@@ -118,6 +118,7 @@ module Toyoterm
   @current_pane = Pane.new(0)
   @commands = []
   @current_command = nil
+  @reload_requested = false
 
   def self.configure(&block)
     block.call(@config)
@@ -129,6 +130,17 @@ module Toyoterm
 
   def self.current_pane
     @current_pane
+  end
+
+  def self.reload_config
+    @reload_requested = true
+    nil
+  end
+
+  def self.__take_reload_request
+    requested = @reload_requested
+    @reload_requested = false
+    requested
   end
 
   def self.__set_current_pane(id)
@@ -306,6 +318,7 @@ pub struct ConfigManager {
     runtime: MrubyRuntime,
     config: ToyotermConfig,
     keybindings: HashSet<String>,
+    source_path: Option<PathBuf>,
 }
 
 impl ConfigManager {
@@ -315,6 +328,7 @@ impl ConfigManager {
             runtime,
             config,
             keybindings,
+            source_path: None,
         })
     }
 
@@ -325,22 +339,33 @@ impl ConfigManager {
     pub fn load_startup(explicit_path: Option<&Path>) -> Result<Self, ScriptError> {
         let env_path = std::env::var_os("TOYOTERM_CONFIG_FILE").filter(|path| !path.is_empty());
         let home = home_directory();
+        let mut manager = Self::new()?;
         let Some(path) = resolve_config_path(explicit_path, env_path.as_deref(), home.as_deref())
         else {
-            return Self::new();
+            return Ok(manager);
         };
         let required = explicit_path.is_some() || env_path.is_some();
+        manager.source_path = Some(path.clone());
         if !required && !path.exists() {
-            return Self::new();
+            return Ok(manager);
         }
+        manager.reload_file()?;
+        Ok(manager)
+    }
 
+    pub fn source_path(&self) -> Option<&Path> {
+        self.source_path.as_deref()
+    }
+
+    /// Reloads the selected config file, preserving the active VM on any failure.
+    pub fn reload_file(&mut self) -> Result<&ToyotermConfig, ScriptError> {
+        let path = self.source_path.clone().ok_or_else(|| {
+            ScriptError::new("reload config", "no configuration path is available")
+        })?;
         let source = std::fs::read_to_string(&path)
             .map_err(|error| ScriptError::config_file(&path, error))?;
-        let mut manager = Self::new()?;
-        manager
-            .reload(&source)
-            .map_err(|error| ScriptError::config_file(&path, error))?;
-        Ok(manager)
+        self.reload(&source)
+            .map_err(|error| ScriptError::config_file(&path, error))
     }
 
     /// Evaluate config in a fresh VM and swap it in only after complete validation.
@@ -383,6 +408,21 @@ impl ConfigManager {
             _ => Err(ScriptError::new(
                 "evaluate key binding",
                 "callback returned an invalid match state",
+            )),
+        }
+    }
+
+    pub fn take_reload_request(&mut self) -> Result<bool, ScriptError> {
+        match self
+            .runtime
+            .eval("Toyoterm.__take_reload_request")?
+            .as_str()
+        {
+            "true" => Ok(true),
+            "false" => Ok(false),
+            _ => Err(ScriptError::new(
+                "decode mruby command",
+                "reload request state is invalid",
             )),
         }
     }
@@ -491,6 +531,10 @@ fn load_config(
         },
         scrollback_lines,
     };
+    validate_color("background", &config.colors.background)?;
+    validate_color("foreground", &config.colors.foreground)?;
+    validate_color("cursor", &config.colors.cursor)?;
+    validate_color("selection", &config.colors.selection)?;
     let binding_count = runtime
         .eval("Toyoterm.__config.__binding_count")?
         .parse::<usize>()
@@ -530,6 +574,18 @@ fn parse_positive_f32(name: &str, value: &str) -> Result<f32, ScriptError> {
         ));
     }
     Ok(value)
+}
+
+fn validate_color(name: &str, value: &str) -> Result<(), ScriptError> {
+    let hex = value.strip_prefix('#').unwrap_or(value);
+    if hex.len() == 6 && hex.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        Ok(())
+    } else {
+        Err(ScriptError::new(
+            "validate config",
+            format!("{name} color must be #RRGGBB"),
+        ))
+    }
 }
 
 fn parse_f32(name: &str, value: &str) -> Result<f32, ScriptError> {
@@ -595,6 +651,54 @@ mod tests {
         assert_eq!(error.operation(), "evaluate mruby");
         assert_eq!(manager.config().font.size, 18.0);
         assert_eq!(manager.eval("Toyoterm.__config.font.size").unwrap(), "18");
+    }
+
+    #[test]
+    fn rejects_invalid_colors_without_replacing_the_config() {
+        let mut manager = ConfigManager::new().unwrap();
+        manager
+            .reload(r##"Toyoterm.configure { |config| config.colors.cursor = "#123456" }"##)
+            .unwrap();
+
+        let error = manager
+            .reload(r#"Toyoterm.configure { |config| config.colors.cursor = "red" }"#)
+            .unwrap_err();
+
+        assert_eq!(error.operation(), "validate config");
+        assert_eq!(manager.config().colors.cursor, "#123456");
+    }
+
+    #[test]
+    fn reloads_the_selected_file_atomically() {
+        let unique = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!(
+            "toyoterm-config-{}-{unique}.rb",
+            std::process::id()
+        ));
+        std::fs::write(
+            &path,
+            "Toyoterm.configure { |config| config.font.size = 17 }",
+        )
+        .unwrap();
+        let mut manager = ConfigManager::load_startup(Some(&path)).unwrap();
+        assert_eq!(manager.source_path(), Some(path.as_path()));
+        assert_eq!(manager.config().font.size, 17.0);
+
+        std::fs::write(
+            &path,
+            "Toyoterm.configure { |config| config.font.size = 19 }",
+        )
+        .unwrap();
+        manager.reload_file().unwrap();
+        assert_eq!(manager.config().font.size, 19.0);
+
+        std::fs::write(&path, "Toyoterm.configure {").unwrap();
+        assert!(manager.reload_file().is_err());
+        assert_eq!(manager.config().font.size, 19.0);
+        std::fs::remove_file(path).unwrap();
     }
 
     #[test]
@@ -686,6 +790,28 @@ mod tests {
         assert!(error.message().contains("broken callback"));
         assert_eq!(manager.eval("6 * 7").unwrap(), "42");
         assert!(manager.drain_commands(PaneId(4)).unwrap().is_empty());
+    }
+
+    #[test]
+    fn exposes_reload_requests_from_ruby_keybindings() {
+        let mut manager = ConfigManager::new().unwrap();
+        manager
+            .reload(
+                r#"
+                Toyoterm.configure do |config|
+                  config.bind("CTRL+SHIFT+R") { Toyoterm.reload_config }
+                end
+                "#,
+            )
+            .unwrap();
+
+        assert!(
+            manager
+                .trigger_keybinding("CTRL+SHIFT+R", PaneId(4))
+                .unwrap()
+        );
+        assert!(manager.take_reload_request().unwrap());
+        assert!(!manager.take_reload_request().unwrap());
     }
 
     #[test]

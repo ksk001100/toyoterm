@@ -35,6 +35,10 @@ impl AlacrittyTerminalBackend {
         }
     }
 
+    pub fn set_scrollback_lines(&mut self, scrollback_lines: usize) {
+        self.terminal.grid_mut().update_history(scrollback_lines);
+    }
+
     fn dimensions(&self) -> (u16, u16) {
         let grid = self.terminal.grid();
         (grid.columns() as u16, grid.screen_lines() as u16)
@@ -282,6 +286,17 @@ mod tests {
         let mut backend = AlacrittyTerminalBackend::with_scrollback(10, 2, 1);
         backend.advance(b"one\r\ntwo\r\nthree\r\nfour");
         backend.scroll_display(i32::MAX);
+        assert_eq!(backend.snapshot().lines, ["two", "three"]);
+    }
+
+    #[test]
+    fn updates_the_scrollback_limit_without_replacing_the_terminal() {
+        let mut backend = AlacrittyTerminalBackend::with_scrollback(10, 2, 10);
+        backend.advance(b"one\r\ntwo\r\nthree\r\nfour");
+
+        backend.set_scrollback_lines(1);
+        backend.scroll_display(i32::MAX);
+
         assert_eq!(backend.snapshot().lines, ["two", "three"]);
     }
 

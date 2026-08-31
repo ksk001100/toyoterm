@@ -385,9 +385,60 @@ impl ToyotermApplication {
             return Ok(false);
         }
 
+        if self
+            .config_manager
+            .take_reload_request()
+            .map_err(|error| error.to_string())?
+        {
+            if let Err(error) = self.reload_config() {
+                eprintln!("toyoterm: config reload failed: {error}");
+            }
+            return Ok(true);
+        }
+
         dispatch_script_commands(&mut self.config_manager, &mut self.mux)?;
         self.flush_mux_input()?;
         Ok(true)
+    }
+
+    fn reload_config(&mut self) -> Result<(), String> {
+        let config = self
+            .config_manager
+            .reload_file()
+            .map_err(|error| error.to_string())?
+            .clone();
+        let render_style = RenderStyle::from_hex(
+            &config.font.family,
+            &config.colors.background,
+            &config.colors.foreground,
+            &config.colors.cursor,
+            &config.colors.selection,
+            config.window_opacity,
+        )
+        .map_err(|error| error.to_string())?;
+        // A reload request in the newly loaded file is not carried into later callbacks.
+        self.config_manager
+            .take_reload_request()
+            .map_err(|error| error.to_string())?;
+        dispatch_script_commands(&mut self.config_manager, &mut self.mux)?;
+
+        let font_scale = f64::from(config.font.size) / 14.0;
+        self.cell_metrics.width = 9.0 * font_scale;
+        self.cell_metrics.height = 18.0 * font_scale;
+        self.cell_metrics.font_size = config.font.size;
+        self.terminal.set_scrollback_lines(config.scrollback_lines);
+        self.render_style = render_style.clone();
+        if let Some(renderer) = self.renderer.as_mut() {
+            renderer.set_style(render_style);
+        }
+        if let Some(window) = self.window.clone() {
+            window.set_transparent(config.window_opacity < 1.0);
+            let size = self.resize_terminal(window.inner_size(), window.scale_factor());
+            self.resize_pty(size)?;
+            self.sync_active_renderer(window.scale_factor());
+            window.request_redraw();
+        }
+        Ok(())
     }
 
     fn resize_terminal(&mut self, window_size: PhysicalSize<u32>, scale_factor: f64) -> PtySize {
