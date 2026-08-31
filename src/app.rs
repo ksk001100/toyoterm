@@ -766,6 +766,7 @@ fn named_key(key: &NamedKey) -> Option<TerminalKey> {
         NamedKey::Backspace => TerminalKey::Backspace,
         NamedKey::Tab => TerminalKey::Tab,
         NamedKey::Escape => TerminalKey::Escape,
+        NamedKey::Space => TerminalKey::Text(" ".into()),
         NamedKey::ArrowUp => TerminalKey::ArrowUp,
         NamedKey::ArrowDown => TerminalKey::ArrowDown,
         NamedKey::ArrowLeft => TerminalKey::ArrowLeft,
@@ -850,5 +851,18 @@ mod tests {
             keybinding_name(&Key::Named(NamedKey::F5), ModifiersState::ALT).as_deref(),
             Some("ALT+F5")
         );
+    }
+
+    #[test]
+    fn encodes_named_space_and_tab_for_the_pty() {
+        let mode = crate::TerminalMode::default();
+        let space = KeyPress::new(
+            named_key(&NamedKey::Space).unwrap(),
+            KeyModifiers::default(),
+        );
+        let tab = KeyPress::new(named_key(&NamedKey::Tab).unwrap(), KeyModifiers::default());
+
+        assert_eq!(encode_key(&space, mode), Some(b" ".to_vec()));
+        assert_eq!(encode_key(&tab, mode), Some(b"\t".to_vec()));
     }
 }
