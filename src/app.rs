@@ -14,7 +14,7 @@ use winit::window::{Window, WindowId};
 
 use crate::{
     AlacrittyTerminalBackend, ConfigManager, GpuRenderer, KeyModifiers, KeyPress,
-    MouseWheelDirection, NativePty, Pty, PtyCommand, PtySession, PtySize, RenderStyle,
+    MouseWheelDirection, Mux, NativePty, Pty, PtyCommand, PtySession, PtySize, RenderStyle,
     TerminalBackend, TerminalKey, TextLayout, encode_key, encode_mouse_wheel, encode_paste,
 };
 
@@ -112,7 +112,8 @@ pub fn run_gui_with_config_path(config_path: Option<&Path>) -> Result<(), AppErr
         .build()
         .map_err(|error| AppError(error.to_string()))?;
     event_loop.set_control_flow(ControlFlow::Wait);
-    let mut app = ToyotermApplication::new(event_loop.create_proxy(), config_manager, render_style);
+    let mut app = ToyotermApplication::new(event_loop.create_proxy(), config_manager, render_style)
+        .map_err(AppError)?;
     event_loop
         .run_app(&mut app)
         .map_err(|error| AppError(error.to_string()))?;
@@ -142,6 +143,7 @@ struct ToyotermApplication {
     clipboard: Option<Clipboard>,
     cell_metrics: CellMetrics,
     config_manager: ConfigManager,
+    mux: Mux,
     render_style: RenderStyle,
     fatal_error: Option<String>,
 }
@@ -298,10 +300,13 @@ impl ToyotermApplication {
         event_proxy: EventLoopProxy<AppEvent>,
         config_manager: ConfigManager,
         render_style: RenderStyle,
-    ) -> Self {
+    ) -> Result<Self, String> {
+        let mut config_manager = config_manager;
+        let mut mux = Mux::new();
+        dispatch_script_commands(&mut config_manager, &mut mux)?;
         let config = config_manager.config();
         let font_scale = f64::from(config.font.size) / 14.0;
-        Self {
+        Ok(Self {
             event_proxy,
             window: None,
             renderer: None,
@@ -319,9 +324,10 @@ impl ToyotermApplication {
                 ..CellMetrics::default()
             },
             config_manager,
+            mux,
             render_style,
             fatal_error: None,
-        }
+        })
     }
 
     fn start_shell(&mut self, size: PtySize) -> Result<(), String> {
@@ -336,7 +342,20 @@ impl ToyotermApplication {
         let reader = session.take_reader().map_err(|error| error.to_string())?;
         spawn_pty_reader(reader, self.event_proxy.clone())?;
         self.pty_session = Some(session);
+        self.flush_mux_input()?;
         Ok(())
+    }
+
+    fn flush_mux_input(&mut self) -> Result<(), String> {
+        let pane = self
+            .mux
+            .current_pane()
+            .ok_or_else(|| "mux has no current pane".to_owned())?;
+        let bytes = self
+            .mux
+            .take_pending_input(pane)
+            .map_err(|error| error.to_string())?;
+        self.write_pty(&bytes)
     }
 
     fn resize_terminal(&mut self, window_size: PhysicalSize<u32>, scale_factor: f64) -> PtySize {
@@ -495,6 +514,25 @@ impl ToyotermApplication {
     }
 }
 
+fn dispatch_script_commands(
+    config_manager: &mut ConfigManager,
+    mux: &mut Mux,
+) -> Result<(), String> {
+    let current_pane = mux
+        .current_pane()
+        .ok_or_else(|| "mux has no current pane".to_owned())?;
+    config_manager
+        .set_current_pane(current_pane)
+        .map_err(|error| error.to_string())?;
+    for command in config_manager
+        .drain_commands(current_pane)
+        .map_err(|error| error.to_string())?
+    {
+        mux.dispatch(command).map_err(|error| error.to_string())?;
+    }
+    Ok(())
+}
+
 fn spawn_pty_reader(
     mut reader: Box<dyn Read + Send>,
     event_proxy: EventLoopProxy<AppEvent>,
@@ -622,5 +660,19 @@ mod tests {
         let logical = metrics.terminal_size_at_scale(PhysicalSize::new(916, 556), 1.0);
         let hidpi = metrics.terminal_size_at_scale(PhysicalSize::new(1832, 1112), 2.0);
         assert_eq!(logical, hidpi);
+    }
+
+    #[test]
+    fn dispatches_startup_ruby_commands_through_the_mux() {
+        let mut config_manager = ConfigManager::new().unwrap();
+        config_manager
+            .reload(r#"Toyoterm.current_pane.send_text("echo hello\n")"#)
+            .unwrap();
+        let mut mux = Mux::new();
+        let pane = mux.current_pane().unwrap();
+
+        dispatch_script_commands(&mut config_manager, &mut mux).unwrap();
+
+        assert_eq!(mux.take_pending_input(pane).unwrap(), b"echo hello\n");
     }
 }

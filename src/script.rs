@@ -5,6 +5,8 @@ use std::path::{Path, PathBuf};
 use std::ptr::NonNull;
 use std::rc::Rc;
 
+use crate::{Command, PaneId};
+
 const CONFIG_DSL: &str = r##"
 module Toyoterm
   class FontConfig
@@ -59,7 +61,25 @@ module Toyoterm
     end
   end
 
+  class Pane
+    attr_reader :id
+
+    def initialize(id)
+      @id = id
+    end
+
+    def send_text(text)
+      text = text.to_s
+      raise ArgumentError, "text contains a NUL byte" if text.index("\0")
+      Toyoterm.__queue_command(:send_text, @id, text)
+      self
+    end
+  end
+
   @config = Config.new
+  @current_pane = Pane.new(0)
+  @commands = []
+  @current_command = nil
 
   def self.configure(&block)
     block.call(@config)
@@ -67,6 +87,31 @@ module Toyoterm
 
   def self.__config
     @config
+  end
+
+  def self.current_pane
+    @current_pane
+  end
+
+  def self.__set_current_pane(id)
+    @current_pane = Pane.new(id)
+  end
+
+  def self.__queue_command(type, pane_id, payload)
+    @commands << [type, pane_id, payload]
+  end
+
+  def self.__next_command
+    @current_command = @commands.shift
+    @current_command ? @current_command[0].to_s : ""
+  end
+
+  def self.__current_command_pane
+    @current_command[1]
+  end
+
+  def self.__current_command_payload
+    @current_command[2]
   end
 end
 "##;
@@ -258,6 +303,48 @@ impl ConfigManager {
     pub fn eval(&mut self, source: &str) -> Result<String, ScriptError> {
         self.runtime.eval(source)
     }
+
+    /// Updates the pane exposed by `Toyoterm.current_pane` for subsequent evaluations.
+    pub fn set_current_pane(&mut self, pane: PaneId) -> Result<(), ScriptError> {
+        self.runtime
+            .eval(&format!("Toyoterm.__set_current_pane({})", pane.0))?;
+        Ok(())
+    }
+
+    /// Converts commands queued by Ruby into the native command API.
+    ///
+    /// Pane id zero is a bootstrap placeholder used while startup config is loading.
+    pub fn drain_commands(&mut self, current_pane: PaneId) -> Result<Vec<Command>, ScriptError> {
+        let mut commands = Vec::new();
+        loop {
+            let command_type = self.runtime.eval("Toyoterm.__next_command")?;
+            if command_type.is_empty() {
+                break;
+            }
+
+            let pane = self
+                .runtime
+                .eval("Toyoterm.__current_command_pane")?
+                .parse::<u64>()
+                .map(PaneId)
+                .map_err(|_| ScriptError::new("decode mruby command", "pane id is invalid"))?;
+            let pane = if pane.0 == 0 { current_pane } else { pane };
+            let payload = self.runtime.eval("Toyoterm.__current_command_payload")?;
+            match command_type.as_str() {
+                "send_text" => commands.push(Command::SendText {
+                    pane,
+                    text: payload,
+                }),
+                other => {
+                    return Err(ScriptError::new(
+                        "decode mruby command",
+                        format!("unsupported command {other}"),
+                    ));
+                }
+            }
+        }
+        Ok(commands)
+    }
 }
 
 pub fn default_config_path() -> Option<PathBuf> {
@@ -403,6 +490,40 @@ mod tests {
         assert_eq!(error.operation(), "evaluate mruby");
         assert_eq!(manager.config().font.size, 18.0);
         assert_eq!(manager.eval("Toyoterm.__config.font.size").unwrap(), "18");
+    }
+
+    #[test]
+    fn converts_pane_send_text_to_a_native_command() {
+        let mut manager = ConfigManager::new().unwrap();
+        manager.set_current_pane(PaneId(42)).unwrap();
+        manager
+            .eval(r#"Toyoterm.current_pane.send_text("echo hello\n")"#)
+            .unwrap();
+
+        assert_eq!(
+            manager.drain_commands(PaneId(42)).unwrap(),
+            vec![Command::SendText {
+                pane: PaneId(42),
+                text: "echo hello\n".into(),
+            }]
+        );
+        assert!(manager.drain_commands(PaneId(42)).unwrap().is_empty());
+    }
+
+    #[test]
+    fn resolves_startup_commands_to_the_current_native_pane() {
+        let mut manager = ConfigManager::new().unwrap();
+        manager
+            .reload(r#"Toyoterm.current_pane.send_text("pwd\n")"#)
+            .unwrap();
+
+        assert_eq!(
+            manager.drain_commands(PaneId(7)).unwrap(),
+            vec![Command::SendText {
+                pane: PaneId(7),
+                text: "pwd\n".into(),
+            }]
+        );
     }
 
     #[test]

@@ -22,11 +22,9 @@ else
   binary_path="target/release/toyoterm"
 fi
 cp "$binary_path" "$staging_directory/toyoterm"
+cp LICENSE "$staging_directory/LICENSE"
 cp THIRD_PARTY_NOTICES.md "$staging_directory/THIRD_PARTY_NOTICES.md"
 cp vendor/mruby/LICENSE "$staging_directory/licenses/mruby-MIT.txt"
-if [ -f LICENSE ]; then
-  cp LICENSE "$staging_directory/LICENSE"
-fi
 
 mkdir -p dist
 tar -C "$staging_root" -czf "dist/$archive_name.tar.gz" "$archive_name"
