@@ -5,10 +5,12 @@
 
 pub mod api;
 pub mod mux;
+pub mod pty;
 pub mod terminal;
 
 pub use api::{
     Command, CommandResult, Event, PaneId, SplitDirection, TabId, WindowId, WorkspaceId,
 };
 pub use mux::{Mux, MuxError, PaneNode};
+pub use pty::{NativePty, Pty, PtyCommand, PtyError, PtyExitStatus, PtySession, PtySize};
 pub use terminal::{CursorShape, CursorState, TerminalBackend, TerminalMode, TerminalSnapshot};

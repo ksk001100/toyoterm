@@ -230,6 +230,15 @@ impl Mux {
             .map(|pane| pane.pending_input.as_slice())
     }
 
+    /// Removes input queued for a pane so an application/PTY worker can write it.
+    pub fn take_pending_input(&mut self, pane: PaneId) -> Result<Vec<u8>, MuxError> {
+        let pane = self
+            .panes
+            .get_mut(&pane)
+            .ok_or(MuxError::UnknownPane(pane))?;
+        Ok(std::mem::take(&mut pane.pending_input))
+    }
+
     pub fn drain_events(&mut self) -> impl Iterator<Item = Event> + '_ {
         self.events.drain(..)
     }
@@ -538,6 +547,11 @@ mod tests {
         })
         .unwrap();
         assert_eq!(mux.pending_input(pane), Some(&b"echo hello\n"[..]));
+        assert_eq!(
+            mux.take_pending_input(pane).unwrap(),
+            b"echo hello\n".to_vec()
+        );
+        assert_eq!(mux.pending_input(pane), Some(&[][..]));
         assert_eq!(
             mux.drain_events().collect::<Vec<_>>(),
             vec![Event::TextQueued { pane, bytes: 11 }]
