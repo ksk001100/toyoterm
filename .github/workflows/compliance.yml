@@ -1,0 +1,20 @@
+name: Compliance
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  licenses:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify vendored notices
+        run: sh scripts/check-licenses.sh
+      - name: Check Cargo dependency licenses
+        uses: EmbarkStudios/cargo-deny-action@v2
+        with:
+          command: check licenses

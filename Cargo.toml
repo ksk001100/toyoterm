@@ -2,6 +2,7 @@
 name = "toyoterm"
 version = "0.1.0"
 edition = "2024"
+publish = false
 
 [dependencies]
 alacritty_terminal = "0.26.0"
