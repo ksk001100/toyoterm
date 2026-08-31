@@ -3,7 +3,7 @@ use std::process::ExitCode;
 
 use toyoterm::{
     AlacrittyTerminalBackend, Command, Mux, NativePty, Pty, PtyCommand, PtySize, SplitDirection,
-    TerminalBackend,
+    TerminalBackend, run_gui,
 };
 
 fn main() -> ExitCode {
@@ -18,11 +18,7 @@ fn main() -> ExitCode {
 
 fn run(mut args: impl Iterator<Item = String>) -> Result<(), String> {
     match args.next().as_deref() {
-        None => {
-            let mux = Mux::new();
-            println!("{}", mux.summary());
-            Ok(())
-        }
+        None => run_gui().map_err(|error| error.to_string()),
         Some("version" | "--version" | "-V") => {
             println!("toyoterm {}", env!("CARGO_PKG_VERSION"));
             Ok(())
@@ -47,6 +43,7 @@ fn run(mut args: impl Iterator<Item = String>) -> Result<(), String> {
         }
         Some("pty-demo") => run_pty_demo(),
         Some("screen-demo") => run_screen_demo(),
+        Some("gui") => run_gui().map_err(|error| error.to_string()),
         Some("help" | "--help" | "-h") => {
             print_help();
             Ok(())
@@ -155,6 +152,6 @@ fn print_help() {
     println!(
         "toyoterm - a programmable terminal emulator powered by Rust and mruby\n\n\
          Usage:\n  toyoterm [COMMAND]\n\n\
-         Commands:\n  list        Show the native mux state\n  demo        Exercise tabs and pane splitting\n  pty-demo    Spawn a process in a native PTY\n  screen-demo Parse PTY output into a terminal snapshot\n  version     Print version\n  help        Print this help"
+         Commands:\n  gui         Open the native GPU window (default)\n  list        Show the native mux state\n  demo        Exercise tabs and pane splitting\n  pty-demo    Spawn a process in a native PTY\n  screen-demo Parse PTY output into a terminal snapshot\n  version     Print version\n  help        Print this help"
     );
 }

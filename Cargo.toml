@@ -5,4 +5,7 @@ edition = "2024"
 
 [dependencies]
 alacritty_terminal = "0.26.0"
+pollster = "1.0.1"
 portable-pty = "0.9.0"
+wgpu = "30.0.1"
+winit = "0.30.13"
