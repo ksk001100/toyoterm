@@ -29,6 +29,7 @@ pub enum SplitDirection {
 #[derive(Clone, Debug, PartialEq)]
 pub enum Command {
     NewTab,
+    ActivateTab(TabId),
     CloseTab(TabId),
     Split {
         pane: PaneId,

@@ -5,7 +5,7 @@
 toyoterm is an experimental, programmable terminal emulator powered by Rust and embedded mruby. Its terminal hot path stays native, while Ruby is used for configuration, dynamic key bindings, runtime events, and commands.
 
 > [!IMPORTANT]
-> toyoterm is under active development. It is usable as a basic terminal, but the GUI currently exposes a single terminal pane. The native mux model already supports tabs, split panes, and workspaces; connecting those features to the GUI is still in progress.
+> toyoterm is under active development. GUI tabs have independent PTY and terminal sessions and can be switched from the keyboard. A visible tab bar, rendered split panes, and workspace UI are still in progress.
 
 ## Features
 
@@ -19,6 +19,7 @@ toyoterm is an experimental, programmable terminal emulator powered by Rust and 
 - Atomic configuration reload: invalid updates leave the previous config active
 - `app_started` and `config_reloaded` Ruby events
 - Native command and mux model for tabs, pane splits, and workspaces
+- GUI tabs with one PTY and terminal backend per pane
 
 ## Current status
 
@@ -26,7 +27,7 @@ The primary development environment is Linux. The architecture and dependencies 
 
 Not yet exposed in the GUI:
 
-- Tabs and split panes
+- A visible tab bar and rendered split panes
 - Workspace switching
 - Live Ruby REPL and remote-control CLI
 - Search, links, image protocols, and session persistence
@@ -128,6 +129,9 @@ Changing `default_shell` does not replace the shell that is already running; it 
 - Type normally to send input to the PTY
 - `Ctrl+Shift+C` on Linux/Windows or `Cmd+C` on macOS: copy the selection
 - `Ctrl+Shift+V` on Linux/Windows or `Cmd+V` on macOS: paste
+- `Ctrl+Shift+T`: open a new tab
+- `Ctrl+Shift+W`: close the active tab (the final tab is kept open)
+- `Ctrl+Tab` / `Ctrl+Shift+Tab`: activate the next / previous tab
 - Drag with the left mouse button: select text
 - Mouse wheel: scroll through history, or report wheel input when the terminal application requests mouse reporting
 

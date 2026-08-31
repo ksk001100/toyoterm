@@ -1,6 +1,7 @@
+use std::collections::{HashMap, HashSet};
 use std::fmt;
 use std::io::Read;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::thread;
 
@@ -13,8 +14,8 @@ use winit::keyboard::{Key, ModifiersState, NamedKey};
 use winit::window::{Window, WindowId};
 
 use crate::{
-    AlacrittyTerminalBackend, ConfigManager, GpuRenderer, KeyModifiers, KeyPress,
-    MouseWheelDirection, Mux, NativePty, Pty, PtyCommand, PtySession, PtySize, RenderStyle,
+    AlacrittyTerminalBackend, Command, ConfigManager, GpuRenderer, KeyModifiers, KeyPress,
+    MouseWheelDirection, Mux, NativePty, PaneId, Pty, PtyCommand, PtySession, PtySize, RenderStyle,
     TerminalBackend, TerminalKey, TextLayout, encode_key, encode_mouse_wheel, encode_paste,
 };
 
@@ -125,17 +126,40 @@ pub fn run_gui_with_config_path(config_path: Option<&Path>) -> Result<(), AppErr
 
 #[derive(Debug)]
 enum AppEvent {
-    Output(Vec<u8>),
-    Eof,
-    Error(String),
+    Output { pane: PaneId, bytes: Vec<u8> },
+    Eof { pane: PaneId },
+    Error { pane: PaneId, message: String },
+}
+
+struct PaneRuntime {
+    terminal: AlacrittyTerminalBackend,
+    pty_session: Option<Box<dyn PtySession>>,
+    process_id: Option<u32>,
+    title: String,
+    cwd: Option<PathBuf>,
+    exited: bool,
+}
+
+impl PaneRuntime {
+    fn terminate(&mut self) {
+        if let Some(mut session) = self.pty_session.take() {
+            let _ = session.kill();
+        }
+        self.exited = true;
+    }
+}
+
+impl Drop for PaneRuntime {
+    fn drop(&mut self) {
+        self.terminate();
+    }
 }
 
 struct ToyotermApplication {
     event_proxy: EventLoopProxy<AppEvent>,
     window: Option<Arc<Window>>,
     renderer: Option<GpuRenderer>,
-    terminal: AlacrittyTerminalBackend,
-    pty_session: Option<Box<dyn PtySession>>,
+    pane_runtimes: HashMap<PaneId, PaneRuntime>,
     modifiers: ModifiersState,
     mouse_position: PhysicalPosition<f64>,
     wheel_line_accumulator: f64,
@@ -173,15 +197,30 @@ impl ApplicationHandler<AppEvent> for ToyotermApplication {
             }
         };
         renderer.set_style(self.render_style.clone());
-        let size = self.resize_terminal(window.inner_size(), window.scale_factor());
-        self.sync_renderer(&mut renderer, window.scale_factor());
+        let size = self
+            .cell_metrics
+            .terminal_size_at_scale(window.inner_size(), window.scale_factor());
         window.set_ime_allowed(true);
-        window.request_redraw();
         self.renderer = Some(renderer);
         self.window = Some(window);
-        if let Err(error) = self.start_shell(size) {
+        if let Err(error) = self.sync_pane_runtimes(size) {
             self.fail(event_loop, error);
+            return;
         }
+        if let Err(error) = self.emit_script_event("app_started") {
+            self.fail(event_loop, error);
+            return;
+        }
+        self.sync_active_renderer(
+            self.window
+                .as_ref()
+                .expect("window was installed")
+                .scale_factor(),
+        );
+        self.window
+            .as_ref()
+            .expect("window was installed")
+            .request_redraw();
     }
 
     fn window_event(
@@ -203,8 +242,8 @@ impl ApplicationHandler<AppEvent> for ToyotermApplication {
                 if let Some(renderer) = self.renderer.as_mut() {
                     renderer.resize(size);
                 }
-                let terminal_size = self.resize_terminal(size, window.scale_factor());
-                if let Err(error) = self.resize_pty(terminal_size) {
+                let terminal_size = self.resize_terminals(size, window.scale_factor());
+                if let Err(error) = self.resize_ptys(terminal_size) {
                     self.fail(event_loop, error);
                     return;
                 }
@@ -216,8 +255,8 @@ impl ApplicationHandler<AppEvent> for ToyotermApplication {
                 if let Some(renderer) = self.renderer.as_mut() {
                     renderer.resize(size);
                 }
-                let terminal_size = self.resize_terminal(size, scale_factor);
-                if let Err(error) = self.resize_pty(terminal_size) {
+                let terminal_size = self.resize_terminals(size, scale_factor);
+                if let Err(error) = self.resize_ptys(terminal_size) {
                     self.fail(event_loop, error);
                     return;
                 }
@@ -229,7 +268,9 @@ impl ApplicationHandler<AppEvent> for ToyotermApplication {
                 self.mouse_position = position;
                 if self.selecting {
                     let (column, row) = self.mouse_cell(window.scale_factor());
-                    self.terminal.update_selection(column, row);
+                    if let Some(terminal) = self.active_terminal_mut() {
+                        terminal.update_selection(column, row);
+                    }
                     self.sync_active_renderer(window.scale_factor());
                     window.request_redraw();
                 }
@@ -257,6 +298,14 @@ impl ApplicationHandler<AppEvent> for ToyotermApplication {
                     }
                     return;
                 }
+                match self.handle_tab_shortcut(&event) {
+                    Ok(true) => return,
+                    Ok(false) => {}
+                    Err(error) => {
+                        eprintln!("toyoterm: {error}");
+                        return;
+                    }
+                }
                 match self.handle_keybinding(&event) {
                     Ok(true) => return,
                     Ok(false) => {}
@@ -266,7 +315,12 @@ impl ApplicationHandler<AppEvent> for ToyotermApplication {
                     }
                 }
                 if let Some(press) = key_press(&event, self.modifiers)
-                    && let Some(bytes) = encode_key(&press, self.terminal.mode())
+                    && let Some(bytes) = encode_key(
+                        &press,
+                        self.active_terminal()
+                            .map(TerminalBackend::mode)
+                            .unwrap_or_default(),
+                    )
                     && let Err(error) = self.write_pty(&bytes)
                 {
                     self.fail(event_loop, error);
@@ -288,17 +342,24 @@ impl ApplicationHandler<AppEvent> for ToyotermApplication {
         }
     }
 
-    fn user_event(&mut self, event_loop: &ActiveEventLoop, event: AppEvent) {
+    fn user_event(&mut self, _event_loop: &ActiveEventLoop, event: AppEvent) {
         match event {
-            AppEvent::Output(bytes) => {
-                self.terminal.advance(&bytes);
-                if let Some(window) = self.window.clone() {
+            AppEvent::Output { pane, bytes } => {
+                if let Some(runtime) = self.pane_runtimes.get_mut(&pane) {
+                    runtime.terminal.advance(&bytes);
+                }
+                if self.mux.current_pane() == Some(pane)
+                    && let Some(window) = self.window.clone()
+                {
                     self.sync_active_renderer(window.scale_factor());
                     window.request_redraw();
                 }
             }
-            AppEvent::Eof => event_loop.exit(),
-            AppEvent::Error(error) => self.fail(event_loop, error),
+            AppEvent::Eof { pane } => self.mark_pane_exited(pane, None),
+            AppEvent::Error { pane, message } => {
+                eprintln!("toyoterm: pane {pane}: {message}");
+                self.mark_pane_exited(pane, Some(message));
+            }
         }
     }
 }
@@ -318,8 +379,7 @@ impl ToyotermApplication {
             event_proxy,
             window: None,
             renderer: None,
-            terminal: AlacrittyTerminalBackend::with_scrollback(80, 24, config.scrollback_lines),
-            pty_session: None,
+            pane_runtimes: HashMap::new(),
             modifiers: ModifiersState::empty(),
             mouse_position: PhysicalPosition::new(0.0, 0.0),
             wheel_line_accumulator: 0.0,
@@ -338,7 +398,7 @@ impl ToyotermApplication {
         })
     }
 
-    fn start_shell(&mut self, size: PtySize) -> Result<(), String> {
+    fn start_shell(&mut self, pane: PaneId, size: PtySize) -> Result<PaneRuntime, String> {
         let mut command = match self.config_manager.config().default_shell.as_deref() {
             Some(shell) => PtyCommand::new(shell),
             None => PtyCommand::default_shell(),
@@ -348,23 +408,34 @@ impl ToyotermApplication {
             .spawn(command, size)
             .map_err(|error| error.to_string())?;
         let reader = session.take_reader().map_err(|error| error.to_string())?;
-        spawn_pty_reader(reader, self.event_proxy.clone())?;
-        self.pty_session = Some(session);
-        self.flush_mux_input()?;
-        self.emit_script_event("app_started")?;
-        Ok(())
+        let process_id = session.process_id();
+        spawn_pty_reader(pane, reader, self.event_proxy.clone())?;
+        Ok(PaneRuntime {
+            terminal: AlacrittyTerminalBackend::with_scrollback(
+                size.columns,
+                size.rows,
+                self.config_manager.config().scrollback_lines,
+            ),
+            pty_session: Some(session),
+            process_id,
+            title: format!("Pane {}", pane.0),
+            cwd: std::env::current_dir().ok(),
+            exited: false,
+        })
     }
 
     fn flush_mux_input(&mut self) -> Result<(), String> {
-        let pane = self
-            .mux
-            .current_pane()
-            .ok_or_else(|| "mux has no current pane".to_owned())?;
-        let bytes = self
-            .mux
-            .take_pending_input(pane)
-            .map_err(|error| error.to_string())?;
-        self.write_pty(&bytes)
+        let panes = self.pane_runtimes.keys().copied().collect::<Vec<_>>();
+        for pane in panes {
+            let bytes = self
+                .mux
+                .take_pending_input(pane)
+                .map_err(|error| error.to_string())?;
+            if !bytes.is_empty() {
+                self.write_pane_pty(pane, &bytes)?;
+            }
+        }
+        Ok(())
     }
 
     fn handle_keybinding(&mut self, event: &KeyEvent) -> Result<bool, String> {
@@ -398,8 +469,70 @@ impl ToyotermApplication {
         }
 
         dispatch_script_commands(&mut self.config_manager, &mut self.mux)?;
+        self.reconcile_pane_runtimes()?;
         self.flush_mux_input()?;
         Ok(true)
+    }
+
+    fn handle_tab_shortcut(&mut self, event: &KeyEvent) -> Result<bool, String> {
+        if self.modifiers.control_key() && self.modifiers.shift_key() {
+            if matches!(&event.logical_key, Key::Character(key) if key.eq_ignore_ascii_case("t")) {
+                self.dispatch_gui_command(Command::NewTab)?;
+                return Ok(true);
+            }
+            if matches!(&event.logical_key, Key::Character(key) if key.eq_ignore_ascii_case("w")) {
+                let tab = self
+                    .mux
+                    .current_tab()
+                    .ok_or_else(|| "mux has no current tab".to_owned())?;
+                self.dispatch_gui_command(Command::CloseTab(tab))?;
+                return Ok(true);
+            }
+        }
+
+        if self.modifiers.control_key() && matches!(&event.logical_key, Key::Named(NamedKey::Tab)) {
+            self.cycle_tab(self.modifiers.shift_key())?;
+            return Ok(true);
+        }
+        Ok(false)
+    }
+
+    fn cycle_tab(&mut self, backwards: bool) -> Result<(), String> {
+        let window = self
+            .mux
+            .current_window()
+            .ok_or_else(|| "mux has no current window".to_owned())?;
+        let current = self
+            .mux
+            .current_tab()
+            .ok_or_else(|| "mux has no current tab".to_owned())?;
+        let tabs = self
+            .mux
+            .tabs(window)
+            .ok_or_else(|| format!("unknown window {window}"))?;
+        let current_index = tabs
+            .iter()
+            .position(|tab| *tab == current)
+            .ok_or_else(|| format!("active tab {current} is not in window {window}"))?;
+        let next_index = if backwards {
+            (current_index + tabs.len() - 1) % tabs.len()
+        } else {
+            (current_index + 1) % tabs.len()
+        };
+        let next = tabs[next_index];
+        self.dispatch_gui_command(Command::ActivateTab(next))
+    }
+
+    fn dispatch_gui_command(&mut self, command: Command) -> Result<(), String> {
+        self.mux
+            .dispatch(command)
+            .map_err(|error| error.to_string())?;
+        self.reconcile_pane_runtimes()?;
+        if let Some(window) = self.window.clone() {
+            self.sync_active_renderer(window.scale_factor());
+            window.request_redraw();
+        }
+        Ok(())
     }
 
     fn reload_config(&mut self) -> Result<(), String> {
@@ -422,20 +555,25 @@ impl ToyotermApplication {
             .take_reload_request()
             .map_err(|error| error.to_string())?;
         dispatch_script_commands(&mut self.config_manager, &mut self.mux)?;
+        self.reconcile_pane_runtimes()?;
 
         let font_scale = f64::from(config.font.size) / 14.0;
         self.cell_metrics.width = 9.0 * font_scale;
         self.cell_metrics.height = 18.0 * font_scale;
         self.cell_metrics.font_size = config.font.size;
-        self.terminal.set_scrollback_lines(config.scrollback_lines);
+        for runtime in self.pane_runtimes.values_mut() {
+            runtime
+                .terminal
+                .set_scrollback_lines(config.scrollback_lines);
+        }
         self.render_style = render_style.clone();
         if let Some(renderer) = self.renderer.as_mut() {
             renderer.set_style(render_style);
         }
         if let Some(window) = self.window.clone() {
             window.set_transparent(config.window_opacity < 1.0);
-            let size = self.resize_terminal(window.inner_size(), window.scale_factor());
-            self.resize_pty(size)?;
+            let size = self.resize_terminals(window.inner_size(), window.scale_factor());
+            self.resize_ptys(size)?;
             self.sync_active_renderer(window.scale_factor());
             window.request_redraw();
         }
@@ -452,6 +590,7 @@ impl ToyotermApplication {
         match self.config_manager.emit_event(name, pane) {
             Ok(true) => {
                 dispatch_script_commands(&mut self.config_manager, &mut self.mux)?;
+                self.reconcile_pane_runtimes()?;
                 self.flush_mux_input()
             }
             Ok(false) => Ok(()),
@@ -462,26 +601,111 @@ impl ToyotermApplication {
         }
     }
 
-    fn resize_terminal(&mut self, window_size: PhysicalSize<u32>, scale_factor: f64) -> PtySize {
+    fn resize_terminals(&mut self, window_size: PhysicalSize<u32>, scale_factor: f64) -> PtySize {
         let size = self
             .cell_metrics
             .terminal_size_at_scale(window_size, scale_factor);
-        self.terminal.resize(size.columns, size.rows);
+        for runtime in self.pane_runtimes.values_mut() {
+            runtime.terminal.resize(size.columns, size.rows);
+        }
         size
     }
 
-    fn resize_pty(&mut self, size: PtySize) -> Result<(), String> {
-        if let Some(session) = self.pty_session.as_mut() {
-            session.resize(size).map_err(|error| error.to_string())?;
+    fn resize_ptys(&mut self, size: PtySize) -> Result<(), String> {
+        for runtime in self.pane_runtimes.values_mut() {
+            if let Some(session) = runtime.pty_session.as_mut() {
+                session.resize(size).map_err(|error| error.to_string())?;
+            }
         }
         Ok(())
     }
 
     fn write_pty(&mut self, bytes: &[u8]) -> Result<(), String> {
-        if let Some(session) = self.pty_session.as_mut() {
+        let pane = self
+            .mux
+            .current_pane()
+            .ok_or_else(|| "mux has no current pane".to_owned())?;
+        self.write_pane_pty(pane, bytes)
+    }
+
+    fn write_pane_pty(&mut self, pane: PaneId, bytes: &[u8]) -> Result<(), String> {
+        let runtime = self
+            .pane_runtimes
+            .get_mut(&pane)
+            .ok_or_else(|| format!("pane {pane} has no runtime"))?;
+        if let Some(session) = runtime.pty_session.as_mut() {
             session.write(bytes).map_err(|error| error.to_string())?;
         }
         Ok(())
+    }
+
+    fn reconcile_pane_runtimes(&mut self) -> Result<(), String> {
+        let size = self
+            .window
+            .as_ref()
+            .map(|window| {
+                self.cell_metrics
+                    .terminal_size_at_scale(window.inner_size(), window.scale_factor())
+            })
+            .unwrap_or_default();
+        self.sync_pane_runtimes(size)
+    }
+
+    fn sync_pane_runtimes(&mut self, size: PtySize) -> Result<(), String> {
+        let desired = self.mux.pane_ids().collect::<HashSet<_>>();
+        let stale = self
+            .pane_runtimes
+            .keys()
+            .filter(|pane| !desired.contains(pane))
+            .copied()
+            .collect::<Vec<_>>();
+        for pane in stale {
+            if let Some(mut runtime) = self.pane_runtimes.remove(&pane) {
+                runtime.terminate();
+            }
+        }
+
+        let mut missing = desired
+            .into_iter()
+            .filter(|pane| !self.pane_runtimes.contains_key(pane))
+            .collect::<Vec<_>>();
+        missing.sort_unstable();
+        for pane in missing {
+            let runtime = self.start_shell(pane, size)?;
+            self.pane_runtimes.insert(pane, runtime);
+        }
+        self.flush_mux_input()
+    }
+
+    fn active_terminal(&self) -> Option<&AlacrittyTerminalBackend> {
+        self.mux
+            .current_pane()
+            .and_then(|pane| self.pane_runtimes.get(&pane))
+            .map(|runtime| &runtime.terminal)
+    }
+
+    fn active_terminal_mut(&mut self) -> Option<&mut AlacrittyTerminalBackend> {
+        let pane = self.mux.current_pane()?;
+        self.pane_runtimes
+            .get_mut(&pane)
+            .map(|runtime| &mut runtime.terminal)
+    }
+
+    fn mark_pane_exited(&mut self, pane: PaneId, error: Option<String>) {
+        if let Some(runtime) = self.pane_runtimes.get_mut(&pane) {
+            runtime.pty_session = None;
+            runtime.exited = true;
+            runtime.title = match error {
+                Some(error) => format!("Pane {} (error: {error})", pane.0),
+                None => format!("Pane {} (exited)", pane.0),
+            };
+        }
+        if self.mux.current_pane() == Some(pane)
+            && let Some(window) = self.window.clone()
+        {
+            self.sync_active_renderer(window.scale_factor());
+            window.request_redraw();
+        }
     }
 
     fn handle_mouse_wheel(
@@ -503,7 +727,10 @@ impl ToyotermApplication {
             return;
         }
 
-        let mode = self.terminal.mode();
+        let mode = self
+            .active_terminal()
+            .map(TerminalBackend::mode)
+            .unwrap_or_default();
         if mode.mouse_reporting && !self.modifiers.shift_key() {
             let (column, row) = self.mouse_cell(window.scale_factor());
             let direction = if steps > 0 {
@@ -521,7 +748,9 @@ impl ToyotermApplication {
                 self.fail(event_loop, error);
             }
         } else {
-            self.terminal.scroll_display(steps);
+            if let Some(terminal) = self.active_terminal_mut() {
+                terminal.scroll_display(steps);
+            }
             self.sync_active_renderer(window.scale_factor());
             window.request_redraw();
         }
@@ -544,19 +773,27 @@ impl ToyotermApplication {
     }
 
     fn handle_left_mouse(&mut self, window: &Window, state: ElementState) {
-        if self.terminal.mode().mouse_reporting && !self.modifiers.shift_key() {
+        if self
+            .active_terminal()
+            .is_some_and(|terminal| terminal.mode().mouse_reporting)
+            && !self.modifiers.shift_key()
+        {
             return;
         }
 
         let (column, row) = self.mouse_cell(window.scale_factor());
         match state {
             ElementState::Pressed => {
-                self.terminal.clear_selection();
-                self.terminal.start_selection(column, row);
+                if let Some(terminal) = self.active_terminal_mut() {
+                    terminal.clear_selection();
+                    terminal.start_selection(column, row);
+                }
                 self.selecting = true;
             }
             ElementState::Released if self.selecting => {
-                self.terminal.update_selection(column, row);
+                if let Some(terminal) = self.active_terminal_mut() {
+                    terminal.update_selection(column, row);
+                }
                 self.selecting = false;
             }
             ElementState::Released => return,
@@ -567,8 +804,8 @@ impl ToyotermApplication {
 
     fn copy_selection(&mut self) -> Result<(), String> {
         let Some(text) = self
-            .terminal
-            .selected_text()
+            .active_terminal()
+            .and_then(TerminalBackend::selected_text)
             .filter(|text| !text.is_empty())
         else {
             return Ok(());
@@ -579,11 +816,15 @@ impl ToyotermApplication {
     }
 
     fn paste_clipboard(&mut self) -> Result<(), String> {
+        let mode = self
+            .active_terminal()
+            .map(TerminalBackend::mode)
+            .unwrap_or_default();
         let text = self
             .clipboard()?
             .get_text()
             .map_err(|error| format!("paste from clipboard: {error}"))?;
-        let bytes = encode_paste(&text, self.terminal.mode());
+        let bytes = encode_paste(&text, mode);
         self.write_pty(&bytes)
     }
 
@@ -596,20 +837,40 @@ impl ToyotermApplication {
     }
 
     fn sync_active_renderer(&mut self, scale_factor: f64) {
-        let snapshot = self.terminal.snapshot();
-        let cursor = self.terminal.cursor();
+        let Some(terminal) = self.active_terminal() else {
+            return;
+        };
+        let snapshot = terminal.snapshot();
+        let cursor = terminal.cursor();
         let layout = self.cell_metrics.text_layout(scale_factor);
         if let Some(renderer) = self.renderer.as_mut() {
             renderer.update_terminal(&snapshot, cursor, layout);
         }
+        self.update_window_title();
     }
 
-    fn sync_renderer(&self, renderer: &mut GpuRenderer, scale_factor: f64) {
-        renderer.update_terminal(
-            &self.terminal.snapshot(),
-            self.terminal.cursor(),
-            self.cell_metrics.text_layout(scale_factor),
-        );
+    fn update_window_title(&self) {
+        let Some(window) = self.window.as_ref() else {
+            return;
+        };
+        let Some(pane) = self.mux.current_pane() else {
+            window.set_title("toyoterm");
+            return;
+        };
+        let Some(runtime) = self.pane_runtimes.get(&pane) else {
+            window.set_title("toyoterm");
+            return;
+        };
+        let pid = runtime
+            .process_id
+            .map(|pid| format!(" · pid {pid}"))
+            .unwrap_or_default();
+        let cwd = runtime
+            .cwd
+            .as_ref()
+            .map(|cwd| format!(" · {}", cwd.display()))
+            .unwrap_or_default();
+        window.set_title(&format!("toyoterm — {}{pid}{cwd}", runtime.title));
     }
 
     fn fail(&mut self, event_loop: &ActiveEventLoop, error: String) {
@@ -638,6 +899,7 @@ fn dispatch_script_commands(
 }
 
 fn spawn_pty_reader(
+    pane: PaneId,
     mut reader: Box<dyn Read + Send>,
     event_proxy: EventLoopProxy<AppEvent>,
 ) -> Result<(), String> {
@@ -648,24 +910,29 @@ fn spawn_pty_reader(
             loop {
                 match reader.read(&mut buffer) {
                     Ok(0) => {
-                        let _ = event_proxy.send_event(AppEvent::Eof);
+                        let _ = event_proxy.send_event(AppEvent::Eof { pane });
                         break;
                     }
                     Ok(count) => {
                         if event_proxy
-                            .send_event(AppEvent::Output(buffer[..count].to_vec()))
+                            .send_event(AppEvent::Output {
+                                pane,
+                                bytes: buffer[..count].to_vec(),
+                            })
                             .is_err()
                         {
                             break;
                         }
                     }
                     Err(error) if error.raw_os_error() == Some(5) => {
-                        let _ = event_proxy.send_event(AppEvent::Eof);
+                        let _ = event_proxy.send_event(AppEvent::Eof { pane });
                         break;
                     }
                     Err(error) => {
-                        let _ = event_proxy
-                            .send_event(AppEvent::Error(format!("read PTY output: {error}")));
+                        let _ = event_proxy.send_event(AppEvent::Error {
+                            pane,
+                            message: format!("read PTY output: {error}"),
+                        });
                         break;
                     }
                 }

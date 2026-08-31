@@ -224,6 +224,16 @@ impl Mux {
         self.tabs.get(&tab).map(|tab| &tab.root)
     }
 
+    pub fn tabs(&self, window: WindowId) -> Option<&[TabId]> {
+        self.windows
+            .get(&window)
+            .map(|window| window.tabs.as_slice())
+    }
+
+    pub fn pane_ids(&self) -> impl Iterator<Item = PaneId> + '_ {
+        self.panes.keys().copied()
+    }
+
     pub fn pending_input(&self, pane: PaneId) -> Option<&[u8]> {
         self.panes
             .get(&pane)
@@ -246,6 +256,10 @@ impl Mux {
     pub fn dispatch(&mut self, command: Command) -> Result<CommandResult, MuxError> {
         match command {
             Command::NewTab => Ok(CommandResult::Tab(self.new_tab())),
+            Command::ActivateTab(tab) => {
+                self.activate_tab(tab)?;
+                Ok(CommandResult::Tab(tab))
+            }
             Command::CloseTab(tab) => {
                 self.close_tab(tab)?;
                 Ok(CommandResult::None)
@@ -424,6 +438,16 @@ impl Mux {
         Ok(())
     }
 
+    fn activate_tab(&mut self, tab: TabId) -> Result<(), MuxError> {
+        if !self.tabs.contains_key(&tab) {
+            return Err(MuxError::UnknownTab(tab));
+        }
+        self.focus_tab(tab);
+        let pane = self.tabs[&tab].active_pane;
+        self.events.push_back(Event::PaneFocused { pane });
+        Ok(())
+    }
+
     fn focus_tab(&mut self, tab: TabId) {
         let window = self.tabs[&tab].window;
         self.windows
@@ -590,5 +614,29 @@ mod tests {
             mux.dispatch(Command::CloseTab(tab)),
             Err(MuxError::CannotCloseLastTab(tab))
         );
+    }
+
+    #[test]
+    fn tabs_keep_their_active_pane_when_switching() {
+        let mut mux = Mux::new();
+        let first_tab = mux.current_tab().unwrap();
+        let first_pane = mux.current_pane().unwrap();
+        let CommandResult::Pane(first_split) = mux
+            .dispatch(Command::Split {
+                pane: first_pane,
+                direction: SplitDirection::Right,
+            })
+            .unwrap()
+        else {
+            panic!("split did not return a pane");
+        };
+        let CommandResult::Tab(second_tab) = mux.dispatch(Command::NewTab).unwrap() else {
+            panic!("new tab did not return a tab");
+        };
+
+        mux.dispatch(Command::ActivateTab(first_tab)).unwrap();
+        assert_eq!(mux.current_pane(), Some(first_split));
+        mux.dispatch(Command::ActivateTab(second_tab)).unwrap();
+        assert_ne!(mux.current_pane(), Some(first_split));
     }
 }
