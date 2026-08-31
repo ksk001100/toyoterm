@@ -35,3 +35,7 @@ pub trait TerminalBackend: Send {
     fn cursor(&self) -> CursorState;
     fn mode(&self) -> TerminalMode;
 }
+
+mod alacritty;
+
+pub use alacritty::AlacrittyTerminalBackend;

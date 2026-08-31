@@ -13,4 +13,7 @@ pub use api::{
 };
 pub use mux::{Mux, MuxError, PaneNode};
 pub use pty::{NativePty, Pty, PtyCommand, PtyError, PtyExitStatus, PtySession, PtySize};
-pub use terminal::{CursorShape, CursorState, TerminalBackend, TerminalMode, TerminalSnapshot};
+pub use terminal::{
+    AlacrittyTerminalBackend, CursorShape, CursorState, TerminalBackend, TerminalMode,
+    TerminalSnapshot,
+};

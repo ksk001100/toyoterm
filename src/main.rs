@@ -1,7 +1,10 @@
 use std::io::Read;
 use std::process::ExitCode;
 
-use toyoterm::{Command, Mux, NativePty, Pty, PtyCommand, PtySize, SplitDirection};
+use toyoterm::{
+    AlacrittyTerminalBackend, Command, Mux, NativePty, Pty, PtyCommand, PtySize, SplitDirection,
+    TerminalBackend,
+};
 
 fn main() -> ExitCode {
     match run(std::env::args().skip(1)) {
@@ -43,12 +46,37 @@ fn run(mut args: impl Iterator<Item = String>) -> Result<(), String> {
             Ok(())
         }
         Some("pty-demo") => run_pty_demo(),
+        Some("screen-demo") => run_screen_demo(),
         Some("help" | "--help" | "-h") => {
             print_help();
             Ok(())
         }
         Some(command) => Err(format!("unknown command `{command}`; try `toyoterm help`")),
     }
+}
+
+fn run_screen_demo() -> Result<(), String> {
+    let mut session = NativePty
+        .spawn(screen_demo_command(), PtySize::new(40, 6))
+        .map_err(|error| error.to_string())?;
+    let mut output = Vec::new();
+    session
+        .take_reader()
+        .map_err(|error| error.to_string())?
+        .read_to_end(&mut output)
+        .map_err(|error| format!("read PTY output: {error}"))?;
+    let status = session.wait().map_err(|error| error.to_string())?;
+    if status.code != 0 {
+        return Err(format!("PTY process exited with code {}", status.code));
+    }
+
+    let mut terminal = AlacrittyTerminalBackend::new(40, 6);
+    terminal.advance(&output);
+    let snapshot = terminal.snapshot();
+    for line in snapshot.lines.iter().filter(|line| !line.is_empty()) {
+        println!("{line}");
+    }
+    Ok(())
 }
 
 fn run_pty_demo() -> Result<(), String> {
@@ -101,6 +129,23 @@ fn demo_input() -> &'static str {
     "printf 'hello from toyoterm PTY\\n'\nexit\n"
 }
 
+#[cfg(unix)]
+fn screen_demo_command() -> PtyCommand {
+    let mut command = PtyCommand::new("/bin/sh");
+    command.args([
+        "-c",
+        "printf '\\033[2J\\033[Htoyoterm VT backend\\nready\\n'",
+    ]);
+    command
+}
+
+#[cfg(windows)]
+fn screen_demo_command() -> PtyCommand {
+    let mut command = PtyCommand::new("cmd.exe");
+    command.args(["/C", "echo toyoterm VT backend&&echo ready"]);
+    command
+}
+
 #[cfg(windows)]
 fn demo_input() -> &'static str {
     "echo hello from toyoterm PTY\r\nexit\r\n"
@@ -110,6 +155,6 @@ fn print_help() {
     println!(
         "toyoterm - a programmable terminal emulator powered by Rust and mruby\n\n\
          Usage:\n  toyoterm [COMMAND]\n\n\
-         Commands:\n  list       Show the native mux state\n  demo       Exercise tabs and pane splitting\n  pty-demo   Spawn a process in a native PTY\n  version    Print version\n  help       Print this help"
+         Commands:\n  list        Show the native mux state\n  demo        Exercise tabs and pane splitting\n  pty-demo    Spawn a process in a native PTY\n  screen-demo Parse PTY output into a terminal snapshot\n  version     Print version\n  help        Print this help"
     );
 }
