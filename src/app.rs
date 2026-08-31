@@ -15,7 +15,8 @@ use winit::window::{Window, WindowId};
 
 use crate::{
     AlacrittyTerminalBackend, Command, ConfigManager, GpuRenderer, KeyModifiers, KeyPress,
-    MouseWheelDirection, Mux, NativePty, PaneId, Pty, PtyCommand, PtySession, PtySize, RenderStyle,
+    MouseWheelDirection, Mux, NativePty, PaneId, PaneLayout, PaneRect, PaneRenderData, Pty,
+    PtyCommand, PtySession, PtySize, RenderStyle, SplitDirection, TabRenderData, TabStripLayout,
     TerminalBackend, TerminalKey, TextLayout, encode_key, encode_mouse_wheel, encode_paste,
 };
 
@@ -160,6 +161,9 @@ struct ToyotermApplication {
     window: Option<Arc<Window>>,
     renderer: Option<GpuRenderer>,
     pane_runtimes: HashMap<PaneId, PaneRuntime>,
+    pane_layout: PaneLayout,
+    tab_layout: TabStripLayout,
+    ime_preedit: Option<String>,
     modifiers: ModifiersState,
     mouse_position: PhysicalPosition<f64>,
     wheel_line_accumulator: f64,
@@ -203,6 +207,7 @@ impl ApplicationHandler<AppEvent> for ToyotermApplication {
         window.set_ime_allowed(true);
         self.renderer = Some(renderer);
         self.window = Some(window);
+        self.refresh_pane_layout();
         if let Err(error) = self.sync_pane_runtimes(size) {
             self.fail(event_loop, error);
             return;
@@ -242,8 +247,7 @@ impl ApplicationHandler<AppEvent> for ToyotermApplication {
                 if let Some(renderer) = self.renderer.as_mut() {
                     renderer.resize(size);
                 }
-                let terminal_size = self.resize_terminals(size, window.scale_factor());
-                if let Err(error) = self.resize_ptys(terminal_size) {
+                if let Err(error) = self.resize_panes(size, window.scale_factor()) {
                     self.fail(event_loop, error);
                     return;
                 }
@@ -255,8 +259,7 @@ impl ApplicationHandler<AppEvent> for ToyotermApplication {
                 if let Some(renderer) = self.renderer.as_mut() {
                     renderer.resize(size);
                 }
-                let terminal_size = self.resize_terminals(size, scale_factor);
-                if let Err(error) = self.resize_ptys(terminal_size) {
+                if let Err(error) = self.resize_panes(size, scale_factor) {
                     self.fail(event_loop, error);
                     return;
                 }
@@ -326,10 +329,23 @@ impl ApplicationHandler<AppEvent> for ToyotermApplication {
                     self.fail(event_loop, error);
                 }
             }
+            WindowEvent::Ime(Ime::Preedit(text, _cursor)) => {
+                self.ime_preedit = (!text.is_empty()).then_some(text);
+                self.sync_active_renderer(window.scale_factor());
+                window.request_redraw();
+            }
             WindowEvent::Ime(Ime::Commit(text)) => {
+                self.ime_preedit = None;
                 if let Err(error) = self.write_pty(text.as_bytes()) {
                     self.fail(event_loop, error);
                 }
+                self.sync_active_renderer(window.scale_factor());
+                window.request_redraw();
+            }
+            WindowEvent::Ime(Ime::Disabled) => {
+                self.ime_preedit = None;
+                self.sync_active_renderer(window.scale_factor());
+                window.request_redraw();
             }
             WindowEvent::RedrawRequested => {
                 if let Some(renderer) = self.renderer.as_mut()
@@ -348,7 +364,7 @@ impl ApplicationHandler<AppEvent> for ToyotermApplication {
                 if let Some(runtime) = self.pane_runtimes.get_mut(&pane) {
                     runtime.terminal.advance(&bytes);
                 }
-                if self.mux.current_pane() == Some(pane)
+                if self.pane_layout.rect(pane).is_some()
                     && let Some(window) = self.window.clone()
                 {
                     self.sync_active_renderer(window.scale_factor());
@@ -380,6 +396,9 @@ impl ToyotermApplication {
             window: None,
             renderer: None,
             pane_runtimes: HashMap::new(),
+            pane_layout: PaneLayout::default(),
+            tab_layout: TabStripLayout::default(),
+            ime_preedit: None,
             modifiers: ModifiersState::empty(),
             mouse_position: PhysicalPosition::new(0.0, 0.0),
             wheel_line_accumulator: 0.0,
@@ -488,6 +507,35 @@ impl ToyotermApplication {
                 self.dispatch_gui_command(Command::CloseTab(tab))?;
                 return Ok(true);
             }
+            if matches!(&event.logical_key, Key::Character(key) if matches!(key.as_str(), "\\" | "|"))
+            {
+                self.split_active_pane(SplitDirection::Right)?;
+                return Ok(true);
+            }
+            if matches!(&event.logical_key, Key::Character(key) if matches!(key.as_str(), "-" | "_"))
+            {
+                self.split_active_pane(SplitDirection::Down)?;
+                return Ok(true);
+            }
+            if matches!(&event.logical_key, Key::Character(key) if key.eq_ignore_ascii_case("q")) {
+                let pane = self
+                    .mux
+                    .current_pane()
+                    .ok_or_else(|| "mux has no current pane".to_owned())?;
+                self.dispatch_gui_command(Command::ClosePane(pane))?;
+                return Ok(true);
+            }
+            let direction = match &event.logical_key {
+                Key::Named(NamedKey::ArrowLeft) => Some(SplitDirection::Left),
+                Key::Named(NamedKey::ArrowRight) => Some(SplitDirection::Right),
+                Key::Named(NamedKey::ArrowUp) => Some(SplitDirection::Up),
+                Key::Named(NamedKey::ArrowDown) => Some(SplitDirection::Down),
+                _ => None,
+            };
+            if let Some(direction) = direction {
+                self.focus_neighbor(direction)?;
+                return Ok(true);
+            }
         }
 
         if self.modifiers.control_key() && matches!(&event.logical_key, Key::Named(NamedKey::Tab)) {
@@ -524,13 +572,36 @@ impl ToyotermApplication {
     }
 
     fn dispatch_gui_command(&mut self, command: Command) -> Result<(), String> {
+        let previous_pane = self.mux.current_pane();
         self.mux
             .dispatch(command)
             .map_err(|error| error.to_string())?;
+        if self.mux.current_pane() != previous_pane {
+            self.ime_preedit = None;
+        }
         self.reconcile_pane_runtimes()?;
         if let Some(window) = self.window.clone() {
             self.sync_active_renderer(window.scale_factor());
             window.request_redraw();
+        }
+        Ok(())
+    }
+
+    fn split_active_pane(&mut self, direction: SplitDirection) -> Result<(), String> {
+        let pane = self
+            .mux
+            .current_pane()
+            .ok_or_else(|| "mux has no current pane".to_owned())?;
+        self.dispatch_gui_command(Command::Split { pane, direction })
+    }
+
+    fn focus_neighbor(&mut self, direction: SplitDirection) -> Result<(), String> {
+        let pane = self
+            .mux
+            .current_pane()
+            .ok_or_else(|| "mux has no current pane".to_owned())?;
+        if let Some(neighbor) = self.pane_layout.neighbor(pane, direction) {
+            self.dispatch_gui_command(Command::ActivatePane(neighbor))?;
         }
         Ok(())
     }
@@ -572,8 +643,7 @@ impl ToyotermApplication {
         }
         if let Some(window) = self.window.clone() {
             window.set_transparent(config.window_opacity < 1.0);
-            let size = self.resize_terminals(window.inner_size(), window.scale_factor());
-            self.resize_ptys(size)?;
+            self.resize_panes(window.inner_size(), window.scale_factor())?;
             self.sync_active_renderer(window.scale_factor());
             window.request_redraw();
         }
@@ -601,20 +671,33 @@ impl ToyotermApplication {
         }
     }
 
-    fn resize_terminals(&mut self, window_size: PhysicalSize<u32>, scale_factor: f64) -> PtySize {
-        let size = self
-            .cell_metrics
-            .terminal_size_at_scale(window_size, scale_factor);
-        for runtime in self.pane_runtimes.values_mut() {
-            runtime.terminal.resize(size.columns, size.rows);
-        }
-        size
-    }
-
-    fn resize_ptys(&mut self, size: PtySize) -> Result<(), String> {
-        for runtime in self.pane_runtimes.values_mut() {
-            if let Some(session) = runtime.pty_session.as_mut() {
-                session.resize(size).map_err(|error| error.to_string())?;
+    fn resize_panes(
+        &mut self,
+        window_size: PhysicalSize<u32>,
+        scale_factor: f64,
+    ) -> Result<(), String> {
+        self.tab_layout = self.calculate_tab_layout(window_size, scale_factor);
+        self.pane_layout = self.calculate_pane_layout(window_size, scale_factor);
+        let sizes = self
+            .pane_layout
+            .panes()
+            .iter()
+            .map(|placement| {
+                (
+                    placement.pane,
+                    self.cell_metrics.terminal_size_at_scale(
+                        PhysicalSize::new(placement.rect.width, placement.rect.height),
+                        scale_factor,
+                    ),
+                )
+            })
+            .collect::<Vec<_>>();
+        for (pane, size) in sizes {
+            if let Some(runtime) = self.pane_runtimes.get_mut(&pane) {
+                runtime.terminal.resize(size.columns, size.rows);
+                if let Some(session) = runtime.pty_session.as_mut() {
+                    session.resize(size).map_err(|error| error.to_string())?;
+                }
             }
         }
         Ok(())
@@ -640,6 +723,7 @@ impl ToyotermApplication {
     }
 
     fn reconcile_pane_runtimes(&mut self) -> Result<(), String> {
+        self.refresh_pane_layout();
         let size = self
             .window
             .as_ref()
@@ -649,6 +733,56 @@ impl ToyotermApplication {
             })
             .unwrap_or_default();
         self.sync_pane_runtimes(size)
+    }
+
+    fn refresh_pane_layout(&mut self) {
+        let Some(window) = self.window.as_ref() else {
+            return;
+        };
+        self.tab_layout = self.calculate_tab_layout(window.inner_size(), window.scale_factor());
+        self.pane_layout = self.calculate_pane_layout(window.inner_size(), window.scale_factor());
+    }
+
+    fn calculate_tab_layout(
+        &self,
+        window_size: PhysicalSize<u32>,
+        scale_factor: f64,
+    ) -> TabStripLayout {
+        let Some(window) = self.mux.current_window() else {
+            return TabStripLayout::default();
+        };
+        let Some(tabs) = self.mux.tabs(window) else {
+            return TabStripLayout::default();
+        };
+        TabStripLayout::calculate(
+            tabs,
+            PaneRect::new(0, 0, window_size.width, tab_bar_height(scale_factor)),
+            (160.0 * scale_factor.max(0.1)).round() as u32,
+        )
+    }
+
+    fn calculate_pane_layout(
+        &self,
+        window_size: PhysicalSize<u32>,
+        scale_factor: f64,
+    ) -> PaneLayout {
+        let Some(tab) = self.mux.current_tab() else {
+            return PaneLayout::default();
+        };
+        let Some(root) = self.mux.pane_tree(tab) else {
+            return PaneLayout::default();
+        };
+        let tab_height = tab_bar_height(scale_factor).min(window_size.height);
+        PaneLayout::calculate(
+            root,
+            PaneRect::new(
+                0,
+                tab_height,
+                window_size.width,
+                window_size.height.saturating_sub(tab_height),
+            ),
+            (2.0 * scale_factor.max(0.1)).round() as u32,
+        )
     }
 
     fn sync_pane_runtimes(&mut self, size: PtySize) -> Result<(), String> {
@@ -674,7 +808,11 @@ impl ToyotermApplication {
             let runtime = self.start_shell(pane, size)?;
             self.pane_runtimes.insert(pane, runtime);
         }
-        self.flush_mux_input()
+        self.flush_mux_input()?;
+        if let Some(window) = self.window.clone() {
+            self.resize_panes(window.inner_size(), window.scale_factor())?;
+        }
+        Ok(())
     }
 
     fn active_terminal(&self) -> Option<&AlacrittyTerminalBackend> {
@@ -758,10 +896,17 @@ impl ToyotermApplication {
 
     fn mouse_cell(&self, scale_factor: f64) -> (u16, u16) {
         let scale_factor = scale_factor.max(0.1);
+        let rect = self
+            .mux
+            .current_pane()
+            .and_then(|pane| self.pane_layout.rect(pane))
+            .unwrap_or_default();
         let x = (self.mouse_position.x
+            - f64::from(rect.x)
             - f64::from(self.cell_metrics.horizontal_padding) * scale_factor)
             .max(0.0);
         let y = (self.mouse_position.y
+            - f64::from(rect.y)
             - f64::from(self.cell_metrics.vertical_padding) * scale_factor)
             .max(0.0);
         let column = (x / (self.cell_metrics.width * scale_factor).max(1.0)).floor() as u32;
@@ -773,6 +918,31 @@ impl ToyotermApplication {
     }
 
     fn handle_left_mouse(&mut self, window: &Window, state: ElementState) {
+        if state == ElementState::Pressed {
+            if let Some(tab) = self
+                .tab_layout
+                .tab_at(self.mouse_position.x, self.mouse_position.y)
+            {
+                if self.mux.current_tab() != Some(tab)
+                    && let Err(error) = self.dispatch_gui_command(Command::ActivateTab(tab))
+                {
+                    eprintln!("toyoterm: activate tab {tab}: {error}");
+                }
+                return;
+            }
+            let hovered = self
+                .pane_layout
+                .pane_at(self.mouse_position.x, self.mouse_position.y);
+            let Some(hovered) = hovered else {
+                return;
+            };
+            if self.mux.current_pane() != Some(hovered)
+                && let Err(error) = self.dispatch_gui_command(Command::ActivatePane(hovered))
+            {
+                eprintln!("toyoterm: focus pane {hovered}: {error}");
+                return;
+            }
+        }
         if self
             .active_terminal()
             .is_some_and(|terminal| terminal.mode().mouse_reporting)
@@ -837,16 +1007,95 @@ impl ToyotermApplication {
     }
 
     fn sync_active_renderer(&mut self, scale_factor: f64) {
+        let active = self.mux.current_pane();
+        let snapshots = self
+            .pane_layout
+            .panes()
+            .iter()
+            .filter_map(|placement| {
+                self.pane_runtimes.get(&placement.pane).map(|runtime| {
+                    (
+                        placement.pane,
+                        runtime.terminal.snapshot(),
+                        runtime.terminal.cursor(),
+                        placement.rect,
+                        active == Some(placement.pane),
+                    )
+                })
+            })
+            .collect::<Vec<_>>();
+        let panes = snapshots
+            .iter()
+            .map(|(pane, snapshot, cursor, rect, active)| PaneRenderData {
+                pane: *pane,
+                snapshot,
+                cursor: *cursor,
+                rect: *rect,
+                active: *active,
+            })
+            .collect::<Vec<_>>();
+        let active_tab = self.mux.current_tab();
+        let tab_titles = self
+            .tab_layout
+            .tabs()
+            .iter()
+            .map(|placement| {
+                (
+                    placement.tab,
+                    format!("Tab {}", placement.tab.0),
+                    placement.rect,
+                    active_tab == Some(placement.tab),
+                )
+            })
+            .collect::<Vec<_>>();
+        let tabs = tab_titles
+            .iter()
+            .map(|(tab, title, rect, active)| TabRenderData {
+                tab: *tab,
+                title,
+                rect: *rect,
+                active: *active,
+            })
+            .collect::<Vec<_>>();
+        let layout = self.cell_metrics.text_layout(scale_factor);
+        if let Some(renderer) = self.renderer.as_mut() {
+            renderer.update_panes(&panes, layout);
+            renderer.update_tabs(&tabs, layout);
+            renderer.update_preedit(self.ime_preedit.as_deref(), layout);
+        }
+        self.update_ime_cursor_area(scale_factor);
+        self.update_window_title();
+    }
+
+    fn update_ime_cursor_area(&self, scale_factor: f64) {
+        let Some(window) = self.window.as_ref() else {
+            return;
+        };
+        let Some(pane) = self.mux.current_pane() else {
+            return;
+        };
+        let Some(rect) = self.pane_layout.rect(pane) else {
+            return;
+        };
         let Some(terminal) = self.active_terminal() else {
             return;
         };
-        let snapshot = terminal.snapshot();
         let cursor = terminal.cursor();
         let layout = self.cell_metrics.text_layout(scale_factor);
-        if let Some(renderer) = self.renderer.as_mut() {
-            renderer.update_terminal(&snapshot, cursor, layout);
-        }
-        self.update_window_title();
+        window.set_ime_cursor_area(
+            PhysicalPosition::new(
+                f64::from(rect.x)
+                    + f64::from(layout.horizontal_padding)
+                    + f64::from(cursor.column) * f64::from(layout.cell_width),
+                f64::from(rect.y)
+                    + f64::from(layout.vertical_padding)
+                    + f64::from(cursor.row) * f64::from(layout.line_height),
+            ),
+            PhysicalSize::new(
+                layout.cell_width.max(1.0) as u32,
+                layout.line_height.max(1.0) as u32,
+            ),
+        );
     }
 
     fn update_window_title(&self) {
@@ -861,6 +1110,11 @@ impl ToyotermApplication {
             window.set_title("toyoterm");
             return;
         };
+        let tab = self
+            .mux
+            .current_tab()
+            .map(|tab| format!("Tab {} · ", tab.0))
+            .unwrap_or_default();
         let pid = runtime
             .process_id
             .map(|pid| format!(" · pid {pid}"))
@@ -870,7 +1124,7 @@ impl ToyotermApplication {
             .as_ref()
             .map(|cwd| format!(" · {}", cwd.display()))
             .unwrap_or_default();
-        window.set_title(&format!("toyoterm — {}{pid}{cwd}", runtime.title));
+        window.set_title(&format!("toyoterm — {tab}{}{pid}{cwd}", runtime.title));
     }
 
     fn fail(&mut self, event_loop: &ActiveEventLoop, error: String) {
@@ -896,6 +1150,10 @@ fn dispatch_script_commands(
         mux.dispatch(command).map_err(|error| error.to_string())?;
     }
     Ok(())
+}
+
+fn tab_bar_height(scale_factor: f64) -> u32 {
+    (30.0 * scale_factor.max(0.1)).round() as u32
 }
 
 fn spawn_pty_reader(

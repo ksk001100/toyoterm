@@ -5,7 +5,7 @@
 toyotermは、Rustと組み込みmrubyで作る実験的なプログラマブル・ターミナルエミュレータです。ターミナルのホットパスはネイティブ実装のまま保ち、設定、動的キーバインド、ランタイムイベント、コマンドにRubyを利用します。
 
 > [!IMPORTANT]
-> toyotermは活発に開発中です。GUIの各タブは独立したPTYとターミナルセッションを持ち、キーボードで切り替えられます。タブバー、分割ペインの同時描画、ワークスペースUIは開発途中です。
+> toyotermは活発に開発中です。GUIの各タブと分割Paneは独立したPTYとターミナルセッションを持ちます。ワークスペースUIと複数ウィンドウ対応は開発途中です。
 
 ## 機能
 
@@ -13,6 +13,7 @@ toyotermは、Rustと組み込みmrubyで作る実験的なプログラマブル
 - `wgpu`と`glyphon`によるGPU描画ウィンドウ
 - `alacritty_terminal`を利用したVTシーケンス解析
 - UTF-8入力、リサイズ、スクロールバック、マウスホイール
+- IME preedit描画とcommit・cancel処理
 - テキスト選択とクリップボードのコピー・ペースト
 - mruby 4.0を組み込んだ設定ランタイム
 - ネイティブコマンドを発行できる動的Rubyキーバインド
@@ -20,6 +21,8 @@ toyotermは、Rustと組み込みmrubyで作る実験的なプログラマブル
 - `app_started`と`config_reloaded`のRubyイベント
 - タブ、ペイン分割、ワークスペースに対応したネイティブCommand・Muxモデル
 - PaneごとにPTYとTerminalBackendを持つGUIタブ
+- Paneごとのresizeとfocusに対応した分割Pane描画
+- マウス操作とキーボード操作に対応したタブバー
 
 ## 現在の状態
 
@@ -27,7 +30,6 @@ toyotermは、Rustと組み込みmrubyで作る実験的なプログラマブル
 
 GUIへ未接続の機能：
 
-- タブバーと分割ペインの同時描画
 - ワークスペース切り替え
 - ライブRuby REPLとリモート操作CLI
 - 検索、リンク、画像プロトコル、セッション永続化
@@ -132,6 +134,9 @@ end
 - `Ctrl+Shift+T`：新しいタブを作成
 - `Ctrl+Shift+W`：active Tabを閉じる（最後のタブは維持）
 - `Ctrl+Tab` / `Ctrl+Shift+Tab`：次／前のタブをactivate
+- `Ctrl+Shift+\` / `Ctrl+Shift+-`：active Paneを右／下へ分割
+- `Ctrl+Shift+矢印`：指定方向の最寄りPaneへfocus
+- `Ctrl+Shift+Q`：active Paneを閉じる（最後のPaneは維持）
 - 左マウスボタンでドラッグ：テキストを選択
 - マウスホイール：履歴をスクロール。アプリケーションがマウスレポートを要求している場合はホイール入力を送信
 

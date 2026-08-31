@@ -6,6 +6,7 @@
 pub mod api;
 pub mod app;
 pub mod input;
+pub mod layout;
 pub mod mux;
 pub mod pty;
 pub mod render;
@@ -20,9 +21,14 @@ pub use input::{
     KeyModifiers, KeyPress, MouseWheelDirection, TerminalKey, encode_key, encode_mouse_wheel,
     encode_paste,
 };
+pub use layout::{
+    PaneLayout, PanePlacement, PaneRect, SplitAxis, SplitBoundary, TabPlacement, TabStripLayout,
+};
 pub use mux::{Mux, MuxError, PaneNode};
 pub use pty::{NativePty, Pty, PtyCommand, PtyError, PtyExitStatus, PtySession, PtySize};
-pub use render::{GpuRenderer, RenderError, RenderOutcome, RenderStyle, TextLayout};
+pub use render::{
+    GpuRenderer, PaneRenderData, RenderError, RenderOutcome, RenderStyle, TabRenderData, TextLayout,
+};
 pub use script::{
     ColorConfig, ConfigManager, FontConfig, MrubyRuntime, ScriptError, ToyotermConfig,
     default_config_path,

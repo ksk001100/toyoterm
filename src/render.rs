@@ -1,3 +1,4 @@
+use std::collections::{HashMap, HashSet};
 use std::fmt;
 use std::sync::Arc;
 
@@ -13,7 +14,7 @@ use wgpu::{
 use winit::dpi::PhysicalSize;
 use winit::window::Window;
 
-use crate::{CursorShape, CursorState, TerminalSnapshot};
+use crate::{CursorShape, CursorState, PaneId, PaneRect, TabId, TerminalSnapshot};
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct TextLayout {
@@ -22,6 +23,23 @@ pub struct TextLayout {
     pub cell_width: f32,
     pub horizontal_padding: f32,
     pub vertical_padding: f32,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub struct PaneRenderData<'a> {
+    pub pane: PaneId,
+    pub snapshot: &'a TerminalSnapshot,
+    pub cursor: CursorState,
+    pub rect: PaneRect,
+    pub active: bool,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub struct TabRenderData<'a> {
+    pub tab: TabId,
+    pub title: &'a str,
+    pub rect: PaneRect,
+    pub active: bool,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -111,13 +129,55 @@ pub struct GpuRenderer {
     viewport: Viewport,
     text_atlas: TextAtlas,
     text_renderer: TextRenderer,
-    selection_buffer: Buffer,
-    text_buffer: Buffer,
-    cursor_buffer: Buffer,
-    text_layout: TextLayout,
-    cursor: CursorState,
-    has_selection: bool,
+    panes: HashMap<PaneId, PaneBuffers>,
+    tabs: HashMap<TabId, TabBuffer>,
+    preedit: Buffer,
+    has_preedit: bool,
     style: RenderStyle,
+}
+
+struct TabBuffer {
+    text: Buffer,
+    rect: PaneRect,
+    active: bool,
+}
+
+struct PaneBuffers {
+    selection: Buffer,
+    text: Buffer,
+    cursor_glyph: Buffer,
+    focus: Buffer,
+    layout: TextLayout,
+    cursor: CursorState,
+    rect: PaneRect,
+    active: bool,
+    has_selection: bool,
+}
+
+impl PaneBuffers {
+    fn new(font_system: &mut FontSystem, metrics: Metrics, layout: TextLayout) -> Self {
+        let mut buffer = || {
+            let mut buffer = Buffer::new(font_system, metrics);
+            buffer.set_wrap(Wrap::None);
+            buffer
+        };
+        Self {
+            selection: buffer(),
+            text: buffer(),
+            cursor_glyph: buffer(),
+            focus: buffer(),
+            layout,
+            cursor: CursorState {
+                column: 0,
+                row: 0,
+                visible: false,
+                shape: CursorShape::Block,
+            },
+            rect: PaneRect::default(),
+            active: false,
+            has_selection: false,
+        }
+    }
 }
 
 impl GpuRenderer {
@@ -161,21 +221,8 @@ impl GpuRenderer {
             wgpu::MultisampleState::default(),
             None,
         );
-        let default_layout = TextLayout {
-            font_size: 14.0,
-            line_height: 18.0,
-            cell_width: 9.0,
-            horizontal_padding: 8.0,
-            vertical_padding: 8.0,
-        };
-        let metrics = Metrics::new(default_layout.font_size, default_layout.line_height);
-        let mut text_buffer = Buffer::new(&mut font_system, metrics);
-        text_buffer.set_wrap(Wrap::None);
-        let mut selection_buffer = Buffer::new(&mut font_system, metrics);
-        selection_buffer.set_wrap(Wrap::None);
-        let mut cursor_buffer = Buffer::new(&mut font_system, metrics);
-        cursor_buffer.set_wrap(Wrap::None);
-
+        let mut preedit = Buffer::new(&mut font_system, Metrics::new(14.0, 18.0));
+        preedit.set_wrap(Wrap::None);
         let style = RenderStyle::default();
         let initial_alpha_mode = configuration.alpha_mode;
         Ok(Self {
@@ -193,17 +240,10 @@ impl GpuRenderer {
             viewport,
             text_atlas,
             text_renderer,
-            selection_buffer,
-            text_buffer,
-            cursor_buffer,
-            text_layout: default_layout,
-            cursor: CursorState {
-                column: 0,
-                row: 0,
-                visible: false,
-                shape: CursorShape::Block,
-            },
-            has_selection: false,
+            panes: HashMap::new(),
+            tabs: HashMap::new(),
+            preedit,
+            has_preedit: false,
             style,
         })
     }
@@ -219,61 +259,144 @@ impl GpuRenderer {
         }
     }
 
-    pub fn update_terminal(
-        &mut self,
-        snapshot: &TerminalSnapshot,
-        cursor: CursorState,
-        layout: TextLayout,
-    ) {
-        self.text_layout = layout;
-        self.cursor = cursor;
-        self.has_selection = !snapshot.selection.is_empty();
+    pub fn update_panes(&mut self, panes: &[PaneRenderData<'_>], layout: TextLayout) {
+        let active_panes = panes.iter().map(|pane| pane.pane).collect::<HashSet<_>>();
+        self.panes.retain(|pane, _| active_panes.contains(pane));
         let metrics = Metrics::new(layout.font_size.max(1.0), layout.line_height.max(1.0));
-        let content_width =
-            self.configuration
+        for pane in panes {
+            if !self.panes.contains_key(&pane.pane) {
+                self.panes.insert(
+                    pane.pane,
+                    PaneBuffers::new(&mut self.font_system, metrics, layout),
+                );
+            }
+            let buffers = self
+                .panes
+                .get_mut(&pane.pane)
+                .expect("pane buffers were inserted");
+            buffers.layout = layout;
+            buffers.cursor = pane.cursor;
+            buffers.rect = pane.rect;
+            buffers.active = pane.active;
+            buffers.has_selection = !pane.snapshot.selection.is_empty();
+            let content_width = pane
+                .rect
                 .width
-                .saturating_sub((layout.horizontal_padding * 2.0) as u32) as f32;
-        let content_height =
-            self.configuration
-                .height
-                .saturating_sub((layout.vertical_padding * 2.0) as u32) as f32;
-        self.text_buffer
-            .set_metrics_and_size(metrics, Some(content_width), Some(content_height));
-        self.text_buffer.set_text(
-            &snapshot.lines.join("\n"),
-            &Attrs::new().family(Family::Name(&self.style.font_family)),
-            Shaping::Basic,
-            None,
-        );
-        self.text_buffer
-            .shape_until_scroll(&mut self.font_system, false);
+                .saturating_sub((layout.horizontal_padding * 2.0) as u32)
+                as f32;
+            let content_height =
+                pane.rect
+                    .height
+                    .saturating_sub((layout.vertical_padding * 2.0) as u32) as f32;
+            buffers
+                .text
+                .set_metrics_and_size(metrics, Some(content_width), Some(content_height));
+            buffers.text.set_text(
+                &pane.snapshot.lines.join("\n"),
+                &Attrs::new().family(Family::Name(&self.style.font_family)),
+                Shaping::Basic,
+                None,
+            );
+            buffers
+                .text
+                .shape_until_scroll(&mut self.font_system, false);
 
-        self.selection_buffer.set_metrics_and_size(
-            metrics,
-            Some(content_width),
-            Some(content_height),
-        );
-        self.selection_buffer.set_text(
-            &selection_text(snapshot),
-            &Attrs::new().family(Family::Name(&self.style.font_family)),
-            Shaping::Basic,
-            None,
-        );
-        self.selection_buffer
-            .shape_until_scroll(&mut self.font_system, false);
+            buffers.selection.set_metrics_and_size(
+                metrics,
+                Some(content_width),
+                Some(content_height),
+            );
+            buffers.selection.set_text(
+                &selection_text(pane.snapshot),
+                &Attrs::new().family(Family::Name(&self.style.font_family)),
+                Shaping::Basic,
+                None,
+            );
+            buffers
+                .selection
+                .shape_until_scroll(&mut self.font_system, false);
 
-        self.cursor_buffer.set_metrics_and_size(metrics, None, None);
-        self.cursor_buffer.set_text(
-            match cursor.shape {
-                CursorShape::Block => "█",
-                CursorShape::Beam => "▏",
-                CursorShape::Underline => "▁",
-            },
+            buffers
+                .cursor_glyph
+                .set_metrics_and_size(metrics, None, None);
+            buffers.cursor_glyph.set_text(
+                match pane.cursor.shape {
+                    CursorShape::Block => "█",
+                    CursorShape::Beam => "▏",
+                    CursorShape::Underline => "▁",
+                },
+                &Attrs::new().family(Family::Name(&self.style.font_family)),
+                Shaping::Basic,
+                None,
+            );
+            buffers
+                .cursor_glyph
+                .shape_until_scroll(&mut self.font_system, false);
+
+            let focus_width = (pane.rect.width as f32 / layout.cell_width.max(1.0)) as usize;
+            buffers.focus.set_metrics_and_size(metrics, None, None);
+            buffers.focus.set_text(
+                &"━".repeat(focus_width),
+                &Attrs::new().family(Family::Name(&self.style.font_family)),
+                Shaping::Basic,
+                None,
+            );
+            buffers
+                .focus
+                .shape_until_scroll(&mut self.font_system, false);
+        }
+    }
+
+    pub fn update_tabs(&mut self, tabs: &[TabRenderData<'_>], layout: TextLayout) {
+        let active_tabs = tabs.iter().map(|tab| tab.tab).collect::<HashSet<_>>();
+        self.tabs.retain(|tab, _| active_tabs.contains(tab));
+        let metrics = Metrics::new(layout.font_size.max(1.0), layout.line_height.max(1.0));
+        for tab in tabs {
+            if !self.tabs.contains_key(&tab.tab) {
+                let mut text = Buffer::new(&mut self.font_system, metrics);
+                text.set_wrap(Wrap::None);
+                self.tabs.insert(
+                    tab.tab,
+                    TabBuffer {
+                        text,
+                        rect: tab.rect,
+                        active: tab.active,
+                    },
+                );
+            }
+            let buffer = self
+                .tabs
+                .get_mut(&tab.tab)
+                .expect("tab buffer was inserted");
+            buffer.rect = tab.rect;
+            buffer.active = tab.active;
+            buffer.text.set_metrics_and_size(
+                metrics,
+                Some(tab.rect.width.saturating_sub(16) as f32),
+                Some(tab.rect.height as f32),
+            );
+            buffer.text.set_text(
+                tab.title,
+                &Attrs::new().family(Family::Name(&self.style.font_family)),
+                Shaping::Basic,
+                None,
+            );
+            buffer.text.shape_until_scroll(&mut self.font_system, false);
+        }
+    }
+
+    pub fn update_preedit(&mut self, text: Option<&str>, layout: TextLayout) {
+        let text = text.unwrap_or_default();
+        self.has_preedit = !text.is_empty();
+        let metrics = Metrics::new(layout.font_size.max(1.0), layout.line_height.max(1.0));
+        self.preedit.set_metrics_and_size(metrics, None, None);
+        self.preedit.set_text(
+            text,
             &Attrs::new().family(Family::Name(&self.style.font_family)),
-            Shaping::Basic,
+            Shaping::Advanced,
             None,
         );
-        self.cursor_buffer
+        self.preedit
             .shape_until_scroll(&mut self.font_system, false);
     }
 
@@ -303,47 +426,79 @@ impl GpuRenderer {
                 height: self.configuration.height,
             },
         );
-        let bounds = TextBounds {
-            left: 0,
-            top: 0,
-            right: self.configuration.width.min(i32::MAX as u32) as i32,
-            bottom: self.configuration.height.min(i32::MAX as u32) as i32,
-        };
-        let cursor_left = self.text_layout.horizontal_padding
-            + f32::from(self.cursor.column) * self.text_layout.cell_width;
-        let cursor_top = self.text_layout.vertical_padding
-            + f32::from(self.cursor.row) * self.text_layout.line_height;
-        let mut text_areas = Vec::with_capacity(3);
-        if self.has_selection {
+        let mut text_areas = Vec::with_capacity(self.panes.len() * 4 + self.tabs.len());
+        for tab in self.tabs.values() {
             text_areas.push(TextArea {
-                buffer: &self.selection_buffer,
-                left: self.text_layout.horizontal_padding,
-                top: self.text_layout.vertical_padding,
+                buffer: &tab.text,
+                left: tab.rect.x as f32 + 8.0,
+                top: tab.rect.y as f32 + 4.0,
                 scale: 1.0,
-                bounds,
-                default_color: glyph_color(self.style.selection, 210),
+                bounds: pane_bounds(tab.rect),
+                default_color: if tab.active {
+                    glyph_color(self.style.cursor, 255)
+                } else {
+                    glyph_color(self.style.foreground, 170)
+                },
                 custom_glyphs: &[],
             });
         }
-        text_areas.push(TextArea {
-            buffer: &self.text_buffer,
-            left: self.text_layout.horizontal_padding,
-            top: self.text_layout.vertical_padding,
-            scale: 1.0,
-            bounds,
-            default_color: glyph_color(self.style.foreground, 255),
-            custom_glyphs: &[],
-        });
-        if self.cursor.visible {
+        for pane in self.panes.values() {
+            let bounds = pane_bounds(pane.rect);
+            let left = pane.rect.x as f32 + pane.layout.horizontal_padding;
+            let top = pane.rect.y as f32 + pane.layout.vertical_padding;
+            if pane.has_selection {
+                text_areas.push(TextArea {
+                    buffer: &pane.selection,
+                    left,
+                    top,
+                    scale: 1.0,
+                    bounds,
+                    default_color: glyph_color(self.style.selection, 210),
+                    custom_glyphs: &[],
+                });
+            }
             text_areas.push(TextArea {
-                buffer: &self.cursor_buffer,
-                left: cursor_left,
-                top: cursor_top,
+                buffer: &pane.text,
+                left,
+                top,
                 scale: 1.0,
                 bounds,
-                default_color: glyph_color(self.style.cursor, 255),
+                default_color: glyph_color(self.style.foreground, 255),
                 custom_glyphs: &[],
             });
+            if pane.active {
+                text_areas.push(TextArea {
+                    buffer: &pane.focus,
+                    left: pane.rect.x as f32,
+                    top: pane.rect.y as f32,
+                    scale: 1.0,
+                    bounds,
+                    default_color: glyph_color(self.style.cursor, 190),
+                    custom_glyphs: &[],
+                });
+            }
+            if pane.active && pane.cursor.visible {
+                text_areas.push(TextArea {
+                    buffer: &pane.cursor_glyph,
+                    left: left + f32::from(pane.cursor.column) * pane.layout.cell_width,
+                    top: top + f32::from(pane.cursor.row) * pane.layout.line_height,
+                    scale: 1.0,
+                    bounds,
+                    default_color: glyph_color(self.style.cursor, 255),
+                    custom_glyphs: &[],
+                });
+            }
+            if pane.active && self.has_preedit {
+                text_areas.push(TextArea {
+                    buffer: &self.preedit,
+                    left: left + f32::from(pane.cursor.column) * pane.layout.cell_width,
+                    top: top + f32::from(pane.cursor.row) * pane.layout.line_height,
+                    scale: 1.0,
+                    bounds,
+                    default_color: glyph_color(self.style.cursor, 255),
+                    custom_glyphs: &[],
+                });
+            }
         }
         self.text_renderer
             .prepare(
@@ -421,6 +576,15 @@ impl GpuRenderer {
             .map_err(|error| RenderError::new("recreate GPU surface", error))?;
         self.surface.configure(&self.device, &self.configuration);
         Ok(())
+    }
+}
+
+fn pane_bounds(rect: PaneRect) -> TextBounds {
+    TextBounds {
+        left: rect.x.min(i32::MAX as u32) as i32,
+        top: rect.y.min(i32::MAX as u32) as i32,
+        right: rect.x.saturating_add(rect.width).min(i32::MAX as u32) as i32,
+        bottom: rect.y.saturating_add(rect.height).min(i32::MAX as u32) as i32,
     }
 }
 
