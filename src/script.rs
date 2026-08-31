@@ -720,6 +720,21 @@ mod tests {
     }
 
     #[test]
+    fn bundled_minimal_configuration_is_executable() {
+        let mut manager = ConfigManager::new().unwrap();
+        manager
+            .reload(include_str!("../examples/minimal_config.rb"))
+            .unwrap();
+        assert_eq!(manager.config().font.size, 14.0);
+        assert_eq!(manager.config().scrollback_lines, 10_000);
+        assert!(
+            manager
+                .trigger_keybinding("CTRL+SHIFT+H", PaneId(7))
+                .unwrap()
+        );
+    }
+
+    #[test]
     fn failed_reload_preserves_the_previous_runtime_and_config() {
         let mut manager = ConfigManager::new().unwrap();
         manager

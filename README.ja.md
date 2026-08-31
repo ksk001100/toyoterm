@@ -5,7 +5,7 @@
 toyotermは、Rustと組み込みmrubyで作る実験的なプログラマブル・ターミナルエミュレータです。ターミナルのホットパスはネイティブ実装のまま保ち、設定、動的キーバインド、ランタイムイベント、コマンドにRubyを利用します。
 
 > [!IMPORTANT]
-> toyotermは活発に開発中です。GUIの各タブと分割Paneは独立したPTYとターミナルセッションを持ちます。ワークスペースUIと複数ウィンドウ対応は開発途中です。
+> toyotermは活発に開発中です。GUIの各Workspace、タブ、分割Paneは独立したPTYとターミナルセッションを持ちます。複数OSウィンドウ対応は初期リリース後へ明示的に延期しています。
 
 ## 機能
 
@@ -23,6 +23,7 @@ toyotermは、Rustと組み込みmrubyで作る実験的なプログラマブル
 - PaneごとにPTYとTerminalBackendを持つGUIタブ
 - Paneごとのresizeとfocusに対応した分割Pane描画
 - マウス操作とキーボード操作に対応したタブバー
+- Workspaceごとのfocus復元に対応したWorkspaceバー
 
 ## 現在の状態
 
@@ -30,7 +31,7 @@ toyotermは、Rustと組み込みmrubyで作る実験的なプログラマブル
 
 GUIへ未接続の機能：
 
-- ワークスペース切り替え
+- 複数OSウィンドウ
 - ライブRuby REPLとリモート操作CLI
 - 検索、リンク、画像プロトコル、セッション永続化
 
@@ -126,6 +127,10 @@ end
 
 `default_shell`を変更しても実行中のシェルは置き換えません。新しいターミナルセッションを作成するときに適用されます。
 
+実行可能な最小設定例は`examples/minimal_config.rb`にあります。`toyoterm --config examples/minimal_config.rb`で試せます。
+
+組み込みランタイムはCRubyではなくmrubyです。toyotermが明示的にbundleしていないCRuby gem、native extension、完全なCRuby標準ライブラリは利用できません。現在の設定・イベントAPIでは不要なため、v0.1では`mruby-time`をbundleしません。
+
 ## 操作
 
 - 通常のキー入力：PTYへ入力を送信
@@ -137,6 +142,9 @@ end
 - `Ctrl+Shift+\` / `Ctrl+Shift+-`：active Paneを右／下へ分割
 - `Ctrl+Shift+矢印`：指定方向の最寄りPaneへfocus
 - `Ctrl+Shift+Q`：active Paneを閉じる（最後のPaneは維持）
+- `Ctrl+Shift+N`：Workspaceを作成してactivate
+- `Ctrl+Alt+Left` / `Ctrl+Alt+Right`：前／次のWorkspaceをactivate
+- Workspaceまたはタブのラベルをクリック：対象をactivate
 - 左マウスボタンでドラッグ：テキストを選択
 - マウスホイール：履歴をスクロール。アプリケーションがマウスレポートを要求している場合はホイール入力を送信
 

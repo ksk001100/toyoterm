@@ -143,6 +143,7 @@ struct Workspace {
 
 #[derive(Debug, Eq, PartialEq)]
 pub enum MuxError {
+    UnknownWorkspace(WorkspaceId),
     UnknownPane(PaneId),
     UnknownTab(TabId),
     CannotCloseLastPane(PaneId),
@@ -152,6 +153,7 @@ pub enum MuxError {
 impl fmt::Display for MuxError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::UnknownWorkspace(id) => write!(formatter, "unknown workspace {id}"),
             Self::UnknownPane(id) => write!(formatter, "unknown pane {id}"),
             Self::UnknownTab(id) => write!(formatter, "unknown tab {id}"),
             Self::CannotCloseLastPane(id) => write!(formatter, "cannot close the last pane {id}"),
@@ -200,6 +202,18 @@ impl Mux {
 
     pub fn current_workspace(&self) -> WorkspaceId {
         self.current_workspace
+    }
+
+    pub fn workspaces(&self) -> Vec<WorkspaceId> {
+        let mut workspaces = self.workspaces.keys().copied().collect::<Vec<_>>();
+        workspaces.sort_unstable();
+        workspaces
+    }
+
+    pub fn workspace_name(&self, workspace: WorkspaceId) -> Option<&str> {
+        self.workspaces
+            .get(&workspace)
+            .map(|workspace| workspace.name.as_str())
     }
 
     pub fn current_window(&self) -> Option<WindowId> {
@@ -286,6 +300,10 @@ impl Mux {
                     bytes: text.len(),
                 });
                 Ok(CommandResult::None)
+            }
+            Command::ActivateWorkspace(workspace) => {
+                self.activate_workspace(workspace)?;
+                Ok(CommandResult::Workspace(workspace))
             }
             Command::SwitchWorkspace(name) => {
                 let workspace = match self.workspace_names.get(&name) {
@@ -445,6 +463,15 @@ impl Mux {
         self.focus_tab(tab);
         let pane = self.tabs[&tab].active_pane;
         self.events.push_back(Event::PaneFocused { pane });
+        Ok(())
+    }
+
+    fn activate_workspace(&mut self, workspace: WorkspaceId) -> Result<(), MuxError> {
+        if !self.workspaces.contains_key(&workspace) {
+            return Err(MuxError::UnknownWorkspace(workspace));
+        }
+        self.current_workspace = workspace;
+        self.events.push_back(Event::WorkspaceChanged { workspace });
         Ok(())
     }
 
@@ -638,5 +665,62 @@ mod tests {
         assert_eq!(mux.current_pane(), Some(first_split));
         mux.dispatch(Command::ActivateTab(second_tab)).unwrap();
         assert_ne!(mux.current_pane(), Some(first_split));
+    }
+
+    #[test]
+    fn workspaces_restore_their_active_tab_and_pane() {
+        let mut mux = Mux::new();
+        let first_workspace = mux.current_workspace();
+        let first_tab = mux.current_tab().unwrap();
+        let first_pane = mux.current_pane().unwrap();
+        let CommandResult::Pane(first_split) = mux
+            .dispatch(Command::Split {
+                pane: first_pane,
+                direction: SplitDirection::Down,
+            })
+            .unwrap()
+        else {
+            panic!("split did not return a pane");
+        };
+
+        let CommandResult::Workspace(second_workspace) = mux
+            .dispatch(Command::SwitchWorkspace("backend".into()))
+            .unwrap()
+        else {
+            panic!("switch did not return a workspace");
+        };
+        let second_tab = mux.current_tab().unwrap();
+
+        mux.dispatch(Command::ActivateWorkspace(first_workspace))
+            .unwrap();
+        assert_eq!(mux.current_tab(), Some(first_tab));
+        assert_eq!(mux.current_pane(), Some(first_split));
+
+        mux.dispatch(Command::ActivateWorkspace(second_workspace))
+            .unwrap();
+        assert_eq!(mux.current_tab(), Some(second_tab));
+        assert_ne!(mux.current_pane(), Some(first_split));
+    }
+
+    #[test]
+    fn tab_commands_cover_create_activate_and_close_lifecycle() {
+        let mut mux = Mux::new();
+        let first = mux.current_tab().unwrap();
+        let CommandResult::Tab(second) = mux.dispatch(Command::NewTab).unwrap() else {
+            panic!("new tab did not return a tab");
+        };
+        assert_eq!(mux.current_tab(), Some(second));
+
+        mux.dispatch(Command::ActivateTab(first)).unwrap();
+        assert_eq!(mux.current_tab(), Some(first));
+        mux.dispatch(Command::CloseTab(second)).unwrap();
+        assert_eq!(mux.current_tab(), Some(first));
+
+        let CommandResult::Tab(third) = mux.dispatch(Command::NewTab).unwrap() else {
+            panic!("new tab did not return a tab");
+        };
+        mux.dispatch(Command::CloseTab(third)).unwrap();
+        assert_eq!(mux.current_tab(), Some(first));
+        assert_eq!(mux.tabs(mux.current_window().unwrap()), Some(&[first][..]));
     }
 }

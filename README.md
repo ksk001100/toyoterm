@@ -5,7 +5,7 @@
 toyoterm is an experimental, programmable terminal emulator powered by Rust and embedded mruby. Its terminal hot path stays native, while Ruby is used for configuration, dynamic key bindings, runtime events, and commands.
 
 > [!IMPORTANT]
-> toyoterm is under active development. GUI tabs and split panes have independent PTY and terminal sessions. Workspace UI and multi-window support are still in progress.
+> toyoterm is under active development. GUI workspaces, tabs, and split panes have independent PTY and terminal sessions. Multiple OS windows are intentionally deferred until after the initial release.
 
 ## Features
 
@@ -23,6 +23,7 @@ toyoterm is an experimental, programmable terminal emulator powered by Rust and 
 - GUI tabs with one PTY and terminal backend per pane
 - Rendered split panes with per-pane resize and focus
 - A clickable tab bar with keyboard tab navigation
+- A clickable workspace bar with per-workspace focus restoration
 
 ## Current status
 
@@ -30,7 +31,7 @@ The primary development environment is Linux. The architecture and dependencies 
 
 Not yet exposed in the GUI:
 
-- Workspace switching
+- Multiple OS windows
 - Live Ruby REPL and remote-control CLI
 - Search, links, image protocols, and session persistence
 
@@ -126,6 +127,10 @@ Unmatched keys bypass mruby and go directly through the native terminal key enco
 
 Changing `default_shell` does not replace the shell that is already running; it applies when a new terminal session is created.
 
+An executable starter configuration is available at `examples/minimal_config.rb` and can be tested with `toyoterm --config examples/minimal_config.rb`.
+
+The embedded runtime is mruby, not CRuby. CRuby gems, native extensions, and the complete CRuby standard library are not available unless toyoterm explicitly bundles them. `mruby-time` is not bundled in v0.1 because the current configuration and event APIs do not require it.
+
 ## Controls
 
 - Type normally to send input to the PTY
@@ -137,6 +142,9 @@ Changing `default_shell` does not replace the shell that is already running; it 
 - `Ctrl+Shift+\` / `Ctrl+Shift+-`: split the active pane right / down
 - `Ctrl+Shift+Arrow`: focus the nearest pane in that direction
 - `Ctrl+Shift+Q`: close the active pane (the final pane is kept open)
+- `Ctrl+Shift+N`: create and activate a workspace
+- `Ctrl+Alt+Left` / `Ctrl+Alt+Right`: activate the previous / next workspace
+- Click a workspace or tab label to activate it
 - Drag with the left mouse button: select text
 - Mouse wheel: scroll through history, or report wheel input when the terminal application requests mouse reporting
 

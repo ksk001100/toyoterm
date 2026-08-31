@@ -1,4 +1,4 @@
-use crate::{PaneId, PaneNode, SplitDirection, TabId};
+use crate::{PaneId, PaneNode, SplitDirection, TabId, WorkspaceId};
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct PaneRect {
@@ -55,6 +55,57 @@ pub struct SplitBoundary {
 pub struct TabPlacement {
     pub tab: TabId,
     pub rect: PaneRect,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct WorkspacePlacement {
+    pub workspace: WorkspaceId,
+    pub rect: PaneRect,
+}
+
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct WorkspaceStripLayout {
+    workspaces: Vec<WorkspacePlacement>,
+}
+
+impl WorkspaceStripLayout {
+    pub fn calculate(workspaces: &[WorkspaceId], bounds: PaneRect, preferred_width: u32) -> Self {
+        if workspaces.is_empty() {
+            return Self::default();
+        }
+        let available_per_workspace = bounds.width.div_ceil(workspaces.len() as u32);
+        let width = preferred_width.min(available_per_workspace).max(1);
+        let workspaces = workspaces
+            .iter()
+            .enumerate()
+            .map(|(index, workspace)| {
+                let x = bounds
+                    .x
+                    .saturating_add((index as u32).saturating_mul(width));
+                WorkspacePlacement {
+                    workspace: *workspace,
+                    rect: PaneRect::new(
+                        x,
+                        bounds.y,
+                        width.min(bounds.x.saturating_add(bounds.width).saturating_sub(x)),
+                        bounds.height,
+                    ),
+                }
+            })
+            .collect();
+        Self { workspaces }
+    }
+
+    pub fn workspaces(&self) -> &[WorkspacePlacement] {
+        &self.workspaces
+    }
+
+    pub fn workspace_at(&self, x: f64, y: f64) -> Option<WorkspaceId> {
+        self.workspaces
+            .iter()
+            .find(|workspace| workspace.rect.contains(x, y))
+            .map(|workspace| workspace.workspace)
+    }
 }
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
@@ -327,5 +378,14 @@ mod tests {
         assert_eq!(layout.tabs()[2].rect, PaneRect::new(200, 0, 100, 30));
         assert_eq!(layout.tab_at(150.0, 10.0), Some(TabId(2)));
         assert_eq!(layout.tab_at(150.0, 31.0), None);
+    }
+
+    #[test]
+    fn lays_out_and_hit_tests_a_workspace_strip() {
+        let workspaces = [WorkspaceId(1), WorkspaceId(5)];
+        let layout =
+            WorkspaceStripLayout::calculate(&workspaces, PaneRect::new(0, 0, 400, 24), 140);
+        assert_eq!(layout.workspaces()[1].rect, PaneRect::new(140, 0, 140, 24));
+        assert_eq!(layout.workspace_at(160.0, 10.0), Some(WorkspaceId(5)));
     }
 }

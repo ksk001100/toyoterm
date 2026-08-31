@@ -23,11 +23,13 @@ pub use input::{
 };
 pub use layout::{
     PaneLayout, PanePlacement, PaneRect, SplitAxis, SplitBoundary, TabPlacement, TabStripLayout,
+    WorkspacePlacement, WorkspaceStripLayout,
 };
 pub use mux::{Mux, MuxError, PaneNode};
 pub use pty::{NativePty, Pty, PtyCommand, PtyError, PtyExitStatus, PtySession, PtySize};
 pub use render::{
-    GpuRenderer, PaneRenderData, RenderError, RenderOutcome, RenderStyle, TabRenderData, TextLayout,
+    GpuRenderer, PaneRenderData, RenderError, RenderOutcome, RenderStyle, TabRenderData,
+    TextLayout, WorkspaceRenderData,
 };
 pub use script::{
     ColorConfig, ConfigManager, FontConfig, MrubyRuntime, ScriptError, ToyotermConfig,

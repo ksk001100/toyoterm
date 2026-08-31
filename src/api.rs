@@ -41,6 +41,7 @@ pub enum Command {
         pane: PaneId,
         text: String,
     },
+    ActivateWorkspace(WorkspaceId),
     SwitchWorkspace(String),
 }
 

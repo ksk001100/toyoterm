@@ -17,7 +17,8 @@ use crate::{
     AlacrittyTerminalBackend, Command, ConfigManager, GpuRenderer, KeyModifiers, KeyPress,
     MouseWheelDirection, Mux, NativePty, PaneId, PaneLayout, PaneRect, PaneRenderData, Pty,
     PtyCommand, PtySession, PtySize, RenderStyle, SplitDirection, TabRenderData, TabStripLayout,
-    TerminalBackend, TerminalKey, TextLayout, encode_key, encode_mouse_wheel, encode_paste,
+    TerminalBackend, TerminalKey, TextLayout, WorkspaceRenderData, WorkspaceStripLayout,
+    encode_key, encode_mouse_wheel, encode_paste,
 };
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -163,6 +164,7 @@ struct ToyotermApplication {
     pane_runtimes: HashMap<PaneId, PaneRuntime>,
     pane_layout: PaneLayout,
     tab_layout: TabStripLayout,
+    workspace_layout: WorkspaceStripLayout,
     ime_preedit: Option<String>,
     modifiers: ModifiersState,
     mouse_position: PhysicalPosition<f64>,
@@ -398,6 +400,7 @@ impl ToyotermApplication {
             pane_runtimes: HashMap::new(),
             pane_layout: PaneLayout::default(),
             tab_layout: TabStripLayout::default(),
+            workspace_layout: WorkspaceStripLayout::default(),
             ime_preedit: None,
             modifiers: ModifiersState::empty(),
             mouse_position: PhysicalPosition::new(0.0, 0.0),
@@ -499,6 +502,10 @@ impl ToyotermApplication {
                 self.dispatch_gui_command(Command::NewTab)?;
                 return Ok(true);
             }
+            if matches!(&event.logical_key, Key::Character(key) if key.eq_ignore_ascii_case("n")) {
+                self.create_workspace()?;
+                return Ok(true);
+            }
             if matches!(&event.logical_key, Key::Character(key) if key.eq_ignore_ascii_case("w")) {
                 let tab = self
                     .mux
@@ -542,7 +549,50 @@ impl ToyotermApplication {
             self.cycle_tab(self.modifiers.shift_key())?;
             return Ok(true);
         }
+        if self.modifiers.control_key() && self.modifiers.alt_key() {
+            let backwards = match &event.logical_key {
+                Key::Named(NamedKey::ArrowLeft) => Some(true),
+                Key::Named(NamedKey::ArrowRight) => Some(false),
+                _ => None,
+            };
+            if let Some(backwards) = backwards {
+                self.cycle_workspace(backwards)?;
+                return Ok(true);
+            }
+        }
         Ok(false)
+    }
+
+    fn create_workspace(&mut self) -> Result<(), String> {
+        let mut suffix = self.mux.workspaces().len() + 1;
+        let name = loop {
+            let candidate = format!("workspace-{suffix}");
+            if self
+                .mux
+                .workspaces()
+                .into_iter()
+                .all(|workspace| self.mux.workspace_name(workspace) != Some(candidate.as_str()))
+            {
+                break candidate;
+            }
+            suffix += 1;
+        };
+        self.dispatch_gui_command(Command::SwitchWorkspace(name))
+    }
+
+    fn cycle_workspace(&mut self, backwards: bool) -> Result<(), String> {
+        let workspaces = self.mux.workspaces();
+        let current = self.mux.current_workspace();
+        let current_index = workspaces
+            .iter()
+            .position(|workspace| *workspace == current)
+            .ok_or_else(|| format!("active workspace {current} is not registered"))?;
+        let next_index = if backwards {
+            (current_index + workspaces.len() - 1) % workspaces.len()
+        } else {
+            (current_index + 1) % workspaces.len()
+        };
+        self.dispatch_gui_command(Command::ActivateWorkspace(workspaces[next_index]))
     }
 
     fn cycle_tab(&mut self, backwards: bool) -> Result<(), String> {
@@ -677,6 +727,7 @@ impl ToyotermApplication {
         scale_factor: f64,
     ) -> Result<(), String> {
         self.tab_layout = self.calculate_tab_layout(window_size, scale_factor);
+        self.workspace_layout = self.calculate_workspace_layout(window_size, scale_factor);
         self.pane_layout = self.calculate_pane_layout(window_size, scale_factor);
         let sizes = self
             .pane_layout
@@ -740,7 +791,21 @@ impl ToyotermApplication {
             return;
         };
         self.tab_layout = self.calculate_tab_layout(window.inner_size(), window.scale_factor());
+        self.workspace_layout =
+            self.calculate_workspace_layout(window.inner_size(), window.scale_factor());
         self.pane_layout = self.calculate_pane_layout(window.inner_size(), window.scale_factor());
+    }
+
+    fn calculate_workspace_layout(
+        &self,
+        window_size: PhysicalSize<u32>,
+        scale_factor: f64,
+    ) -> WorkspaceStripLayout {
+        WorkspaceStripLayout::calculate(
+            &self.mux.workspaces(),
+            PaneRect::new(0, 0, window_size.width, workspace_bar_height(scale_factor)),
+            (140.0 * scale_factor.max(0.1)).round() as u32,
+        )
     }
 
     fn calculate_tab_layout(
@@ -756,7 +821,12 @@ impl ToyotermApplication {
         };
         TabStripLayout::calculate(
             tabs,
-            PaneRect::new(0, 0, window_size.width, tab_bar_height(scale_factor)),
+            PaneRect::new(
+                0,
+                workspace_bar_height(scale_factor),
+                window_size.width,
+                tab_bar_height(scale_factor),
+            ),
             (160.0 * scale_factor.max(0.1)).round() as u32,
         )
     }
@@ -772,14 +842,16 @@ impl ToyotermApplication {
         let Some(root) = self.mux.pane_tree(tab) else {
             return PaneLayout::default();
         };
-        let tab_height = tab_bar_height(scale_factor).min(window_size.height);
+        let chrome_height = workspace_bar_height(scale_factor)
+            .saturating_add(tab_bar_height(scale_factor))
+            .min(window_size.height);
         PaneLayout::calculate(
             root,
             PaneRect::new(
                 0,
-                tab_height,
+                chrome_height,
                 window_size.width,
-                window_size.height.saturating_sub(tab_height),
+                window_size.height.saturating_sub(chrome_height),
             ),
             (2.0 * scale_factor.max(0.1)).round() as u32,
         )
@@ -919,6 +991,18 @@ impl ToyotermApplication {
 
     fn handle_left_mouse(&mut self, window: &Window, state: ElementState) {
         if state == ElementState::Pressed {
+            if let Some(workspace) = self
+                .workspace_layout
+                .workspace_at(self.mouse_position.x, self.mouse_position.y)
+            {
+                if self.mux.current_workspace() != workspace
+                    && let Err(error) =
+                        self.dispatch_gui_command(Command::ActivateWorkspace(workspace))
+                {
+                    eprintln!("toyoterm: activate workspace {workspace}: {error}");
+                }
+                return;
+            }
             if let Some(tab) = self
                 .tab_layout
                 .tab_at(self.mouse_position.x, self.mouse_position.y)
@@ -1057,10 +1141,36 @@ impl ToyotermApplication {
                 active: *active,
             })
             .collect::<Vec<_>>();
+        let active_workspace = self.mux.current_workspace();
+        let workspace_titles = self
+            .workspace_layout
+            .workspaces()
+            .iter()
+            .filter_map(|placement| {
+                self.mux.workspace_name(placement.workspace).map(|name| {
+                    (
+                        placement.workspace,
+                        name.to_owned(),
+                        placement.rect,
+                        active_workspace == placement.workspace,
+                    )
+                })
+            })
+            .collect::<Vec<_>>();
+        let workspaces = workspace_titles
+            .iter()
+            .map(|(workspace, name, rect, active)| WorkspaceRenderData {
+                workspace: *workspace,
+                name,
+                rect: *rect,
+                active: *active,
+            })
+            .collect::<Vec<_>>();
         let layout = self.cell_metrics.text_layout(scale_factor);
         if let Some(renderer) = self.renderer.as_mut() {
             renderer.update_panes(&panes, layout);
             renderer.update_tabs(&tabs, layout);
+            renderer.update_workspaces(&workspaces, layout);
             renderer.update_preedit(self.ime_preedit.as_deref(), layout);
         }
         self.update_ime_cursor_area(scale_factor);
@@ -1115,6 +1225,11 @@ impl ToyotermApplication {
             .current_tab()
             .map(|tab| format!("Tab {} · ", tab.0))
             .unwrap_or_default();
+        let workspace = self
+            .mux
+            .workspace_name(self.mux.current_workspace())
+            .map(|workspace| format!("{workspace} · "))
+            .unwrap_or_default();
         let pid = runtime
             .process_id
             .map(|pid| format!(" · pid {pid}"))
@@ -1124,7 +1239,10 @@ impl ToyotermApplication {
             .as_ref()
             .map(|cwd| format!(" · {}", cwd.display()))
             .unwrap_or_default();
-        window.set_title(&format!("toyoterm — {tab}{}{pid}{cwd}", runtime.title));
+        window.set_title(&format!(
+            "toyoterm — {workspace}{tab}{}{pid}{cwd}",
+            runtime.title
+        ));
     }
 
     fn fail(&mut self, event_loop: &ActiveEventLoop, error: String) {
@@ -1154,6 +1272,10 @@ fn dispatch_script_commands(
 
 fn tab_bar_height(scale_factor: f64) -> u32 {
     (30.0 * scale_factor.max(0.1)).round() as u32
+}
+
+fn workspace_bar_height(scale_factor: f64) -> u32 {
+    (24.0 * scale_factor.max(0.1)).round() as u32
 }
 
 fn spawn_pty_reader(

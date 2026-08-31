@@ -14,7 +14,7 @@ use wgpu::{
 use winit::dpi::PhysicalSize;
 use winit::window::Window;
 
-use crate::{CursorShape, CursorState, PaneId, PaneRect, TabId, TerminalSnapshot};
+use crate::{CursorShape, CursorState, PaneId, PaneRect, TabId, TerminalSnapshot, WorkspaceId};
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct TextLayout {
@@ -38,6 +38,14 @@ pub struct PaneRenderData<'a> {
 pub struct TabRenderData<'a> {
     pub tab: TabId,
     pub title: &'a str,
+    pub rect: PaneRect,
+    pub active: bool,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub struct WorkspaceRenderData<'a> {
+    pub workspace: WorkspaceId,
+    pub name: &'a str,
     pub rect: PaneRect,
     pub active: bool,
 }
@@ -131,6 +139,7 @@ pub struct GpuRenderer {
     text_renderer: TextRenderer,
     panes: HashMap<PaneId, PaneBuffers>,
     tabs: HashMap<TabId, TabBuffer>,
+    workspaces: HashMap<WorkspaceId, TabBuffer>,
     preedit: Buffer,
     has_preedit: bool,
     style: RenderStyle,
@@ -242,6 +251,7 @@ impl GpuRenderer {
             text_renderer,
             panes: HashMap::new(),
             tabs: HashMap::new(),
+            workspaces: HashMap::new(),
             preedit,
             has_preedit: false,
             style,
@@ -385,6 +395,55 @@ impl GpuRenderer {
         }
     }
 
+    pub fn update_workspaces(
+        &mut self,
+        workspaces: &[WorkspaceRenderData<'_>],
+        layout: TextLayout,
+    ) {
+        let active_workspaces = workspaces
+            .iter()
+            .map(|workspace| workspace.workspace)
+            .collect::<HashSet<_>>();
+        self.workspaces
+            .retain(|workspace, _| active_workspaces.contains(workspace));
+        let metrics = Metrics::new(
+            (layout.font_size * 0.85).max(1.0),
+            (layout.line_height * 0.85).max(1.0),
+        );
+        for workspace in workspaces {
+            if !self.workspaces.contains_key(&workspace.workspace) {
+                let mut text = Buffer::new(&mut self.font_system, metrics);
+                text.set_wrap(Wrap::None);
+                self.workspaces.insert(
+                    workspace.workspace,
+                    TabBuffer {
+                        text,
+                        rect: workspace.rect,
+                        active: workspace.active,
+                    },
+                );
+            }
+            let buffer = self
+                .workspaces
+                .get_mut(&workspace.workspace)
+                .expect("workspace buffer was inserted");
+            buffer.rect = workspace.rect;
+            buffer.active = workspace.active;
+            buffer.text.set_metrics_and_size(
+                metrics,
+                Some(workspace.rect.width.saturating_sub(12) as f32),
+                Some(workspace.rect.height as f32),
+            );
+            buffer.text.set_text(
+                workspace.name,
+                &Attrs::new().family(Family::Name(&self.style.font_family)),
+                Shaping::Basic,
+                None,
+            );
+            buffer.text.shape_until_scroll(&mut self.font_system, false);
+        }
+    }
+
     pub fn update_preedit(&mut self, text: Option<&str>, layout: TextLayout) {
         let text = text.unwrap_or_default();
         self.has_preedit = !text.is_empty();
@@ -426,7 +485,23 @@ impl GpuRenderer {
                 height: self.configuration.height,
             },
         );
-        let mut text_areas = Vec::with_capacity(self.panes.len() * 4 + self.tabs.len());
+        let mut text_areas =
+            Vec::with_capacity(self.panes.len() * 4 + self.tabs.len() + self.workspaces.len());
+        for workspace in self.workspaces.values() {
+            text_areas.push(TextArea {
+                buffer: &workspace.text,
+                left: workspace.rect.x as f32 + 6.0,
+                top: workspace.rect.y as f32 + 2.0,
+                scale: 1.0,
+                bounds: pane_bounds(workspace.rect),
+                default_color: if workspace.active {
+                    glyph_color(self.style.cursor, 255)
+                } else {
+                    glyph_color(self.style.foreground, 140)
+                },
+                custom_glyphs: &[],
+            });
+        }
         for tab in self.tabs.values() {
             text_areas.push(TextArea {
                 buffer: &tab.text,
