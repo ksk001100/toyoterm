@@ -2293,6 +2293,7 @@ version = "0.1.0"
 dependencies = [
  "alacritty_terminal",
  "arboard",
+ "cc",
  "glyphon",
  "pollster",
  "portable-pty",

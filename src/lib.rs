@@ -9,6 +9,7 @@ pub mod input;
 pub mod mux;
 pub mod pty;
 pub mod render;
+pub mod script;
 pub mod terminal;
 
 pub use api::{
@@ -22,6 +23,9 @@ pub use input::{
 pub use mux::{Mux, MuxError, PaneNode};
 pub use pty::{NativePty, Pty, PtyCommand, PtyError, PtyExitStatus, PtySession, PtySize};
 pub use render::{GpuRenderer, RenderError, RenderOutcome, TextLayout};
+pub use script::{
+    ColorConfig, ConfigManager, FontConfig, MrubyRuntime, ScriptError, ToyotermConfig,
+};
 pub use terminal::{
     AlacrittyTerminalBackend, CursorShape, CursorState, DEFAULT_SCROLLBACK_LINES, SelectionSpan,
     TerminalBackend, TerminalMode, TerminalSnapshot,
