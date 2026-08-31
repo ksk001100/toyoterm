@@ -46,6 +46,15 @@ module Toyoterm
     end
   end
 
+  class Event
+    attr_reader :name, :pane
+
+    def initialize(name, pane)
+      @name = name
+      @pane = pane
+    end
+  end
+
   class Config
     attr_accessor :default_shell, :scrollback_lines
 
@@ -119,6 +128,7 @@ module Toyoterm
   @commands = []
   @current_command = nil
   @reload_requested = false
+  @event_handlers = {}
 
   def self.configure(&block)
     block.call(@config)
@@ -135,6 +145,36 @@ module Toyoterm
   def self.reload_config
     @reload_requested = true
     nil
+  end
+
+  def self.on(name, &block)
+    raise ArgumentError, "event handler requires a block" unless block
+    name = name.to_s
+    raise ArgumentError, "event name cannot be empty" if name.empty?
+    (@event_handlers[name] ||= []) << block
+    block
+  end
+
+  def self.__event_count
+    @event_handlers.length
+  end
+
+  def self.__event_name(index)
+    @event_handlers.keys[index]
+  end
+
+  def self.__emit_event(name, pane)
+    handlers = @event_handlers[name.to_s]
+    return false unless handlers
+    checkpoint = __command_checkpoint
+    begin
+      event = Event.new(name.to_sym, pane)
+      handlers.each { |handler| handler.call(event) }
+    rescue => error
+      __rollback_commands(checkpoint)
+      raise error
+    end
+    true
   end
 
   def self.__take_reload_request
@@ -318,16 +358,18 @@ pub struct ConfigManager {
     runtime: MrubyRuntime,
     config: ToyotermConfig,
     keybindings: HashSet<String>,
+    event_names: HashSet<String>,
     source_path: Option<PathBuf>,
 }
 
 impl ConfigManager {
     pub fn new() -> Result<Self, ScriptError> {
-        let (runtime, config, keybindings) = load_config("")?;
+        let (runtime, config, keybindings, event_names) = load_config("")?;
         Ok(Self {
             runtime,
             config,
             keybindings,
+            event_names,
             source_path: None,
         })
     }
@@ -370,10 +412,11 @@ impl ConfigManager {
 
     /// Evaluate config in a fresh VM and swap it in only after complete validation.
     pub fn reload(&mut self, source: &str) -> Result<&ToyotermConfig, ScriptError> {
-        let (runtime, config, keybindings) = load_config(source)?;
+        let (runtime, config, keybindings, event_names) = load_config(source)?;
         self.runtime = runtime;
         self.config = config;
         self.keybindings = keybindings;
+        self.event_names = event_names;
         Ok(&self.config)
     }
 
@@ -423,6 +466,25 @@ impl ConfigManager {
             _ => Err(ScriptError::new(
                 "decode mruby command",
                 "reload request state is invalid",
+            )),
+        }
+    }
+
+    /// Emits an event only when Ruby registered at least one handler for it.
+    pub fn emit_event(&mut self, name: &str, current_pane: PaneId) -> Result<bool, ScriptError> {
+        if !self.event_names.contains(name) {
+            return Ok(false);
+        }
+        self.set_current_pane(current_pane)?;
+        let name = ruby_string_literal(name);
+        match self.runtime.eval(&format!(
+            "Toyoterm.__emit_event({name}, Toyoterm.current_pane)"
+        ))? {
+            value if value == "true" => Ok(true),
+            value if value == "false" => Ok(false),
+            _ => Err(ScriptError::new(
+                "emit mruby event",
+                "event handler returned an invalid state",
             )),
         }
     }
@@ -488,7 +550,15 @@ fn resolve_config_path(
 
 fn load_config(
     source: &str,
-) -> Result<(MrubyRuntime, ToyotermConfig, HashSet<String>), ScriptError> {
+) -> Result<
+    (
+        MrubyRuntime,
+        ToyotermConfig,
+        HashSet<String>,
+        HashSet<String>,
+    ),
+    ScriptError,
+> {
     let mut runtime = MrubyRuntime::new()?;
     runtime.eval(CONFIG_DSL)?;
     runtime.eval(source)?;
@@ -544,7 +614,16 @@ fn load_config(
         keybindings.insert(runtime.eval(&format!("Toyoterm.__config.__binding_key({index})"))?);
     }
 
-    Ok((runtime, config, keybindings))
+    let event_count = runtime
+        .eval("Toyoterm.__event_count")?
+        .parse::<usize>()
+        .map_err(|_| ScriptError::new("load events", "event count is invalid"))?;
+    let mut event_names = HashSet::with_capacity(event_count);
+    for index in 0..event_count {
+        event_names.insert(runtime.eval(&format!("Toyoterm.__event_name({index})"))?);
+    }
+
+    Ok((runtime, config, keybindings, event_names))
 }
 
 fn ruby_string_literal(value: &str) -> String {
@@ -812,6 +891,60 @@ mod tests {
         );
         assert!(manager.take_reload_request().unwrap());
         assert!(!manager.take_reload_request().unwrap());
+    }
+
+    #[test]
+    fn emits_registered_events_with_the_current_pane() {
+        let mut manager = ConfigManager::new().unwrap();
+        manager
+            .reload(
+                r#"
+                $event_count = 0
+                Toyoterm.on :app_started do |event|
+                  $event_count += 1
+                  $event_name = event.name
+                  $event_pane = event.pane.id
+                  event.pane.send_text("echo app started\n")
+                end
+                "#,
+            )
+            .unwrap();
+
+        assert!(!manager.emit_event("config_reloaded", PaneId(12)).unwrap());
+        assert_eq!(manager.eval("$event_count").unwrap(), "0");
+        assert!(manager.emit_event("app_started", PaneId(12)).unwrap());
+        assert_eq!(manager.eval("$event_count").unwrap(), "1");
+        assert_eq!(manager.eval("$event_name").unwrap(), "app_started");
+        assert_eq!(manager.eval("$event_pane").unwrap(), "12");
+        assert_eq!(
+            manager.drain_commands(PaneId(12)).unwrap(),
+            vec![Command::SendText {
+                pane: PaneId(12),
+                text: "echo app started\n".into(),
+            }]
+        );
+    }
+
+    #[test]
+    fn ruby_event_errors_roll_back_commands() {
+        let mut manager = ConfigManager::new().unwrap();
+        manager
+            .reload(
+                r#"
+                Toyoterm.on :config_reloaded do |event|
+                  event.pane.send_text("must not run\n")
+                  raise "broken event"
+                end
+                "#,
+            )
+            .unwrap();
+
+        let error = manager
+            .emit_event("config_reloaded", PaneId(3))
+            .unwrap_err();
+        assert!(error.message().contains("broken event"));
+        assert!(manager.drain_commands(PaneId(3)).unwrap().is_empty());
+        assert_eq!(manager.eval("21 * 2").unwrap(), "42");
     }
 
     #[test]

@@ -351,6 +351,7 @@ impl ToyotermApplication {
         spawn_pty_reader(reader, self.event_proxy.clone())?;
         self.pty_session = Some(session);
         self.flush_mux_input()?;
+        self.emit_script_event("app_started")?;
         Ok(())
     }
 
@@ -438,7 +439,27 @@ impl ToyotermApplication {
             self.sync_active_renderer(window.scale_factor());
             window.request_redraw();
         }
+        self.emit_script_event("config_reloaded")?;
+        self.flush_mux_input()?;
         Ok(())
+    }
+
+    fn emit_script_event(&mut self, name: &str) -> Result<(), String> {
+        let pane = self
+            .mux
+            .current_pane()
+            .ok_or_else(|| "mux has no current pane".to_owned())?;
+        match self.config_manager.emit_event(name, pane) {
+            Ok(true) => {
+                dispatch_script_commands(&mut self.config_manager, &mut self.mux)?;
+                self.flush_mux_input()
+            }
+            Ok(false) => Ok(()),
+            Err(error) => {
+                eprintln!("toyoterm: Ruby `{name}` event error: {error}");
+                Ok(())
+            }
+        }
     }
 
     fn resize_terminal(&mut self, window_size: PhysicalSize<u32>, scale_factor: f64) -> PtySize {
