@@ -1,13 +1,19 @@
 use std::fmt;
+use std::io::Read;
 use std::sync::Arc;
+use std::thread;
 
 use winit::application::ApplicationHandler;
 use winit::dpi::{LogicalSize, PhysicalSize};
-use winit::event::WindowEvent;
-use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
+use winit::event::{ElementState, Ime, KeyEvent, WindowEvent};
+use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop, EventLoopProxy};
+use winit::keyboard::{Key, ModifiersState, NamedKey};
 use winit::window::{Window, WindowId};
 
-use crate::{AlacrittyTerminalBackend, GpuRenderer, PtySize, TerminalBackend, TextLayout};
+use crate::{
+    AlacrittyTerminalBackend, GpuRenderer, KeyModifiers, KeyPress, NativePty, Pty, PtyCommand,
+    PtySession, PtySize, TerminalBackend, TerminalKey, TextLayout, encode_key,
+};
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct CellMetrics {
@@ -81,9 +87,11 @@ impl fmt::Display for AppError {
 impl std::error::Error for AppError {}
 
 pub fn run_gui() -> Result<(), AppError> {
-    let event_loop = EventLoop::new().map_err(|error| AppError(error.to_string()))?;
+    let event_loop = EventLoop::<AppEvent>::with_user_event()
+        .build()
+        .map_err(|error| AppError(error.to_string()))?;
     event_loop.set_control_flow(ControlFlow::Wait);
-    let mut app = ToyotermApplication::default();
+    let mut app = ToyotermApplication::new(event_loop.create_proxy());
     event_loop
         .run_app(&mut app)
         .map_err(|error| AppError(error.to_string()))?;
@@ -93,16 +101,25 @@ pub fn run_gui() -> Result<(), AppError> {
     }
 }
 
-#[derive(Default)]
+#[derive(Debug)]
+enum AppEvent {
+    Output(Vec<u8>),
+    Eof,
+    Error(String),
+}
+
 struct ToyotermApplication {
+    event_proxy: EventLoopProxy<AppEvent>,
     window: Option<Arc<Window>>,
     renderer: Option<GpuRenderer>,
     terminal: AlacrittyTerminalBackend,
+    pty_session: Option<Box<dyn PtySession>>,
+    modifiers: ModifiersState,
     cell_metrics: CellMetrics,
     fatal_error: Option<String>,
 }
 
-impl ApplicationHandler for ToyotermApplication {
+impl ApplicationHandler<AppEvent> for ToyotermApplication {
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
         if self.window.is_some() {
             return;
@@ -125,13 +142,15 @@ impl ApplicationHandler for ToyotermApplication {
                 return;
             }
         };
-        self.resize_terminal(window.inner_size(), window.scale_factor());
-        self.terminal
-            .advance(b"toyoterm\r\nGPU text renderer ready\r\n");
+        let size = self.resize_terminal(window.inner_size(), window.scale_factor());
         self.sync_renderer(&mut renderer, window.scale_factor());
+        window.set_ime_allowed(true);
         window.request_redraw();
         self.renderer = Some(renderer);
         self.window = Some(window);
+        if let Err(error) = self.start_shell(size) {
+            self.fail(event_loop, error);
+        }
     }
 
     fn window_event(
@@ -153,7 +172,11 @@ impl ApplicationHandler for ToyotermApplication {
                 if let Some(renderer) = self.renderer.as_mut() {
                     renderer.resize(size);
                 }
-                self.resize_terminal(size, window.scale_factor());
+                let terminal_size = self.resize_terminal(size, window.scale_factor());
+                if let Err(error) = self.resize_pty(terminal_size) {
+                    self.fail(event_loop, error);
+                    return;
+                }
                 self.sync_active_renderer(window.scale_factor());
                 window.request_redraw();
             }
@@ -162,9 +185,27 @@ impl ApplicationHandler for ToyotermApplication {
                 if let Some(renderer) = self.renderer.as_mut() {
                     renderer.resize(size);
                 }
-                self.resize_terminal(size, scale_factor);
+                let terminal_size = self.resize_terminal(size, scale_factor);
+                if let Err(error) = self.resize_pty(terminal_size) {
+                    self.fail(event_loop, error);
+                    return;
+                }
                 self.sync_active_renderer(scale_factor);
                 window.request_redraw();
+            }
+            WindowEvent::ModifiersChanged(modifiers) => self.modifiers = modifiers.state(),
+            WindowEvent::KeyboardInput { event, .. } if event.state == ElementState::Pressed => {
+                if let Some(press) = key_press(&event, self.modifiers)
+                    && let Some(bytes) = encode_key(&press, self.terminal.mode())
+                    && let Err(error) = self.write_pty(&bytes)
+                {
+                    self.fail(event_loop, error);
+                }
+            }
+            WindowEvent::Ime(Ime::Commit(text)) => {
+                if let Err(error) = self.write_pty(text.as_bytes()) {
+                    self.fail(event_loop, error);
+                }
             }
             WindowEvent::RedrawRequested => {
                 if let Some(renderer) = self.renderer.as_mut()
@@ -176,14 +217,68 @@ impl ApplicationHandler for ToyotermApplication {
             _ => {}
         }
     }
+
+    fn user_event(&mut self, event_loop: &ActiveEventLoop, event: AppEvent) {
+        match event {
+            AppEvent::Output(bytes) => {
+                self.terminal.advance(&bytes);
+                if let Some(window) = self.window.clone() {
+                    self.sync_active_renderer(window.scale_factor());
+                    window.request_redraw();
+                }
+            }
+            AppEvent::Eof => event_loop.exit(),
+            AppEvent::Error(error) => self.fail(event_loop, error),
+        }
+    }
 }
 
 impl ToyotermApplication {
-    fn resize_terminal(&mut self, window_size: PhysicalSize<u32>, scale_factor: f64) {
+    fn new(event_proxy: EventLoopProxy<AppEvent>) -> Self {
+        Self {
+            event_proxy,
+            window: None,
+            renderer: None,
+            terminal: AlacrittyTerminalBackend::default(),
+            pty_session: None,
+            modifiers: ModifiersState::empty(),
+            cell_metrics: CellMetrics::default(),
+            fatal_error: None,
+        }
+    }
+
+    fn start_shell(&mut self, size: PtySize) -> Result<(), String> {
+        let mut command = PtyCommand::default_shell();
+        command.env("TERM", "xterm-256color");
+        let mut session = NativePty
+            .spawn(command, size)
+            .map_err(|error| error.to_string())?;
+        let reader = session.take_reader().map_err(|error| error.to_string())?;
+        spawn_pty_reader(reader, self.event_proxy.clone())?;
+        self.pty_session = Some(session);
+        Ok(())
+    }
+
+    fn resize_terminal(&mut self, window_size: PhysicalSize<u32>, scale_factor: f64) -> PtySize {
         let size = self
             .cell_metrics
             .terminal_size_at_scale(window_size, scale_factor);
         self.terminal.resize(size.columns, size.rows);
+        size
+    }
+
+    fn resize_pty(&mut self, size: PtySize) -> Result<(), String> {
+        if let Some(session) = self.pty_session.as_mut() {
+            session.resize(size).map_err(|error| error.to_string())?;
+        }
+        Ok(())
+    }
+
+    fn write_pty(&mut self, bytes: &[u8]) -> Result<(), String> {
+        if let Some(session) = self.pty_session.as_mut() {
+            session.write(bytes).map_err(|error| error.to_string())?;
+        }
+        Ok(())
     }
 
     fn sync_active_renderer(&mut self, scale_factor: f64) {
@@ -207,6 +302,95 @@ impl ToyotermApplication {
         self.fatal_error = Some(error);
         event_loop.exit();
     }
+}
+
+fn spawn_pty_reader(
+    mut reader: Box<dyn Read + Send>,
+    event_proxy: EventLoopProxy<AppEvent>,
+) -> Result<(), String> {
+    thread::Builder::new()
+        .name("toyoterm-pty-reader".into())
+        .spawn(move || {
+            let mut buffer = [0_u8; 8192];
+            loop {
+                match reader.read(&mut buffer) {
+                    Ok(0) => {
+                        let _ = event_proxy.send_event(AppEvent::Eof);
+                        break;
+                    }
+                    Ok(count) => {
+                        if event_proxy
+                            .send_event(AppEvent::Output(buffer[..count].to_vec()))
+                            .is_err()
+                        {
+                            break;
+                        }
+                    }
+                    Err(error) if error.raw_os_error() == Some(5) => {
+                        let _ = event_proxy.send_event(AppEvent::Eof);
+                        break;
+                    }
+                    Err(error) => {
+                        let _ = event_proxy
+                            .send_event(AppEvent::Error(format!("read PTY output: {error}")));
+                        break;
+                    }
+                }
+            }
+        })
+        .map(|_| ())
+        .map_err(|error| format!("start PTY reader: {error}"))
+}
+
+fn key_press(event: &KeyEvent, modifiers: ModifiersState) -> Option<KeyPress> {
+    let key = match &event.logical_key {
+        Key::Named(named) => named_key(named)?,
+        Key::Character(text) => {
+            TerminalKey::Text(event.text.as_deref().unwrap_or(text.as_str()).to_owned())
+        }
+        _ => return None,
+    };
+    Some(KeyPress::new(
+        key,
+        KeyModifiers {
+            shift: modifiers.shift_key(),
+            control: modifiers.control_key(),
+            alt: modifiers.alt_key(),
+            super_key: modifiers.super_key(),
+        },
+    ))
+}
+
+fn named_key(key: &NamedKey) -> Option<TerminalKey> {
+    Some(match key {
+        NamedKey::Enter => TerminalKey::Enter,
+        NamedKey::Backspace => TerminalKey::Backspace,
+        NamedKey::Tab => TerminalKey::Tab,
+        NamedKey::Escape => TerminalKey::Escape,
+        NamedKey::ArrowUp => TerminalKey::ArrowUp,
+        NamedKey::ArrowDown => TerminalKey::ArrowDown,
+        NamedKey::ArrowLeft => TerminalKey::ArrowLeft,
+        NamedKey::ArrowRight => TerminalKey::ArrowRight,
+        NamedKey::Home => TerminalKey::Home,
+        NamedKey::End => TerminalKey::End,
+        NamedKey::PageUp => TerminalKey::PageUp,
+        NamedKey::PageDown => TerminalKey::PageDown,
+        NamedKey::Insert => TerminalKey::Insert,
+        NamedKey::Delete => TerminalKey::Delete,
+        NamedKey::F1 => TerminalKey::Function(1),
+        NamedKey::F2 => TerminalKey::Function(2),
+        NamedKey::F3 => TerminalKey::Function(3),
+        NamedKey::F4 => TerminalKey::Function(4),
+        NamedKey::F5 => TerminalKey::Function(5),
+        NamedKey::F6 => TerminalKey::Function(6),
+        NamedKey::F7 => TerminalKey::Function(7),
+        NamedKey::F8 => TerminalKey::Function(8),
+        NamedKey::F9 => TerminalKey::Function(9),
+        NamedKey::F10 => TerminalKey::Function(10),
+        NamedKey::F11 => TerminalKey::Function(11),
+        NamedKey::F12 => TerminalKey::Function(12),
+        _ => return None,
+    })
 }
 
 #[cfg(test)]
