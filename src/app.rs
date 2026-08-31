@@ -3,9 +3,10 @@ use std::io::Read;
 use std::sync::Arc;
 use std::thread;
 
+use arboard::Clipboard;
 use winit::application::ApplicationHandler;
 use winit::dpi::{LogicalSize, PhysicalPosition, PhysicalSize};
-use winit::event::{ElementState, Ime, KeyEvent, MouseScrollDelta, WindowEvent};
+use winit::event::{ElementState, Ime, KeyEvent, MouseButton, MouseScrollDelta, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop, EventLoopProxy};
 use winit::keyboard::{Key, ModifiersState, NamedKey};
 use winit::window::{Window, WindowId};
@@ -13,7 +14,7 @@ use winit::window::{Window, WindowId};
 use crate::{
     AlacrittyTerminalBackend, GpuRenderer, KeyModifiers, KeyPress, MouseWheelDirection, NativePty,
     Pty, PtyCommand, PtySession, PtySize, TerminalBackend, TerminalKey, TextLayout, encode_key,
-    encode_mouse_wheel,
+    encode_mouse_wheel, encode_paste,
 };
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -118,6 +119,8 @@ struct ToyotermApplication {
     modifiers: ModifiersState,
     mouse_position: PhysicalPosition<f64>,
     wheel_line_accumulator: f64,
+    selecting: bool,
+    clipboard: Option<Clipboard>,
     cell_metrics: CellMetrics,
     fatal_error: Option<String>,
 }
@@ -197,11 +200,38 @@ impl ApplicationHandler<AppEvent> for ToyotermApplication {
                 window.request_redraw();
             }
             WindowEvent::ModifiersChanged(modifiers) => self.modifiers = modifiers.state(),
-            WindowEvent::CursorMoved { position, .. } => self.mouse_position = position,
+            WindowEvent::CursorMoved { position, .. } => {
+                self.mouse_position = position;
+                if self.selecting {
+                    let (column, row) = self.mouse_cell(window.scale_factor());
+                    self.terminal.update_selection(column, row);
+                    self.sync_active_renderer(window.scale_factor());
+                    window.request_redraw();
+                }
+            }
+            WindowEvent::MouseInput {
+                state,
+                button: MouseButton::Left,
+                ..
+            } => {
+                self.handle_left_mouse(&window, state);
+            }
             WindowEvent::MouseWheel { delta, .. } => {
                 self.handle_mouse_wheel(event_loop, &window, delta);
             }
             WindowEvent::KeyboardInput { event, .. } if event.state == ElementState::Pressed => {
+                if is_clipboard_shortcut(&event, self.modifiers, 'c') {
+                    if let Err(error) = self.copy_selection() {
+                        eprintln!("toyoterm: {error}");
+                    }
+                    return;
+                }
+                if is_clipboard_shortcut(&event, self.modifiers, 'v') {
+                    if let Err(error) = self.paste_clipboard() {
+                        eprintln!("toyoterm: {error}");
+                    }
+                    return;
+                }
                 if let Some(press) = key_press(&event, self.modifiers)
                     && let Some(bytes) = encode_key(&press, self.terminal.mode())
                     && let Err(error) = self.write_pty(&bytes)
@@ -251,6 +281,8 @@ impl ToyotermApplication {
             modifiers: ModifiersState::empty(),
             mouse_position: PhysicalPosition::new(0.0, 0.0),
             wheel_line_accumulator: 0.0,
+            selecting: false,
+            clipboard: None,
             cell_metrics: CellMetrics::default(),
             fatal_error: None,
         }
@@ -349,6 +381,58 @@ impl ToyotermApplication {
         )
     }
 
+    fn handle_left_mouse(&mut self, window: &Window, state: ElementState) {
+        if self.terminal.mode().mouse_reporting && !self.modifiers.shift_key() {
+            return;
+        }
+
+        let (column, row) = self.mouse_cell(window.scale_factor());
+        match state {
+            ElementState::Pressed => {
+                self.terminal.clear_selection();
+                self.terminal.start_selection(column, row);
+                self.selecting = true;
+            }
+            ElementState::Released if self.selecting => {
+                self.terminal.update_selection(column, row);
+                self.selecting = false;
+            }
+            ElementState::Released => return,
+        }
+        self.sync_active_renderer(window.scale_factor());
+        window.request_redraw();
+    }
+
+    fn copy_selection(&mut self) -> Result<(), String> {
+        let Some(text) = self
+            .terminal
+            .selected_text()
+            .filter(|text| !text.is_empty())
+        else {
+            return Ok(());
+        };
+        self.clipboard()?
+            .set_text(text)
+            .map_err(|error| format!("copy to clipboard: {error}"))
+    }
+
+    fn paste_clipboard(&mut self) -> Result<(), String> {
+        let text = self
+            .clipboard()?
+            .get_text()
+            .map_err(|error| format!("paste from clipboard: {error}"))?;
+        let bytes = encode_paste(&text, self.terminal.mode());
+        self.write_pty(&bytes)
+    }
+
+    fn clipboard(&mut self) -> Result<&mut Clipboard, String> {
+        if self.clipboard.is_none() {
+            self.clipboard =
+                Some(Clipboard::new().map_err(|error| format!("initialize clipboard: {error}"))?);
+        }
+        Ok(self.clipboard.as_mut().expect("clipboard was initialized"))
+    }
+
     fn sync_active_renderer(&mut self, scale_factor: f64) {
         let snapshot = self.terminal.snapshot();
         let cursor = self.terminal.cursor();
@@ -428,6 +512,15 @@ fn key_modifiers(modifiers: ModifiersState) -> KeyModifiers {
         alt: modifiers.alt_key(),
         super_key: modifiers.super_key(),
     }
+}
+
+fn is_clipboard_shortcut(event: &KeyEvent, modifiers: ModifiersState, character: char) -> bool {
+    let Key::Character(key) = &event.logical_key else {
+        return false;
+    };
+    let primary_modifier =
+        modifiers.super_key() || (modifiers.control_key() && modifiers.shift_key());
+    primary_modifier && key.eq_ignore_ascii_case(&character.to_string())
 }
 
 fn named_key(key: &NamedKey) -> Option<TerminalKey> {

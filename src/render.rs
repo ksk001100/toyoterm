@@ -67,10 +67,12 @@ pub struct GpuRenderer {
     viewport: Viewport,
     text_atlas: TextAtlas,
     text_renderer: TextRenderer,
+    selection_buffer: Buffer,
     text_buffer: Buffer,
     cursor_buffer: Buffer,
     text_layout: TextLayout,
     cursor: CursorState,
+    has_selection: bool,
 }
 
 impl GpuRenderer {
@@ -123,6 +125,8 @@ impl GpuRenderer {
         let metrics = Metrics::new(default_layout.font_size, default_layout.line_height);
         let mut text_buffer = Buffer::new(&mut font_system, metrics);
         text_buffer.set_wrap(Wrap::None);
+        let mut selection_buffer = Buffer::new(&mut font_system, metrics);
+        selection_buffer.set_wrap(Wrap::None);
         let mut cursor_buffer = Buffer::new(&mut font_system, metrics);
         cursor_buffer.set_wrap(Wrap::None);
 
@@ -145,6 +149,7 @@ impl GpuRenderer {
             viewport,
             text_atlas,
             text_renderer,
+            selection_buffer,
             text_buffer,
             cursor_buffer,
             text_layout: default_layout,
@@ -154,6 +159,7 @@ impl GpuRenderer {
                 visible: false,
                 shape: CursorShape::Block,
             },
+            has_selection: false,
         })
     }
 
@@ -165,6 +171,7 @@ impl GpuRenderer {
     ) {
         self.text_layout = layout;
         self.cursor = cursor;
+        self.has_selection = !snapshot.selection.is_empty();
         let metrics = Metrics::new(layout.font_size.max(1.0), layout.line_height.max(1.0));
         let content_width =
             self.configuration
@@ -183,6 +190,20 @@ impl GpuRenderer {
             None,
         );
         self.text_buffer
+            .shape_until_scroll(&mut self.font_system, false);
+
+        self.selection_buffer.set_metrics_and_size(
+            metrics,
+            Some(content_width),
+            Some(content_height),
+        );
+        self.selection_buffer.set_text(
+            &selection_text(snapshot),
+            &Attrs::new().family(Family::Monospace),
+            Shaping::Basic,
+            None,
+        );
+        self.selection_buffer
             .shape_until_scroll(&mut self.font_system, false);
 
         self.cursor_buffer.set_metrics_and_size(metrics, None, None);
@@ -236,7 +257,19 @@ impl GpuRenderer {
             + f32::from(self.cursor.column) * self.text_layout.cell_width;
         let cursor_top = self.text_layout.vertical_padding
             + f32::from(self.cursor.row) * self.text_layout.line_height;
-        let mut text_areas = vec![TextArea {
+        let mut text_areas = Vec::with_capacity(3);
+        if self.has_selection {
+            text_areas.push(TextArea {
+                buffer: &self.selection_buffer,
+                left: self.text_layout.horizontal_padding,
+                top: self.text_layout.vertical_padding,
+                scale: 1.0,
+                bounds,
+                default_color: GlyphColor::rgba(55, 88, 145, 210),
+                custom_glyphs: &[],
+            });
+        }
+        text_areas.push(TextArea {
             buffer: &self.text_buffer,
             left: self.text_layout.horizontal_padding,
             top: self.text_layout.vertical_padding,
@@ -244,7 +277,7 @@ impl GpuRenderer {
             bounds,
             default_color: GlyphColor::rgb(220, 225, 232),
             custom_glyphs: &[],
-        }];
+        });
         if self.cursor.visible {
             text_areas.push(TextArea {
                 buffer: &self.cursor_buffer,
@@ -332,5 +365,53 @@ impl GpuRenderer {
             .map_err(|error| RenderError::new("recreate GPU surface", error))?;
         self.surface.configure(&self.device, &self.configuration);
         Ok(())
+    }
+}
+
+fn selection_text(snapshot: &TerminalSnapshot) -> String {
+    if snapshot.selection.is_empty() {
+        return String::new();
+    }
+
+    let mut text = String::new();
+    for row in 0..snapshot.rows {
+        if row > 0 {
+            text.push('\n');
+        }
+        let Some(span) = snapshot.selection.iter().find(|span| span.row == row) else {
+            continue;
+        };
+        text.extend(std::iter::repeat_n(' ', usize::from(span.start_column)));
+        let width = span.end_column.saturating_sub(span.start_column) + 1;
+        text.extend(std::iter::repeat_n('█', usize::from(width)));
+    }
+    text
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::SelectionSpan;
+
+    #[test]
+    fn builds_a_cell_aligned_selection_mask() {
+        let snapshot = TerminalSnapshot {
+            columns: 8,
+            rows: 3,
+            lines: vec!["alpha".into(), "beta".into(), "gamma".into()],
+            selection: vec![
+                SelectionSpan {
+                    row: 0,
+                    start_column: 2,
+                    end_column: 4,
+                },
+                SelectionSpan {
+                    row: 1,
+                    start_column: 0,
+                    end_column: 1,
+                },
+            ],
+        };
+        assert_eq!(selection_text(&snapshot), "  ███\n██\n");
     }
 }

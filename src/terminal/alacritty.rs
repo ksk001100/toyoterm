@@ -1,12 +1,15 @@
 use alacritty_terminal::Term;
 use alacritty_terminal::event::VoidListener;
 use alacritty_terminal::grid::{Dimensions, Scroll};
-use alacritty_terminal::index::{Column, Line};
+use alacritty_terminal::index::{Column, Line, Point, Side};
+use alacritty_terminal::selection::{Selection, SelectionType};
 use alacritty_terminal::term::cell::Flags;
 use alacritty_terminal::term::{Config, MIN_COLUMNS, MIN_SCREEN_LINES, TermMode};
 use alacritty_terminal::vte::ansi::{CursorShape as AlacrittyCursorShape, Processor};
 
-use super::{CursorShape, CursorState, TerminalBackend, TerminalMode, TerminalSnapshot};
+use super::{
+    CursorShape, CursorState, SelectionSpan, TerminalBackend, TerminalMode, TerminalSnapshot,
+};
 
 pub const DEFAULT_SCROLLBACK_LINES: usize = 10_000;
 
@@ -36,6 +39,13 @@ impl AlacrittyTerminalBackend {
         let grid = self.terminal.grid();
         (grid.columns() as u16, grid.screen_lines() as u16)
     }
+
+    fn viewport_point(&self, column: u16, row: u16) -> Point {
+        let grid = self.terminal.grid();
+        let column = usize::from(column).min(grid.columns().saturating_sub(1));
+        let row = i32::from(row).min(grid.screen_lines().saturating_sub(1) as i32);
+        Point::new(Line(row - grid.display_offset() as i32), Column(column))
+    }
 }
 
 impl Default for AlacrittyTerminalBackend {
@@ -58,6 +68,12 @@ impl TerminalBackend for AlacrittyTerminalBackend {
         let (columns, rows) = self.dimensions();
         let display_offset = grid.display_offset() as i32;
         let mut lines = Vec::with_capacity(rows as usize);
+        let selection_range = self
+            .terminal
+            .selection
+            .as_ref()
+            .and_then(|selection| selection.to_range(&self.terminal));
+        let mut selection = Vec::new();
 
         for viewport_row in 0..rows {
             let line = Line(viewport_row as i32 - display_offset);
@@ -76,12 +92,26 @@ impl TerminalBackend for AlacrittyTerminalBackend {
                 }
             }
             lines.push(text.trim_end().to_owned());
+            if let Some(range) = selection_range {
+                let mut selected_columns = (0..columns).filter(|column| {
+                    range.contains(Point::new(line, Column(usize::from(*column))))
+                });
+                if let Some(start_column) = selected_columns.next() {
+                    let end_column = selected_columns.next_back().unwrap_or(start_column);
+                    selection.push(SelectionSpan {
+                        row: viewport_row,
+                        start_column,
+                        end_column,
+                    });
+                }
+            }
         }
 
         TerminalSnapshot {
             columns,
             rows,
             lines,
+            selection,
         }
     }
 
@@ -118,6 +148,26 @@ impl TerminalBackend for AlacrittyTerminalBackend {
 
     fn scroll_display(&mut self, lines: i32) {
         self.terminal.scroll_display(Scroll::Delta(lines));
+    }
+
+    fn start_selection(&mut self, column: u16, row: u16) {
+        let point = self.viewport_point(column, row);
+        self.terminal.selection = Some(Selection::new(SelectionType::Simple, point, Side::Left));
+    }
+
+    fn update_selection(&mut self, column: u16, row: u16) {
+        let point = self.viewport_point(column, row);
+        if let Some(selection) = self.terminal.selection.as_mut() {
+            selection.update(point, Side::Right);
+        }
+    }
+
+    fn clear_selection(&mut self) {
+        self.terminal.selection = None;
+    }
+
+    fn selected_text(&self) -> Option<String> {
+        self.terminal.selection_to_string()
     }
 }
 
@@ -233,5 +283,25 @@ mod tests {
         backend.advance(b"one\r\ntwo\r\nthree\r\nfour");
         backend.scroll_display(i32::MAX);
         assert_eq!(backend.snapshot().lines, ["two", "three"]);
+    }
+
+    #[test]
+    fn selects_visible_cells_and_extracts_text() {
+        let mut backend = AlacrittyTerminalBackend::new(10, 2);
+        backend.advance(b"hello world");
+        backend.start_selection(1, 0);
+        backend.update_selection(3, 0);
+
+        assert_eq!(backend.selected_text().as_deref(), Some("ell"));
+        assert_eq!(
+            backend.snapshot().selection,
+            [SelectionSpan {
+                row: 0,
+                start_column: 1,
+                end_column: 3,
+            }]
+        );
+        backend.clear_selection();
+        assert_eq!(backend.selected_text(), None);
     }
 }

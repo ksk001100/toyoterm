@@ -17,11 +17,12 @@ pub use api::{
 pub use app::{CellMetrics, run_gui};
 pub use input::{
     KeyModifiers, KeyPress, MouseWheelDirection, TerminalKey, encode_key, encode_mouse_wheel,
+    encode_paste,
 };
 pub use mux::{Mux, MuxError, PaneNode};
 pub use pty::{NativePty, Pty, PtyCommand, PtyError, PtyExitStatus, PtySession, PtySize};
 pub use render::{GpuRenderer, RenderError, RenderOutcome, TextLayout};
 pub use terminal::{
-    AlacrittyTerminalBackend, CursorShape, CursorState, DEFAULT_SCROLLBACK_LINES, TerminalBackend,
-    TerminalMode, TerminalSnapshot,
+    AlacrittyTerminalBackend, CursorShape, CursorState, DEFAULT_SCROLLBACK_LINES, SelectionSpan,
+    TerminalBackend, TerminalMode, TerminalSnapshot,
 };

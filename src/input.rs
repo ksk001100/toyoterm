@@ -114,6 +114,19 @@ pub fn encode_mouse_wheel(
     }
 }
 
+pub fn encode_paste(text: &str, mode: TerminalMode) -> Vec<u8> {
+    let normalized = text.replace("\r\n", "\n").replace('\r', "\n");
+    if mode.bracketed_paste {
+        let mut bytes = Vec::with_capacity(normalized.len() + 12);
+        bytes.extend_from_slice(b"\x1b[200~");
+        bytes.extend_from_slice(normalized.as_bytes());
+        bytes.extend_from_slice(b"\x1b[201~");
+        bytes
+    } else {
+        normalized.replace('\n', "\r").into_bytes()
+    }
+}
+
 fn encode_text(text: &str, control: bool) -> Option<Vec<u8>> {
     if !control {
         return Some(text.as_bytes().to_vec());
@@ -276,5 +289,25 @@ mod tests {
             false,
         );
         assert_eq!(bytes, [0x1b, b'[', b'M', 97, 33, 33]);
+    }
+
+    #[test]
+    fn normalizes_pasted_newlines_for_the_terminal() {
+        assert_eq!(
+            encode_paste("one\r\ntwo\n", TerminalMode::default()),
+            b"one\rtwo\r"
+        );
+    }
+
+    #[test]
+    fn wraps_bracketed_paste_without_converting_newlines() {
+        let mode = TerminalMode {
+            bracketed_paste: true,
+            ..TerminalMode::default()
+        };
+        assert_eq!(
+            encode_paste("one\r\ntwo", mode),
+            b"\x1b[200~one\ntwo\x1b[201~"
+        );
     }
 }
