@@ -1,5 +1,6 @@
 use std::fmt;
 use std::io::Read;
+use std::path::Path;
 use std::sync::Arc;
 use std::thread;
 
@@ -12,9 +13,9 @@ use winit::keyboard::{Key, ModifiersState, NamedKey};
 use winit::window::{Window, WindowId};
 
 use crate::{
-    AlacrittyTerminalBackend, GpuRenderer, KeyModifiers, KeyPress, MouseWheelDirection, NativePty,
-    Pty, PtyCommand, PtySession, PtySize, TerminalBackend, TerminalKey, TextLayout, encode_key,
-    encode_mouse_wheel, encode_paste,
+    AlacrittyTerminalBackend, ConfigManager, GpuRenderer, KeyModifiers, KeyPress,
+    MouseWheelDirection, NativePty, Pty, PtyCommand, PtySession, PtySize, RenderStyle,
+    TerminalBackend, TerminalKey, TextLayout, encode_key, encode_mouse_wheel, encode_paste,
 };
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -23,6 +24,7 @@ pub struct CellMetrics {
     pub height: f64,
     pub horizontal_padding: u32,
     pub vertical_padding: u32,
+    pub font_size: f32,
 }
 
 impl Default for CellMetrics {
@@ -32,6 +34,7 @@ impl Default for CellMetrics {
             height: 18.0,
             horizontal_padding: 8,
             vertical_padding: 8,
+            font_size: 14.0,
         }
     }
 }
@@ -68,7 +71,7 @@ impl CellMetrics {
     pub fn text_layout(self, scale_factor: f64) -> TextLayout {
         let scale = scale_factor.max(0.1) as f32;
         TextLayout {
-            font_size: 14.0 * scale,
+            font_size: self.font_size * scale,
             line_height: self.height as f32 * scale,
             cell_width: self.width as f32 * scale,
             horizontal_padding: self.horizontal_padding as f32 * scale,
@@ -89,11 +92,27 @@ impl fmt::Display for AppError {
 impl std::error::Error for AppError {}
 
 pub fn run_gui() -> Result<(), AppError> {
+    run_gui_with_config_path(None)
+}
+
+pub fn run_gui_with_config_path(config_path: Option<&Path>) -> Result<(), AppError> {
+    let config_manager =
+        ConfigManager::load_startup(config_path).map_err(|error| AppError(error.to_string()))?;
+    let config = config_manager.config();
+    let render_style = RenderStyle::from_hex(
+        &config.font.family,
+        &config.colors.background,
+        &config.colors.foreground,
+        &config.colors.cursor,
+        &config.colors.selection,
+        config.window_opacity,
+    )
+    .map_err(|error| AppError(error.to_string()))?;
     let event_loop = EventLoop::<AppEvent>::with_user_event()
         .build()
         .map_err(|error| AppError(error.to_string()))?;
     event_loop.set_control_flow(ControlFlow::Wait);
-    let mut app = ToyotermApplication::new(event_loop.create_proxy());
+    let mut app = ToyotermApplication::new(event_loop.create_proxy(), config_manager, render_style);
     event_loop
         .run_app(&mut app)
         .map_err(|error| AppError(error.to_string()))?;
@@ -122,6 +141,8 @@ struct ToyotermApplication {
     selecting: bool,
     clipboard: Option<Clipboard>,
     cell_metrics: CellMetrics,
+    config_manager: ConfigManager,
+    render_style: RenderStyle,
     fatal_error: Option<String>,
 }
 
@@ -132,6 +153,7 @@ impl ApplicationHandler<AppEvent> for ToyotermApplication {
         }
         let attributes = Window::default_attributes()
             .with_title("toyoterm")
+            .with_transparent(self.config_manager.config().window_opacity < 1.0)
             .with_inner_size(LogicalSize::new(960.0, 600.0))
             .with_min_inner_size(LogicalSize::new(320.0, 180.0));
         let window = match event_loop.create_window(attributes) {
@@ -148,6 +170,7 @@ impl ApplicationHandler<AppEvent> for ToyotermApplication {
                 return;
             }
         };
+        renderer.set_style(self.render_style.clone());
         let size = self.resize_terminal(window.inner_size(), window.scale_factor());
         self.sync_renderer(&mut renderer, window.scale_factor());
         window.set_ime_allowed(true);
@@ -271,25 +294,41 @@ impl ApplicationHandler<AppEvent> for ToyotermApplication {
 }
 
 impl ToyotermApplication {
-    fn new(event_proxy: EventLoopProxy<AppEvent>) -> Self {
+    fn new(
+        event_proxy: EventLoopProxy<AppEvent>,
+        config_manager: ConfigManager,
+        render_style: RenderStyle,
+    ) -> Self {
+        let config = config_manager.config();
+        let font_scale = f64::from(config.font.size) / 14.0;
         Self {
             event_proxy,
             window: None,
             renderer: None,
-            terminal: AlacrittyTerminalBackend::default(),
+            terminal: AlacrittyTerminalBackend::with_scrollback(80, 24, config.scrollback_lines),
             pty_session: None,
             modifiers: ModifiersState::empty(),
             mouse_position: PhysicalPosition::new(0.0, 0.0),
             wheel_line_accumulator: 0.0,
             selecting: false,
             clipboard: None,
-            cell_metrics: CellMetrics::default(),
+            cell_metrics: CellMetrics {
+                width: 9.0 * font_scale,
+                height: 18.0 * font_scale,
+                font_size: config.font.size,
+                ..CellMetrics::default()
+            },
+            config_manager,
+            render_style,
             fatal_error: None,
         }
     }
 
     fn start_shell(&mut self, size: PtySize) -> Result<(), String> {
-        let mut command = PtyCommand::default_shell();
+        let mut command = match self.config_manager.config().default_shell.as_deref() {
+            Some(shell) => PtyCommand::new(shell),
+            None => PtyCommand::default_shell(),
+        };
         command.env("TERM", "xterm-256color");
         let mut session = NativePty
             .spawn(command, size)

@@ -6,9 +6,9 @@ use glyphon::{
     Resolution, Shaping, SwashCache, TextArea, TextAtlas, TextBounds, TextRenderer, Viewport, Wrap,
 };
 use wgpu::{
-    Color, CommandEncoderDescriptor, CurrentSurfaceTexture, Device, DeviceDescriptor, Instance,
-    LoadOp, Operations, Queue, RenderPassColorAttachment, RenderPassDescriptor, StoreOp, Surface,
-    SurfaceConfiguration, TextureViewDescriptor,
+    Color, CommandEncoderDescriptor, CompositeAlphaMode, CurrentSurfaceTexture, Device,
+    DeviceDescriptor, Instance, LoadOp, Operations, Queue, RenderPassColorAttachment,
+    RenderPassDescriptor, StoreOp, Surface, SurfaceConfiguration, TextureViewDescriptor,
 };
 use winit::dpi::PhysicalSize;
 use winit::window::Window;
@@ -22,6 +22,49 @@ pub struct TextLayout {
     pub cell_width: f32,
     pub horizontal_padding: f32,
     pub vertical_padding: f32,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct RenderStyle {
+    pub font_family: String,
+    pub background: [u8; 3],
+    pub foreground: [u8; 3],
+    pub cursor: [u8; 3],
+    pub selection: [u8; 3],
+    pub opacity: f32,
+}
+
+impl Default for RenderStyle {
+    fn default() -> Self {
+        Self {
+            font_family: "monospace".into(),
+            background: [9, 11, 14],
+            foreground: [220, 225, 232],
+            cursor: [245, 247, 250],
+            selection: [55, 88, 145],
+            opacity: 1.0,
+        }
+    }
+}
+
+impl RenderStyle {
+    pub fn from_hex(
+        font_family: impl Into<String>,
+        background: &str,
+        foreground: &str,
+        cursor: &str,
+        selection: &str,
+        opacity: f32,
+    ) -> Result<Self, RenderError> {
+        Ok(Self {
+            font_family: font_family.into(),
+            background: parse_rgb(background)?,
+            foreground: parse_rgb(foreground)?,
+            cursor: parse_rgb(cursor)?,
+            selection: parse_rgb(selection)?,
+            opacity,
+        })
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -60,6 +103,7 @@ pub struct GpuRenderer {
     device: Device,
     queue: Queue,
     configuration: SurfaceConfiguration,
+    supported_alpha_modes: Vec<CompositeAlphaMode>,
     suspended: bool,
     clear_color: Color,
     font_system: FontSystem,
@@ -73,6 +117,7 @@ pub struct GpuRenderer {
     text_layout: TextLayout,
     cursor: CursorState,
     has_selection: bool,
+    style: RenderStyle,
 }
 
 impl GpuRenderer {
@@ -98,6 +143,7 @@ impl GpuRenderer {
             })
             .await
             .map_err(|error| RenderError::new("request GPU device", error))?;
+        let supported_alpha_modes = surface.get_capabilities(&adapter).alpha_modes;
         let mut configuration = surface
             .get_default_config(&adapter, width, height)
             .ok_or_else(|| RenderError::new("configure GPU surface", "unsupported surface"))?;
@@ -130,6 +176,8 @@ impl GpuRenderer {
         let mut cursor_buffer = Buffer::new(&mut font_system, metrics);
         cursor_buffer.set_wrap(Wrap::None);
 
+        let style = RenderStyle::default();
+        let initial_alpha_mode = configuration.alpha_mode;
         Ok(Self {
             instance,
             window,
@@ -137,13 +185,9 @@ impl GpuRenderer {
             device,
             queue,
             configuration,
+            supported_alpha_modes,
             suspended: size.width == 0 || size.height == 0,
-            clear_color: Color {
-                r: 0.035,
-                g: 0.043,
-                b: 0.055,
-                a: 1.0,
-            },
+            clear_color: clear_color(&style, initial_alpha_mode),
             font_system,
             swash_cache,
             viewport,
@@ -160,7 +204,19 @@ impl GpuRenderer {
                 shape: CursorShape::Block,
             },
             has_selection: false,
+            style,
         })
+    }
+
+    pub fn set_style(&mut self, style: RenderStyle) {
+        let alpha_mode = preferred_alpha_mode(&self.supported_alpha_modes, style.opacity);
+        let alpha_mode_changed = self.configuration.alpha_mode != alpha_mode;
+        self.configuration.alpha_mode = alpha_mode;
+        self.clear_color = clear_color(&style, alpha_mode);
+        self.style = style;
+        if alpha_mode_changed && !self.suspended {
+            self.surface.configure(&self.device, &self.configuration);
+        }
     }
 
     pub fn update_terminal(
@@ -185,7 +241,7 @@ impl GpuRenderer {
             .set_metrics_and_size(metrics, Some(content_width), Some(content_height));
         self.text_buffer.set_text(
             &snapshot.lines.join("\n"),
-            &Attrs::new().family(Family::Monospace),
+            &Attrs::new().family(Family::Name(&self.style.font_family)),
             Shaping::Basic,
             None,
         );
@@ -199,7 +255,7 @@ impl GpuRenderer {
         );
         self.selection_buffer.set_text(
             &selection_text(snapshot),
-            &Attrs::new().family(Family::Monospace),
+            &Attrs::new().family(Family::Name(&self.style.font_family)),
             Shaping::Basic,
             None,
         );
@@ -213,7 +269,7 @@ impl GpuRenderer {
                 CursorShape::Beam => "▏",
                 CursorShape::Underline => "▁",
             },
-            &Attrs::new().family(Family::Monospace),
+            &Attrs::new().family(Family::Name(&self.style.font_family)),
             Shaping::Basic,
             None,
         );
@@ -265,7 +321,7 @@ impl GpuRenderer {
                 top: self.text_layout.vertical_padding,
                 scale: 1.0,
                 bounds,
-                default_color: GlyphColor::rgba(55, 88, 145, 210),
+                default_color: glyph_color(self.style.selection, 210),
                 custom_glyphs: &[],
             });
         }
@@ -275,7 +331,7 @@ impl GpuRenderer {
             top: self.text_layout.vertical_padding,
             scale: 1.0,
             bounds,
-            default_color: GlyphColor::rgb(220, 225, 232),
+            default_color: glyph_color(self.style.foreground, 255),
             custom_glyphs: &[],
         });
         if self.cursor.visible {
@@ -285,7 +341,7 @@ impl GpuRenderer {
                 top: cursor_top,
                 scale: 1.0,
                 bounds,
-                default_color: GlyphColor::rgb(245, 247, 250),
+                default_color: glyph_color(self.style.cursor, 255),
                 custom_glyphs: &[],
             });
         }
@@ -388,6 +444,57 @@ fn selection_text(snapshot: &TerminalSnapshot) -> String {
     text
 }
 
+fn parse_rgb(value: &str) -> Result<[u8; 3], RenderError> {
+    let hex = value.strip_prefix('#').unwrap_or(value);
+    if hex.len() != 6 {
+        return Err(RenderError::new(
+            "parse color",
+            format!("expected #RRGGBB, got `{value}`"),
+        ));
+    }
+    let parse = |range| {
+        u8::from_str_radix(&hex[range], 16)
+            .map_err(|_| RenderError::new("parse color", format!("invalid color `{value}`")))
+    };
+    Ok([parse(0..2)?, parse(2..4)?, parse(4..6)?])
+}
+
+fn clear_color(style: &RenderStyle, alpha_mode: CompositeAlphaMode) -> Color {
+    let alpha = f64::from(style.opacity.clamp(0.0, 1.0));
+    let multiplier = if alpha_mode == CompositeAlphaMode::PreMultiplied {
+        alpha
+    } else {
+        1.0
+    };
+    Color {
+        r: f64::from(style.background[0]) / 255.0 * multiplier,
+        g: f64::from(style.background[1]) / 255.0 * multiplier,
+        b: f64::from(style.background[2]) / 255.0 * multiplier,
+        a: alpha,
+    }
+}
+
+fn preferred_alpha_mode(supported: &[CompositeAlphaMode], opacity: f32) -> CompositeAlphaMode {
+    let preferences: &[CompositeAlphaMode] = if opacity < 1.0 {
+        &[
+            CompositeAlphaMode::PostMultiplied,
+            CompositeAlphaMode::PreMultiplied,
+            CompositeAlphaMode::Inherit,
+        ]
+    } else {
+        &[CompositeAlphaMode::Opaque, CompositeAlphaMode::Inherit]
+    };
+    preferences
+        .iter()
+        .copied()
+        .find(|mode| supported.contains(mode))
+        .unwrap_or(CompositeAlphaMode::Auto)
+}
+
+fn glyph_color(color: [u8; 3], alpha: u8) -> GlyphColor {
+    GlyphColor::rgba(color[0], color[1], color[2], alpha)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -413,5 +520,38 @@ mod tests {
             ],
         };
         assert_eq!(selection_text(&snapshot), "  ███\n██\n");
+    }
+
+    #[test]
+    fn parses_configured_render_colors() {
+        let style = RenderStyle::from_hex(
+            "JetBrains Mono",
+            "#112233",
+            "aabbcc",
+            "#ffffff",
+            "#010203",
+            0.9,
+        )
+        .unwrap();
+        assert_eq!(style.background, [0x11, 0x22, 0x33]);
+        assert_eq!(style.foreground, [0xaa, 0xbb, 0xcc]);
+        assert_eq!(style.opacity, 0.9);
+        assert!(RenderStyle::from_hex("mono", "bad", "#fff", "#fff", "#fff", 1.0).is_err());
+    }
+
+    #[test]
+    fn selects_a_supported_transparency_mode() {
+        let supported = [
+            CompositeAlphaMode::Opaque,
+            CompositeAlphaMode::PreMultiplied,
+        ];
+        assert_eq!(
+            preferred_alpha_mode(&supported, 0.8),
+            CompositeAlphaMode::PreMultiplied
+        );
+        assert_eq!(
+            preferred_alpha_mode(&supported, 1.0),
+            CompositeAlphaMode::Opaque
+        );
     }
 }

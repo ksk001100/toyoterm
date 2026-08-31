@@ -1,6 +1,7 @@
 use std::ffi::{CStr, CString, c_char, c_void};
 use std::fmt;
 use std::marker::PhantomData;
+use std::path::{Path, PathBuf};
 use std::ptr::NonNull;
 use std::rc::Rc;
 
@@ -145,6 +146,10 @@ impl ScriptError {
     pub fn message(&self) -> &str {
         &self.message
     }
+
+    fn config_file(path: &Path, error: impl fmt::Display) -> Self {
+        Self::new("load config", format!("{}: {error}", path.display()))
+    }
 }
 
 impl fmt::Display for ScriptError {
@@ -221,6 +226,27 @@ impl ConfigManager {
         &self.config
     }
 
+    pub fn load_startup(explicit_path: Option<&Path>) -> Result<Self, ScriptError> {
+        let env_path = std::env::var_os("TOYOTERM_CONFIG_FILE").filter(|path| !path.is_empty());
+        let home = home_directory();
+        let Some(path) = resolve_config_path(explicit_path, env_path.as_deref(), home.as_deref())
+        else {
+            return Self::new();
+        };
+        let required = explicit_path.is_some() || env_path.is_some();
+        if !required && !path.exists() {
+            return Self::new();
+        }
+
+        let source = std::fs::read_to_string(&path)
+            .map_err(|error| ScriptError::config_file(&path, error))?;
+        let mut manager = Self::new()?;
+        manager
+            .reload(&source)
+            .map_err(|error| ScriptError::config_file(&path, error))?;
+        Ok(manager)
+    }
+
     /// Evaluate config in a fresh VM and swap it in only after complete validation.
     pub fn reload(&mut self, source: &str) -> Result<&ToyotermConfig, ScriptError> {
         let (runtime, config) = load_config(source)?;
@@ -232,6 +258,29 @@ impl ConfigManager {
     pub fn eval(&mut self, source: &str) -> Result<String, ScriptError> {
         self.runtime.eval(source)
     }
+}
+
+pub fn default_config_path() -> Option<PathBuf> {
+    home_directory().map(|home| home.join(".config").join("toyoterm").join("config.rb"))
+}
+
+fn home_directory() -> Option<PathBuf> {
+    #[cfg(windows)]
+    let home = std::env::var_os("USERPROFILE");
+    #[cfg(not(windows))]
+    let home = std::env::var_os("HOME");
+    home.filter(|path| !path.is_empty()).map(PathBuf::from)
+}
+
+fn resolve_config_path(
+    explicit_path: Option<&Path>,
+    env_path: Option<&std::ffi::OsStr>,
+    home: Option<&Path>,
+) -> Option<PathBuf> {
+    explicit_path
+        .map(Path::to_owned)
+        .or_else(|| env_path.map(PathBuf::from))
+        .or_else(|| home.map(|home| home.join(".config").join("toyoterm").join("config.rb")))
 }
 
 fn load_config(source: &str) -> Result<(MrubyRuntime, ToyotermConfig), ScriptError> {
@@ -354,5 +403,24 @@ mod tests {
         assert_eq!(error.operation(), "evaluate mruby");
         assert_eq!(manager.config().font.size, 18.0);
         assert_eq!(manager.eval("Toyoterm.__config.font.size").unwrap(), "18");
+    }
+
+    #[test]
+    fn resolves_config_paths_in_priority_order() {
+        let explicit = Path::new("custom.rb");
+        let environment = std::ffi::OsStr::new("environment.rb");
+        let home = Path::new("/users/toyo");
+        assert_eq!(
+            resolve_config_path(Some(explicit), Some(environment), Some(home)),
+            Some(explicit.to_owned())
+        );
+        assert_eq!(
+            resolve_config_path(None, Some(environment), Some(home)),
+            Some(PathBuf::from("environment.rb"))
+        );
+        assert_eq!(
+            resolve_config_path(None, None, Some(home)),
+            Some(home.join(".config/toyoterm/config.rb"))
+        );
     }
 }
