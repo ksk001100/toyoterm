@@ -16,7 +16,7 @@ pub use api::{
 pub use app::{CellMetrics, run_gui};
 pub use mux::{Mux, MuxError, PaneNode};
 pub use pty::{NativePty, Pty, PtyCommand, PtyError, PtyExitStatus, PtySession, PtySize};
-pub use render::{GpuRenderer, RenderError, RenderOutcome};
+pub use render::{GpuRenderer, RenderError, RenderOutcome, TextLayout};
 pub use terminal::{
     AlacrittyTerminalBackend, CursorShape, CursorState, TerminalBackend, TerminalMode,
     TerminalSnapshot,

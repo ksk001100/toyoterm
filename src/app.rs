@@ -7,7 +7,7 @@ use winit::event::WindowEvent;
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
 use winit::window::{Window, WindowId};
 
-use crate::{AlacrittyTerminalBackend, GpuRenderer, PtySize, TerminalBackend};
+use crate::{AlacrittyTerminalBackend, GpuRenderer, PtySize, TerminalBackend, TextLayout};
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct CellMetrics {
@@ -30,18 +30,42 @@ impl Default for CellMetrics {
 
 impl CellMetrics {
     pub fn terminal_size(self, window_size: PhysicalSize<u32>) -> PtySize {
+        self.terminal_size_at_scale(window_size, 1.0)
+    }
+
+    pub fn terminal_size_at_scale(
+        self,
+        window_size: PhysicalSize<u32>,
+        scale_factor: f64,
+    ) -> PtySize {
+        let scale_factor = scale_factor.max(0.1);
+        let horizontal_padding = (f64::from(self.horizontal_padding) * scale_factor).round() as u32;
+        let vertical_padding = (f64::from(self.vertical_padding) * scale_factor).round() as u32;
         let content_width = window_size
             .width
-            .saturating_sub(self.horizontal_padding.saturating_mul(2));
+            .saturating_sub(horizontal_padding.saturating_mul(2));
         let content_height = window_size
             .height
-            .saturating_sub(self.vertical_padding.saturating_mul(2));
-        let columns = (f64::from(content_width) / self.width.max(1.0)).floor() as u32;
-        let rows = (f64::from(content_height) / self.height.max(1.0)).floor() as u32;
+            .saturating_sub(vertical_padding.saturating_mul(2));
+        let columns =
+            (f64::from(content_width) / (self.width * scale_factor).max(1.0)).floor() as u32;
+        let rows =
+            (f64::from(content_height) / (self.height * scale_factor).max(1.0)).floor() as u32;
         PtySize::new(
             columns.clamp(2, u16::MAX.into()) as u16,
             rows.clamp(1, u16::MAX.into()) as u16,
         )
+    }
+
+    pub fn text_layout(self, scale_factor: f64) -> TextLayout {
+        let scale = scale_factor.max(0.1) as f32;
+        TextLayout {
+            font_size: 14.0 * scale,
+            line_height: self.height as f32 * scale,
+            cell_width: self.width as f32 * scale,
+            horizontal_padding: self.horizontal_padding as f32 * scale,
+            vertical_padding: self.vertical_padding as f32 * scale,
+        }
     }
 }
 
@@ -94,14 +118,17 @@ impl ApplicationHandler for ToyotermApplication {
                 return;
             }
         };
-        let renderer = match pollster::block_on(GpuRenderer::new(window.clone())) {
+        let mut renderer = match pollster::block_on(GpuRenderer::new(window.clone())) {
             Ok(renderer) => renderer,
             Err(error) => {
                 self.fail(event_loop, error.to_string());
                 return;
             }
         };
-        self.resize_terminal(window.inner_size());
+        self.resize_terminal(window.inner_size(), window.scale_factor());
+        self.terminal
+            .advance(b"toyoterm\r\nGPU text renderer ready\r\n");
+        self.sync_renderer(&mut renderer, window.scale_factor());
         window.request_redraw();
         self.renderer = Some(renderer);
         self.window = Some(window);
@@ -126,7 +153,17 @@ impl ApplicationHandler for ToyotermApplication {
                 if let Some(renderer) = self.renderer.as_mut() {
                     renderer.resize(size);
                 }
-                self.resize_terminal(size);
+                self.resize_terminal(size, window.scale_factor());
+                self.sync_active_renderer(window.scale_factor());
+                window.request_redraw();
+            }
+            WindowEvent::ScaleFactorChanged { scale_factor, .. } => {
+                let size = window.inner_size();
+                if let Some(renderer) = self.renderer.as_mut() {
+                    renderer.resize(size);
+                }
+                self.resize_terminal(size, scale_factor);
+                self.sync_active_renderer(scale_factor);
                 window.request_redraw();
             }
             WindowEvent::RedrawRequested => {
@@ -142,9 +179,28 @@ impl ApplicationHandler for ToyotermApplication {
 }
 
 impl ToyotermApplication {
-    fn resize_terminal(&mut self, window_size: PhysicalSize<u32>) {
-        let size = self.cell_metrics.terminal_size(window_size);
+    fn resize_terminal(&mut self, window_size: PhysicalSize<u32>, scale_factor: f64) {
+        let size = self
+            .cell_metrics
+            .terminal_size_at_scale(window_size, scale_factor);
         self.terminal.resize(size.columns, size.rows);
+    }
+
+    fn sync_active_renderer(&mut self, scale_factor: f64) {
+        let snapshot = self.terminal.snapshot();
+        let cursor = self.terminal.cursor();
+        let layout = self.cell_metrics.text_layout(scale_factor);
+        if let Some(renderer) = self.renderer.as_mut() {
+            renderer.update_terminal(&snapshot, cursor, layout);
+        }
+    }
+
+    fn sync_renderer(&self, renderer: &mut GpuRenderer, scale_factor: f64) {
+        renderer.update_terminal(
+            &self.terminal.snapshot(),
+            self.terminal.cursor(),
+            self.cell_metrics.text_layout(scale_factor),
+        );
     }
 
     fn fail(&mut self, event_loop: &ActiveEventLoop, error: String) {
@@ -173,5 +229,13 @@ mod tests {
             metrics.terminal_size(PhysicalSize::new(0, 0)),
             PtySize::new(2, 1)
         );
+    }
+
+    #[test]
+    fn hidpi_scaling_preserves_logical_grid_size() {
+        let metrics = CellMetrics::default();
+        let logical = metrics.terminal_size_at_scale(PhysicalSize::new(916, 556), 1.0);
+        let hidpi = metrics.terminal_size_at_scale(PhysicalSize::new(1832, 1112), 2.0);
+        assert_eq!(logical, hidpi);
     }
 }
