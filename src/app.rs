@@ -257,6 +257,14 @@ impl ApplicationHandler<AppEvent> for ToyotermApplication {
                     }
                     return;
                 }
+                match self.handle_keybinding(&event) {
+                    Ok(true) => return,
+                    Ok(false) => {}
+                    Err(error) => {
+                        self.fail(event_loop, error);
+                        return;
+                    }
+                }
                 if let Some(press) = key_press(&event, self.modifiers)
                     && let Some(bytes) = encode_key(&press, self.terminal.mode())
                     && let Err(error) = self.write_pty(&bytes)
@@ -356,6 +364,30 @@ impl ToyotermApplication {
             .take_pending_input(pane)
             .map_err(|error| error.to_string())?;
         self.write_pty(&bytes)
+    }
+
+    fn handle_keybinding(&mut self, event: &KeyEvent) -> Result<bool, String> {
+        let Some(key) = keybinding_name(&event.logical_key, self.modifiers) else {
+            return Ok(false);
+        };
+        let pane = self
+            .mux
+            .current_pane()
+            .ok_or_else(|| "mux has no current pane".to_owned())?;
+        let matched = match self.config_manager.trigger_keybinding(&key, pane) {
+            Ok(matched) => matched,
+            Err(error) => {
+                eprintln!("toyoterm: Ruby key binding error: {error}");
+                return Ok(true);
+            }
+        };
+        if !matched {
+            return Ok(false);
+        }
+
+        dispatch_script_commands(&mut self.config_manager, &mut self.mux)?;
+        self.flush_mux_input()?;
+        Ok(true)
     }
 
     fn resize_terminal(&mut self, window_size: PhysicalSize<u32>, scale_factor: f64) -> PtySize {
@@ -582,6 +614,62 @@ fn key_press(event: &KeyEvent, modifiers: ModifiersState) -> Option<KeyPress> {
     Some(KeyPress::new(key, key_modifiers(modifiers)))
 }
 
+fn keybinding_name(logical_key: &Key, modifiers: ModifiersState) -> Option<String> {
+    let key = match logical_key {
+        Key::Character(text) if !text.is_empty() => text.to_uppercase(),
+        Key::Named(key) => keybinding_named_key(key)?.to_owned(),
+        _ => return None,
+    };
+    let mut parts = Vec::with_capacity(5);
+    if modifiers.control_key() {
+        parts.push("CTRL".to_owned());
+    }
+    if modifiers.shift_key() {
+        parts.push("SHIFT".to_owned());
+    }
+    if modifiers.alt_key() {
+        parts.push("ALT".to_owned());
+    }
+    if modifiers.super_key() {
+        parts.push("SUPER".to_owned());
+    }
+    parts.push(key);
+    Some(parts.join("+"))
+}
+
+fn keybinding_named_key(key: &NamedKey) -> Option<&'static str> {
+    Some(match key {
+        NamedKey::Enter => "ENTER",
+        NamedKey::Backspace => "BACKSPACE",
+        NamedKey::Tab => "TAB",
+        NamedKey::Escape => "ESCAPE",
+        NamedKey::Space => "SPACE",
+        NamedKey::ArrowUp => "UP",
+        NamedKey::ArrowDown => "DOWN",
+        NamedKey::ArrowLeft => "LEFT",
+        NamedKey::ArrowRight => "RIGHT",
+        NamedKey::Home => "HOME",
+        NamedKey::End => "END",
+        NamedKey::PageUp => "PAGEUP",
+        NamedKey::PageDown => "PAGEDOWN",
+        NamedKey::Insert => "INSERT",
+        NamedKey::Delete => "DELETE",
+        NamedKey::F1 => "F1",
+        NamedKey::F2 => "F2",
+        NamedKey::F3 => "F3",
+        NamedKey::F4 => "F4",
+        NamedKey::F5 => "F5",
+        NamedKey::F6 => "F6",
+        NamedKey::F7 => "F7",
+        NamedKey::F8 => "F8",
+        NamedKey::F9 => "F9",
+        NamedKey::F10 => "F10",
+        NamedKey::F11 => "F11",
+        NamedKey::F12 => "F12",
+        _ => return None,
+    })
+}
+
 fn key_modifiers(modifiers: ModifiersState) -> KeyModifiers {
     KeyModifiers {
         shift: modifiers.shift_key(),
@@ -674,5 +762,21 @@ mod tests {
         dispatch_script_commands(&mut config_manager, &mut mux).unwrap();
 
         assert_eq!(mux.take_pending_input(pane).unwrap(), b"echo hello\n");
+    }
+
+    #[test]
+    fn normalizes_native_keys_for_the_ruby_binding_resolver() {
+        assert_eq!(
+            keybinding_name(
+                &Key::Character("h".into()),
+                ModifiersState::CONTROL | ModifiersState::SHIFT,
+            )
+            .as_deref(),
+            Some("CTRL+SHIFT+H")
+        );
+        assert_eq!(
+            keybinding_name(&Key::Named(NamedKey::F5), ModifiersState::ALT).as_deref(),
+            Some("ALT+F5")
+        );
     }
 }

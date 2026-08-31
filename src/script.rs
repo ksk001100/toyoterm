@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use std::ffi::{CStr, CString, c_char, c_void};
 use std::fmt;
 use std::marker::PhantomData;
@@ -37,6 +38,14 @@ module Toyoterm
     end
   end
 
+  class KeyBindingContext
+    attr_reader :pane
+
+    def initialize(pane)
+      @pane = pane
+    end
+  end
+
   class Config
     attr_accessor :default_shell, :scrollback_lines
 
@@ -46,6 +55,7 @@ module Toyoterm
       @window = WindowConfig.new
       @default_shell = nil
       @scrollback_lines = 10_000
+      @bindings = {}
     end
 
     def font(&block)
@@ -58,6 +68,34 @@ module Toyoterm
 
     def window(&block)
       block ? block.call(@window) : @window
+    end
+
+    def bind(key, &block)
+      raise ArgumentError, "key binding requires a block" unless block
+      key = key.to_s.upcase
+      raise ArgumentError, "key binding cannot be empty" if key.empty?
+      @bindings[key] = block
+    end
+
+    def __binding_count
+      @bindings.length
+    end
+
+    def __binding_key(index)
+      @bindings.keys[index]
+    end
+
+    def __trigger_binding(key, pane)
+      callback = @bindings[key.to_s.upcase]
+      return false unless callback
+      checkpoint = Toyoterm.__command_checkpoint
+      begin
+        callback.call(KeyBindingContext.new(pane))
+      rescue => error
+        Toyoterm.__rollback_commands(checkpoint)
+        raise error
+      end
+      true
     end
   end
 
@@ -99,6 +137,14 @@ module Toyoterm
 
   def self.__queue_command(type, pane_id, payload)
     @commands << [type, pane_id, payload]
+  end
+
+  def self.__command_checkpoint
+    @commands.length
+  end
+
+  def self.__rollback_commands(checkpoint)
+    @commands.pop while @commands.length > checkpoint
   end
 
   def self.__next_command
@@ -259,12 +305,17 @@ impl Drop for MrubyRuntime {
 pub struct ConfigManager {
     runtime: MrubyRuntime,
     config: ToyotermConfig,
+    keybindings: HashSet<String>,
 }
 
 impl ConfigManager {
     pub fn new() -> Result<Self, ScriptError> {
-        let (runtime, config) = load_config("")?;
-        Ok(Self { runtime, config })
+        let (runtime, config, keybindings) = load_config("")?;
+        Ok(Self {
+            runtime,
+            config,
+            keybindings,
+        })
     }
 
     pub fn config(&self) -> &ToyotermConfig {
@@ -294,9 +345,10 @@ impl ConfigManager {
 
     /// Evaluate config in a fresh VM and swap it in only after complete validation.
     pub fn reload(&mut self, source: &str) -> Result<&ToyotermConfig, ScriptError> {
-        let (runtime, config) = load_config(source)?;
+        let (runtime, config, keybindings) = load_config(source)?;
         self.runtime = runtime;
         self.config = config;
+        self.keybindings = keybindings;
         Ok(&self.config)
     }
 
@@ -309,6 +361,30 @@ impl ConfigManager {
         self.runtime
             .eval(&format!("Toyoterm.__set_current_pane({})", pane.0))?;
         Ok(())
+    }
+
+    /// Runs a configured callback only when the native key resolver found a match.
+    pub fn trigger_keybinding(
+        &mut self,
+        key: &str,
+        current_pane: PaneId,
+    ) -> Result<bool, ScriptError> {
+        let key = key.to_uppercase();
+        if !self.keybindings.contains(&key) {
+            return Ok(false);
+        }
+        self.set_current_pane(current_pane)?;
+        let key = ruby_string_literal(&key);
+        match self.runtime.eval(&format!(
+            "Toyoterm.__config.__trigger_binding({key}, Toyoterm.current_pane)"
+        ))? {
+            value if value == "true" => Ok(true),
+            value if value == "false" => Ok(false),
+            _ => Err(ScriptError::new(
+                "evaluate key binding",
+                "callback returned an invalid match state",
+            )),
+        }
     }
 
     /// Converts commands queued by Ruby into the native command API.
@@ -370,7 +446,9 @@ fn resolve_config_path(
         .or_else(|| home.map(|home| home.join(".config").join("toyoterm").join("config.rb")))
 }
 
-fn load_config(source: &str) -> Result<(MrubyRuntime, ToyotermConfig), ScriptError> {
+fn load_config(
+    source: &str,
+) -> Result<(MrubyRuntime, ToyotermConfig, HashSet<String>), ScriptError> {
     let mut runtime = MrubyRuntime::new()?;
     runtime.eval(CONFIG_DSL)?;
     runtime.eval(source)?;
@@ -413,7 +491,34 @@ fn load_config(source: &str) -> Result<(MrubyRuntime, ToyotermConfig), ScriptErr
         },
         scrollback_lines,
     };
-    Ok((runtime, config))
+    let binding_count = runtime
+        .eval("Toyoterm.__config.__binding_count")?
+        .parse::<usize>()
+        .map_err(|_| ScriptError::new("load key bindings", "binding count is invalid"))?;
+    let mut keybindings = HashSet::with_capacity(binding_count);
+    for index in 0..binding_count {
+        keybindings.insert(runtime.eval(&format!("Toyoterm.__config.__binding_key({index})"))?);
+    }
+
+    Ok((runtime, config, keybindings))
+}
+
+fn ruby_string_literal(value: &str) -> String {
+    let mut literal = String::with_capacity(value.len() + 2);
+    literal.push('"');
+    for character in value.chars() {
+        match character {
+            '\\' => literal.push_str("\\\\"),
+            '"' => literal.push_str("\\\""),
+            '\n' => literal.push_str("\\n"),
+            '\r' => literal.push_str("\\r"),
+            '\t' => literal.push_str("\\t"),
+            '\0' => literal.push_str("\\0"),
+            character => literal.push(character),
+        }
+    }
+    literal.push('"');
+    literal
 }
 
 fn parse_positive_f32(name: &str, value: &str) -> Result<f32, ScriptError> {
@@ -524,6 +629,63 @@ mod tests {
                 text: "pwd\n".into(),
             }]
         );
+    }
+
+    #[test]
+    fn invokes_only_matching_dynamic_keybindings() {
+        let mut manager = ConfigManager::new().unwrap();
+        manager
+            .reload(
+                r#"
+                $callback_count = 0
+                Toyoterm.configure do |config|
+                  config.bind "CTRL+SHIFT+H" do |ctx|
+                    $callback_count += 1
+                    ctx.pane.send_text("echo from ruby\n")
+                  end
+                end
+                "#,
+            )
+            .unwrap();
+
+        assert!(!manager.trigger_keybinding("A", PaneId(9)).unwrap());
+        assert_eq!(manager.eval("$callback_count").unwrap(), "0");
+        assert!(
+            manager
+                .trigger_keybinding("ctrl+shift+h", PaneId(9))
+                .unwrap()
+        );
+        assert_eq!(manager.eval("$callback_count").unwrap(), "1");
+        assert_eq!(
+            manager.drain_commands(PaneId(9)).unwrap(),
+            vec![Command::SendText {
+                pane: PaneId(9),
+                text: "echo from ruby\n".into(),
+            }]
+        );
+    }
+
+    #[test]
+    fn ruby_keybinding_errors_leave_the_runtime_usable() {
+        let mut manager = ConfigManager::new().unwrap();
+        manager
+            .reload(
+                r#"
+                Toyoterm.configure do |config|
+                  config.bind "CTRL+E" do |ctx|
+                    ctx.pane.send_text("must not run\n")
+                    raise "broken callback"
+                  end
+                end
+                "#,
+            )
+            .unwrap();
+
+        let error = manager.trigger_keybinding("CTRL+E", PaneId(4)).unwrap_err();
+        assert_eq!(error.operation(), "evaluate mruby");
+        assert!(error.message().contains("broken callback"));
+        assert_eq!(manager.eval("6 * 7").unwrap(), "42");
+        assert!(manager.drain_commands(PaneId(4)).unwrap().is_empty());
     }
 
     #[test]
