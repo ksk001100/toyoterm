@@ -18,6 +18,7 @@ pub struct TerminalMode {
     pub application_cursor: bool,
     pub bracketed_paste: bool,
     pub mouse_reporting: bool,
+    pub sgr_mouse: bool,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -34,8 +35,9 @@ pub trait TerminalBackend: Send {
     fn snapshot(&self) -> TerminalSnapshot;
     fn cursor(&self) -> CursorState;
     fn mode(&self) -> TerminalMode;
+    fn scroll_display(&mut self, lines: i32);
 }
 
 mod alacritty;
 
-pub use alacritty::AlacrittyTerminalBackend;
+pub use alacritty::{AlacrittyTerminalBackend, DEFAULT_SCROLLBACK_LINES};

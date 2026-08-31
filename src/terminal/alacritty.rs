@@ -1,12 +1,14 @@
 use alacritty_terminal::Term;
 use alacritty_terminal::event::VoidListener;
-use alacritty_terminal::grid::Dimensions;
+use alacritty_terminal::grid::{Dimensions, Scroll};
 use alacritty_terminal::index::{Column, Line};
 use alacritty_terminal::term::cell::Flags;
 use alacritty_terminal::term::{Config, MIN_COLUMNS, MIN_SCREEN_LINES, TermMode};
 use alacritty_terminal::vte::ansi::{CursorShape as AlacrittyCursorShape, Processor};
 
 use super::{CursorShape, CursorState, TerminalBackend, TerminalMode, TerminalSnapshot};
+
+pub const DEFAULT_SCROLLBACK_LINES: usize = 10_000;
 
 pub struct AlacrittyTerminalBackend {
     processor: Processor,
@@ -15,10 +17,18 @@ pub struct AlacrittyTerminalBackend {
 
 impl AlacrittyTerminalBackend {
     pub fn new(columns: u16, rows: u16) -> Self {
+        Self::with_scrollback(columns, rows, DEFAULT_SCROLLBACK_LINES)
+    }
+
+    pub fn with_scrollback(columns: u16, rows: u16, scrollback_lines: usize) -> Self {
         let size = TermSize::new(columns, rows);
+        let config = Config {
+            scrolling_history: scrollback_lines,
+            ..Config::default()
+        };
         Self {
             processor: Processor::new(),
-            terminal: Term::new(Config::default(), &size, VoidListener),
+            terminal: Term::new(config, &size, VoidListener),
         }
     }
 
@@ -102,7 +112,12 @@ impl TerminalBackend for AlacrittyTerminalBackend {
             application_cursor: mode.contains(TermMode::APP_CURSOR),
             bracketed_paste: mode.contains(TermMode::BRACKETED_PASTE),
             mouse_reporting: mode.intersects(TermMode::MOUSE_MODE),
+            sgr_mouse: mode.contains(TermMode::SGR_MOUSE),
         }
+    }
+
+    fn scroll_display(&mut self, lines: i32) {
+        self.terminal.scroll_display(Scroll::Delta(lines));
     }
 }
 
@@ -175,6 +190,7 @@ mod tests {
                 application_cursor: true,
                 bracketed_paste: true,
                 mouse_reporting: true,
+                sgr_mouse: false,
             }
         );
         assert!(!backend.cursor().visible);
@@ -197,5 +213,25 @@ mod tests {
             (snapshot.columns, snapshot.rows),
             (MIN_COLUMNS as u16, MIN_SCREEN_LINES as u16)
         );
+    }
+
+    #[test]
+    fn scrolls_through_saved_history() {
+        let mut backend = AlacrittyTerminalBackend::new(10, 2);
+        backend.advance(b"one\r\ntwo\r\nthree");
+        assert_eq!(backend.snapshot().lines, ["two", "three"]);
+
+        backend.scroll_display(1);
+        assert_eq!(backend.snapshot().lines, ["one", "two"]);
+        backend.scroll_display(-1);
+        assert_eq!(backend.snapshot().lines, ["two", "three"]);
+    }
+
+    #[test]
+    fn supports_a_configurable_scrollback_limit() {
+        let mut backend = AlacrittyTerminalBackend::with_scrollback(10, 2, 1);
+        backend.advance(b"one\r\ntwo\r\nthree\r\nfour");
+        backend.scroll_display(i32::MAX);
+        assert_eq!(backend.snapshot().lines, ["two", "three"]);
     }
 }

@@ -4,15 +4,16 @@ use std::sync::Arc;
 use std::thread;
 
 use winit::application::ApplicationHandler;
-use winit::dpi::{LogicalSize, PhysicalSize};
-use winit::event::{ElementState, Ime, KeyEvent, WindowEvent};
+use winit::dpi::{LogicalSize, PhysicalPosition, PhysicalSize};
+use winit::event::{ElementState, Ime, KeyEvent, MouseScrollDelta, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop, EventLoopProxy};
 use winit::keyboard::{Key, ModifiersState, NamedKey};
 use winit::window::{Window, WindowId};
 
 use crate::{
-    AlacrittyTerminalBackend, GpuRenderer, KeyModifiers, KeyPress, NativePty, Pty, PtyCommand,
-    PtySession, PtySize, TerminalBackend, TerminalKey, TextLayout, encode_key,
+    AlacrittyTerminalBackend, GpuRenderer, KeyModifiers, KeyPress, MouseWheelDirection, NativePty,
+    Pty, PtyCommand, PtySession, PtySize, TerminalBackend, TerminalKey, TextLayout, encode_key,
+    encode_mouse_wheel,
 };
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -115,6 +116,8 @@ struct ToyotermApplication {
     terminal: AlacrittyTerminalBackend,
     pty_session: Option<Box<dyn PtySession>>,
     modifiers: ModifiersState,
+    mouse_position: PhysicalPosition<f64>,
+    wheel_line_accumulator: f64,
     cell_metrics: CellMetrics,
     fatal_error: Option<String>,
 }
@@ -194,6 +197,10 @@ impl ApplicationHandler<AppEvent> for ToyotermApplication {
                 window.request_redraw();
             }
             WindowEvent::ModifiersChanged(modifiers) => self.modifiers = modifiers.state(),
+            WindowEvent::CursorMoved { position, .. } => self.mouse_position = position,
+            WindowEvent::MouseWheel { delta, .. } => {
+                self.handle_mouse_wheel(event_loop, &window, delta);
+            }
             WindowEvent::KeyboardInput { event, .. } if event.state == ElementState::Pressed => {
                 if let Some(press) = key_press(&event, self.modifiers)
                     && let Some(bytes) = encode_key(&press, self.terminal.mode())
@@ -242,6 +249,8 @@ impl ToyotermApplication {
             terminal: AlacrittyTerminalBackend::default(),
             pty_session: None,
             modifiers: ModifiersState::empty(),
+            mouse_position: PhysicalPosition::new(0.0, 0.0),
+            wheel_line_accumulator: 0.0,
             cell_metrics: CellMetrics::default(),
             fatal_error: None,
         }
@@ -279,6 +288,65 @@ impl ToyotermApplication {
             session.write(bytes).map_err(|error| error.to_string())?;
         }
         Ok(())
+    }
+
+    fn handle_mouse_wheel(
+        &mut self,
+        event_loop: &ActiveEventLoop,
+        window: &Window,
+        delta: MouseScrollDelta,
+    ) {
+        let lines = match delta {
+            MouseScrollDelta::LineDelta(_, vertical) => f64::from(vertical),
+            MouseScrollDelta::PixelDelta(position) => {
+                position.y / (self.cell_metrics.height * window.scale_factor()).max(1.0)
+            }
+        };
+        self.wheel_line_accumulator += lines;
+        let steps = self.wheel_line_accumulator.trunc() as i32;
+        self.wheel_line_accumulator -= f64::from(steps);
+        if steps == 0 {
+            return;
+        }
+
+        let mode = self.terminal.mode();
+        if mode.mouse_reporting && !self.modifiers.shift_key() {
+            let (column, row) = self.mouse_cell(window.scale_factor());
+            let direction = if steps > 0 {
+                MouseWheelDirection::Up
+            } else {
+                MouseWheelDirection::Down
+            };
+            let modifiers = key_modifiers(self.modifiers);
+            let sequence = encode_mouse_wheel(direction, column, row, modifiers, mode.sgr_mouse);
+            let mut bytes = Vec::with_capacity(sequence.len() * steps.unsigned_abs() as usize);
+            for _ in 0..steps.unsigned_abs() {
+                bytes.extend_from_slice(&sequence);
+            }
+            if let Err(error) = self.write_pty(&bytes) {
+                self.fail(event_loop, error);
+            }
+        } else {
+            self.terminal.scroll_display(steps);
+            self.sync_active_renderer(window.scale_factor());
+            window.request_redraw();
+        }
+    }
+
+    fn mouse_cell(&self, scale_factor: f64) -> (u16, u16) {
+        let scale_factor = scale_factor.max(0.1);
+        let x = (self.mouse_position.x
+            - f64::from(self.cell_metrics.horizontal_padding) * scale_factor)
+            .max(0.0);
+        let y = (self.mouse_position.y
+            - f64::from(self.cell_metrics.vertical_padding) * scale_factor)
+            .max(0.0);
+        let column = (x / (self.cell_metrics.width * scale_factor).max(1.0)).floor() as u32;
+        let row = (y / (self.cell_metrics.height * scale_factor).max(1.0)).floor() as u32;
+        (
+            column.min(u16::MAX.into()) as u16,
+            row.min(u16::MAX.into()) as u16,
+        )
     }
 
     fn sync_active_renderer(&mut self, scale_factor: f64) {
@@ -350,15 +418,16 @@ fn key_press(event: &KeyEvent, modifiers: ModifiersState) -> Option<KeyPress> {
         }
         _ => return None,
     };
-    Some(KeyPress::new(
-        key,
-        KeyModifiers {
-            shift: modifiers.shift_key(),
-            control: modifiers.control_key(),
-            alt: modifiers.alt_key(),
-            super_key: modifiers.super_key(),
-        },
-    ))
+    Some(KeyPress::new(key, key_modifiers(modifiers)))
+}
+
+fn key_modifiers(modifiers: ModifiersState) -> KeyModifiers {
+    KeyModifiers {
+        shift: modifiers.shift_key(),
+        control: modifiers.control_key(),
+        alt: modifiers.alt_key(),
+        super_key: modifiers.super_key(),
+    }
 }
 
 fn named_key(key: &NamedKey) -> Option<TerminalKey> {

@@ -34,6 +34,12 @@ pub struct KeyPress {
     pub modifiers: KeyModifiers,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum MouseWheelDirection {
+    Up,
+    Down,
+}
+
 impl KeyPress {
     pub fn new(key: TerminalKey, modifiers: KeyModifiers) -> Self {
         Self { key, modifiers }
@@ -68,6 +74,43 @@ pub fn encode_key(press: &KeyPress, mode: TerminalMode) -> Option<Vec<u8>> {
         Some(prefixed)
     } else {
         Some(bytes)
+    }
+}
+
+pub fn encode_mouse_wheel(
+    direction: MouseWheelDirection,
+    column: u16,
+    row: u16,
+    modifiers: KeyModifiers,
+    sgr_mouse: bool,
+) -> Vec<u8> {
+    let mut code = match direction {
+        MouseWheelDirection::Up => 64,
+        MouseWheelDirection::Down => 65,
+    };
+    if modifiers.shift {
+        code += 4;
+    }
+    if modifiers.alt {
+        code += 8;
+    }
+    if modifiers.control {
+        code += 16;
+    }
+
+    let column = column.saturating_add(1);
+    let row = row.saturating_add(1);
+    if sgr_mouse {
+        format!("\x1b[<{code};{column};{row}M").into_bytes()
+    } else {
+        vec![
+            0x1b,
+            b'[',
+            b'M',
+            (code + 32) as u8,
+            column.min(223) as u8 + 32,
+            row.min(223) as u8 + 32,
+        ]
     }
 }
 
@@ -206,5 +249,32 @@ mod tests {
             encode_key(&press(TerminalKey::Function(13)), TerminalMode::default()),
             None
         );
+    }
+
+    #[test]
+    fn encodes_sgr_mouse_wheel_with_cell_coordinates() {
+        let bytes = encode_mouse_wheel(
+            MouseWheelDirection::Up,
+            4,
+            2,
+            KeyModifiers {
+                control: true,
+                ..KeyModifiers::default()
+            },
+            true,
+        );
+        assert_eq!(bytes, b"\x1b[<80;5;3M");
+    }
+
+    #[test]
+    fn encodes_legacy_mouse_wheel() {
+        let bytes = encode_mouse_wheel(
+            MouseWheelDirection::Down,
+            0,
+            0,
+            KeyModifiers::default(),
+            false,
+        );
+        assert_eq!(bytes, [0x1b, b'[', b'M', 97, 33, 33]);
     }
 }
