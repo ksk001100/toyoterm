@@ -1,4 +1,4 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::ffi::{CStr, CString, c_char, c_void};
 use std::fmt;
 use std::marker::PhantomData;
@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 use std::ptr::NonNull;
 use std::rc::Rc;
 
-use crate::{Command, PaneId};
+use crate::{Command, NativeAction, PaneId, SplitDirection};
 
 const CONFIG_DSL: &str = r##"
 module Toyoterm
@@ -55,6 +55,67 @@ module Toyoterm
     end
   end
 
+  class StaticBinding
+    def initialize(config, key)
+      @config = config
+      @key = key
+    end
+
+    def activate_pane(direction)
+      @config.__register_static(@key, :activate_pane, direction)
+      self
+    end
+
+    def split(direction)
+      @config.__register_static(@key, :split, direction)
+      self
+    end
+
+    def new_tab
+      @config.__register_static(@key, :new_tab, nil)
+      self
+    end
+
+    def close_pane
+      @config.__register_static(@key, :close_pane, nil)
+      self
+    end
+  end
+
+  class KeysConfig
+    def initialize(config)
+      @config = config
+    end
+
+    def ctrl(key)
+      binding(key, "CTRL")
+    end
+
+    def ctrl_shift(key)
+      binding(key, "CTRL+SHIFT")
+    end
+
+    def alt(key)
+      binding(key, "ALT")
+    end
+
+    def super_key(key)
+      binding(key, "SUPER")
+    end
+
+    def physical(key, mods = "")
+      prefix = mods.to_s.upcase
+      prefix = "#{prefix}+" unless prefix.empty?
+      StaticBinding.new(@config, "#{prefix}PHYSICAL:#{key.to_s.upcase}")
+    end
+
+    private
+
+    def binding(key, mods)
+      StaticBinding.new(@config, "#{mods}+#{key.to_s.upcase}")
+    end
+  end
+
   class Config
     attr_accessor :default_shell, :scrollback_lines
 
@@ -65,6 +126,7 @@ module Toyoterm
       @default_shell = nil
       @scrollback_lines = 10_000
       @bindings = {}
+      @static_bindings = {}
     end
 
     def font(&block)
@@ -83,7 +145,37 @@ module Toyoterm
       raise ArgumentError, "key binding requires a block" unless block
       key = key.to_s.upcase
       raise ArgumentError, "key binding cannot be empty" if key.empty?
+      raise ArgumentError, "duplicate key binding: #{key}" if @bindings.key?(key) || @static_bindings.key?(key)
       @bindings[key] = block
+    end
+
+    def keys(&block)
+      keys = KeysConfig.new(self)
+      return keys unless block
+      block.arity == 0 ? keys.instance_eval(&block) : block.call(keys)
+      keys
+    end
+
+    def __register_static(key, action, argument)
+      key = key.to_s.upcase
+      raise ArgumentError, "duplicate key binding: #{key}" if @bindings.key?(key) || @static_bindings.key?(key)
+      @static_bindings[key] = [action, argument]
+    end
+
+    def __static_binding_count
+      @static_bindings.length
+    end
+
+    def __static_binding_key(index)
+      @static_bindings.keys[index]
+    end
+
+    def __static_binding_action(index)
+      @static_bindings.values[index][0]
+    end
+
+    def __static_binding_argument(index)
+      @static_bindings.values[index][1]
     end
 
     def __binding_count
@@ -358,18 +450,28 @@ pub struct ConfigManager {
     runtime: MrubyRuntime,
     config: ToyotermConfig,
     keybindings: HashSet<String>,
+    native_actions: HashMap<String, NativeAction>,
     event_names: HashSet<String>,
     source_path: Option<PathBuf>,
 }
 
+struct LoadedConfig {
+    runtime: MrubyRuntime,
+    config: ToyotermConfig,
+    keybindings: HashSet<String>,
+    native_actions: HashMap<String, NativeAction>,
+    event_names: HashSet<String>,
+}
+
 impl ConfigManager {
     pub fn new() -> Result<Self, ScriptError> {
-        let (runtime, config, keybindings, event_names) = load_config("")?;
+        let loaded = load_config("")?;
         Ok(Self {
-            runtime,
-            config,
-            keybindings,
-            event_names,
+            runtime: loaded.runtime,
+            config: loaded.config,
+            keybindings: loaded.keybindings,
+            native_actions: loaded.native_actions,
+            event_names: loaded.event_names,
             source_path: None,
         })
     }
@@ -412,16 +514,25 @@ impl ConfigManager {
 
     /// Evaluate config in a fresh VM and swap it in only after complete validation.
     pub fn reload(&mut self, source: &str) -> Result<&ToyotermConfig, ScriptError> {
-        let (runtime, config, keybindings, event_names) = load_config(source)?;
-        self.runtime = runtime;
-        self.config = config;
-        self.keybindings = keybindings;
-        self.event_names = event_names;
+        let loaded = load_config(source)?;
+        self.runtime = loaded.runtime;
+        self.config = loaded.config;
+        self.keybindings = loaded.keybindings;
+        self.native_actions = loaded.native_actions;
+        self.event_names = loaded.event_names;
         Ok(&self.config)
     }
 
     pub fn eval(&mut self, source: &str) -> Result<String, ScriptError> {
         self.runtime.eval(source)
+    }
+
+    pub fn native_action(&self, key: &str) -> Option<NativeAction> {
+        self.native_actions.get(&key.to_uppercase()).copied()
+    }
+
+    pub fn has_dynamic_keybinding(&self, key: &str) -> bool {
+        self.keybindings.contains(&key.to_uppercase())
     }
 
     /// Updates the pane exposed by `Toyoterm.current_pane` for subsequent evaluations.
@@ -548,17 +659,7 @@ fn resolve_config_path(
         .or_else(|| home.map(|home| home.join(".config").join("toyoterm").join("config.rb")))
 }
 
-fn load_config(
-    source: &str,
-) -> Result<
-    (
-        MrubyRuntime,
-        ToyotermConfig,
-        HashSet<String>,
-        HashSet<String>,
-    ),
-    ScriptError,
-> {
+fn load_config(source: &str) -> Result<LoadedConfig, ScriptError> {
     let mut runtime = MrubyRuntime::new()?;
     runtime.eval(CONFIG_DSL)?;
     runtime.eval(source)?;
@@ -614,6 +715,22 @@ fn load_config(
         keybindings.insert(runtime.eval(&format!("Toyoterm.__config.__binding_key({index})"))?);
     }
 
+    let static_count = runtime
+        .eval("Toyoterm.__config.__static_binding_count")?
+        .parse::<usize>()
+        .map_err(|_| ScriptError::new("load key bindings", "static binding count is invalid"))?;
+    let mut native_actions = HashMap::with_capacity(static_count);
+    for index in 0..static_count {
+        let key = runtime.eval(&format!("Toyoterm.__config.__static_binding_key({index})"))?;
+        let action = runtime.eval(&format!(
+            "Toyoterm.__config.__static_binding_action({index})"
+        ))?;
+        let argument = runtime.eval(&format!(
+            "Toyoterm.__config.__static_binding_argument({index})"
+        ))?;
+        native_actions.insert(key, decode_native_action(&action, &argument)?);
+    }
+
     let event_count = runtime
         .eval("Toyoterm.__event_count")?
         .parse::<usize>()
@@ -623,7 +740,39 @@ fn load_config(
         event_names.insert(runtime.eval(&format!("Toyoterm.__event_name({index})"))?);
     }
 
-    Ok((runtime, config, keybindings, event_names))
+    Ok(LoadedConfig {
+        runtime,
+        config,
+        keybindings,
+        native_actions,
+        event_names,
+    })
+}
+
+fn decode_native_action(action: &str, argument: &str) -> Result<NativeAction, ScriptError> {
+    match action {
+        "new_tab" => Ok(NativeAction::NewTab),
+        "close_pane" => Ok(NativeAction::ClosePane),
+        "split" => parse_direction(argument).map(NativeAction::Split),
+        "activate_pane" => parse_direction(argument).map(NativeAction::ActivatePane),
+        other => Err(ScriptError::new(
+            "load key bindings",
+            format!("unsupported native action {other}"),
+        )),
+    }
+}
+
+fn parse_direction(direction: &str) -> Result<SplitDirection, ScriptError> {
+    match direction.to_ascii_lowercase().as_str() {
+        "left" => Ok(SplitDirection::Left),
+        "right" => Ok(SplitDirection::Right),
+        "up" => Ok(SplitDirection::Up),
+        "down" => Ok(SplitDirection::Down),
+        _ => Err(ScriptError::new(
+            "load key bindings",
+            format!("invalid pane direction `{direction}`"),
+        )),
+    }
 }
 
 fn ruby_string_literal(value: &str) -> String {
@@ -861,6 +1010,60 @@ mod tests {
                 text: "echo from ruby\n".into(),
             }]
         );
+    }
+
+    #[test]
+    fn compiles_static_key_dsl_to_native_actions() {
+        let mut manager = ConfigManager::new().unwrap();
+        manager
+            .reload(
+                r#"
+                Toyoterm.configure do |config|
+                  config.keys do
+                    ctrl_shift("v").split(:right)
+                    ctrl_shift("j").activate_pane(:down)
+                    ctrl("t").new_tab
+                    alt("q").close_pane
+                    physical("KeyH", "CTRL").activate_pane(:left)
+                  end
+                end
+                "#,
+            )
+            .unwrap();
+
+        assert_eq!(
+            manager.native_action("CTRL+SHIFT+V"),
+            Some(NativeAction::Split(SplitDirection::Right))
+        );
+        assert_eq!(
+            manager.native_action("CTRL+SHIFT+J"),
+            Some(NativeAction::ActivatePane(SplitDirection::Down))
+        );
+        assert_eq!(
+            manager.native_action("CTRL+PHYSICAL:KEYH"),
+            Some(NativeAction::ActivatePane(SplitDirection::Left))
+        );
+        assert_eq!(manager.native_action("CTRL+T"), Some(NativeAction::NewTab));
+        assert_eq!(
+            manager.native_action("ALT+Q"),
+            Some(NativeAction::ClosePane)
+        );
+    }
+
+    #[test]
+    fn rejects_duplicate_static_and_dynamic_bindings() {
+        let mut manager = ConfigManager::new().unwrap();
+        let error = manager
+            .reload(
+                r#"
+                Toyoterm.configure do |config|
+                  config.keys { ctrl("x").new_tab }
+                  config.bind("CTRL+X") { }
+                end
+                "#,
+            )
+            .unwrap_err();
+        assert!(error.message().contains("duplicate key binding"));
     }
 
     #[test]

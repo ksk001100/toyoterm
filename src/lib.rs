@@ -14,12 +14,13 @@ pub mod script;
 pub mod terminal;
 
 pub use api::{
-    Command, CommandResult, Event, PaneId, SplitDirection, TabId, WindowId, WorkspaceId,
+    Command, CommandResult, Event, NativeAction, PaneId, SplitDirection, TabId, WindowId,
+    WorkspaceId,
 };
 pub use app::{CellMetrics, run_gui, run_gui_with_config_path};
 pub use input::{
-    KeyModifiers, KeyPress, MouseWheelDirection, TerminalKey, encode_key, encode_mouse_wheel,
-    encode_paste,
+    BindingKey, KeyChord, KeyModifiers, KeyPress, MouseWheelDirection, TerminalKey, encode_key,
+    encode_mouse_wheel, encode_paste,
 };
 pub use layout::{
     PaneLayout, PanePlacement, PaneRect, SplitAxis, SplitBoundary, TabPlacement, TabStripLayout,

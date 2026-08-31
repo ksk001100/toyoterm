@@ -26,6 +26,14 @@ pub enum SplitDirection {
     Down,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum NativeAction {
+    NewTab,
+    ClosePane,
+    Split(SplitDirection),
+    ActivatePane(SplitDirection),
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub enum Command {
     NewTab,

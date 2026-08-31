@@ -1,11 +1,50 @@
 use crate::TerminalMode;
 
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Default, Eq, Hash, PartialEq)]
 pub struct KeyModifiers {
     pub shift: bool,
     pub control: bool,
     pub alt: bool,
     pub super_key: bool,
+}
+
+#[derive(Clone, Debug, Eq, Hash, PartialEq)]
+pub enum BindingKey {
+    Logical(String),
+    Physical(String),
+}
+
+#[derive(Clone, Debug, Eq, Hash, PartialEq)]
+pub struct KeyChord {
+    pub key: BindingKey,
+    pub modifiers: KeyModifiers,
+}
+
+impl KeyChord {
+    pub fn new(key: BindingKey, modifiers: KeyModifiers) -> Self {
+        Self { key, modifiers }
+    }
+
+    pub fn canonical_name(&self) -> String {
+        let mut parts = Vec::with_capacity(5);
+        if self.modifiers.control {
+            parts.push("CTRL".to_owned());
+        }
+        if self.modifiers.shift {
+            parts.push("SHIFT".to_owned());
+        }
+        if self.modifiers.alt {
+            parts.push("ALT".to_owned());
+        }
+        if self.modifiers.super_key {
+            parts.push("SUPER".to_owned());
+        }
+        parts.push(match &self.key {
+            BindingKey::Logical(key) => key.to_uppercase(),
+            BindingKey::Physical(key) => format!("PHYSICAL:{}", key.to_uppercase()),
+        });
+        parts.join("+")
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -205,6 +244,23 @@ mod tests {
         assert_eq!(
             encode_key(&control_c, TerminalMode::default()),
             Some(vec![3])
+        );
+    }
+
+    #[test]
+    fn physical_and_logical_key_chords_have_distinct_names() {
+        let modifiers = KeyModifiers {
+            control: true,
+            shift: true,
+            ..KeyModifiers::default()
+        };
+        assert_eq!(
+            KeyChord::new(BindingKey::Logical("h".into()), modifiers).canonical_name(),
+            "CTRL+SHIFT+H"
+        );
+        assert_eq!(
+            KeyChord::new(BindingKey::Physical("KeyH".into()), modifiers).canonical_name(),
+            "CTRL+SHIFT+PHYSICAL:KEYH"
         );
     }
 

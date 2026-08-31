@@ -104,6 +104,13 @@ Toyoterm.configure do |config|
   config.bind "CTRL+SHIFT+R" do
     Toyoterm.reload_config
   end
+
+  # Common actions compile to native bindings and do not invoke mruby on key press.
+  config.keys do
+    ctrl_shift("e").split(:right)
+    ctrl_shift("o").activate_pane(:right)
+    ctrl_shift("t").new_tab
+  end
 end
 
 Toyoterm.on :app_started do |event|
@@ -118,6 +125,8 @@ end
 ### Key bindings
 
 Key names are case-insensitive. Modifiers use names such as `CTRL`, `SHIFT`, `ALT`, and `SUPER`. Named keys include `ENTER`, `TAB`, `SPACE`, arrow keys, navigation keys, and `F1` through `F12`.
+
+`config.keys` provides `ctrl`, `ctrl_shift`, `alt`, `super_key`, and `physical` helpers. The `physical` helper distinguishes a hardware position from the logical character, for example `physical("KeyH", "CTRL")`. When both match, physical bindings take priority over logical bindings. User-configured bindings take priority over built-in GUI shortcuts. Defining the same chord more than once is a configuration error.
 
 Unmatched keys bypass mruby and go directly through the native terminal key encoder. If a Ruby callback raises an exception, toyoterm logs the error and keeps the shell running.
 

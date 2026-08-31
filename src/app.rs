@@ -10,15 +10,15 @@ use winit::application::ApplicationHandler;
 use winit::dpi::{LogicalSize, PhysicalPosition, PhysicalSize};
 use winit::event::{ElementState, Ime, KeyEvent, MouseButton, MouseScrollDelta, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop, EventLoopProxy};
-use winit::keyboard::{Key, ModifiersState, NamedKey};
+use winit::keyboard::{Key, ModifiersState, NamedKey, PhysicalKey};
 use winit::window::{Window, WindowId};
 
 use crate::{
-    AlacrittyTerminalBackend, Command, ConfigManager, GpuRenderer, KeyModifiers, KeyPress,
-    MouseWheelDirection, Mux, NativePty, PaneId, PaneLayout, PaneRect, PaneRenderData, Pty,
-    PtyCommand, PtySession, PtySize, RenderStyle, SplitDirection, TabRenderData, TabStripLayout,
-    TerminalBackend, TerminalKey, TextLayout, WorkspaceRenderData, WorkspaceStripLayout,
-    encode_key, encode_mouse_wheel, encode_paste,
+    AlacrittyTerminalBackend, BindingKey, Command, ConfigManager, GpuRenderer, KeyChord,
+    KeyModifiers, KeyPress, MouseWheelDirection, Mux, NativeAction, NativePty, PaneId, PaneLayout,
+    PaneRect, PaneRenderData, Pty, PtyCommand, PtySession, PtySize, RenderStyle, SplitDirection,
+    TabRenderData, TabStripLayout, TerminalBackend, TerminalKey, TextLayout, WorkspaceRenderData,
+    WorkspaceStripLayout, encode_key, encode_mouse_wheel, encode_paste,
 };
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -303,7 +303,9 @@ impl ApplicationHandler<AppEvent> for ToyotermApplication {
                     }
                     return;
                 }
-                match self.handle_tab_shortcut(&event) {
+                // Configured bindings override built-in GUI shortcuts. Physical
+                // bindings are checked before logical bindings by the resolver.
+                match self.handle_keybinding(&event) {
                     Ok(true) => return,
                     Ok(false) => {}
                     Err(error) => {
@@ -311,11 +313,11 @@ impl ApplicationHandler<AppEvent> for ToyotermApplication {
                         return;
                     }
                 }
-                match self.handle_keybinding(&event) {
+                match self.handle_tab_shortcut(&event) {
                     Ok(true) => return,
                     Ok(false) => {}
                     Err(error) => {
-                        self.fail(event_loop, error);
+                        eprintln!("toyoterm: {error}");
                         return;
                     }
                 }
@@ -461,39 +463,59 @@ impl ToyotermApplication {
     }
 
     fn handle_keybinding(&mut self, event: &KeyEvent) -> Result<bool, String> {
-        let Some(key) = keybinding_name(&event.logical_key, self.modifiers) else {
-            return Ok(false);
-        };
         let pane = self
             .mux
             .current_pane()
             .ok_or_else(|| "mux has no current pane".to_owned())?;
-        let matched = match self.config_manager.trigger_keybinding(&key, pane) {
-            Ok(matched) => matched,
-            Err(error) => {
-                eprintln!("toyoterm: Ruby key binding error: {error}");
+        for key in keybinding_names(event, self.modifiers) {
+            if let Some(action) = self.config_manager.native_action(&key) {
+                self.execute_native_action(action)?;
                 return Ok(true);
             }
-        };
-        if !matched {
-            return Ok(false);
-        }
-
-        if self
-            .config_manager
-            .take_reload_request()
-            .map_err(|error| error.to_string())?
-        {
-            if let Err(error) = self.reload_config() {
-                eprintln!("toyoterm: config reload failed: {error}");
+            if !self.config_manager.has_dynamic_keybinding(&key) {
+                continue;
             }
+            match self.config_manager.trigger_keybinding(&key, pane) {
+                Ok(true) => {}
+                Ok(false) => continue,
+                Err(error) => {
+                    eprintln!("toyoterm: Ruby key binding error: {error}");
+                    return Ok(true);
+                }
+            }
+
+            if self
+                .config_manager
+                .take_reload_request()
+                .map_err(|error| error.to_string())?
+            {
+                if let Err(error) = self.reload_config() {
+                    eprintln!("toyoterm: config reload failed: {error}");
+                }
+                return Ok(true);
+            }
+
+            dispatch_script_commands(&mut self.config_manager, &mut self.mux)?;
+            self.reconcile_pane_runtimes()?;
+            self.flush_mux_input()?;
             return Ok(true);
         }
+        Ok(false)
+    }
 
-        dispatch_script_commands(&mut self.config_manager, &mut self.mux)?;
-        self.reconcile_pane_runtimes()?;
-        self.flush_mux_input()?;
-        Ok(true)
+    fn execute_native_action(&mut self, action: NativeAction) -> Result<(), String> {
+        match action {
+            NativeAction::NewTab => self.dispatch_gui_command(Command::NewTab),
+            NativeAction::ClosePane => {
+                let pane = self
+                    .mux
+                    .current_pane()
+                    .ok_or_else(|| "mux has no current pane".to_owned())?;
+                self.dispatch_gui_command(Command::ClosePane(pane))
+            }
+            NativeAction::Split(direction) => self.split_active_pane(direction),
+            NativeAction::ActivatePane(direction) => self.focus_neighbor(direction),
+        }
     }
 
     fn handle_tab_shortcut(&mut self, event: &KeyEvent) -> Result<bool, String> {
@@ -1333,27 +1355,41 @@ fn key_press(event: &KeyEvent, modifiers: ModifiersState) -> Option<KeyPress> {
     Some(KeyPress::new(key, key_modifiers(modifiers)))
 }
 
+fn keybinding_names(event: &KeyEvent, modifiers: ModifiersState) -> Vec<String> {
+    let modifiers = key_modifiers(modifiers);
+    let physical = match event.physical_key {
+        PhysicalKey::Code(code) => Some(format!("{code:?}")),
+        PhysicalKey::Unidentified(_) => None,
+    };
+    binding_candidates(physical, logical_binding_key(&event.logical_key), modifiers)
+}
+
+fn binding_candidates(
+    physical: Option<String>,
+    logical: Option<String>,
+    modifiers: KeyModifiers,
+) -> Vec<String> {
+    physical
+        .map(|key| KeyChord::new(BindingKey::Physical(key), modifiers).canonical_name())
+        .into_iter()
+        .chain(
+            logical.map(|key| KeyChord::new(BindingKey::Logical(key), modifiers).canonical_name()),
+        )
+        .collect()
+}
+
+#[cfg(test)]
 fn keybinding_name(logical_key: &Key, modifiers: ModifiersState) -> Option<String> {
-    let key = match logical_key {
+    let key = logical_binding_key(logical_key)?;
+    Some(KeyChord::new(BindingKey::Logical(key), key_modifiers(modifiers)).canonical_name())
+}
+
+fn logical_binding_key(logical_key: &Key) -> Option<String> {
+    Some(match logical_key {
         Key::Character(text) if !text.is_empty() => text.to_uppercase(),
         Key::Named(key) => keybinding_named_key(key)?.to_owned(),
         _ => return None,
-    };
-    let mut parts = Vec::with_capacity(5);
-    if modifiers.control_key() {
-        parts.push("CTRL".to_owned());
-    }
-    if modifiers.shift_key() {
-        parts.push("SHIFT".to_owned());
-    }
-    if modifiers.alt_key() {
-        parts.push("ALT".to_owned());
-    }
-    if modifiers.super_key() {
-        parts.push("SUPER".to_owned());
-    }
-    parts.push(key);
-    Some(parts.join("+"))
+    })
 }
 
 fn keybinding_named_key(key: &NamedKey) -> Option<&'static str> {
@@ -1497,6 +1533,21 @@ mod tests {
         assert_eq!(
             keybinding_name(&Key::Named(NamedKey::F5), ModifiersState::ALT).as_deref(),
             Some("ALT+F5")
+        );
+    }
+
+    #[test]
+    fn physical_binding_candidates_take_priority_over_logical_keys() {
+        assert_eq!(
+            binding_candidates(
+                Some("KeyY".into()),
+                Some("Z".into()),
+                KeyModifiers {
+                    control: true,
+                    ..KeyModifiers::default()
+                },
+            ),
+            vec!["CTRL+PHYSICAL:KEYY", "CTRL+Z"]
         );
     }
 

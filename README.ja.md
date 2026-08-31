@@ -104,6 +104,13 @@ Toyoterm.configure do |config|
   config.bind "CTRL+SHIFT+R" do
     Toyoterm.reload_config
   end
+
+  # 一般的な操作はNative Actionへcompileされ、キー入力時にmrubyを呼びません。
+  config.keys do
+    ctrl_shift("e").split(:right)
+    ctrl_shift("o").activate_pane(:right)
+    ctrl_shift("t").new_tab
+  end
 end
 
 Toyoterm.on :app_started do |event|
@@ -118,6 +125,8 @@ end
 ### キーバインド
 
 キー名は大文字・小文字を区別しません。修飾キーには`CTRL`、`SHIFT`、`ALT`、`SUPER`などを使用します。名前付きキーは`ENTER`、`TAB`、`SPACE`、矢印キー、ナビゲーションキー、`F1`から`F12`に対応しています。
+
+`config.keys`では`ctrl`、`ctrl_shift`、`alt`、`super_key`、`physical`ヘルパーを使用できます。`physical("KeyH", "CTRL")`のように指定すると、論理文字ではなく物理キー位置へ割り当てられます。両方が一致した場合はphysical設定、組み込みGUIショートカットと競合した場合はユーザー設定を優先します。同じchordの重複定義は設定エラーです。
 
 割り当てのないキーはmrubyを呼ばず、ネイティブのターミナルキーエンコーダへ直接渡されます。Ruby callbackで例外が発生した場合はエラーをログへ出し、シェルの実行を継続します。
 

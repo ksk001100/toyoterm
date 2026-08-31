@@ -21,4 +21,10 @@ Toyoterm.configure do |config|
   config.bind "CTRL+SHIFT+R" do
     Toyoterm.reload_config
   end
+
+  config.keys do
+    ctrl_shift("e").split(:right)
+    ctrl_shift("o").activate_pane(:right)
+    ctrl_shift("t").new_tab
+  end
 end
