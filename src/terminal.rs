@@ -1,0 +1,37 @@
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum CursorShape {
+    Block,
+    Beam,
+    Underline,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct CursorState {
+    pub column: u16,
+    pub row: u16,
+    pub visible: bool,
+    pub shape: CursorShape,
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct TerminalMode {
+    pub application_cursor: bool,
+    pub bracketed_paste: bool,
+    pub mouse_reporting: bool,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct TerminalSnapshot {
+    pub columns: u16,
+    pub rows: u16,
+    pub lines: Vec<String>,
+}
+
+/// Adapter boundary for a VT implementation such as `alacritty_terminal`.
+pub trait TerminalBackend: Send {
+    fn advance(&mut self, bytes: &[u8]);
+    fn resize(&mut self, columns: u16, rows: u16);
+    fn snapshot(&self) -> TerminalSnapshot;
+    fn cursor(&self) -> CursorState;
+    fn mode(&self) -> TerminalMode;
+}

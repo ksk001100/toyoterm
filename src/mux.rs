@@ -1,0 +1,580 @@
+use std::collections::{HashMap, VecDeque};
+use std::error::Error;
+use std::fmt;
+
+use crate::api::{
+    Command, CommandResult, Event, PaneId, SplitDirection, TabId, WindowId, WorkspaceId,
+};
+
+#[derive(Clone, Debug, PartialEq)]
+pub enum PaneNode {
+    Leaf(PaneId),
+    Split {
+        direction: SplitDirection,
+        ratio: f32,
+        first: Box<PaneNode>,
+        second: Box<PaneNode>,
+    },
+}
+
+impl PaneNode {
+    pub fn panes(&self) -> Vec<PaneId> {
+        let mut panes = Vec::new();
+        self.collect_panes(&mut panes);
+        panes
+    }
+
+    fn collect_panes(&self, panes: &mut Vec<PaneId>) {
+        match self {
+            Self::Leaf(pane) => panes.push(*pane),
+            Self::Split { first, second, .. } => {
+                first.collect_panes(panes);
+                second.collect_panes(panes);
+            }
+        }
+    }
+
+    fn split(&mut self, target: PaneId, new_pane: PaneId, direction: SplitDirection) -> bool {
+        match self {
+            Self::Leaf(pane) if *pane == target => {
+                let target = Self::Leaf(target);
+                let new = Self::Leaf(new_pane);
+                let (first, second) = match direction {
+                    SplitDirection::Left | SplitDirection::Up => (new, target),
+                    SplitDirection::Right | SplitDirection::Down => (target, new),
+                };
+                *self = Self::Split {
+                    direction,
+                    ratio: 0.5,
+                    first: Box::new(first),
+                    second: Box::new(second),
+                };
+                true
+            }
+            Self::Leaf(_) => false,
+            Self::Split { first, second, .. } => {
+                first.split(target, new_pane, direction)
+                    || second.split(target, new_pane, direction)
+            }
+        }
+    }
+
+    fn remove(self, target: PaneId) -> (Option<Self>, bool) {
+        match self {
+            Self::Leaf(pane) if pane == target => (None, true),
+            leaf @ Self::Leaf(_) => (Some(leaf), false),
+            Self::Split {
+                direction,
+                ratio,
+                first,
+                second,
+            } => {
+                let (first, removed) = first.remove(target);
+                if removed {
+                    return match first {
+                        Some(first) => (
+                            Some(Self::Split {
+                                direction,
+                                ratio,
+                                first: Box::new(first),
+                                second,
+                            }),
+                            true,
+                        ),
+                        None => (Some(*second), true),
+                    };
+                }
+
+                let first = Box::new(first.expect("an unchanged child cannot disappear"));
+                let (second, removed) = second.remove(target);
+                match (second, removed) {
+                    (Some(second), true) => (
+                        Some(Self::Split {
+                            direction,
+                            ratio,
+                            first,
+                            second: Box::new(second),
+                        }),
+                        true,
+                    ),
+                    (None, true) => (Some(*first), true),
+                    (Some(second), false) => (
+                        Some(Self::Split {
+                            direction,
+                            ratio,
+                            first,
+                            second: Box::new(second),
+                        }),
+                        false,
+                    ),
+                    (None, false) => unreachable!("an unchanged child cannot disappear"),
+                }
+            }
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+struct Pane {
+    tab: TabId,
+    pending_input: Vec<u8>,
+}
+
+#[derive(Clone, Debug)]
+struct Tab {
+    window: WindowId,
+    root: PaneNode,
+    active_pane: PaneId,
+}
+
+#[derive(Clone, Debug)]
+struct Window {
+    workspace: WorkspaceId,
+    tabs: Vec<TabId>,
+    active_tab: TabId,
+}
+
+#[derive(Clone, Debug)]
+struct Workspace {
+    name: String,
+    windows: Vec<WindowId>,
+    active_window: WindowId,
+}
+
+#[derive(Debug, Eq, PartialEq)]
+pub enum MuxError {
+    UnknownPane(PaneId),
+    UnknownTab(TabId),
+    CannotCloseLastPane(PaneId),
+    CannotCloseLastTab(TabId),
+}
+
+impl fmt::Display for MuxError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::UnknownPane(id) => write!(formatter, "unknown pane {id}"),
+            Self::UnknownTab(id) => write!(formatter, "unknown tab {id}"),
+            Self::CannotCloseLastPane(id) => write!(formatter, "cannot close the last pane {id}"),
+            Self::CannotCloseLastTab(id) => write!(formatter, "cannot close the last tab {id}"),
+        }
+    }
+}
+
+impl Error for MuxError {}
+
+/// In-memory mux state. All external control planes operate through `dispatch`.
+pub struct Mux {
+    next_id: u64,
+    workspaces: HashMap<WorkspaceId, Workspace>,
+    workspace_names: HashMap<String, WorkspaceId>,
+    windows: HashMap<WindowId, Window>,
+    tabs: HashMap<TabId, Tab>,
+    panes: HashMap<PaneId, Pane>,
+    current_workspace: WorkspaceId,
+    events: VecDeque<Event>,
+}
+
+impl Default for Mux {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl Mux {
+    pub fn new() -> Self {
+        let mut mux = Self {
+            next_id: 1,
+            workspaces: HashMap::new(),
+            workspace_names: HashMap::new(),
+            windows: HashMap::new(),
+            tabs: HashMap::new(),
+            panes: HashMap::new(),
+            current_workspace: WorkspaceId(0),
+            events: VecDeque::new(),
+        };
+        let workspace = mux.create_workspace("default".to_owned());
+        mux.current_workspace = workspace;
+        mux.events.clear();
+        mux
+    }
+
+    pub fn current_workspace(&self) -> WorkspaceId {
+        self.current_workspace
+    }
+
+    pub fn current_window(&self) -> Option<WindowId> {
+        self.workspaces
+            .get(&self.current_workspace)
+            .map(|workspace| workspace.active_window)
+    }
+
+    pub fn current_tab(&self) -> Option<TabId> {
+        self.current_window()
+            .and_then(|window| self.windows.get(&window))
+            .map(|window| window.active_tab)
+    }
+
+    pub fn current_pane(&self) -> Option<PaneId> {
+        self.current_tab()
+            .and_then(|tab| self.tabs.get(&tab))
+            .map(|tab| tab.active_pane)
+    }
+
+    pub fn pane_tree(&self, tab: TabId) -> Option<&PaneNode> {
+        self.tabs.get(&tab).map(|tab| &tab.root)
+    }
+
+    pub fn pending_input(&self, pane: PaneId) -> Option<&[u8]> {
+        self.panes
+            .get(&pane)
+            .map(|pane| pane.pending_input.as_slice())
+    }
+
+    pub fn drain_events(&mut self) -> impl Iterator<Item = Event> + '_ {
+        self.events.drain(..)
+    }
+
+    pub fn dispatch(&mut self, command: Command) -> Result<CommandResult, MuxError> {
+        match command {
+            Command::NewTab => Ok(CommandResult::Tab(self.new_tab())),
+            Command::CloseTab(tab) => {
+                self.close_tab(tab)?;
+                Ok(CommandResult::None)
+            }
+            Command::Split { pane, direction } => {
+                self.split_pane(pane, direction).map(CommandResult::Pane)
+            }
+            Command::ClosePane(pane) => {
+                self.close_pane(pane)?;
+                Ok(CommandResult::None)
+            }
+            Command::ActivatePane(pane) => {
+                self.activate_pane(pane)?;
+                Ok(CommandResult::Pane(pane))
+            }
+            Command::SendText { pane, text } => {
+                let state = self
+                    .panes
+                    .get_mut(&pane)
+                    .ok_or(MuxError::UnknownPane(pane))?;
+                state.pending_input.extend_from_slice(text.as_bytes());
+                self.events.push_back(Event::TextQueued {
+                    pane,
+                    bytes: text.len(),
+                });
+                Ok(CommandResult::None)
+            }
+            Command::SwitchWorkspace(name) => {
+                let workspace = match self.workspace_names.get(&name) {
+                    Some(workspace) => *workspace,
+                    None => self.create_workspace(name),
+                };
+                self.current_workspace = workspace;
+                self.events.push_back(Event::WorkspaceChanged { workspace });
+                Ok(CommandResult::Workspace(workspace))
+            }
+        }
+    }
+
+    pub fn summary(&self) -> String {
+        let workspace = &self.workspaces[&self.current_workspace];
+        let window_count = workspace.windows.len();
+        let tab_count: usize = workspace
+            .windows
+            .iter()
+            .map(|id| self.windows[id].tabs.len())
+            .sum();
+        let pane_count: usize = workspace
+            .windows
+            .iter()
+            .flat_map(|id| self.windows[id].tabs.iter())
+            .map(|id| self.tabs[id].root.panes().len())
+            .sum();
+        format!(
+            "workspace={} windows={} tabs={} panes={}",
+            workspace.name, window_count, tab_count, pane_count
+        )
+    }
+
+    fn allocate_id(&mut self) -> u64 {
+        let id = self.next_id;
+        self.next_id += 1;
+        id
+    }
+
+    fn create_workspace(&mut self, name: String) -> WorkspaceId {
+        let workspace = WorkspaceId(self.allocate_id());
+        let window = WindowId(self.allocate_id());
+        let tab = TabId(self.allocate_id());
+        let pane = PaneId(self.allocate_id());
+
+        self.panes.insert(
+            pane,
+            Pane {
+                tab,
+                pending_input: Vec::new(),
+            },
+        );
+        self.tabs.insert(
+            tab,
+            Tab {
+                window,
+                root: PaneNode::Leaf(pane),
+                active_pane: pane,
+            },
+        );
+        self.windows.insert(
+            window,
+            Window {
+                workspace,
+                tabs: vec![tab],
+                active_tab: tab,
+            },
+        );
+        self.workspaces.insert(
+            workspace,
+            Workspace {
+                name: name.clone(),
+                windows: vec![window],
+                active_window: window,
+            },
+        );
+        self.workspace_names.insert(name, workspace);
+        self.events.push_back(Event::WorkspaceChanged { workspace });
+        workspace
+    }
+
+    fn new_tab(&mut self) -> TabId {
+        let window = self
+            .current_window()
+            .expect("mux always has an active window");
+        let tab = TabId(self.allocate_id());
+        let pane = PaneId(self.allocate_id());
+        self.panes.insert(
+            pane,
+            Pane {
+                tab,
+                pending_input: Vec::new(),
+            },
+        );
+        self.tabs.insert(
+            tab,
+            Tab {
+                window,
+                root: PaneNode::Leaf(pane),
+                active_pane: pane,
+            },
+        );
+        let state = self.windows.get_mut(&window).expect("active window exists");
+        state.tabs.push(tab);
+        state.active_tab = tab;
+        self.events.push_back(Event::TabCreated { tab });
+        self.events.push_back(Event::PaneCreated { pane });
+        tab
+    }
+
+    fn split_pane(&mut self, pane: PaneId, direction: SplitDirection) -> Result<PaneId, MuxError> {
+        let tab = self
+            .panes
+            .get(&pane)
+            .ok_or(MuxError::UnknownPane(pane))?
+            .tab;
+        let new_pane = PaneId(self.allocate_id());
+        let state = self
+            .tabs
+            .get_mut(&tab)
+            .expect("pane refers to an existing tab");
+        let split = state.root.split(pane, new_pane, direction);
+        debug_assert!(split, "pane must occur in its tab tree");
+        state.active_pane = new_pane;
+        self.panes.insert(
+            new_pane,
+            Pane {
+                tab,
+                pending_input: Vec::new(),
+            },
+        );
+        self.focus_tab(tab);
+        self.events.push_back(Event::PaneCreated { pane: new_pane });
+        self.events.push_back(Event::PaneFocused { pane: new_pane });
+        Ok(new_pane)
+    }
+
+    fn activate_pane(&mut self, pane: PaneId) -> Result<(), MuxError> {
+        let tab = self
+            .panes
+            .get(&pane)
+            .ok_or(MuxError::UnknownPane(pane))?
+            .tab;
+        self.tabs
+            .get_mut(&tab)
+            .expect("pane tab exists")
+            .active_pane = pane;
+        self.focus_tab(tab);
+        self.events.push_back(Event::PaneFocused { pane });
+        Ok(())
+    }
+
+    fn focus_tab(&mut self, tab: TabId) {
+        let window = self.tabs[&tab].window;
+        self.windows
+            .get_mut(&window)
+            .expect("tab window exists")
+            .active_tab = tab;
+        let workspace = self.windows[&window].workspace;
+        self.workspaces
+            .get_mut(&workspace)
+            .expect("window workspace exists")
+            .active_window = window;
+        self.current_workspace = workspace;
+    }
+
+    fn close_pane(&mut self, pane: PaneId) -> Result<(), MuxError> {
+        let tab = self
+            .panes
+            .get(&pane)
+            .ok_or(MuxError::UnknownPane(pane))?
+            .tab;
+        let state = self.tabs.get_mut(&tab).expect("pane tab exists");
+        if matches!(state.root, PaneNode::Leaf(_)) {
+            return Err(MuxError::CannotCloseLastPane(pane));
+        }
+        let old_root = std::mem::replace(&mut state.root, PaneNode::Leaf(pane));
+        let (new_root, removed) = old_root.remove(pane);
+        debug_assert!(removed);
+        state.root = new_root.expect("a split retains at least one pane");
+        self.panes.remove(&pane);
+        if state.active_pane == pane {
+            state.active_pane = state.root.panes()[0];
+            self.events.push_back(Event::PaneFocused {
+                pane: state.active_pane,
+            });
+        }
+        self.events.push_back(Event::PaneClosed { pane });
+        Ok(())
+    }
+
+    fn close_tab(&mut self, tab: TabId) -> Result<(), MuxError> {
+        let tab_state = self.tabs.get(&tab).ok_or(MuxError::UnknownTab(tab))?;
+        let window = tab_state.window;
+        if self.windows[&window].tabs.len() == 1 {
+            return Err(MuxError::CannotCloseLastTab(tab));
+        }
+        let panes = tab_state.root.panes();
+        for pane in panes {
+            self.panes.remove(&pane);
+            self.events.push_back(Event::PaneClosed { pane });
+        }
+        self.tabs.remove(&tab);
+        let window = self.windows.get_mut(&window).expect("tab window exists");
+        window.tabs.retain(|candidate| *candidate != tab);
+        if window.active_tab == tab {
+            window.active_tab = window.tabs[0];
+        }
+        self.events.push_back(Event::TabClosed { tab });
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn starts_with_a_usable_hierarchy() {
+        let mux = Mux::new();
+        assert!(mux.current_window().is_some());
+        assert!(mux.current_tab().is_some());
+        assert!(mux.current_pane().is_some());
+        assert_eq!(mux.summary(), "workspace=default windows=1 tabs=1 panes=1");
+    }
+
+    #[test]
+    fn split_order_respects_direction() {
+        let mut mux = Mux::new();
+        let original = mux.current_pane().unwrap();
+        let CommandResult::Pane(new) = mux
+            .dispatch(Command::Split {
+                pane: original,
+                direction: SplitDirection::Left,
+            })
+            .unwrap()
+        else {
+            panic!("split did not return a pane");
+        };
+        let tree = mux.pane_tree(mux.current_tab().unwrap()).unwrap();
+        assert_eq!(tree.panes(), vec![new, original]);
+        assert_eq!(mux.current_pane(), Some(new));
+    }
+
+    #[test]
+    fn closing_a_pane_collapses_the_split() {
+        let mut mux = Mux::new();
+        let original = mux.current_pane().unwrap();
+        let CommandResult::Pane(new) = mux
+            .dispatch(Command::Split {
+                pane: original,
+                direction: SplitDirection::Right,
+            })
+            .unwrap()
+        else {
+            panic!("split did not return a pane");
+        };
+        mux.dispatch(Command::ClosePane(new)).unwrap();
+        assert_eq!(
+            mux.pane_tree(mux.current_tab().unwrap()).unwrap().panes(),
+            vec![original]
+        );
+        assert_eq!(mux.current_pane(), Some(original));
+    }
+
+    #[test]
+    fn send_text_is_queued_without_a_script_callback() {
+        let mut mux = Mux::new();
+        let pane = mux.current_pane().unwrap();
+        mux.dispatch(Command::SendText {
+            pane,
+            text: "echo hello\n".into(),
+        })
+        .unwrap();
+        assert_eq!(mux.pending_input(pane), Some(&b"echo hello\n"[..]));
+        assert_eq!(
+            mux.drain_events().collect::<Vec<_>>(),
+            vec![Event::TextQueued { pane, bytes: 11 }]
+        );
+    }
+
+    #[test]
+    fn switching_to_a_new_workspace_creates_a_complete_hierarchy() {
+        let mut mux = Mux::new();
+        let original = mux.current_workspace();
+        let CommandResult::Workspace(created) = mux
+            .dispatch(Command::SwitchWorkspace("backend".into()))
+            .unwrap()
+        else {
+            panic!("switch did not return a workspace");
+        };
+        assert_ne!(created, original);
+        assert_eq!(mux.summary(), "workspace=backend windows=1 tabs=1 panes=1");
+
+        let result = mux
+            .dispatch(Command::SwitchWorkspace("default".into()))
+            .unwrap();
+        assert_eq!(result, CommandResult::Workspace(original));
+    }
+
+    #[test]
+    fn refuses_to_remove_last_pane_or_tab() {
+        let mut mux = Mux::new();
+        let pane = mux.current_pane().unwrap();
+        let tab = mux.current_tab().unwrap();
+        assert_eq!(
+            mux.dispatch(Command::ClosePane(pane)),
+            Err(MuxError::CannotCloseLastPane(pane))
+        );
+        assert_eq!(
+            mux.dispatch(Command::CloseTab(tab)),
+            Err(MuxError::CannotCloseLastTab(tab))
+        );
+    }
+}
