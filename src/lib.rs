@@ -15,6 +15,7 @@ pub mod palette;
 pub mod pty;
 pub mod render;
 pub mod script;
+pub mod shell_integration;
 pub mod terminal;
 
 pub use api::{

@@ -443,6 +443,16 @@ module Toyoterm
       Toyoterm.__object_data(:pane, @id)[2]
     end
 
+    def command_running?
+      validate!
+      Toyoterm.__object_data(:pane, @id)[3]
+    end
+
+    def last_exit_status
+      validate!
+      Toyoterm.__object_data(:pane, @id)[4]
+    end
+
     def split(direction)
       validate!
       direction = direction.to_s.downcase
@@ -683,8 +693,8 @@ module Toyoterm
     @object_data[:tab][id] = [title, panes]
   end
 
-  def self.__add_pane(id, title, cwd, pid)
-    @object_data[:pane][id] = [title, cwd, pid]
+  def self.__add_pane(id, title, cwd, pid, command_running, last_exit_status)
+    @object_data[:pane][id] = [title, cwd, pid, command_running, last_exit_status]
   end
 
   def self.__object_data(kind, id)
@@ -811,6 +821,9 @@ unsafe extern "C" {
         cwd_available: i32,
         pid: u64,
         pid_available: i32,
+        command_running: i32,
+        last_exit_status: i32,
+        last_exit_status_available: i32,
         error_output: *mut *mut c_char,
     ) -> i32;
     fn toyoterm_mruby_emit_event(
@@ -909,6 +922,8 @@ pub(crate) struct RubyPane {
     pub title: String,
     pub cwd: Option<String>,
     pub pid: Option<u32>,
+    pub command_running: bool,
+    pub last_exit_status: Option<i32>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -1273,6 +1288,9 @@ impl MrubyRuntime {
                     cwd_available,
                     pane.pid.unwrap_or_default().into(),
                     i32::from(pane.pid.is_some()),
+                    i32::from(pane.command_running),
+                    pane.last_exit_status.unwrap_or_default(),
+                    i32::from(pane.last_exit_status.is_some()),
                     &mut error,
                 )
             };
@@ -2156,6 +2174,8 @@ mod tests {
                     title: "Pane 4".into(),
                     cwd: None,
                     pid: None,
+                    command_running: false,
+                    last_exit_status: None,
                 }],
             },
             handles: vec![
@@ -2463,6 +2483,8 @@ fail_config
                     title: "shell".into(),
                     cwd: Some("/srv/app".into()),
                     pid: Some(1234),
+                    command_running: true,
+                    last_exit_status: Some(17),
                 }],
             })
             .unwrap();
@@ -2497,6 +2519,18 @@ fail_config
             "/srv/app"
         );
         assert_eq!(manager.eval("Toyoterm.current_pane.pid").unwrap(), "1234");
+        assert_eq!(
+            manager
+                .eval("Toyoterm.current_pane.command_running?")
+                .unwrap(),
+            "true"
+        );
+        assert_eq!(
+            manager
+                .eval("Toyoterm.current_pane.last_exit_status")
+                .unwrap(),
+            "17"
+        );
         assert_eq!(manager.eval("Toyoterm.workspace('missing')").unwrap(), "");
 
         manager.eval("Toyoterm.current_pane.badge = 'dev'").unwrap();

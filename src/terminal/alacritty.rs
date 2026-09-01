@@ -23,11 +23,13 @@ pub enum TerminalEvent {
     TitleChanged(String),
     TitleReset,
     CwdChanged(String),
+    CommandStarted,
+    CommandFinished(Option<i32>),
     Bell,
 }
 
 #[derive(Default)]
-enum Osc7State {
+enum ShellIntegrationState {
     #[default]
     Ground,
     Escape,
@@ -39,61 +41,89 @@ enum Osc7State {
 }
 
 #[derive(Default)]
-struct Osc7Parser {
-    state: Osc7State,
+struct ShellIntegrationParser {
+    state: ShellIntegrationState,
 }
 
-impl Osc7Parser {
-    fn advance(&mut self, bytes: &[u8]) -> Vec<String> {
-        let mut paths = Vec::new();
+impl ShellIntegrationParser {
+    fn advance(&mut self, bytes: &[u8]) -> Vec<TerminalEvent> {
+        let mut events = Vec::new();
         for &byte in bytes {
             let state = std::mem::take(&mut self.state);
             self.state = match state {
-                Osc7State::Ground if byte == b'\x1b' => Osc7State::Escape,
-                Osc7State::Ground => Osc7State::Ground,
-                Osc7State::Escape if byte == b']' => Osc7State::Command(Vec::new()),
-                Osc7State::Escape => Osc7State::Ground,
-                Osc7State::Command(command) if byte == b';' && command == b"7" => {
-                    Osc7State::Payload(Vec::new())
+                ShellIntegrationState::Ground if byte == b'\x1b' => ShellIntegrationState::Escape,
+                ShellIntegrationState::Ground => ShellIntegrationState::Ground,
+                ShellIntegrationState::Escape if byte == b']' => {
+                    ShellIntegrationState::Command(Vec::new())
                 }
-                Osc7State::Command(_) if byte == b';' => Osc7State::Ignore,
-                Osc7State::Command(_) if byte == b'\x07' => Osc7State::Ground,
-                Osc7State::Command(mut command) if command.len() < 16 => {
+                ShellIntegrationState::Escape => ShellIntegrationState::Ground,
+                ShellIntegrationState::Command(command)
+                    if byte == b';' && (command == b"7" || command == b"133") =>
+                {
+                    let mut payload = command;
+                    payload.push(b';');
+                    ShellIntegrationState::Payload(payload)
+                }
+                ShellIntegrationState::Command(_) if byte == b';' => ShellIntegrationState::Ignore,
+                ShellIntegrationState::Command(_) if byte == b'\x07' => {
+                    ShellIntegrationState::Ground
+                }
+                ShellIntegrationState::Command(mut command) if command.len() < 16 => {
                     command.push(byte);
-                    Osc7State::Command(command)
+                    ShellIntegrationState::Command(command)
                 }
-                Osc7State::Command(_) => Osc7State::Ignore,
-                Osc7State::Payload(payload) if byte == b'\x07' => {
-                    if let Some(path) = osc7_path(&payload) {
-                        paths.push(path);
-                    }
-                    Osc7State::Ground
+                ShellIntegrationState::Command(_) => ShellIntegrationState::Ignore,
+                ShellIntegrationState::Payload(payload) if byte == b'\x07' => {
+                    parse_shell_integration_payload(&payload, &mut events);
+                    ShellIntegrationState::Ground
                 }
-                Osc7State::Payload(payload) if byte == b'\x1b' => Osc7State::PayloadEscape(payload),
-                Osc7State::Payload(mut payload) if payload.len() < 8_192 => {
+                ShellIntegrationState::Payload(payload) if byte == b'\x1b' => {
+                    ShellIntegrationState::PayloadEscape(payload)
+                }
+                ShellIntegrationState::Payload(mut payload) if payload.len() < 8_192 => {
                     payload.push(byte);
-                    Osc7State::Payload(payload)
+                    ShellIntegrationState::Payload(payload)
                 }
-                Osc7State::Payload(_) => Osc7State::Ignore,
-                Osc7State::PayloadEscape(payload) if byte == b'\\' => {
-                    if let Some(path) = osc7_path(&payload) {
-                        paths.push(path);
-                    }
-                    Osc7State::Ground
+                ShellIntegrationState::Payload(_) => ShellIntegrationState::Ignore,
+                ShellIntegrationState::PayloadEscape(payload) if byte == b'\\' => {
+                    parse_shell_integration_payload(&payload, &mut events);
+                    ShellIntegrationState::Ground
                 }
-                Osc7State::PayloadEscape(mut payload) => {
+                ShellIntegrationState::PayloadEscape(mut payload) => {
                     payload.push(b'\x1b');
                     payload.push(byte);
-                    Osc7State::Payload(payload)
+                    ShellIntegrationState::Payload(payload)
                 }
-                Osc7State::Ignore if byte == b'\x07' => Osc7State::Ground,
-                Osc7State::Ignore if byte == b'\x1b' => Osc7State::IgnoreEscape,
-                Osc7State::Ignore => Osc7State::Ignore,
-                Osc7State::IgnoreEscape if byte == b'\\' => Osc7State::Ground,
-                Osc7State::IgnoreEscape => Osc7State::Ignore,
+                ShellIntegrationState::Ignore if byte == b'\x07' => ShellIntegrationState::Ground,
+                ShellIntegrationState::Ignore if byte == b'\x1b' => {
+                    ShellIntegrationState::IgnoreEscape
+                }
+                ShellIntegrationState::Ignore => ShellIntegrationState::Ignore,
+                ShellIntegrationState::IgnoreEscape if byte == b'\\' => {
+                    ShellIntegrationState::Ground
+                }
+                ShellIntegrationState::IgnoreEscape => ShellIntegrationState::Ignore,
             };
         }
-        paths
+        events
+    }
+}
+
+fn parse_shell_integration_payload(payload: &[u8], events: &mut Vec<TerminalEvent>) {
+    if let Some(payload) = payload.strip_prefix(b"7;") {
+        if let Some(path) = osc7_path(payload) {
+            events.push(TerminalEvent::CwdChanged(path));
+        }
+    } else if payload == b"133;C" {
+        events.push(TerminalEvent::CommandStarted);
+    } else if payload == b"133;D" {
+        events.push(TerminalEvent::CommandFinished(None));
+    } else if let Some(status) = payload.strip_prefix(b"133;D;") {
+        let status = (!status.is_empty())
+            .then_some(status)
+            .and_then(|status| std::str::from_utf8(status).ok())
+            .and_then(|status| status.parse().ok());
+        events.push(TerminalEvent::CommandFinished(status));
     }
 }
 
@@ -148,7 +178,7 @@ pub struct AlacrittyTerminalBackend {
     processor: Processor,
     terminal: Term<TerminalEventSender>,
     events: Receiver<TerminalEvent>,
-    osc7: Osc7Parser,
+    shell_integration: ShellIntegrationParser,
     pending_events: Vec<TerminalEvent>,
     selection_anchor: Option<Point>,
 }
@@ -166,7 +196,7 @@ impl AlacrittyTerminalBackend {
             processor: Processor::new(),
             terminal: Term::new(config, &size, TerminalEventSender(event_sender)),
             events,
-            osc7: Osc7Parser::default(),
+            shell_integration: ShellIntegrationParser::default(),
             pending_events: Vec::new(),
             selection_anchor: None,
         }
@@ -214,11 +244,9 @@ impl Default for AlacrittyTerminalBackend {
 
 impl TerminalBackend for AlacrittyTerminalBackend {
     fn advance(&mut self, bytes: &[u8]) {
-        let cwd_events = self.osc7.advance(bytes);
+        let shell_events = self.shell_integration.advance(bytes);
         self.processor.advance(&mut self.terminal, bytes);
-        for cwd in cwd_events {
-            self.pending_events.push(TerminalEvent::CwdChanged(cwd));
-        }
+        self.pending_events.extend(shell_events);
     }
 
     fn resize(&mut self, columns: u16, rows: u16) {
@@ -726,16 +754,32 @@ mod tests {
     }
 
     #[test]
-    fn exposes_title_cwd_and_bell_terminal_events() {
+    fn exposes_title_cwd_command_and_bell_terminal_events() {
         let mut backend = AlacrittyTerminalBackend::new(20, 2);
         backend.advance(b"\x1b]0;build server\x07");
         backend.advance(b"\x1b]7;file://localhost/srv/my%20app");
-        backend.advance(b"\x1b\\\x07");
+        backend.advance(b"\x1b\\\x1b]133;C\x1b\\\x1b]133;D;17\x07\x07");
 
         let events = backend.drain_events();
         assert!(events.contains(&TerminalEvent::TitleChanged("build server".into())));
         assert!(events.contains(&TerminalEvent::CwdChanged("/srv/my app".into())));
+        assert!(events.contains(&TerminalEvent::CommandStarted));
+        assert!(events.contains(&TerminalEvent::CommandFinished(Some(17))));
         assert!(events.contains(&TerminalEvent::Bell));
         assert!(backend.drain_events().is_empty());
+    }
+
+    #[test]
+    fn accepts_command_end_without_status_and_ignores_invalid_status() {
+        let mut backend = AlacrittyTerminalBackend::new(20, 2);
+        backend.advance(b"\x1b]133;D\x07\x1b]133;D;invalid\x1b\\\x1b]133;DX\x07");
+
+        assert_eq!(
+            backend.drain_events(),
+            vec![
+                TerminalEvent::CommandFinished(None),
+                TerminalEvent::CommandFinished(None),
+            ]
+        );
     }
 }

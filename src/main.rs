@@ -73,6 +73,19 @@ fn run(mut args: impl Iterator<Item = String>) -> Result<(), String> {
         }
         Some("pty-demo") => run_pty_demo(),
         Some("screen-demo") => run_screen_demo(),
+        Some("shell-integration") => {
+            let shell = args
+                .next()
+                .ok_or("shell-integration requires bash, zsh, fish, or powershell")?;
+            ensure_no_arguments(&mut args)?;
+            print!(
+                "{}",
+                toyoterm::shell_integration::script(&shell).ok_or_else(|| format!(
+                    "unsupported shell `{shell}`; expected bash, zsh, fish, or powershell"
+                ))?
+            );
+            Ok(())
+        }
         Some("gui-smoke-test") => {
             ensure_no_arguments(&mut args)?;
             run_gui_smoke_test().map_err(|error| error.to_string())
@@ -293,6 +306,6 @@ fn print_help() {
     println!(
         "toyoterm - a programmable terminal emulator powered by Rust and mruby\n\n\
          Usage:\n  toyoterm [--config PATH]\n  toyoterm [COMMAND]\n\n\
-         Commands:\n  gui                              Open the native GPU window (default)\n  ruby console                     Connect to the running GUI Ruby VM\n  list                             Show the running GUI mux state\n  reload                           Reload the running GUI configuration\n  cli list-panes                   List panes in the running GUI\n  cli send-text --pane ID TEXT     Send text to a pane\n  cli split [DIRECTION]            Split the active pane (default: right)\n  cli activate-workspace NAME      Activate or create a workspace\n  demo                             Exercise tabs and pane splitting\n  pty-demo                         Spawn a process in a native PTY\n  screen-demo                      Parse PTY output into a terminal snapshot\n  version                          Print version\n  help                             Print this help\n\nEnvironment:\n  TOYOTERM_INSTANCE                Select a named running GUI instance"
+         Commands:\n  gui                              Open the native GPU window (default)\n  ruby console                     Connect to the running GUI Ruby VM\n  list                             Show the running GUI mux state\n  reload                           Reload the running GUI configuration\n  cli list-panes                   List panes in the running GUI\n  cli send-text --pane ID TEXT     Send text to a pane\n  cli split [DIRECTION]            Split the active pane (default: right)\n  cli activate-workspace NAME      Activate or create a workspace\n  demo                             Exercise tabs and pane splitting\n  pty-demo                         Spawn a process in a native PTY\n  screen-demo                      Parse PTY output into a terminal snapshot\n  shell-integration SHELL         Print the integration script for a shell\n  version                          Print version\n  help                             Print this help\n\nEnvironment:\n  TOYOTERM_INSTANCE                Select a named running GUI instance"
     );
 }

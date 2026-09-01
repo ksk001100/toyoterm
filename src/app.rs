@@ -271,6 +271,8 @@ struct PaneRuntime {
     process_id: Option<u32>,
     title: String,
     cwd: Option<PathBuf>,
+    command_running: bool,
+    last_exit_status: Option<i32>,
     exited: bool,
 }
 
@@ -639,6 +641,11 @@ impl ApplicationHandler<AppEvent> for ToyotermApplication {
                             TerminalEvent::CwdChanged(cwd) => {
                                 runtime.cwd = Some(PathBuf::from(cwd))
                             }
+                            TerminalEvent::CommandStarted => runtime.command_running = true,
+                            TerminalEvent::CommandFinished(status) => {
+                                runtime.command_running = false;
+                                runtime.last_exit_status = *status;
+                            }
                             TerminalEvent::Bell => {}
                         }
                     }
@@ -659,6 +666,9 @@ impl ApplicationHandler<AppEvent> for ToyotermApplication {
                             let mut event = RubyEvent::new("cwd_changed");
                             event.cwd = Some(cwd);
                             event
+                        }
+                        TerminalEvent::CommandStarted | TerminalEvent::CommandFinished(_) => {
+                            continue;
                         }
                         TerminalEvent::Bell => RubyEvent::new("bell"),
                     };
@@ -820,6 +830,8 @@ impl ToyotermApplication {
             None => PtyCommand::default_shell(),
         };
         command.env("TERM", "xterm-256color");
+        command.env("TERM_PROGRAM", "toyoterm");
+        command.env("TERM_PROGRAM_VERSION", env!("CARGO_PKG_VERSION"));
         let mut session = NativePty.spawn(command, size).map_err(|error| {
             tracing::error!(
                 target: "toyoterm::pty",
@@ -854,6 +866,8 @@ impl ToyotermApplication {
             process_id,
             title: format!("Pane {}", pane.0),
             cwd: std::env::current_dir().ok(),
+            command_running: false,
+            last_exit_status: None,
             exited: false,
         })
     }
@@ -2492,6 +2506,8 @@ fn ruby_object_model(
                             .and_then(|runtime| runtime.cwd.as_ref())
                             .map(|cwd| cwd.display().to_string()),
                         pid: runtime.and_then(|runtime| runtime.process_id),
+                        command_running: runtime.is_some_and(|runtime| runtime.command_running),
+                        last_exit_status: runtime.and_then(|runtime| runtime.last_exit_status),
                     });
                 }
             }
@@ -2949,6 +2965,8 @@ mod tests {
                 process_id: Some(42),
                 title: "test".into(),
                 cwd: None,
+                command_running: false,
+                last_exit_status: None,
                 exited: false,
             };
         }

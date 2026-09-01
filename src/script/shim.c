@@ -181,19 +181,26 @@ int toyoterm_mruby_add_tab(void *state, uint64_t tab_id, const char *title,
 int toyoterm_mruby_add_pane(void *state, uint64_t pane_id, const char *title,
                             size_t title_length, const char *cwd,
                             size_t cwd_length, int cwd_available, uint64_t pid,
-                            int pid_available, char **error_output) {
+                            int pid_available, int command_running,
+                            int32_t last_exit_status,
+                            int last_exit_status_available,
+                            char **error_output) {
   mrb_state *mrb = (mrb_state *)state;
   *error_output = NULL;
   mrb->exc = NULL;
-  mrb_value arguments[4] = {
+  mrb_value arguments[6] = {
       mrb_int_value(mrb, (mrb_int)pane_id),
       mrb_str_new(mrb, title, (mrb_int)title_length),
       cwd_available ? mrb_str_new(mrb, cwd, (mrb_int)cwd_length)
                     : mrb_nil_value(),
       pid_available ? mrb_int_value(mrb, (mrb_int)pid) : mrb_nil_value(),
+      mrb_bool_value(command_running != 0),
+      last_exit_status_available
+          ? mrb_int_value(mrb, (mrb_int)last_exit_status)
+          : mrb_nil_value(),
   };
   mrb_funcall_argv(mrb, toyoterm_module(mrb),
-                   mrb_intern_lit(mrb, "__add_pane"), 4, arguments);
+                   mrb_intern_lit(mrb, "__add_pane"), 6, arguments);
   return finish_typed_call(mrb, error_output);
 }
 
