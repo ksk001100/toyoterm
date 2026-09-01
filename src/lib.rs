@@ -29,8 +29,8 @@ pub use input::{
 };
 pub use ipc::{IpcRequest, IpcResponse, IpcServer, eval_remote, request_remote, run_console};
 pub use layout::{
-    CommandMenuLayout, ConfigErrorLayout, PaneLayout, PanePlacement, PaneRect, SplitAxis,
-    SplitBoundary, TabPlacement, TabStripLayout, WorkspacePlacement, WorkspaceStripLayout,
+    ConfigErrorLayout, PaneLayout, PanePlacement, PaneRect, SplitAxis, SplitBoundary, TabPlacement,
+    TabStripLayout, WorkspacePlacement, WorkspaceStripLayout,
 };
 pub use lifecycle::install_panic_hook;
 pub use logging::init_logging;
@@ -38,8 +38,8 @@ pub use mux::{Mux, MuxError, PaneNode};
 pub use palette::{CommandPalette, PaletteAction, PaletteItem, filter_items};
 pub use pty::{NativePty, Pty, PtyCommand, PtyError, PtyExitStatus, PtySession, PtySize};
 pub use render::{
-    CommandMenuRenderData, ConfigErrorRenderData, GpuRenderer, PaletteRenderData, PaneRenderData,
-    RenderError, RenderOutcome, RenderStyle, StatusBarRenderData, TabRenderData, TextLayout,
+    ConfigErrorRenderData, GpuRenderer, PaletteRenderData, PaneRenderData, RenderError,
+    RenderOutcome, RenderStyle, StatusBarRenderData, TabRenderData, TextLayout,
     WorkspaceRenderData,
 };
 pub use script::{

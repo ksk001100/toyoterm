@@ -22,15 +22,14 @@ use crate::script::{
     ScriptContext, ScriptInvocation, ScriptRequest, ScriptSnapshot, ScriptThread,
 };
 use crate::{
-    AlacrittyTerminalBackend, BindingKey, Command, CommandMenuLayout, CommandMenuRenderData,
-    CommandPalette, ConfigErrorLayout, ConfigErrorRenderData, Event as MuxEvent, GpuRenderer,
-    IpcRequest, IpcResponse, IpcServer, KeyChord, KeyModifiers, KeyPress, KeypadKey,
-    MouseWheelDirection, Mux, NativeAction, NativeCommand, NativePty, PaletteAction, PaletteItem,
-    PaletteRenderData, PaneId, PaneLayout, PaneRect, PaneRenderData, Pty, PtyCommand, PtySession,
-    PtySize, RenderOutcome, RenderStyle, SelectionKind, SplitDirection, StatusBarRenderData,
-    TabRenderData, TabStripLayout, TerminalBackend, TerminalEvent, TerminalKey, TextLayout,
-    WorkspaceRenderData, WorkspaceStripLayout, encode_key, encode_mouse_wheel, encode_paste,
-    filter_items,
+    AlacrittyTerminalBackend, BindingKey, Command, CommandPalette, ConfigErrorLayout,
+    ConfigErrorRenderData, Event as MuxEvent, GpuRenderer, IpcRequest, IpcResponse, IpcServer,
+    KeyChord, KeyModifiers, KeyPress, KeypadKey, MouseWheelDirection, Mux, NativeAction,
+    NativeCommand, NativePty, PaletteAction, PaletteItem, PaletteRenderData, PaneId, PaneLayout,
+    PaneRect, PaneRenderData, Pty, PtyCommand, PtySession, PtySize, RenderOutcome, RenderStyle,
+    SelectionKind, SplitDirection, StatusBarRenderData, TabRenderData, TabStripLayout,
+    TerminalBackend, TerminalEvent, TerminalKey, TextLayout, WorkspaceRenderData,
+    WorkspaceStripLayout, encode_key, encode_mouse_wheel, encode_paste, filter_items,
 };
 
 const MULTI_CLICK_INTERVAL: Duration = Duration::from_millis(500);
@@ -300,8 +299,7 @@ struct ToyotermApplication {
     pane_layout: PaneLayout,
     tab_layout: TabStripLayout,
     workspace_layout: WorkspaceStripLayout,
-    command_menu_layout: CommandMenuLayout,
-    command_menu_open: bool,
+    palette_open: bool,
     palette: CommandPalette,
     _ipc_server: Option<IpcServer>,
     config_error_layout: ConfigErrorLayout,
@@ -451,8 +449,8 @@ impl ApplicationHandler<AppEvent> for ToyotermApplication {
                 if !focused {
                     clear_modifier_state(&mut self.modifiers, &mut self.alt_graph_active);
                     self.leader_deadline = None;
-                    if self.command_menu_open {
-                        self.command_menu_open = false;
+                    if self.palette_open {
+                        self.palette_open = false;
                         self.palette.close();
                         self.sync_active_renderer(window.scale_factor());
                         window.request_redraw();
@@ -510,16 +508,14 @@ impl ApplicationHandler<AppEvent> for ToyotermApplication {
                     window.request_redraw();
                     return;
                 }
-                if self.command_menu_open
-                    && matches!(event.logical_key, Key::Named(NamedKey::Escape))
-                {
-                    self.command_menu_open = false;
+                if self.palette_open && matches!(event.logical_key, Key::Named(NamedKey::Escape)) {
+                    self.palette_open = false;
                     self.palette.close();
                     self.sync_active_renderer(window.scale_factor());
                     window.request_redraw();
                     return;
                 }
-                if self.command_menu_open {
+                if self.palette_open {
                     if let Err(error) = self.handle_palette_key(&event) {
                         tracing::warn!(target: "toyoterm::app", %error, "command palette action failed");
                     }
@@ -585,7 +581,7 @@ impl ApplicationHandler<AppEvent> for ToyotermApplication {
             WindowEvent::Ime(Ime::Commit(text)) => {
                 self.leader_deadline = None;
                 self.ime_preedit = None;
-                if self.command_menu_open {
+                if self.palette_open {
                     self.palette.insert(&text);
                     self.sync_active_renderer(window.scale_factor());
                     window.request_redraw();
@@ -818,8 +814,7 @@ impl ToyotermApplication {
             pane_layout: PaneLayout::default(),
             tab_layout: TabStripLayout::default(),
             workspace_layout: WorkspaceStripLayout::default(),
-            command_menu_layout: CommandMenuLayout::default(),
-            command_menu_open: false,
+            palette_open: false,
             palette: CommandPalette::default(),
             _ipc_server: ipc_server,
             config_error_layout: ConfigErrorLayout::default(),
@@ -1018,12 +1013,12 @@ impl ToyotermApplication {
     }
 
     fn open_command_palette(&mut self) {
-        self.command_menu_open = true;
+        self.palette_open = true;
         self.palette.open();
     }
 
     fn open_ruby_console(&mut self) {
-        self.command_menu_open = true;
+        self.palette_open = true;
         self.palette.open_console();
     }
 
@@ -1097,7 +1092,7 @@ impl ToyotermApplication {
             Key::Named(NamedKey::Enter) => {
                 let items = filter_items(&self.palette_items(), self.palette.query());
                 if let Some(item) = items.get(self.palette.selected()).cloned() {
-                    self.command_menu_open = false;
+                    self.palette_open = false;
                     self.palette.close();
                     self.execute_palette_action(item.action)?;
                 }
@@ -1497,7 +1492,6 @@ impl ToyotermApplication {
     ) -> Result<(), String> {
         self.tab_layout = self.calculate_tab_layout(window_size, scale_factor);
         self.workspace_layout = self.calculate_workspace_layout(window_size, scale_factor);
-        self.command_menu_layout = self.calculate_command_menu_layout(window_size, scale_factor);
         self.config_error_layout = self.calculate_config_error_layout(window_size, scale_factor);
         self.pane_layout = self.calculate_pane_layout(window_size, scale_factor);
         let sizes = self
@@ -1585,8 +1579,6 @@ impl ToyotermApplication {
         self.tab_layout = self.calculate_tab_layout(window.inner_size(), window.scale_factor());
         self.workspace_layout =
             self.calculate_workspace_layout(window.inner_size(), window.scale_factor());
-        self.command_menu_layout =
-            self.calculate_command_menu_layout(window.inner_size(), window.scale_factor());
         self.config_error_layout =
             self.calculate_config_error_layout(window.inner_size(), window.scale_factor());
         self.pane_layout = self.calculate_pane_layout(window.inner_size(), window.scale_factor());
@@ -1599,28 +1591,8 @@ impl ToyotermApplication {
     ) -> WorkspaceStripLayout {
         WorkspaceStripLayout::calculate(
             &self.mux.workspaces(),
-            PaneRect::new(
-                0,
-                0,
-                window_size
-                    .width
-                    .saturating_sub(command_menu_width(scale_factor)),
-                workspace_bar_height(scale_factor),
-            ),
+            PaneRect::new(0, 0, window_size.width, workspace_bar_height(scale_factor)),
             (140.0 * scale_factor.max(0.1)).round() as u32,
-        )
-    }
-
-    fn calculate_command_menu_layout(
-        &self,
-        window_size: PhysicalSize<u32>,
-        scale_factor: f64,
-    ) -> CommandMenuLayout {
-        CommandMenuLayout::calculate(
-            window_size.width,
-            workspace_bar_height(scale_factor),
-            tab_bar_height(scale_factor),
-            command_menu_width(scale_factor),
         )
     }
 
@@ -1657,9 +1629,7 @@ impl ToyotermApplication {
             PaneRect::new(
                 0,
                 workspace_bar_height(scale_factor),
-                window_size
-                    .width
-                    .saturating_sub(command_menu_width(scale_factor)),
+                window_size.width,
                 tab_bar_height(scale_factor),
             ),
             (160.0 * scale_factor.max(0.1)).round() as u32,
@@ -1884,34 +1854,9 @@ impl ToyotermApplication {
 
     fn handle_left_mouse(&mut self, window: &Window, state: ElementState) {
         if state == ElementState::Pressed {
-            if self
-                .command_menu_layout
-                .button_contains(self.mouse_position.x, self.mouse_position.y)
-            {
-                self.command_menu_open = !self.command_menu_open;
-                if self.command_menu_open {
-                    self.palette.open();
-                } else {
-                    self.palette.close();
-                }
-                self.sync_active_renderer(window.scale_factor());
-                window.request_redraw();
-                return;
-            }
-            if self.command_menu_open {
-                let reload_config = self
-                    .command_menu_layout
-                    .reload_config_contains(self.mouse_position.x, self.mouse_position.y);
-                self.command_menu_open = false;
+            if self.palette_open {
+                self.palette_open = false;
                 self.palette.close();
-                if reload_config {
-                    if let Err(error) = self.reload_config_with_notification() {
-                        tracing::warn!(target: "toyoterm::config", %error, "update config error notification failed");
-                    }
-                    self.sync_active_renderer(window.scale_factor());
-                    window.request_redraw();
-                    return;
-                }
                 self.sync_active_renderer(window.scale_factor());
                 window.request_redraw();
             }
@@ -2350,15 +2295,8 @@ impl ToyotermApplication {
             renderer.update_panes(&panes, layout);
             renderer.update_tabs(&tabs, layout);
             renderer.update_workspaces(&workspaces, layout);
-            renderer.update_command_menu(
-                CommandMenuRenderData {
-                    button_rect: self.command_menu_layout.button(),
-                    reload_config_rect: None,
-                },
-                layout,
-            );
             renderer.update_palette(
-                self.command_menu_open.then(|| PaletteRenderData {
+                self.palette_open.then(|| PaletteRenderData {
                     rect: palette_rect.unwrap_or_default(),
                     text: &palette_text,
                 }),
@@ -2675,10 +2613,6 @@ fn status_bar_rect(window_size: PhysicalSize<u32>, scale_factor: f64) -> PaneRec
         window_size.width,
         height,
     )
-}
-
-fn command_menu_width(scale_factor: f64) -> u32 {
-    (160.0 * scale_factor.max(0.1)).round() as u32
 }
 
 fn config_error_height(scale_factor: f64, log_expanded: bool) -> u32 {

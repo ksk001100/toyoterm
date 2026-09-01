@@ -85,7 +85,7 @@ cargo run -- --config /path/to/config.rb
 cargo run -- ruby console
 ```
 
-Command Paletteは`Ctrl+Shift+P`（macOSでは`Cmd+Shift+P`）または右上のCommandsボタンで開きます。
+Command Paletteは`Ctrl+Shift+P`（macOSでは`Cmd+Shift+P`）で開きます。
 
 ## 設定
 
@@ -223,7 +223,6 @@ v0.1のログ出力先は標準エラー出力のみで、ログファイルの�
 - Linux・Windowsの`Ctrl+Shift+V`またはmacOSの`Cmd+V`：貼り付け
 - Linux・Windowsの`Ctrl+Shift+T`またはmacOSの`Cmd+T`：新しいタブを作成
 - Linux・Windowsの`Ctrl+Shift+R`またはmacOSの`Cmd+Shift+R`：有効な設定ファイルを再読込
-- `Commands` → `Reload Config`をクリック：GUIから有効な設定ファイルを再読込
 - Linux・Windowsの`Ctrl+Shift+W`またはmacOSの`Cmd+W`：active Tabを閉じる（最後のタブは維持）
 - `Ctrl+Tab` / `Ctrl+Shift+Tab`：次／前のタブをactivate
 - Linux・Windowsの`Ctrl+Shift+\` / `Ctrl+Shift+-`またはmacOSの`Cmd+D` / `Cmd+Shift+D`：active Paneを右／下へ分割

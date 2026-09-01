@@ -64,12 +64,6 @@ pub struct WorkspacePlacement {
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-pub struct CommandMenuLayout {
-    button: PaneRect,
-    reload_config: PaneRect,
-}
-
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct ConfigErrorLayout {
     notice: PaneRect,
     open_log: PaneRect,
@@ -136,38 +130,6 @@ impl ConfigErrorLayout {
 
     pub fn dismiss_contains(&self, x: f64, y: f64) -> bool {
         self.dismiss.contains(x, y)
-    }
-}
-
-impl CommandMenuLayout {
-    pub fn calculate(
-        window_width: u32,
-        button_height: u32,
-        item_height: u32,
-        preferred_width: u32,
-    ) -> Self {
-        let width = preferred_width.min(window_width);
-        let x = window_width.saturating_sub(width);
-        Self {
-            button: PaneRect::new(x, 0, width, button_height),
-            reload_config: PaneRect::new(x, button_height, width, item_height),
-        }
-    }
-
-    pub fn button(&self) -> PaneRect {
-        self.button
-    }
-
-    pub fn reload_config(&self) -> PaneRect {
-        self.reload_config
-    }
-
-    pub fn button_contains(&self, x: f64, y: f64) -> bool {
-        self.button.contains(x, y)
-    }
-
-    pub fn reload_config_contains(&self, x: f64, y: f64) -> bool {
-        self.reload_config.contains(x, y)
     }
 }
 
@@ -495,17 +457,6 @@ mod tests {
             WorkspaceStripLayout::calculate(&workspaces, PaneRect::new(0, 0, 400, 24), 140);
         assert_eq!(layout.workspaces()[1].rect, PaneRect::new(140, 0, 140, 24));
         assert_eq!(layout.workspace_at(160.0, 10.0), Some(WorkspaceId(5)));
-    }
-
-    #[test]
-    fn lays_out_and_hit_tests_the_command_menu() {
-        let layout = CommandMenuLayout::calculate(400, 24, 30, 160);
-
-        assert_eq!(layout.button(), PaneRect::new(240, 0, 160, 24));
-        assert_eq!(layout.reload_config(), PaneRect::new(240, 24, 160, 30));
-        assert!(layout.button_contains(399.0, 12.0));
-        assert!(layout.reload_config_contains(250.0, 40.0));
-        assert!(!layout.reload_config_contains(239.0, 40.0));
     }
 
     #[test]

@@ -88,7 +88,7 @@ Connect a live Ruby REPL to the running GUI from another terminal. It supports m
 cargo run -- ruby console
 ```
 
-Open the Command Palette with `Ctrl+Shift+P` (`Cmd+Shift+P` on macOS), or the Commands button in the top-right corner.
+Open the Command Palette with `Ctrl+Shift+P` (`Cmd+Shift+P` on macOS).
 
 ## Configuration
 
@@ -226,7 +226,6 @@ v0.1 writes logs only to stderr and does not create or rotate log files. Redirec
 - `Ctrl+Shift+V` on Linux/Windows or `Cmd+V` on macOS: paste
 - `Ctrl+Shift+T` on Linux/Windows or `Cmd+T` on macOS: open a new tab
 - `Ctrl+Shift+R` on Linux/Windows or `Cmd+Shift+R` on macOS: reload the active configuration file
-- Click `Commands` → `Reload Config`: reload the active configuration file from the GUI
 - `Ctrl+Shift+W` on Linux/Windows or `Cmd+W` on macOS: close the active tab (the final tab is kept open)
 - `Ctrl+Tab` / `Ctrl+Shift+Tab`: activate the next / previous tab
 - `Ctrl+Shift+\` / `Ctrl+Shift+-` on Linux/Windows or `Cmd+D` / `Cmd+Shift+D` on macOS: split the active pane right / down
