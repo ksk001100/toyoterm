@@ -30,6 +30,7 @@ pub enum SplitDirection {
 pub enum NativeAction {
     NewTab,
     ClosePane,
+    ReloadConfig,
     Split(SplitDirection),
     ActivatePane(SplitDirection),
 }

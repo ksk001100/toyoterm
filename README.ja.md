@@ -103,16 +103,13 @@ Toyoterm.configure do |config|
     context.pane.send_text("echo hello from mruby\n")
   end
 
-  config.bind "CTRL+SHIFT+R" do
-    Toyoterm.reload_config
-  end
-
   # 一般的な操作はNative Actionへcompileされ、キー入力時にmrubyを呼びません。
   config.keys do
     leader("v").split(:right)
     ctrl_shift("e").split(:right)
     ctrl_shift("o").activate_pane(:right)
     ctrl_shift("t").new_tab
+    ctrl_shift("r").reload_config
   end
 end
 
@@ -139,6 +136,8 @@ end
 
 `Toyoterm.reload_config`は、起動時に選択されたものと同じファイルを再読込します。新しいソースは別のmruby VMで評価・検証され、成功した場合だけ有効な設定と入れ替わります。正常に再読込できると、実行中のターミナルセッションを維持したまま、配色、フォントメトリクス、透明度、スクロールバック、キーバインド、イベントハンドラを更新します。
 
+設定エラーにはソースのファイル名、行番号、Ruby backtraceを表示します。再読込に失敗した場合は、それまでの設定を維持します。
+
 `default_shell`を変更しても実行中のシェルは置き換えません。新しいターミナルセッションを作成するときに適用されます。
 
 実行可能な最小設定例は`examples/minimal_config.rb`にあります。`toyoterm --config examples/minimal_config.rb`で試せます。
@@ -151,6 +150,7 @@ end
 - Linux・Windowsの`Ctrl+Shift+C`またはmacOSの`Cmd+C`：選択範囲をコピー
 - Linux・Windowsの`Ctrl+Shift+V`またはmacOSの`Cmd+V`：貼り付け
 - `Ctrl+Shift+T`：新しいタブを作成
+- `Ctrl+Shift+R`：有効な設定ファイルを再読込
 - `Ctrl+Shift+W`：active Tabを閉じる（最後のタブは維持）
 - `Ctrl+Tab` / `Ctrl+Shift+Tab`：次／前のタブをactivate
 - `Ctrl+Shift+\` / `Ctrl+Shift+-`：active Paneを右／下へ分割

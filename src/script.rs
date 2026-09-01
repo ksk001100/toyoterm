@@ -81,6 +81,11 @@ module Toyoterm
       @config.__register_static(@key, :close_pane, nil)
       self
     end
+
+    def reload_config
+      @config.__register_static(@key, :reload_config, nil)
+      self
+    end
   end
 
   class KeysConfig
@@ -336,6 +341,7 @@ unsafe extern "C" {
     fn toyoterm_mruby_eval(
         state: *mut c_void,
         source: *const c_char,
+        filename: *const c_char,
         output: *mut *mut c_char,
     ) -> i32;
     fn toyoterm_mruby_string_free(string: *mut c_char);
@@ -447,12 +453,24 @@ impl MrubyRuntime {
     }
 
     pub fn eval(&mut self, source: &str) -> Result<String, ScriptError> {
+        self.eval_with_filename(source, "(eval)")
+    }
+
+    fn eval_with_filename(&mut self, source: &str, filename: &str) -> Result<String, ScriptError> {
         let source = CString::new(source)
             .map_err(|_| ScriptError::new("evaluate mruby", "source contains a NUL byte"))?;
+        let filename = CString::new(filename)
+            .map_err(|_| ScriptError::new("evaluate mruby", "filename contains a NUL byte"))?;
         let mut output = std::ptr::null_mut();
-        // SAFETY: `state` is live, `source` is NUL terminated, and the shim initializes `output`.
-        let status =
-            unsafe { toyoterm_mruby_eval(self.state.as_ptr(), source.as_ptr(), &mut output) };
+        // SAFETY: `state` is live, strings are NUL terminated, and the shim initializes `output`.
+        let status = unsafe {
+            toyoterm_mruby_eval(
+                self.state.as_ptr(),
+                source.as_ptr(),
+                filename.as_ptr(),
+                &mut output,
+            )
+        };
         let output = NonNull::new(output)
             .ok_or_else(|| ScriptError::new("evaluate mruby", "failed to allocate result"))?;
         // SAFETY: The shim returns a NUL-terminated allocation which remains live until freed below.
@@ -499,7 +517,7 @@ struct LoadedConfig {
 
 impl ConfigManager {
     pub fn new() -> Result<Self, ScriptError> {
-        let loaded = load_config("")?;
+        let loaded = load_config("", "(default config)")?;
         Ok(Self {
             runtime: loaded.runtime,
             config: loaded.config,
@@ -542,13 +560,21 @@ impl ConfigManager {
         })?;
         let source = std::fs::read_to_string(&path)
             .map_err(|error| ScriptError::config_file(&path, error))?;
-        self.reload(&source)
+        self.reload_named(&source, &path.display().to_string())
             .map_err(|error| ScriptError::config_file(&path, error))
     }
 
     /// Evaluate config in a fresh VM and swap it in only after complete validation.
     pub fn reload(&mut self, source: &str) -> Result<&ToyotermConfig, ScriptError> {
-        let loaded = load_config(source)?;
+        self.reload_named(source, "(config)")
+    }
+
+    fn reload_named(
+        &mut self,
+        source: &str,
+        filename: &str,
+    ) -> Result<&ToyotermConfig, ScriptError> {
+        let loaded = load_config(source, filename)?;
         self.runtime = loaded.runtime;
         self.config = loaded.config;
         self.keybindings = loaded.keybindings;
@@ -693,10 +719,10 @@ fn resolve_config_path(
         .or_else(|| home.map(|home| home.join(".config").join("toyoterm").join("config.rb")))
 }
 
-fn load_config(source: &str) -> Result<LoadedConfig, ScriptError> {
+fn load_config(source: &str, filename: &str) -> Result<LoadedConfig, ScriptError> {
     let mut runtime = MrubyRuntime::new()?;
-    runtime.eval(CONFIG_DSL)?;
-    runtime.eval(source)?;
+    runtime.eval_with_filename(CONFIG_DSL, "(toyoterm DSL)")?;
+    runtime.eval_with_filename(source, filename)?;
 
     let defaults = ToyotermConfig::default();
     let family = runtime.eval("Toyoterm.__config.font.family")?;
@@ -820,6 +846,7 @@ fn decode_native_action(action: &str, argument: &str) -> Result<NativeAction, Sc
     match action {
         "new_tab" => Ok(NativeAction::NewTab),
         "close_pane" => Ok(NativeAction::ClosePane),
+        "reload_config" => Ok(NativeAction::ReloadConfig),
         "split" => parse_direction(argument).map(NativeAction::Split),
         "activate_pane" => parse_direction(argument).map(NativeAction::ActivatePane),
         other => Err(ScriptError::new(
@@ -1027,6 +1054,39 @@ mod tests {
     }
 
     #[test]
+    fn reports_config_filename_line_and_ruby_backtrace() {
+        let unique = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!(
+            "toyoterm-broken-config-{}-{unique}.rb",
+            std::process::id()
+        ));
+        std::fs::write(
+            &path,
+            r#"def fail_config
+  raise "broken config"
+end
+fail_config
+"#,
+        )
+        .unwrap();
+
+        let error = match ConfigManager::load_startup(Some(&path)) {
+            Ok(_) => panic!("broken config unexpectedly loaded"),
+            Err(error) => error,
+        };
+        std::fs::remove_file(&path).unwrap();
+        let message = error.to_string();
+
+        assert!(message.contains(&path.display().to_string()), "{message}");
+        assert!(message.contains(":2"), "{message}");
+        assert!(message.contains(":4"), "{message}");
+        assert!(message.contains("broken config"), "{message}");
+    }
+
+    #[test]
     fn converts_pane_send_text_to_a_native_command() {
         let mut manager = ConfigManager::new().unwrap();
         manager.set_current_pane(PaneId(42)).unwrap();
@@ -1106,6 +1166,7 @@ mod tests {
                     ctrl_shift("j").activate_pane(:down)
                     ctrl("t").new_tab
                     alt("q").close_pane
+                    ctrl_shift("r").reload_config
                     physical("KeyH", "CTRL").activate_pane(:left)
                   end
                 end
@@ -1129,6 +1190,10 @@ mod tests {
         assert_eq!(
             manager.native_action("ALT+Q"),
             Some(NativeAction::ClosePane)
+        );
+        assert_eq!(
+            manager.native_action("CTRL+SHIFT+R"),
+            Some(NativeAction::ReloadConfig)
         );
     }
 

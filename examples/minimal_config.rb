@@ -20,14 +20,11 @@ Toyoterm.configure do |config|
     context.pane.send_text("echo hello from toyoterm\n")
   end
 
-  config.bind "CTRL+SHIFT+R" do
-    Toyoterm.reload_config
-  end
-
   config.keys do
     leader("v").split(:right)
     ctrl_shift("e").split(:right)
     ctrl_shift("o").activate_pane(:right)
     ctrl_shift("t").new_tab
+    ctrl_shift("r").reload_config
   end
 end

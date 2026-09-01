@@ -640,6 +640,7 @@ impl ToyotermApplication {
                     .ok_or_else(|| "mux has no current pane".to_owned())?;
                 self.dispatch_gui_command(Command::ClosePane(pane))
             }
+            NativeAction::ReloadConfig => self.reload_config(),
             NativeAction::Split(direction) => self.split_active_pane(direction),
             NativeAction::ActivatePane(direction) => self.focus_neighbor(direction),
         }
@@ -651,6 +652,10 @@ impl ToyotermApplication {
         modifiers: ModifiersState,
     ) -> Result<bool, String> {
         if modifiers.control_key() && modifiers.shift_key() {
+            if matches!(&event.logical_key, Key::Character(key) if key.eq_ignore_ascii_case("r")) {
+                self.reload_config()?;
+                return Ok(true);
+            }
             if matches!(&event.logical_key, Key::Character(key) if key.eq_ignore_ascii_case("t")) {
                 self.dispatch_gui_command(Command::NewTab)?;
                 return Ok(true);

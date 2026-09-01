@@ -32,14 +32,47 @@ static char *copy_mruby_string(mrb_value value) {
   return copy;
 }
 
-int toyoterm_mruby_eval(void *state, const char *source, char **output) {
+static mrb_value format_exception(mrb_state *mrb, mrb_value exception) {
+  mrb_value error = mrb_inspect(mrb, exception);
+  if (mrb->exc != NULL) {
+    mrb->exc = NULL;
+    return error;
+  }
+
+  mrb_value backtrace = mrb_funcall(mrb, exception, "backtrace", 0);
+  if (mrb->exc != NULL || !mrb_array_p(backtrace) || RARRAY_LEN(backtrace) == 0) {
+    mrb->exc = NULL;
+    return error;
+  }
+
+  mrb_value joined = mrb_ary_join(mrb, backtrace, mrb_str_new_lit(mrb, "\n"));
+  if (mrb->exc != NULL) {
+    mrb->exc = NULL;
+    return error;
+  }
+  mrb_value message = mrb_str_dup(mrb, error);
+  mrb_str_cat_lit(mrb, message, "\n");
+  mrb_str_cat_str(mrb, message, joined);
+  return message;
+}
+
+int toyoterm_mruby_eval(void *state, const char *source, const char *filename,
+                        char **output) {
   mrb_state *mrb = (mrb_state *)state;
   *output = NULL;
   mrb->exc = NULL;
 
-  mrb_value value = mrb_load_string(mrb, source);
+  mrb_ccontext *context = mrb_ccontext_new(mrb);
+  if (context == NULL) {
+    return 2;
+  }
+  mrb_ccontext_filename(mrb, context, filename);
+  mrb_value value = mrb_load_string_cxt(mrb, source, context);
+  mrb_ccontext_free(mrb, context);
   if (mrb->exc != NULL) {
-    mrb_value error = mrb_inspect(mrb, mrb_obj_value(mrb->exc));
+    mrb_value exception = mrb_obj_value(mrb->exc);
+    mrb->exc = NULL;
+    mrb_value error = format_exception(mrb, exception);
     *output = copy_mruby_string(error);
     mrb->exc = NULL;
     return 1;
@@ -47,7 +80,9 @@ int toyoterm_mruby_eval(void *state, const char *source, char **output) {
 
   value = mrb_obj_as_string(mrb, value);
   if (mrb->exc != NULL) {
-    mrb_value error = mrb_inspect(mrb, mrb_obj_value(mrb->exc));
+    mrb_value exception = mrb_obj_value(mrb->exc);
+    mrb->exc = NULL;
+    mrb_value error = format_exception(mrb, exception);
     *output = copy_mruby_string(error);
     mrb->exc = NULL;
     return 1;

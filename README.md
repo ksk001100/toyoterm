@@ -103,16 +103,13 @@ Toyoterm.configure do |config|
     context.pane.send_text("echo hello from mruby\n")
   end
 
-  config.bind "CTRL+SHIFT+R" do
-    Toyoterm.reload_config
-  end
-
   # Common actions compile to native bindings and do not invoke mruby on key press.
   config.keys do
     leader("v").split(:right)
     ctrl_shift("e").split(:right)
     ctrl_shift("o").activate_pane(:right)
     ctrl_shift("t").new_tab
+    ctrl_shift("r").reload_config
   end
 end
 
@@ -139,6 +136,8 @@ Unmatched keys bypass mruby and go directly through the native terminal key enco
 
 `Toyoterm.reload_config` reloads the same file selected at startup. The new source is evaluated and validated in a fresh mruby VM before it replaces the active configuration. A successful reload updates colors, font metrics, opacity, scrollback, key bindings, and event handlers without replacing the running terminal session.
 
+Configuration errors include the source filename, line number, and Ruby backtrace. The previous configuration remains active when a reload fails.
+
 Changing `default_shell` does not replace the shell that is already running; it applies when a new terminal session is created.
 
 An executable starter configuration is available at `examples/minimal_config.rb` and can be tested with `toyoterm --config examples/minimal_config.rb`.
@@ -151,6 +150,7 @@ The embedded runtime is mruby, not CRuby. CRuby gems, native extensions, and the
 - `Ctrl+Shift+C` on Linux/Windows or `Cmd+C` on macOS: copy the selection
 - `Ctrl+Shift+V` on Linux/Windows or `Cmd+V` on macOS: paste
 - `Ctrl+Shift+T`: open a new tab
+- `Ctrl+Shift+R`: reload the active configuration file
 - `Ctrl+Shift+W`: close the active tab (the final tab is kept open)
 - `Ctrl+Tab` / `Ctrl+Shift+Tab`: activate the next / previous tab
 - `Ctrl+Shift+\` / `Ctrl+Shift+-`: split the active pane right / down
