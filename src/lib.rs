@@ -8,6 +8,7 @@ pub mod app;
 pub mod input;
 pub mod ipc;
 pub mod layout;
+pub mod lifecycle;
 pub mod logging;
 pub mod mux;
 pub mod palette;
@@ -20,7 +21,7 @@ pub use api::{
     Command, CommandResult, Event, HandleKind, NativeAction, NativeCommand, NativeHandle, NativeId,
     PaneId, SplitDirection, TabId, WindowId, WorkspaceId,
 };
-pub use app::{CellMetrics, run_gui, run_gui_with_config_path};
+pub use app::{CellMetrics, run_gui, run_gui_smoke_test, run_gui_with_config_path};
 pub use input::{
     BindingKey, KeyChord, KeyModifiers, KeyPress, KeypadKey, MouseWheelDirection, TerminalKey,
     encode_key, encode_mouse_wheel, encode_paste,
@@ -30,6 +31,7 @@ pub use layout::{
     CommandMenuLayout, ConfigErrorLayout, PaneLayout, PanePlacement, PaneRect, SplitAxis,
     SplitBoundary, TabPlacement, TabStripLayout, WorkspacePlacement, WorkspaceStripLayout,
 };
+pub use lifecycle::install_panic_hook;
 pub use logging::init_logging;
 pub use mux::{Mux, MuxError, PaneNode};
 pub use palette::{CommandPalette, PaletteAction, PaletteItem, filter_items};

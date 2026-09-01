@@ -62,6 +62,20 @@ cargo build --release --locked
 ./target/release/toyoterm
 ```
 
+### Install, upgrade, and uninstall
+
+Download the archive for your OS and CPU from a release. On Linux, extract it
+and copy `toyoterm` to a directory on `PATH`, such as `~/.local/bin`. On macOS,
+extract and move `toyoterm.app` to `/Applications` (the executable is inside
+`Contents/MacOS`). On Windows, extract the portable zip and add its directory to
+`PATH` if command-line access is desired.
+
+To upgrade, replace the previous binary or `.app` with the newer release while
+toyoterm is not running. To uninstall, remove that binary, application bundle,
+or extracted Windows directory. User configuration under
+`~/.config/toyoterm/` is deliberately retained; remove it separately only if
+you no longer need it.
+
 Use an explicit configuration file:
 
 ```sh
@@ -258,7 +272,9 @@ Create a release archive under `dist/`:
 sh scripts/package.sh
 ```
 
-The archive contains the toyoterm binary, the project license, third-party notices, and the mruby license.
+Linux produces a `.tar.gz`, macOS an unsigned `.app` inside `.tar.gz`, and
+Windows a portable `.zip`. See [the release checklist](docs/releasing.md) and
+[platform validation guide](docs/platform-validation.md).
 
 ## Architecture
 

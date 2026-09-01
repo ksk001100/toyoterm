@@ -1,17 +1,16 @@
 use std::collections::BTreeMap;
 use std::ffi::{OsStr, OsString};
 use std::fmt;
-use std::io::{Read, Write};
+use std::io::Read;
 use std::path::{Path, PathBuf};
 
-#[cfg(windows)]
-use conpty_oxide::blocking::{
-    Child as ConPtyChild, Command as ConPtyCommand, OwnedReadHalf, OwnedWriteHalf,
-};
-#[cfg(windows)]
-use conpty_oxide::{PtyController, SessionOptions, Size as ConPtySize};
 #[cfg(unix)]
 use portable_pty::{Child, CommandBuilder, MasterPty, native_pty_system};
+#[cfg(unix)]
+use std::io::Write;
+
+#[cfg(windows)]
+mod windows;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct PtySize {
@@ -138,28 +137,6 @@ impl PtyCommand {
                 Some(value) => builder.env(key, value),
                 None => builder.env_remove(key),
             }
-        }
-        builder
-    }
-
-    #[cfg(windows)]
-    fn into_builder(self) -> ConPtyCommand {
-        let program = match self.program {
-            Program::DefaultShell => std::env::var_os("ComSpec")
-                .filter(|program| !program.is_empty())
-                .unwrap_or_else(|| OsString::from("cmd.exe")),
-            Program::Executable(program) => program,
-        };
-        let mut builder = ConPtyCommand::new(program);
-        builder.args(self.args);
-        if let Some(cwd) = self.cwd {
-            builder.current_dir(cwd);
-        }
-        for (key, value) in self.environment {
-            match value {
-                Some(value) => builder.env(key, value),
-                None => builder.env_remove(key),
-            };
         }
         builder
     }
@@ -352,116 +329,6 @@ impl Drop for NativePtySession {
     }
 }
 
-#[cfg(windows)]
-impl Pty for NativePty {
-    fn spawn(&self, command: PtyCommand, size: PtySize) -> Result<Box<dyn PtySession>, PtyError> {
-        tracing::debug!(
-            target: "toyoterm::pty",
-            columns = size.columns,
-            rows = size.rows,
-            "spawn ConPTY"
-        );
-        let conpty_size = ConPtySize::try_new(size.columns, size.rows)
-            .map_err(|error| PtyError::new("open PTY", error))?;
-        let session = command
-            .into_builder()
-            .spawn_with(SessionOptions::new().size(conpty_size))
-            .map_err(|error| PtyError::new("spawn PTY process", error))?;
-        let process_id = session.id();
-        let parts = session.into_parts();
-        tracing::info!(target: "toyoterm::pty", process_id, "ConPTY process started");
-        Ok(Box::new(WindowsPtySession {
-            output: Some(parts.output),
-            input: Some(parts.input),
-            child: parts.child,
-            controller: parts.controller,
-            completed: false,
-        }))
-    }
-}
-
-#[cfg(windows)]
-struct WindowsPtySession {
-    output: Option<OwnedReadHalf>,
-    input: Option<OwnedWriteHalf>,
-    child: ConPtyChild,
-    controller: PtyController,
-    completed: bool,
-}
-
-#[cfg(windows)]
-impl PtySession for WindowsPtySession {
-    fn process_id(&self) -> Option<u32> {
-        Some(self.child.id())
-    }
-
-    fn take_reader(&mut self) -> Result<Box<dyn Read + Send>, PtyError> {
-        self.output
-            .take()
-            .map(|reader| Box::new(reader) as Box<dyn Read + Send>)
-            .ok_or_else(|| PtyError::new("open PTY reader", "reader already taken"))
-    }
-
-    fn write(&mut self, data: &[u8]) -> Result<(), PtyError> {
-        let input = self
-            .input
-            .as_mut()
-            .ok_or_else(|| PtyError::new("write PTY input", "PTY is already closed"))?;
-        input
-            .write_all(data)
-            .and_then(|()| input.flush())
-            .map_err(|error| PtyError::new("write PTY input", error))
-    }
-
-    fn resize(&mut self, size: PtySize) -> Result<(), PtyError> {
-        let size = ConPtySize::try_new(size.columns, size.rows)
-            .map_err(|error| PtyError::new("resize PTY", error))?;
-        self.controller
-            .resize(size)
-            .map_err(|error| PtyError::new("resize PTY", error))
-    }
-
-    fn try_wait(&mut self) -> Result<Option<PtyExitStatus>, PtyError> {
-        let status = self
-            .child
-            .try_wait()
-            .map_err(|error| PtyError::new("poll PTY process", error))?
-            .map(|status| PtyExitStatus {
-                code: status.code(),
-                signal: None,
-            });
-        self.completed |= status.is_some();
-        Ok(status)
-    }
-
-    fn wait(&mut self) -> Result<PtyExitStatus, PtyError> {
-        let status = self
-            .child
-            .wait()
-            .map_err(|error| PtyError::new("wait for PTY process", error))?;
-        self.completed = true;
-        Ok(PtyExitStatus {
-            code: status.code(),
-            signal: None,
-        })
-    }
-
-    fn kill(&mut self) -> Result<(), PtyError> {
-        self.child
-            .kill()
-            .map_err(|error| PtyError::new("kill PTY process", error))
-    }
-}
-
-#[cfg(windows)]
-impl Drop for WindowsPtySession {
-    fn drop(&mut self) {
-        if !self.completed {
-            let _ = self.child.kill();
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -536,6 +403,38 @@ mod tests {
         assert_eq!(status.code, 0, "unexpected status: {status:?}");
         assert!(
             output.contains("toyoterm-default-shell-ok"),
+            "output was {output:?}"
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn powershell_runs_inside_conpty() {
+        let mut command = PtyCommand::new("powershell.exe");
+        command.args([
+            "-NoLogo",
+            "-NoProfile",
+            "-NonInteractive",
+            "-Command",
+            "Write-Output toyoterm-powershell-ok",
+        ]);
+        let mut session = NativePty
+            .spawn(command, PtySize::new(80, 24))
+            .expect("spawn PowerShell in ConPTY");
+        let mut reader = session.take_reader().expect("take ConPTY reader");
+        let reader_thread = std::thread::spawn(move || {
+            let mut output = String::new();
+            reader.read_to_string(&mut output).map(|_| output)
+        });
+        let status = session.wait().expect("wait for PowerShell");
+        let output = reader_thread
+            .join()
+            .expect("join PowerShell reader")
+            .expect("read PowerShell output");
+
+        assert_eq!(status.code, 0, "unexpected status: {status:?}");
+        assert!(
+            output.contains("toyoterm-powershell-ok"),
             "output was {output:?}"
         );
     }

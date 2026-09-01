@@ -155,10 +155,19 @@ impl fmt::Display for AppError {
 impl std::error::Error for AppError {}
 
 pub fn run_gui() -> Result<(), AppError> {
-    run_gui_with_config_path(None)
+    run_gui_inner(None, false)
 }
 
 pub fn run_gui_with_config_path(config_path: Option<&Path>) -> Result<(), AppError> {
+    run_gui_inner(config_path, false)
+}
+
+/// Starts the complete GUI stack and exits after successful initialization.
+pub fn run_gui_smoke_test() -> Result<(), AppError> {
+    run_gui_inner(None, true)
+}
+
+fn run_gui_inner(config_path: Option<&Path>, exit_after_startup: bool) -> Result<(), AppError> {
     let event_loop = EventLoop::<AppEvent>::with_user_event()
         .build()
         .map_err(|error| AppError(error.to_string()))?;
@@ -217,6 +226,7 @@ pub fn run_gui_with_config_path(config_path: Option<&Path>) -> Result<(), AppErr
         startup.snapshot,
         render_style,
         startup_config_error,
+        exit_after_startup,
     )
     .map_err(AppError)?;
     app.submit_script(ScriptInvocation::DrainStartup)
@@ -224,7 +234,7 @@ pub fn run_gui_with_config_path(config_path: Option<&Path>) -> Result<(), AppErr
     event_loop
         .run_app(&mut app)
         .map_err(|error| AppError(error.to_string()))?;
-    match app.fatal_error {
+    match app.fatal_error.take() {
         Some(error) => Err(AppError(error)),
         None => Ok(()),
     }
@@ -314,6 +324,7 @@ struct ToyotermApplication {
     mux: Mux,
     render_style: RenderStyle,
     fatal_error: Option<String>,
+    exit_after_startup: bool,
 }
 
 impl ApplicationHandler<AppEvent> for ToyotermApplication {
@@ -383,6 +394,9 @@ impl ApplicationHandler<AppEvent> for ToyotermApplication {
             .as_ref()
             .expect("window was installed")
             .request_redraw();
+        if self.exit_after_startup {
+            event_loop.exit();
+        }
     }
 
     fn window_event(
@@ -607,6 +621,10 @@ impl ApplicationHandler<AppEvent> for ToyotermApplication {
         }
     }
 
+    fn exiting(&mut self, _event_loop: &ActiveEventLoop) {
+        self.shutdown();
+    }
+
     fn user_event(&mut self, event_loop: &ActiveEventLoop, event: AppEvent) {
         match event {
             AppEvent::Output { pane, bytes } => {
@@ -701,12 +719,24 @@ impl ApplicationHandler<AppEvent> for ToyotermApplication {
 }
 
 impl ToyotermApplication {
+    fn shutdown(&mut self) {
+        if let Some(window) = self.window.as_ref() {
+            window.set_ime_allowed(false);
+        }
+        for (_, mut runtime) in self.pane_runtimes.drain() {
+            runtime.terminate();
+        }
+        self.renderer = None;
+        self.window = None;
+    }
+
     fn new(
         event_proxy: EventLoopProxy<AppEvent>,
         script_thread: ScriptThread,
         script_snapshot: ScriptSnapshot,
         render_style: RenderStyle,
         startup_config_error: Option<String>,
+        exit_after_startup: bool,
     ) -> Result<Self, String> {
         let mux = Mux::new();
         let config = &script_snapshot.config;
@@ -766,6 +796,7 @@ impl ToyotermApplication {
             mux,
             render_style,
             fatal_error: None,
+            exit_after_startup,
         })
     }
 
@@ -2291,6 +2322,14 @@ impl ToyotermApplication {
     }
 }
 
+impl Drop for ToyotermApplication {
+    fn drop(&mut self) {
+        // This is also reached while unwinding from a panic. PaneRuntime and
+        // native PTY sessions provide a second idempotent kill-on-drop guard.
+        self.shutdown();
+    }
+}
+
 #[cfg(test)]
 #[derive(Debug, Default, Eq, PartialEq)]
 struct NativeCommandEffects {
@@ -2769,6 +2808,59 @@ fn named_key(key: &NamedKey) -> Option<TerminalKey> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    struct KillTrackingSession(std::sync::Arc<std::sync::atomic::AtomicUsize>);
+
+    impl PtySession for KillTrackingSession {
+        fn process_id(&self) -> Option<u32> {
+            Some(42)
+        }
+
+        fn take_reader(&mut self) -> Result<Box<dyn Read + Send>, crate::PtyError> {
+            Ok(Box::new(std::io::Cursor::new(Vec::<u8>::new())))
+        }
+
+        fn write(&mut self, _data: &[u8]) -> Result<(), crate::PtyError> {
+            Ok(())
+        }
+
+        fn resize(&mut self, _size: PtySize) -> Result<(), crate::PtyError> {
+            Ok(())
+        }
+
+        fn try_wait(&mut self) -> Result<Option<crate::PtyExitStatus>, crate::PtyError> {
+            Ok(None)
+        }
+
+        fn wait(&mut self) -> Result<crate::PtyExitStatus, crate::PtyError> {
+            Ok(crate::PtyExitStatus {
+                code: 0,
+                signal: None,
+            })
+        }
+
+        fn kill(&mut self) -> Result<(), crate::PtyError> {
+            self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn pane_runtime_kills_its_child_when_dropped_during_shutdown() {
+        let kills = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        {
+            let _runtime = PaneRuntime {
+                terminal: AlacrittyTerminalBackend::new(80, 24),
+                pty_session: Some(Box::new(KillTrackingSession(kills.clone()))),
+                process_id: Some(42),
+                title: "test".into(),
+                cwd: None,
+                exited: false,
+            };
+        }
+
+        assert_eq!(kills.load(std::sync::atomic::Ordering::SeqCst), 1);
+    }
 
     #[test]
     fn config_error_notice_switches_between_summary_log_and_console_hint() {

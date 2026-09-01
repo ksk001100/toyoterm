@@ -26,3 +26,7 @@ conpty-oxide = { version = "0.1.2", features = ["tracing"] }
 
 [build-dependencies]
 cc = "1.2.56"
+
+[profile.release]
+# PTY and window guards must run even when an unexpected panic reaches main.
+panic = "unwind"

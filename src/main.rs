@@ -1,10 +1,12 @@
 use std::io::Read;
+use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::path::PathBuf;
 use std::process::ExitCode;
 
 use toyoterm::{
     AlacrittyTerminalBackend, Command, Mux, NativePty, Pty, PtyCommand, PtySize, SplitDirection,
-    TerminalBackend, init_logging, run_console, run_gui, run_gui_with_config_path,
+    TerminalBackend, init_logging, run_console, run_gui, run_gui_smoke_test,
+    run_gui_with_config_path,
 };
 
 fn main() -> ExitCode {
@@ -12,9 +14,20 @@ fn main() -> ExitCode {
         eprintln!("toyoterm: {error}");
         return ExitCode::FAILURE;
     }
-    match run(std::env::args().skip(1)) {
-        Ok(()) => ExitCode::SUCCESS,
-        Err(message) => {
+    toyoterm::install_panic_hook();
+    match catch_unwind(AssertUnwindSafe(|| run(std::env::args().skip(1)))) {
+        Ok(Ok(())) => ExitCode::SUCCESS,
+        Err(payload) => {
+            if let Some(message) = payload.downcast_ref::<String>() {
+                eprintln!("toyoterm: fatal panic: {message}");
+            } else if let Some(message) = payload.downcast_ref::<&str>() {
+                eprintln!("toyoterm: fatal panic: {message}");
+            } else {
+                eprintln!("toyoterm: fatal panic");
+            }
+            ExitCode::FAILURE
+        }
+        Ok(Err(message)) => {
             eprintln!("toyoterm: {message}");
             ExitCode::FAILURE
         }
@@ -53,6 +66,10 @@ fn run(mut args: impl Iterator<Item = String>) -> Result<(), String> {
         }
         Some("pty-demo") => run_pty_demo(),
         Some("screen-demo") => run_screen_demo(),
+        Some("gui-smoke-test") => {
+            ensure_no_arguments(&mut args)?;
+            run_gui_smoke_test().map_err(|error| error.to_string())
+        }
         Some("ruby") => match args.next().as_deref() {
             None | Some("console") => {
                 ensure_no_arguments(&mut args)?;
