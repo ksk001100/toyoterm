@@ -81,6 +81,7 @@ Example configuration:
 Toyoterm.configure do |config|
   config.font do |font|
     font.family = "monospace"
+    font.fallback = ["Noto Sans Mono CJK JP", "Noto Color Emoji"]
     font.size = 14
     font.weight = 400
   end
@@ -121,6 +122,8 @@ Toyoterm.on :config_reloaded do |event|
   event.pane.send_text("echo config reloaded\n")
 end
 ```
+
+`font.fallback` is optional. Installed families are tried in the listed order for missing CJK, emoji, symbol, and other glyphs, followed by the platform defaults. Unknown families are skipped by the font system.
 
 ### Key bindings
 

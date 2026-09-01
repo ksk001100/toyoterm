@@ -2297,7 +2297,9 @@ dependencies = [
  "glyphon",
  "pollster",
  "portable-pty",
+ "sys-locale",
  "tracing",
+ "unicode-script",
  "wgpu",
  "winit",
 ]

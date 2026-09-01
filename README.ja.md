@@ -81,6 +81,7 @@ cargo run -- --config /path/to/config.rb
 Toyoterm.configure do |config|
   config.font do |font|
     font.family = "monospace"
+    font.fallback = ["Noto Sans Mono CJK JP", "Noto Color Emoji"]
     font.size = 14
     font.weight = 400
   end
@@ -121,6 +122,8 @@ Toyoterm.on :config_reloaded do |event|
   event.pane.send_text("echo config reloaded\n")
 end
 ```
+
+`font.fallback`は省略できます。CJK、emoji、記号などの不足グリフに対し、インストール済みのフォントを指定順で試した後、OS標準のfallbackを使います。存在しないフォント名はフォントシステムが読み飛ばします。
 
 ### キーバインド
 

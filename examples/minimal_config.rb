@@ -1,6 +1,8 @@
 Toyoterm.configure do |config|
   config.font do |font|
     font.family = "monospace"
+    # Tried in order before the platform's standard fallback fonts.
+    font.fallback = ["Noto Sans Mono CJK JP", "Noto Color Emoji"]
     font.size = 14
     font.weight = 400
   end

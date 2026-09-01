@@ -1,12 +1,15 @@
 use std::collections::{HashMap, HashSet};
 use std::fmt;
 use std::sync::Arc;
+use std::sync::{Mutex, OnceLock};
 
+use glyphon::cosmic_text::{Fallback, PlatformFallback};
 use glyphon::{
     Attrs, Buffer, Cache as GlyphCache, Color as GlyphColor, Family, FontSystem, Metrics,
     Resolution, Shaping, Style, SwashCache, TextArea, TextAtlas, TextBounds, TextRenderer,
     Viewport, Weight, Wrap,
 };
+use unicode_script::Script;
 use wgpu::{
     Color, CommandEncoderDescriptor, CompositeAlphaMode, CurrentSurfaceTexture, Device,
     DeviceDescriptor, Instance, LoadOp, Operations, Queue, RenderPassColorAttachment,
@@ -73,6 +76,7 @@ pub struct ConfigErrorRenderData<'a> {
 #[derive(Clone, Debug, PartialEq)]
 pub struct RenderStyle {
     pub font_family: String,
+    pub font_fallback: Vec<String>,
     pub font_weight: u16,
     pub background: [u8; 3],
     pub foreground: [u8; 3],
@@ -85,6 +89,7 @@ impl Default for RenderStyle {
     fn default() -> Self {
         Self {
             font_family: "monospace".into(),
+            font_fallback: Vec::new(),
             font_weight: 400,
             background: [9, 11, 14],
             foreground: [220, 225, 232],
@@ -98,15 +103,15 @@ impl Default for RenderStyle {
 impl RenderStyle {
     pub fn from_hex(
         font_family: impl Into<String>,
+        font_fallback: Vec<String>,
         font_weight: u16,
-        background: &str,
-        foreground: &str,
-        cursor: &str,
-        selection: &str,
+        colors: [&str; 4],
         opacity: f32,
     ) -> Result<Self, RenderError> {
+        let [background, foreground, cursor, selection] = colors;
         Ok(Self {
             font_family: font_family.into(),
+            font_fallback,
             font_weight,
             background: parse_rgb(background)?,
             foreground: parse_rgb(foreground)?,
@@ -220,6 +225,77 @@ struct PaneBuffers {
     rect: PaneRect,
     active: bool,
     has_selection: bool,
+}
+
+struct ConfiguredFallback {
+    configured: Vec<&'static str>,
+    common: Vec<&'static str>,
+    platform: PlatformFallback,
+}
+
+impl ConfiguredFallback {
+    fn new(families: &[String]) -> Self {
+        let configured = families
+            .iter()
+            .map(|family| intern_font_family(family))
+            .collect::<Vec<_>>();
+        let platform = PlatformFallback;
+        let mut common = configured.clone();
+        common.extend_from_slice(platform.common_fallback());
+        Self {
+            configured,
+            common,
+            platform,
+        }
+    }
+}
+
+impl Fallback for ConfiguredFallback {
+    fn common_fallback(&self) -> &[&'static str] {
+        &self.common
+    }
+
+    fn forbidden_fallback(&self) -> &[&'static str] {
+        self.platform.forbidden_fallback()
+    }
+
+    fn script_fallback(&self, _script: Script, _locale: &str) -> &[&'static str] {
+        // Script-specific candidates are considered before the common list, so
+        // returning the configured list here preserves the user's priority.
+        &self.configured
+    }
+}
+
+fn intern_font_family(family: &str) -> &'static str {
+    static INTERNER: OnceLock<Mutex<HashMap<String, &'static str>>> = OnceLock::new();
+    let mut interner = INTERNER
+        .get_or_init(|| Mutex::new(HashMap::new()))
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    if let Some(interned) = interner.get(family) {
+        return interned;
+    }
+    // cosmic-text's Fallback API requires family names with process lifetime.
+    let interned = Box::leak(family.to_owned().into_boxed_str());
+    interner.insert(family.to_owned(), interned);
+    interned
+}
+
+fn configured_font_system(fallback: &[String]) -> FontSystem {
+    if fallback.is_empty() {
+        return FontSystem::new();
+    }
+    let locale = sys_locale::get_locale().unwrap_or_else(|| "en-US".to_owned());
+    let mut database = glyphon::fontdb::Database::new();
+    database.load_system_fonts();
+    database.set_monospace_family("Noto Sans Mono");
+    database.set_sans_serif_family("Open Sans");
+    database.set_serif_family("DejaVu Serif");
+    FontSystem::new_with_locale_and_db_and_fallback(
+        locale,
+        database,
+        ConfiguredFallback::new(fallback),
+    )
 }
 
 impl PaneBuffers {
@@ -350,6 +426,9 @@ impl GpuRenderer {
     }
 
     pub fn set_style(&mut self, style: RenderStyle) {
+        if self.style.font_fallback != style.font_fallback {
+            self.reset_font_system(&style.font_fallback);
+        }
         let alpha_mode = preferred_alpha_mode(&self.supported_alpha_modes, style.opacity);
         let alpha_mode_changed = self.configuration.alpha_mode != alpha_mode;
         self.configuration.alpha_mode = alpha_mode;
@@ -358,6 +437,45 @@ impl GpuRenderer {
         if alpha_mode_changed && !self.suspended {
             self.surface.configure(&self.device, &self.configuration);
         }
+    }
+
+    fn reset_font_system(&mut self, fallback: &[String]) {
+        self.font_system = configured_font_system(fallback);
+        self.panes.clear();
+        self.tabs.clear();
+        self.workspaces.clear();
+
+        let mut preedit = Buffer::new(&mut self.font_system, Metrics::new(14.0, 18.0));
+        preedit.set_wrap(Wrap::None);
+        self.preedit = preedit;
+        self.has_preedit = false;
+
+        let button_rect = self.command_menu.button_rect;
+        let reload_config_rect = self.command_menu.reload_config_rect;
+        let mut button = Buffer::new(&mut self.font_system, Metrics::new(12.0, 15.0));
+        button.set_wrap(Wrap::None);
+        let mut reload_config = Buffer::new(&mut self.font_system, Metrics::new(14.0, 18.0));
+        reload_config.set_wrap(Wrap::None);
+        self.command_menu = CommandMenuBuffers {
+            button,
+            reload_config,
+            button_rect,
+            reload_config_rect,
+        };
+
+        let mut buffer = || {
+            let mut buffer = Buffer::new(&mut self.font_system, Metrics::new(14.0, 18.0));
+            buffer.set_wrap(Wrap::None);
+            buffer
+        };
+        self.config_error = ConfigErrorBuffers {
+            title: buffer(),
+            message: buffer(),
+            open_log: buffer(),
+            open_ruby_console: buffer(),
+            dismiss: buffer(),
+            layout: None,
+        };
     }
 
     pub fn update_panes(&mut self, panes: &[PaneRenderData<'_>], layout: TextLayout) {
@@ -410,7 +528,7 @@ impl GpuRenderer {
                 buffers.text.set_text(
                     &pane.snapshot.lines.join("\n"),
                     &default_attrs,
-                    Shaping::Basic,
+                    Shaping::Advanced,
                     None,
                 );
             } else {
@@ -419,7 +537,7 @@ impl GpuRenderer {
                         .iter()
                         .map(|(text, attrs)| (text.as_str(), attrs.clone())),
                     &default_attrs,
-                    Shaping::Basic,
+                    Shaping::Advanced,
                     None,
                 );
             }
@@ -437,7 +555,7 @@ impl GpuRenderer {
                 &Attrs::new()
                     .family(Family::Name(&self.style.font_family))
                     .weight(Weight(self.style.font_weight)),
-                Shaping::Basic,
+                Shaping::Advanced,
                 None,
             );
             buffers
@@ -456,7 +574,7 @@ impl GpuRenderer {
                 &Attrs::new()
                     .family(Family::Name(&self.style.font_family))
                     .weight(Weight(self.style.font_weight)),
-                Shaping::Basic,
+                Shaping::Advanced,
                 None,
             );
             buffers
@@ -470,7 +588,7 @@ impl GpuRenderer {
                 &Attrs::new()
                     .family(Family::Name(&self.style.font_family))
                     .weight(Weight(self.style.font_weight)),
-                Shaping::Basic,
+                Shaping::Advanced,
                 None,
             );
             buffers
@@ -512,7 +630,7 @@ impl GpuRenderer {
                 &Attrs::new()
                     .family(Family::Name(&self.style.font_family))
                     .weight(Weight(self.style.font_weight)),
-                Shaping::Basic,
+                Shaping::Advanced,
                 None,
             );
             buffer.text.shape_until_scroll(&mut self.font_system, false);
@@ -563,7 +681,7 @@ impl GpuRenderer {
                 &Attrs::new()
                     .family(Family::Name(&self.style.font_family))
                     .weight(Weight(self.style.font_weight)),
-                Shaping::Basic,
+                Shaping::Advanced,
                 None,
             );
             buffer.text.shape_until_scroll(&mut self.font_system, false);
@@ -591,7 +709,7 @@ impl GpuRenderer {
             &Attrs::new()
                 .family(Family::Name(&self.style.font_family))
                 .weight(Weight(self.style.font_weight)),
-            Shaping::Basic,
+            Shaping::Advanced,
             None,
         );
         self.command_menu
@@ -610,7 +728,7 @@ impl GpuRenderer {
                 &Attrs::new()
                     .family(Family::Name(&self.style.font_family))
                     .weight(Weight(self.style.font_weight)),
-                Shaping::Basic,
+                Shaping::Advanced,
                 None,
             );
             self.command_menu
@@ -648,7 +766,7 @@ impl GpuRenderer {
         self.config_error.title.set_text(
             "Toyoterm Ruby Error",
             &attrs.clone().weight(Weight(700)),
-            Shaping::Basic,
+            Shaping::Advanced,
             None,
         );
         self.config_error
@@ -698,7 +816,7 @@ impl GpuRenderer {
                 Some(rect.width.saturating_sub(16) as f32),
                 Some(rect.height as f32),
             );
-            buffer.set_text(text, &attrs, Shaping::Basic, None);
+            buffer.set_text(text, &attrs, Shaping::Advanced, None);
             buffer.shape_until_scroll(&mut self.font_system, false);
         }
     }
@@ -1252,22 +1370,41 @@ mod tests {
     fn parses_configured_render_colors() {
         let style = RenderStyle::from_hex(
             "JetBrains Mono",
+            vec!["Noto Sans Mono CJK JP".into(), "Noto Color Emoji".into()],
             500,
-            "#112233",
-            "aabbcc",
-            "#ffffff",
-            "#010203",
+            ["#112233", "aabbcc", "#ffffff", "#010203"],
             0.9,
         )
         .unwrap();
         assert_eq!(style.background, [0x11, 0x22, 0x33]);
         assert_eq!(style.font_weight, 500);
+        assert_eq!(style.font_fallback.len(), 2);
         assert_eq!(style.foreground, [0xaa, 0xbb, 0xcc]);
         assert_eq!(style.opacity, 0.9);
-        let error =
-            RenderStyle::from_hex("mono", 400, "bad", "#fff", "#fff", "#fff", 1.0).unwrap_err();
+        let error = RenderStyle::from_hex(
+            "mono",
+            Vec::new(),
+            400,
+            ["bad", "#fff", "#fff", "#fff"],
+            1.0,
+        )
+        .unwrap_err();
         assert_eq!(error.operation(), "parse color");
         assert!(error.message().contains("expected #RRGGBB"));
+    }
+
+    #[test]
+    fn configured_font_fallback_preserves_user_priority() {
+        let fallback =
+            ConfiguredFallback::new(&["CJK First".to_owned(), "Emoji Second".to_owned()]);
+        assert_eq!(
+            &fallback.common_fallback()[..2],
+            &["CJK First", "Emoji Second"]
+        );
+        assert_eq!(
+            fallback.script_fallback(Script::Han, "ja-JP"),
+            &["CJK First", "Emoji Second"]
+        );
     }
 
     #[test]

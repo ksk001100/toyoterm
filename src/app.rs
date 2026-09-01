@@ -175,11 +175,14 @@ pub fn run_gui_with_config_path(config_path: Option<&Path>) -> Result<(), AppErr
     let config = config_manager.config();
     let render_style = RenderStyle::from_hex(
         &config.font.family,
+        config.font.fallback.clone(),
         config.font.weight,
-        &config.colors.background,
-        &config.colors.foreground,
-        &config.colors.cursor,
-        &config.colors.selection,
+        [
+            &config.colors.background,
+            &config.colors.foreground,
+            &config.colors.cursor,
+            &config.colors.selection,
+        ],
         config.window_opacity,
     )
     .map_err(|error| {
@@ -976,11 +979,14 @@ impl ToyotermApplication {
         self.leader_deadline = None;
         let render_style = RenderStyle::from_hex(
             &config.font.family,
+            config.font.fallback.clone(),
             config.font.weight,
-            &config.colors.background,
-            &config.colors.foreground,
-            &config.colors.cursor,
-            &config.colors.selection,
+            [
+                &config.colors.background,
+                &config.colors.foreground,
+                &config.colors.cursor,
+                &config.colors.selection,
+            ],
             config.window_opacity,
         )
         .map_err(|error| error.to_string())?;

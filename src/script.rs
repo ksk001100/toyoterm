@@ -35,12 +35,24 @@ pub(crate) enum ScriptCommand {
 const CONFIG_DSL: &str = r##"
 module Toyoterm
   class FontConfig
-    attr_accessor :family, :size, :weight
+    attr_accessor :family, :fallback, :size, :weight
 
     def initialize
       @family = "monospace"
+      @fallback = []
       @size = 14.0
       @weight = 400
+    end
+
+    def __fallback_count
+      raise TypeError, "font fallback must be an array" unless @fallback.is_a?(Array)
+      @fallback.length
+    end
+
+    def __fallback_at(index)
+      family = @fallback[index]
+      raise TypeError, "font fallback entries must be strings" unless family.is_a?(String)
+      family
     end
   end
 
@@ -418,6 +430,7 @@ unsafe extern "C" {
 #[derive(Clone, Debug, PartialEq)]
 pub struct FontConfig {
     pub family: String,
+    pub fallback: Vec<String>,
     pub size: f32,
     pub weight: u16,
 }
@@ -451,6 +464,7 @@ impl Default for ToyotermConfig {
         Self {
             font: FontConfig {
                 family: "monospace".into(),
+                fallback: Vec::new(),
                 size: 14.0,
                 weight: 400,
             },
@@ -862,6 +876,42 @@ fn load_config(source: &str, filename: &str) -> Result<LoadedConfig, ScriptError
 
     let defaults = ToyotermConfig::default();
     let family = runtime.eval("Toyoterm.__config.font.family")?;
+    if family.trim().is_empty() {
+        return Err(ScriptError::new(
+            "validate config",
+            "font family cannot be empty",
+        ));
+    }
+    let fallback_count = runtime
+        .eval("Toyoterm.__config.font.__fallback_count")?
+        .parse::<usize>()
+        .map_err(|_| {
+            ScriptError::new("validate config", "font fallback count must be an integer")
+        })?;
+    if fallback_count > 32 {
+        return Err(ScriptError::new(
+            "validate config",
+            "font fallback supports at most 32 families",
+        ));
+    }
+    let mut fallback = Vec::with_capacity(fallback_count);
+    for index in 0..fallback_count {
+        let fallback_family =
+            runtime.eval(&format!("Toyoterm.__config.font.__fallback_at({index})"))?;
+        if fallback_family.trim().is_empty() {
+            return Err(ScriptError::new(
+                "validate config",
+                "font fallback entries cannot be empty",
+            ));
+        }
+        if fallback_family == family || fallback.contains(&fallback_family) {
+            return Err(ScriptError::new(
+                "validate config",
+                format!("duplicate font family in fallback: {fallback_family}"),
+            ));
+        }
+        fallback.push(fallback_family);
+    }
     let font_size = parse_positive_f32("font size", &runtime.eval("Toyoterm.__config.font.size")?)?;
     let font_weight = runtime
         .eval("Toyoterm.__config.font.weight")?
@@ -913,6 +963,7 @@ fn load_config(source: &str, filename: &str) -> Result<LoadedConfig, ScriptError
     let config = ToyotermConfig {
         font: FontConfig {
             family,
+            fallback,
             size: font_size,
             weight: font_weight,
         },
@@ -1094,6 +1145,7 @@ mod tests {
                 Toyoterm.configure do |config|
                   config.font do |font|
                     font.family = "JetBrains Mono"
+                    font.fallback = ["Noto Sans Mono CJK JP", "Noto Color Emoji"]
                     font.size = 16
                     font.weight = 500
                   end
@@ -1107,6 +1159,10 @@ mod tests {
             .unwrap();
 
         assert_eq!(config.font.family, "JetBrains Mono");
+        assert_eq!(
+            config.font.fallback,
+            ["Noto Sans Mono CJK JP", "Noto Color Emoji"]
+        );
         assert_eq!(config.font.size, 16.0);
         assert_eq!(config.font.weight, 500);
         assert_eq!(config.colors.background, "#111111");
@@ -1126,6 +1182,25 @@ mod tests {
                 .message()
                 .contains("font weight must be between 1 and 1000")
         );
+    }
+
+    #[test]
+    fn rejects_invalid_font_fallbacks() {
+        let mut manager = ConfigManager::new().unwrap();
+        let error = manager
+            .reload("Toyoterm.configure { |config| config.font.fallback = 'emoji' }")
+            .unwrap_err();
+        assert!(error.message().contains("font fallback must be an array"));
+
+        let error = manager
+            .reload("Toyoterm.configure { |config| config.font.fallback = [''] }")
+            .unwrap_err();
+        assert!(error.message().contains("cannot be empty"));
+
+        let error = manager
+            .reload("Toyoterm.configure { |config| config.font.fallback = ['Noto', 'Noto'] }")
+            .unwrap_err();
+        assert!(error.message().contains("duplicate font family"));
     }
 
     #[test]
