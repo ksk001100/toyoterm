@@ -94,6 +94,7 @@ Toyoterm.configure do |config|
 
   config.window.opacity = 0.96
   config.scrollback_lines = 20_000
+  config.leader key: "b", mods: "CTRL", timeout: 1000
 
   # Set an explicit shell when needed. Otherwise the platform default is used.
   # config.default_shell = "/bin/zsh"
@@ -108,6 +109,7 @@ Toyoterm.configure do |config|
 
   # Common actions compile to native bindings and do not invoke mruby on key press.
   config.keys do
+    leader("v").split(:right)
     ctrl_shift("e").split(:right)
     ctrl_shift("o").activate_pane(:right)
     ctrl_shift("t").new_tab
@@ -127,7 +129,9 @@ end
 
 Key names are case-insensitive. Modifiers use names such as `CTRL`, `SHIFT`, `ALT`, and `SUPER`. Named keys include `ENTER`, `TAB`, `SPACE`, arrow keys, navigation keys, and `F1` through `F12`.
 
-`config.keys` provides `ctrl`, `ctrl_shift`, `alt`, `super_key`, and `physical` helpers. The `physical` helper distinguishes a hardware position from the logical character, for example `physical("KeyH", "CTRL")`. When both match, physical bindings take priority over logical bindings. User-configured bindings take priority over built-in GUI shortcuts. Defining the same chord more than once is a configuration error.
+`config.keys` provides `ctrl`, `ctrl_shift`, `alt`, `super_key`, `leader`, and `physical` helpers. The `physical` helper distinguishes a hardware position from the logical character, for example `physical("KeyH", "CTRL")`. When both match, physical bindings take priority over logical bindings. User-configured bindings take priority over built-in GUI shortcuts. Defining the same chord more than once is a configuration error.
+
+`config.leader` defines a native leader prefix with a timeout in milliseconds. `leader("v")` bindings are resolved without invoking mruby. The leader prefix is discarded; an unmatched or expired suffix continues through normal key handling. Leader state is cleared by repeat events, IME activity, focus loss, and configuration reload.
 
 Unmatched keys bypass mruby and go directly through the native terminal key encoder. If a Ruby callback raises an exception, toyoterm logs the error and keeps the shell running.
 

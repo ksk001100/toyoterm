@@ -104,6 +104,10 @@ module Toyoterm
       binding(key, "SUPER")
     end
 
+    def leader(key)
+      binding(key, "LEADER")
+    end
+
     def physical(key, mods = "")
       prefix = mods.to_s.upcase
       prefix = "#{prefix}+" unless prefix.empty?
@@ -128,6 +132,8 @@ module Toyoterm
       @scrollback_lines = 10_000
       @bindings = {}
       @static_bindings = {}
+      @leader_key = nil
+      @leader_timeout = 1000
     end
 
     def font(&block)
@@ -155,6 +161,23 @@ module Toyoterm
       return keys unless block
       block.arity == 0 ? keys.instance_eval(&block) : block.call(keys)
       keys
+    end
+
+    def leader(key:, mods: "", timeout: 1000)
+      key = key.to_s.upcase
+      raise ArgumentError, "leader key cannot be empty" if key.empty?
+      mods = mods.to_s.upcase
+      @leader_key = mods.empty? ? key : "#{mods}+#{key}"
+      @leader_timeout = timeout
+      self
+    end
+
+    def __leader_key
+      @leader_key || ""
+    end
+
+    def __leader_timeout
+      @leader_timeout
     end
 
     def __register_static(key, action, argument)
@@ -326,6 +349,12 @@ pub struct FontConfig {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+pub struct LeaderConfig {
+    pub key: String,
+    pub timeout_ms: u64,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ColorConfig {
     pub background: String,
     pub foreground: String,
@@ -340,6 +369,7 @@ pub struct ToyotermConfig {
     pub window_opacity: f32,
     pub default_shell: Option<String>,
     pub scrollback_lines: usize,
+    pub leader: Option<LeaderConfig>,
 }
 
 impl Default for ToyotermConfig {
@@ -359,6 +389,7 @@ impl Default for ToyotermConfig {
             window_opacity: 1.0,
             default_shell: None,
             scrollback_lines: 10_000,
+            leader: None,
         }
     }
 }
@@ -695,6 +726,27 @@ fn load_config(source: &str) -> Result<LoadedConfig, ScriptError> {
         .parse::<usize>()
         .map_err(|_| ScriptError::new("validate config", "scrollback_lines must be an integer"))?;
     let default_shell = runtime.eval("Toyoterm.__config.default_shell")?;
+    let leader_key = runtime.eval("Toyoterm.__config.__leader_key")?;
+    let leader = if leader_key.is_empty() {
+        None
+    } else {
+        let timeout_ms = runtime
+            .eval("Toyoterm.__config.__leader_timeout")?
+            .parse::<u64>()
+            .map_err(|_| {
+                ScriptError::new("validate config", "leader timeout must be an integer")
+            })?;
+        if timeout_ms == 0 {
+            return Err(ScriptError::new(
+                "validate config",
+                "leader timeout must be positive",
+            ));
+        }
+        Some(LeaderConfig {
+            key: leader_key,
+            timeout_ms,
+        })
+    };
 
     let config = ToyotermConfig {
         font: FontConfig {
@@ -715,6 +767,7 @@ fn load_config(source: &str) -> Result<LoadedConfig, ScriptError> {
             Some(default_shell)
         },
         scrollback_lines,
+        leader,
     };
     validate_color("background", &config.colors.background)?;
     validate_color("foreground", &config.colors.foreground)?;
@@ -1077,6 +1130,49 @@ mod tests {
             manager.native_action("ALT+Q"),
             Some(NativeAction::ClosePane)
         );
+    }
+
+    #[test]
+    fn loads_leader_configuration_and_compiles_leader_actions() {
+        let mut manager = ConfigManager::new().unwrap();
+        let config = manager
+            .reload(
+                r#"
+                Toyoterm.configure do |config|
+                  config.leader key: "b", mods: "CTRL", timeout: 750
+                  config.keys do
+                    leader("v").split(:right)
+                    leader("t").new_tab
+                  end
+                end
+                "#,
+            )
+            .unwrap();
+
+        assert_eq!(
+            config.leader,
+            Some(LeaderConfig {
+                key: "CTRL+B".into(),
+                timeout_ms: 750,
+            })
+        );
+        assert_eq!(
+            manager.native_action("LEADER+V"),
+            Some(NativeAction::Split(SplitDirection::Right))
+        );
+        assert_eq!(
+            manager.native_action("LEADER+T"),
+            Some(NativeAction::NewTab)
+        );
+    }
+
+    #[test]
+    fn rejects_invalid_leader_timeout() {
+        let mut manager = ConfigManager::new().unwrap();
+        let error = manager
+            .reload("Toyoterm.configure { |config| config.leader key: 'b', timeout: 0 }")
+            .unwrap_err();
+        assert!(error.message().contains("leader timeout must be positive"));
     }
 
     #[test]

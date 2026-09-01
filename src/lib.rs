@@ -33,8 +33,8 @@ pub use render::{
     TextLayout, WorkspaceRenderData,
 };
 pub use script::{
-    ColorConfig, ConfigManager, FontConfig, MrubyRuntime, ScriptError, ToyotermConfig,
-    default_config_path,
+    ColorConfig, ConfigManager, FontConfig, LeaderConfig, MrubyRuntime, ScriptError,
+    ToyotermConfig, default_config_path,
 };
 pub use terminal::{
     AlacrittyTerminalBackend, CellAttributes, CellColor, CursorShape, CursorState,

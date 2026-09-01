@@ -94,6 +94,7 @@ Toyoterm.configure do |config|
 
   config.window.opacity = 0.96
   config.scrollback_lines = 20_000
+  config.leader key: "b", mods: "CTRL", timeout: 1000
 
   # 必要な場合はシェルを明示できます。省略時はプラットフォーム標準です。
   # config.default_shell = "/bin/zsh"
@@ -108,6 +109,7 @@ Toyoterm.configure do |config|
 
   # 一般的な操作はNative Actionへcompileされ、キー入力時にmrubyを呼びません。
   config.keys do
+    leader("v").split(:right)
     ctrl_shift("e").split(:right)
     ctrl_shift("o").activate_pane(:right)
     ctrl_shift("t").new_tab
@@ -127,7 +129,9 @@ end
 
 キー名は大文字・小文字を区別しません。修飾キーには`CTRL`、`SHIFT`、`ALT`、`SUPER`などを使用します。名前付きキーは`ENTER`、`TAB`、`SPACE`、矢印キー、ナビゲーションキー、`F1`から`F12`に対応しています。
 
-`config.keys`では`ctrl`、`ctrl_shift`、`alt`、`super_key`、`physical`ヘルパーを使用できます。`physical("KeyH", "CTRL")`のように指定すると、論理文字ではなく物理キー位置へ割り当てられます。両方が一致した場合はphysical設定、組み込みGUIショートカットと競合した場合はユーザー設定を優先します。同じchordの重複定義は設定エラーです。
+`config.keys`では`ctrl`、`ctrl_shift`、`alt`、`super_key`、`leader`、`physical`ヘルパーを使用できます。`physical("KeyH", "CTRL")`のように指定すると、論理文字ではなく物理キー位置へ割り当てられます。両方が一致した場合はphysical設定、組み込みGUIショートカットと競合した場合はユーザー設定を優先します。同じchordの重複定義は設定エラーです。
+
+`config.leader`では、ミリ秒単位のtimeout付きLeader prefixをネイティブ側へ設定できます。`leader("v")`の割り当てはmrubyを呼ばずに解決されます。Leader prefix自体は破棄し、不一致またはtimeout後の次キーは通常のキー処理へ戻します。repeat、IME入力、フォーカス喪失、設定reloadではLeader待機状態を解除します。
 
 割り当てのないキーはmrubyを呼ばず、ネイティブのターミナルキーエンコーダへ直接渡されます。Ruby callbackで例外が発生した場合はエラーをログへ出し、シェルの実行を継続します。
 

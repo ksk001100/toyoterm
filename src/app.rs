@@ -201,6 +201,7 @@ struct ToyotermApplication {
     ime_preedit: Option<String>,
     modifiers: ModifiersState,
     alt_graph_active: bool,
+    leader_deadline: Option<Instant>,
     mouse_position: PhysicalPosition<f64>,
     wheel_line_accumulator: f64,
     selecting: bool,
@@ -310,6 +311,7 @@ impl ApplicationHandler<AppEvent> for ToyotermApplication {
                 // AltGraph) stuck when focus returns.
                 if !focused {
                     clear_modifier_state(&mut self.modifiers, &mut self.alt_graph_active);
+                    self.leader_deadline = None;
                 }
                 if self
                     .active_terminal()
@@ -349,6 +351,14 @@ impl ApplicationHandler<AppEvent> for ToyotermApplication {
                     return;
                 }
                 let modifiers = effective_modifiers(self.modifiers, self.alt_graph_active);
+                match self.handle_leader_key(&event, modifiers) {
+                    Ok(true) => return,
+                    Ok(false) => {}
+                    Err(error) => {
+                        eprintln!("toyoterm: {error}");
+                        return;
+                    }
+                }
                 if is_clipboard_shortcut(&event, modifiers, 'c') {
                     if let Err(error) = self.copy_selection() {
                         eprintln!("toyoterm: {error}");
@@ -391,11 +401,13 @@ impl ApplicationHandler<AppEvent> for ToyotermApplication {
                 }
             }
             WindowEvent::Ime(Ime::Preedit(text, _cursor)) => {
+                self.leader_deadline = None;
                 self.ime_preedit = (!text.is_empty()).then_some(text);
                 self.sync_active_renderer(window.scale_factor());
                 window.request_redraw();
             }
             WindowEvent::Ime(Ime::Commit(text)) => {
+                self.leader_deadline = None;
                 self.ime_preedit = None;
                 if let Err(error) = self.write_pty(text.as_bytes()) {
                     self.fail(event_loop, error);
@@ -404,6 +416,7 @@ impl ApplicationHandler<AppEvent> for ToyotermApplication {
                 window.request_redraw();
             }
             WindowEvent::Ime(Ime::Disabled) => {
+                self.leader_deadline = None;
                 self.ime_preedit = None;
                 self.sync_active_renderer(window.scale_factor());
                 window.request_redraw();
@@ -463,6 +476,7 @@ impl ToyotermApplication {
             ime_preedit: None,
             modifiers: ModifiersState::empty(),
             alt_graph_active: false,
+            leader_deadline: None,
             mouse_position: PhysicalPosition::new(0.0, 0.0),
             wheel_line_accumulator: 0.0,
             selecting: false,
@@ -526,11 +540,15 @@ impl ToyotermApplication {
         event: &KeyEvent,
         modifiers: ModifiersState,
     ) -> Result<bool, String> {
+        self.handle_keybinding_candidates(keybinding_names(event, modifiers))
+    }
+
+    fn handle_keybinding_candidates(&mut self, keys: Vec<String>) -> Result<bool, String> {
         let pane = self
             .mux
             .current_pane()
             .ok_or_else(|| "mux has no current pane".to_owned())?;
-        for key in keybinding_names(event, modifiers) {
+        for key in keys {
             if let Some(action) = self.config_manager.native_action(&key) {
                 self.execute_native_action(action)?;
                 return Ok(true);
@@ -564,6 +582,52 @@ impl ToyotermApplication {
             return Ok(true);
         }
         Ok(false)
+    }
+
+    fn handle_leader_key(
+        &mut self,
+        event: &KeyEvent,
+        modifiers: ModifiersState,
+    ) -> Result<bool, String> {
+        let now = Instant::now();
+        if let Some(deadline) = self.leader_deadline.take() {
+            // Repeated events must never extend or accidentally complete a
+            // leader sequence.
+            if event.repeat {
+                return Ok(true);
+            }
+            if now <= deadline {
+                let candidates = keybinding_names(event, modifiers)
+                    .into_iter()
+                    .map(|key| format!("LEADER+{key}"))
+                    .collect();
+                if self.handle_keybinding_candidates(candidates)? {
+                    return Ok(true);
+                }
+            }
+            // An unmatched or expired suffix is processed normally below by
+            // the caller. Only the leader prefix itself is discarded.
+            return Ok(false);
+        }
+
+        let Some(leader) = self.config_manager.config().leader.as_ref() else {
+            return Ok(false);
+        };
+        let matches_leader = keybinding_names(event, modifiers)
+            .iter()
+            .any(|key| key == &leader.key);
+        if event.repeat {
+            // Holding the prefix must not leak repeated prefix bytes to the PTY.
+            return Ok(matches_leader);
+        }
+        if !matches_leader {
+            return Ok(false);
+        }
+        self.leader_deadline = Some(
+            now.checked_add(Duration::from_millis(leader.timeout_ms))
+                .unwrap_or(now),
+        );
+        Ok(true)
     }
 
     fn execute_native_action(&mut self, action: NativeAction) -> Result<(), String> {
@@ -751,6 +815,7 @@ impl ToyotermApplication {
             .reload_file()
             .map_err(|error| error.to_string())?
             .clone();
+        self.leader_deadline = None;
         let render_style = RenderStyle::from_hex(
             &config.font.family,
             config.font.weight,

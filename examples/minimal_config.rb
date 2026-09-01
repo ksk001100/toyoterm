@@ -14,6 +14,7 @@ Toyoterm.configure do |config|
 
   config.window.opacity = 1.0
   config.scrollback_lines = 10_000
+  config.leader key: "b", mods: "CTRL", timeout: 1000
 
   config.bind "CTRL+SHIFT+H" do |context|
     context.pane.send_text("echo hello from toyoterm\n")
@@ -24,6 +25,7 @@ Toyoterm.configure do |config|
   end
 
   config.keys do
+    leader("v").split(:right)
     ctrl_shift("e").split(:right)
     ctrl_shift("o").activate_pane(:right)
     ctrl_shift("t").new_tab
