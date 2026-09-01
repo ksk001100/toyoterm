@@ -138,6 +138,8 @@ Unmatched keys bypass mruby and go directly through the native terminal key enco
 
 Configuration errors include the source filename, line number, and Ruby backtrace. The previous configuration remains active when a reload fails.
 
+GUI configuration failures open a non-fatal error banner. `Open Log` expands the complete diagnostic, `Open Ruby Console` explains the current console availability, and `Dismiss` closes the banner. A broken startup configuration falls back to defaults while retaining its path for a later reload.
+
 Changing `default_shell` does not replace the shell that is already running; it applies when a new terminal session is created.
 
 An executable starter configuration is available at `examples/minimal_config.rb` and can be tested with `toyoterm --config examples/minimal_config.rb`.

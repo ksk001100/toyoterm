@@ -16,11 +16,11 @@ use winit::window::{Window, WindowId};
 
 use crate::{
     AlacrittyTerminalBackend, BindingKey, Command, CommandMenuLayout, CommandMenuRenderData,
-    ConfigManager, GpuRenderer, KeyChord, KeyModifiers, KeyPress, KeypadKey, MouseWheelDirection,
-    Mux, NativeAction, NativePty, PaneId, PaneLayout, PaneRect, PaneRenderData, Pty, PtyCommand,
-    PtySession, PtySize, RenderStyle, SelectionKind, SplitDirection, TabRenderData, TabStripLayout,
-    TerminalBackend, TerminalKey, TextLayout, WorkspaceRenderData, WorkspaceStripLayout,
-    encode_key, encode_mouse_wheel, encode_paste,
+    ConfigErrorLayout, ConfigErrorRenderData, ConfigManager, GpuRenderer, KeyChord, KeyModifiers,
+    KeyPress, KeypadKey, MouseWheelDirection, Mux, NativeAction, NativePty, PaneId, PaneLayout,
+    PaneRect, PaneRenderData, Pty, PtyCommand, PtySession, PtySize, RenderStyle, SelectionKind,
+    SplitDirection, TabRenderData, TabStripLayout, TerminalBackend, TerminalKey, TextLayout,
+    WorkspaceRenderData, WorkspaceStripLayout, encode_key, encode_mouse_wheel, encode_paste,
 };
 
 const MULTI_CLICK_INTERVAL: Duration = Duration::from_millis(500);
@@ -50,6 +50,25 @@ impl ClickTracker {
         };
         self.previous = Some((now, target, count));
         count
+    }
+}
+
+struct ConfigErrorNotice {
+    message: String,
+    log_expanded: bool,
+    console_hint: bool,
+}
+
+impl ConfigErrorNotice {
+    fn display_message(&self) -> String {
+        if self.console_hint {
+            return "Ruby Console is not available yet. Use Open Log to inspect the complete error."
+                .to_owned();
+        }
+        if self.log_expanded {
+            return self.message.clone();
+        }
+        self.message.lines().take(3).collect::<Vec<_>>().join("\n")
     }
 }
 
@@ -131,8 +150,9 @@ pub fn run_gui() -> Result<(), AppError> {
 }
 
 pub fn run_gui_with_config_path(config_path: Option<&Path>) -> Result<(), AppError> {
-    let config_manager =
-        ConfigManager::load_startup(config_path).map_err(|error| AppError(error.to_string()))?;
+    let (config_manager, startup_config_error) =
+        ConfigManager::load_startup_recovering(config_path)
+            .map_err(|error| AppError(error.to_string()))?;
     let config = config_manager.config();
     let render_style = RenderStyle::from_hex(
         &config.font.family,
@@ -148,8 +168,13 @@ pub fn run_gui_with_config_path(config_path: Option<&Path>) -> Result<(), AppErr
         .build()
         .map_err(|error| AppError(error.to_string()))?;
     event_loop.set_control_flow(ControlFlow::Wait);
-    let mut app = ToyotermApplication::new(event_loop.create_proxy(), config_manager, render_style)
-        .map_err(AppError)?;
+    let mut app = ToyotermApplication::new(
+        event_loop.create_proxy(),
+        config_manager,
+        render_style,
+        startup_config_error.map(|error| error.to_string()),
+    )
+    .map_err(AppError)?;
     event_loop
         .run_app(&mut app)
         .map_err(|error| AppError(error.to_string()))?;
@@ -200,6 +225,8 @@ struct ToyotermApplication {
     workspace_layout: WorkspaceStripLayout,
     command_menu_layout: CommandMenuLayout,
     command_menu_open: bool,
+    config_error_layout: ConfigErrorLayout,
+    config_error_notice: Option<ConfigErrorNotice>,
     ime_preedit: Option<String>,
     modifiers: ModifiersState,
     alt_graph_active: bool,
@@ -358,6 +385,20 @@ impl ApplicationHandler<AppEvent> for ToyotermApplication {
                     return;
                 }
                 let modifiers = effective_modifiers(self.modifiers, self.alt_graph_active);
+                if self.config_error_notice.is_some()
+                    && matches!(event.logical_key, Key::Named(NamedKey::Escape))
+                {
+                    self.config_error_notice = None;
+                    if let Err(error) =
+                        self.resize_panes(window.inner_size(), window.scale_factor())
+                    {
+                        self.fail(event_loop, error);
+                        return;
+                    }
+                    self.sync_active_renderer(window.scale_factor());
+                    window.request_redraw();
+                    return;
+                }
                 if self.command_menu_open
                     && matches!(event.logical_key, Key::Named(NamedKey::Escape))
                 {
@@ -474,6 +515,7 @@ impl ToyotermApplication {
         event_proxy: EventLoopProxy<AppEvent>,
         config_manager: ConfigManager,
         render_style: RenderStyle,
+        startup_config_error: Option<String>,
     ) -> Result<Self, String> {
         let mut config_manager = config_manager;
         let mut mux = Mux::new();
@@ -490,6 +532,12 @@ impl ToyotermApplication {
             workspace_layout: WorkspaceStripLayout::default(),
             command_menu_layout: CommandMenuLayout::default(),
             command_menu_open: false,
+            config_error_layout: ConfigErrorLayout::default(),
+            config_error_notice: startup_config_error.map(|message| ConfigErrorNotice {
+                message,
+                log_expanded: false,
+                console_hint: false,
+            }),
             ime_preedit: None,
             modifiers: ModifiersState::empty(),
             alt_graph_active: false,
@@ -587,9 +635,7 @@ impl ToyotermApplication {
                 .take_reload_request()
                 .map_err(|error| error.to_string())?
             {
-                if let Err(error) = self.reload_config() {
-                    eprintln!("toyoterm: config reload failed: {error}");
-                }
+                self.reload_config_with_notification()?;
                 return Ok(true);
             }
 
@@ -657,7 +703,7 @@ impl ToyotermApplication {
                     .ok_or_else(|| "mux has no current pane".to_owned())?;
                 self.dispatch_gui_command(Command::ClosePane(pane))
             }
-            NativeAction::ReloadConfig => self.reload_config(),
+            NativeAction::ReloadConfig => self.reload_config_with_notification(),
             NativeAction::Split(direction) => self.split_active_pane(direction),
             NativeAction::ActivatePane(direction) => self.focus_neighbor(direction),
         }
@@ -670,7 +716,7 @@ impl ToyotermApplication {
     ) -> Result<bool, String> {
         if modifiers.control_key() && modifiers.shift_key() {
             if matches!(&event.logical_key, Key::Character(key) if key.eq_ignore_ascii_case("r")) {
-                self.reload_config()?;
+                self.reload_config_with_notification()?;
                 return Ok(true);
             }
             if matches!(&event.logical_key, Key::Character(key) if key.eq_ignore_ascii_case("t")) {
@@ -831,6 +877,26 @@ impl ToyotermApplication {
         Ok(())
     }
 
+    fn reload_config_with_notification(&mut self) -> Result<(), String> {
+        match self.reload_config() {
+            Ok(()) => self.config_error_notice = None,
+            Err(error) => {
+                eprintln!("toyoterm: config reload failed: {error}");
+                self.config_error_notice = Some(ConfigErrorNotice {
+                    message: error,
+                    log_expanded: false,
+                    console_hint: false,
+                });
+            }
+        }
+        if let Some(window) = self.window.clone() {
+            self.resize_panes(window.inner_size(), window.scale_factor())?;
+            self.sync_active_renderer(window.scale_factor());
+            window.request_redraw();
+        }
+        Ok(())
+    }
+
     fn reload_config(&mut self) -> Result<(), String> {
         let config = self
             .config_manager
@@ -906,6 +972,7 @@ impl ToyotermApplication {
         self.tab_layout = self.calculate_tab_layout(window_size, scale_factor);
         self.workspace_layout = self.calculate_workspace_layout(window_size, scale_factor);
         self.command_menu_layout = self.calculate_command_menu_layout(window_size, scale_factor);
+        self.config_error_layout = self.calculate_config_error_layout(window_size, scale_factor);
         self.pane_layout = self.calculate_pane_layout(window_size, scale_factor);
         let sizes = self
             .pane_layout
@@ -973,6 +1040,8 @@ impl ToyotermApplication {
             self.calculate_workspace_layout(window.inner_size(), window.scale_factor());
         self.command_menu_layout =
             self.calculate_command_menu_layout(window.inner_size(), window.scale_factor());
+        self.config_error_layout =
+            self.calculate_config_error_layout(window.inner_size(), window.scale_factor());
         self.pane_layout = self.calculate_pane_layout(window.inner_size(), window.scale_factor());
     }
 
@@ -1005,6 +1074,23 @@ impl ToyotermApplication {
             workspace_bar_height(scale_factor),
             tab_bar_height(scale_factor),
             command_menu_width(scale_factor),
+        )
+    }
+
+    fn calculate_config_error_layout(
+        &self,
+        window_size: PhysicalSize<u32>,
+        scale_factor: f64,
+    ) -> ConfigErrorLayout {
+        let Some(notice) = self.config_error_notice.as_ref() else {
+            return ConfigErrorLayout::default();
+        };
+        let y = workspace_bar_height(scale_factor).saturating_add(tab_bar_height(scale_factor));
+        let height = config_error_height(scale_factor, notice.log_expanded)
+            .min(window_size.height.saturating_sub(y));
+        ConfigErrorLayout::calculate(
+            PaneRect::new(0, y, window_size.width, height),
+            tab_bar_height(scale_factor),
         )
     }
 
@@ -1044,8 +1130,14 @@ impl ToyotermApplication {
         let Some(root) = self.mux.pane_tree(tab) else {
             return PaneLayout::default();
         };
+        let notification_height = self
+            .config_error_notice
+            .as_ref()
+            .map(|notice| config_error_height(scale_factor, notice.log_expanded))
+            .unwrap_or(0);
         let chrome_height = workspace_bar_height(scale_factor)
             .saturating_add(tab_bar_height(scale_factor))
+            .saturating_add(notification_height)
             .min(window_size.height);
         PaneLayout::calculate(
             root,
@@ -1223,8 +1315,8 @@ impl ToyotermApplication {
                     .reload_config_contains(self.mouse_position.x, self.mouse_position.y);
                 self.command_menu_open = false;
                 if reload_config {
-                    if let Err(error) = self.reload_config() {
-                        eprintln!("toyoterm: reload config: {error}");
+                    if let Err(error) = self.reload_config_with_notification() {
+                        eprintln!("toyoterm: update config error notification: {error}");
                     }
                     self.sync_active_renderer(window.scale_factor());
                     window.request_redraw();
@@ -1232,6 +1324,42 @@ impl ToyotermApplication {
                 }
                 self.sync_active_renderer(window.scale_factor());
                 window.request_redraw();
+            }
+            if self.config_error_notice.is_some()
+                && self
+                    .config_error_layout
+                    .notice()
+                    .contains(self.mouse_position.x, self.mouse_position.y)
+            {
+                let open_log = self
+                    .config_error_layout
+                    .open_log_contains(self.mouse_position.x, self.mouse_position.y);
+                let open_ruby_console = self
+                    .config_error_layout
+                    .open_ruby_console_contains(self.mouse_position.x, self.mouse_position.y);
+                let dismiss = self
+                    .config_error_layout
+                    .dismiss_contains(self.mouse_position.x, self.mouse_position.y);
+                if dismiss {
+                    self.config_error_notice = None;
+                } else if let Some(notice) = self.config_error_notice.as_mut() {
+                    if open_log {
+                        notice.log_expanded = !notice.log_expanded;
+                        notice.console_hint = false;
+                    } else if open_ruby_console {
+                        notice.console_hint = true;
+                    }
+                }
+                if open_log || open_ruby_console || dismiss {
+                    if let Err(error) =
+                        self.resize_panes(window.inner_size(), window.scale_factor())
+                    {
+                        eprintln!("toyoterm: resize after config notification action: {error}");
+                    }
+                    self.sync_active_renderer(window.scale_factor());
+                    window.request_redraw();
+                }
+                return;
             }
             if let Some(workspace) = self
                 .workspace_layout
@@ -1419,6 +1547,22 @@ impl ToyotermApplication {
                 active: *active,
             })
             .collect::<Vec<_>>();
+        let config_error_message = self
+            .config_error_notice
+            .as_ref()
+            .map(ConfigErrorNotice::display_message);
+        let config_error = self.config_error_notice.as_ref().and_then(|notice| {
+            config_error_message
+                .as_deref()
+                .map(|message| ConfigErrorRenderData {
+                    message,
+                    notice_rect: self.config_error_layout.notice(),
+                    open_log_rect: self.config_error_layout.open_log(),
+                    open_ruby_console_rect: self.config_error_layout.open_ruby_console(),
+                    dismiss_rect: self.config_error_layout.dismiss(),
+                    log_expanded: notice.log_expanded,
+                })
+        });
         let layout = self.cell_metrics.text_layout(scale_factor);
         if let Some(renderer) = self.renderer.as_mut() {
             renderer.update_panes(&panes, layout);
@@ -1433,6 +1577,7 @@ impl ToyotermApplication {
                 },
                 layout,
             );
+            renderer.update_config_error(config_error, layout);
             renderer.update_preedit(self.ime_preedit.as_deref(), layout);
         }
         self.update_ime_cursor_area(scale_factor);
@@ -1542,6 +1687,11 @@ fn workspace_bar_height(scale_factor: f64) -> u32 {
 
 fn command_menu_width(scale_factor: f64) -> u32 {
     (160.0 * scale_factor.max(0.1)).round() as u32
+}
+
+fn config_error_height(scale_factor: f64, log_expanded: bool) -> u32 {
+    let logical_height = if log_expanded { 240.0 } else { 120.0 };
+    (logical_height * scale_factor.max(0.1)).round() as u32
 }
 
 fn spawn_pty_reader(
@@ -1776,6 +1926,22 @@ fn named_key(key: &NamedKey) -> Option<TerminalKey> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn config_error_notice_switches_between_summary_log_and_console_hint() {
+        let mut notice = ConfigErrorNotice {
+            message: "error\nconfig.rb:2\nconfig.rb:5\nextra".into(),
+            log_expanded: false,
+            console_hint: false,
+        };
+        assert_eq!(notice.display_message(), "error\nconfig.rb:2\nconfig.rb:5");
+
+        notice.log_expanded = true;
+        assert_eq!(notice.display_message(), notice.message);
+
+        notice.console_hint = true;
+        assert!(notice.display_message().contains("not available yet"));
+    }
 
     #[test]
     fn calculates_grid_from_physical_window_size() {

@@ -138,6 +138,8 @@ end
 
 設定エラーにはソースのファイル名、行番号、Ruby backtraceを表示します。再読込に失敗した場合は、それまでの設定を維持します。
 
+GUIで設定の読込に失敗すると、アプリを終了せずエラーバナーを表示します。`Open Log`で診断全体を展開し、`Open Ruby Console`で現在のConsole提供状況を案内し、`Dismiss`で閉じます。起動時の設定が壊れている場合はデフォルト設定で起動し、修正後に再読込できるよう元のパスを維持します。
+
 `default_shell`を変更しても実行中のシェルは置き換えません。新しいターミナルセッションを作成するときに適用されます。
 
 実行可能な最小設定例は`examples/minimal_config.rb`にあります。`toyoterm --config examples/minimal_config.rb`で試せます。

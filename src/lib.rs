@@ -23,14 +23,14 @@ pub use input::{
     encode_key, encode_mouse_wheel, encode_paste,
 };
 pub use layout::{
-    CommandMenuLayout, PaneLayout, PanePlacement, PaneRect, SplitAxis, SplitBoundary, TabPlacement,
-    TabStripLayout, WorkspacePlacement, WorkspaceStripLayout,
+    CommandMenuLayout, ConfigErrorLayout, PaneLayout, PanePlacement, PaneRect, SplitAxis,
+    SplitBoundary, TabPlacement, TabStripLayout, WorkspacePlacement, WorkspaceStripLayout,
 };
 pub use mux::{Mux, MuxError, PaneNode};
 pub use pty::{NativePty, Pty, PtyCommand, PtyError, PtyExitStatus, PtySession, PtySize};
 pub use render::{
-    CommandMenuRenderData, GpuRenderer, PaneRenderData, RenderError, RenderOutcome, RenderStyle,
-    TabRenderData, TextLayout, WorkspaceRenderData,
+    CommandMenuRenderData, ConfigErrorRenderData, GpuRenderer, PaneRenderData, RenderError,
+    RenderOutcome, RenderStyle, TabRenderData, TextLayout, WorkspaceRenderData,
 };
 pub use script::{
     ColorConfig, ConfigManager, FontConfig, LeaderConfig, MrubyRuntime, ScriptError,

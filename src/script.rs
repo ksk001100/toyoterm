@@ -533,20 +533,30 @@ impl ConfigManager {
     }
 
     pub fn load_startup(explicit_path: Option<&Path>) -> Result<Self, ScriptError> {
+        let (manager, error) = Self::load_startup_recovering(explicit_path)?;
+        match error {
+            Some(error) => Err(error),
+            None => Ok(manager),
+        }
+    }
+
+    pub(crate) fn load_startup_recovering(
+        explicit_path: Option<&Path>,
+    ) -> Result<(Self, Option<ScriptError>), ScriptError> {
         let env_path = std::env::var_os("TOYOTERM_CONFIG_FILE").filter(|path| !path.is_empty());
         let home = home_directory();
         let mut manager = Self::new()?;
         let Some(path) = resolve_config_path(explicit_path, env_path.as_deref(), home.as_deref())
         else {
-            return Ok(manager);
+            return Ok((manager, None));
         };
         let required = explicit_path.is_some() || env_path.is_some();
         manager.source_path = Some(path.clone());
         if !required && !path.exists() {
-            return Ok(manager);
+            return Ok((manager, None));
         }
-        manager.reload_file()?;
-        Ok(manager)
+        let error = manager.reload_file().err();
+        Ok((manager, error))
     }
 
     pub fn source_path(&self) -> Option<&Path> {
@@ -1084,6 +1094,31 @@ fail_config
         assert!(message.contains(":2"), "{message}");
         assert!(message.contains(":4"), "{message}");
         assert!(message.contains("broken config"), "{message}");
+    }
+
+    #[test]
+    fn gui_startup_recovers_with_defaults_and_keeps_the_broken_path() {
+        let unique = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!(
+            "toyoterm-gui-config-{}-{unique}.rb",
+            std::process::id()
+        ));
+        std::fs::write(&path, "raise 'broken GUI config'").unwrap();
+
+        let (manager, error) = ConfigManager::load_startup_recovering(Some(&path)).unwrap();
+        std::fs::remove_file(&path).unwrap();
+
+        assert_eq!(manager.source_path(), Some(path.as_path()));
+        assert_eq!(manager.config(), &ToyotermConfig::default());
+        assert!(
+            error
+                .expect("broken config should be reported")
+                .message()
+                .contains("broken GUI config")
+        );
     }
 
     #[test]

@@ -69,6 +69,76 @@ pub struct CommandMenuLayout {
     reload_config: PaneRect,
 }
 
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct ConfigErrorLayout {
+    notice: PaneRect,
+    open_log: PaneRect,
+    open_ruby_console: PaneRect,
+    dismiss: PaneRect,
+}
+
+impl ConfigErrorLayout {
+    pub fn calculate(bounds: PaneRect, action_height: u32) -> Self {
+        let action_height = action_height.min(bounds.height);
+        let action_y = bounds
+            .y
+            .saturating_add(bounds.height.saturating_sub(action_height));
+        let first_width = bounds.width / 3;
+        let second_width = bounds.width / 3;
+        let third_width = bounds
+            .width
+            .saturating_sub(first_width)
+            .saturating_sub(second_width);
+        Self {
+            notice: bounds,
+            open_log: PaneRect::new(bounds.x, action_y, first_width, action_height),
+            open_ruby_console: PaneRect::new(
+                bounds.x.saturating_add(first_width),
+                action_y,
+                second_width,
+                action_height,
+            ),
+            dismiss: PaneRect::new(
+                bounds
+                    .x
+                    .saturating_add(first_width)
+                    .saturating_add(second_width),
+                action_y,
+                third_width,
+                action_height,
+            ),
+        }
+    }
+
+    pub fn notice(&self) -> PaneRect {
+        self.notice
+    }
+
+    pub fn open_log(&self) -> PaneRect {
+        self.open_log
+    }
+
+    pub fn open_ruby_console(&self) -> PaneRect {
+        self.open_ruby_console
+    }
+
+    pub fn dismiss(&self) -> PaneRect {
+        self.dismiss
+    }
+
+    pub fn open_log_contains(&self, x: f64, y: f64) -> bool {
+        self.open_log.contains(x, y)
+    }
+
+    pub fn open_ruby_console_contains(&self, x: f64, y: f64) -> bool {
+        self.open_ruby_console.contains(x, y)
+    }
+
+    pub fn dismiss_contains(&self, x: f64, y: f64) -> bool {
+        self.dismiss.contains(x, y)
+    }
+}
+
 impl CommandMenuLayout {
     pub fn calculate(
         window_width: u32,
@@ -436,5 +506,18 @@ mod tests {
         assert!(layout.button_contains(399.0, 12.0));
         assert!(layout.reload_config_contains(250.0, 40.0));
         assert!(!layout.reload_config_contains(239.0, 40.0));
+    }
+
+    #[test]
+    fn lays_out_config_error_actions_without_gaps() {
+        let layout = ConfigErrorLayout::calculate(PaneRect::new(0, 54, 401, 120), 30);
+
+        assert_eq!(layout.notice(), PaneRect::new(0, 54, 401, 120));
+        assert_eq!(layout.open_log(), PaneRect::new(0, 144, 133, 30));
+        assert_eq!(layout.open_ruby_console(), PaneRect::new(133, 144, 133, 30));
+        assert_eq!(layout.dismiss(), PaneRect::new(266, 144, 135, 30));
+        assert!(layout.open_log_contains(132.0, 150.0));
+        assert!(layout.open_ruby_console_contains(133.0, 150.0));
+        assert!(layout.dismiss_contains(400.0, 150.0));
     }
 }

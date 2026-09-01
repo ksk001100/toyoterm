@@ -60,6 +60,16 @@ pub struct CommandMenuRenderData {
     pub reload_config_rect: Option<PaneRect>,
 }
 
+#[derive(Clone, Copy, Debug)]
+pub struct ConfigErrorRenderData<'a> {
+    pub message: &'a str,
+    pub notice_rect: PaneRect,
+    pub open_log_rect: PaneRect,
+    pub open_ruby_console_rect: PaneRect,
+    pub dismiss_rect: PaneRect,
+    pub log_expanded: bool,
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct RenderStyle {
     pub font_family: String,
@@ -155,6 +165,7 @@ pub struct GpuRenderer {
     tabs: HashMap<TabId, TabBuffer>,
     workspaces: HashMap<WorkspaceId, TabBuffer>,
     command_menu: CommandMenuBuffers,
+    config_error: ConfigErrorBuffers,
     preedit: Buffer,
     has_preedit: bool,
     style: RenderStyle,
@@ -171,6 +182,24 @@ struct CommandMenuBuffers {
     reload_config: Buffer,
     button_rect: PaneRect,
     reload_config_rect: Option<PaneRect>,
+}
+
+struct ConfigErrorBuffers {
+    title: Buffer,
+    message: Buffer,
+    open_log: Buffer,
+    open_ruby_console: Buffer,
+    dismiss: Buffer,
+    layout: Option<ConfigErrorRenderLayout>,
+}
+
+#[derive(Clone, Copy)]
+struct ConfigErrorRenderLayout {
+    notice: PaneRect,
+    message_top: f32,
+    open_log: PaneRect,
+    open_ruby_console: PaneRect,
+    dismiss: PaneRect,
 }
 
 struct PaneBuffers {
@@ -258,6 +287,19 @@ impl GpuRenderer {
         command_button.set_wrap(Wrap::None);
         let mut reload_config = Buffer::new(&mut font_system, Metrics::new(14.0, 18.0));
         reload_config.set_wrap(Wrap::None);
+        let mut config_error_buffer = || {
+            let mut buffer = Buffer::new(&mut font_system, Metrics::new(14.0, 18.0));
+            buffer.set_wrap(Wrap::None);
+            buffer
+        };
+        let config_error = ConfigErrorBuffers {
+            title: config_error_buffer(),
+            message: config_error_buffer(),
+            open_log: config_error_buffer(),
+            open_ruby_console: config_error_buffer(),
+            dismiss: config_error_buffer(),
+            layout: None,
+        };
         let style = RenderStyle::default();
         let initial_alpha_mode = configuration.alpha_mode;
         Ok(Self {
@@ -284,6 +326,7 @@ impl GpuRenderer {
                 button_rect: PaneRect::default(),
                 reload_config_rect: None,
             },
+            config_error,
             preedit,
             has_preedit: false,
             style,
@@ -560,6 +603,90 @@ impl GpuRenderer {
         }
     }
 
+    pub fn update_config_error(
+        &mut self,
+        error: Option<ConfigErrorRenderData<'_>>,
+        layout: TextLayout,
+    ) {
+        let Some(error) = error else {
+            self.config_error.layout = None;
+            return;
+        };
+        self.config_error.layout = Some(ConfigErrorRenderLayout {
+            notice: error.notice_rect,
+            message_top: error.notice_rect.y as f32 + layout.line_height + 4.0,
+            open_log: error.open_log_rect,
+            open_ruby_console: error.open_ruby_console_rect,
+            dismiss: error.dismiss_rect,
+        });
+        let metrics = Metrics::new(layout.font_size.max(1.0), layout.line_height.max(1.0));
+        let attrs = Attrs::new()
+            .family(Family::Name(&self.style.font_family))
+            .weight(Weight(self.style.font_weight));
+
+        self.config_error.title.set_metrics_and_size(
+            metrics,
+            Some(error.notice_rect.width.saturating_sub(16) as f32),
+            Some(layout.line_height),
+        );
+        self.config_error.title.set_text(
+            "Toyoterm Ruby Error",
+            &attrs.clone().weight(Weight(700)),
+            Shaping::Basic,
+            None,
+        );
+        self.config_error
+            .title
+            .shape_until_scroll(&mut self.font_system, false);
+
+        let message_height = error
+            .notice_rect
+            .height
+            .saturating_sub(error.open_log_rect.height)
+            .saturating_sub(layout.line_height as u32);
+        self.config_error.message.set_metrics_and_size(
+            metrics,
+            Some(error.notice_rect.width.saturating_sub(16) as f32),
+            Some(message_height as f32),
+        );
+        self.config_error
+            .message
+            .set_text(error.message, &attrs, Shaping::Advanced, None);
+        self.config_error
+            .message
+            .shape_until_scroll(&mut self.font_system, false);
+
+        for (buffer, rect, text) in [
+            (
+                &mut self.config_error.open_log,
+                error.open_log_rect,
+                if error.log_expanded {
+                    "Hide Log"
+                } else {
+                    "Open Log"
+                },
+            ),
+            (
+                &mut self.config_error.open_ruby_console,
+                error.open_ruby_console_rect,
+                "Open Ruby Console",
+            ),
+            (
+                &mut self.config_error.dismiss,
+                error.dismiss_rect,
+                "Dismiss",
+            ),
+        ] {
+            buffer.set_metrics_and_size(
+                metrics,
+                Some(rect.width.saturating_sub(16) as f32),
+                Some(rect.height as f32),
+            );
+            buffer.set_text(text, &attrs, Shaping::Basic, None);
+            buffer.shape_until_scroll(&mut self.font_system, false);
+        }
+    }
+
     pub fn update_preedit(&mut self, text: Option<&str>, layout: TextLayout) {
         let text = text.unwrap_or_default();
         self.has_preedit = !text.is_empty();
@@ -604,7 +731,7 @@ impl GpuRenderer {
             },
         );
         let mut text_areas =
-            Vec::with_capacity(self.panes.len() * 4 + self.tabs.len() + self.workspaces.len() + 2);
+            Vec::with_capacity(self.panes.len() * 4 + self.tabs.len() + self.workspaces.len() + 7);
         for workspace in self.workspaces.values() {
             text_areas.push(TextArea {
                 buffer: &workspace.text,
@@ -654,6 +781,44 @@ impl GpuRenderer {
                 default_color: glyph_color(self.style.cursor, 255),
                 custom_glyphs: &[],
             });
+        }
+        if let Some(layout) = self.config_error.layout {
+            text_areas.push(TextArea {
+                buffer: &self.config_error.title,
+                left: layout.notice.x as f32 + 8.0,
+                top: layout.notice.y as f32 + 4.0,
+                scale: 1.0,
+                bounds: pane_bounds(layout.notice),
+                default_color: glyph_color([255, 120, 110], 255),
+                custom_glyphs: &[],
+            });
+            text_areas.push(TextArea {
+                buffer: &self.config_error.message,
+                left: layout.notice.x as f32 + 8.0,
+                top: layout.message_top,
+                scale: 1.0,
+                bounds: pane_bounds(layout.notice),
+                default_color: glyph_color(self.style.foreground, 255),
+                custom_glyphs: &[],
+            });
+            for (buffer, rect) in [
+                (&self.config_error.open_log, layout.open_log),
+                (
+                    &self.config_error.open_ruby_console,
+                    layout.open_ruby_console,
+                ),
+                (&self.config_error.dismiss, layout.dismiss),
+            ] {
+                text_areas.push(TextArea {
+                    buffer,
+                    left: rect.x as f32 + 8.0,
+                    top: rect.y as f32 + 4.0,
+                    scale: 1.0,
+                    bounds: pane_bounds(rect),
+                    default_color: glyph_color(self.style.cursor, 255),
+                    custom_glyphs: &[],
+                });
+            }
         }
         for pane in self.panes.values() {
             let bounds = pane_bounds(pane.rect);
