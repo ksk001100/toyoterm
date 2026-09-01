@@ -361,6 +361,7 @@ impl PaneBuffers {
         let mut buffer = || {
             let mut buffer = Buffer::new(font_system, metrics);
             buffer.set_wrap(Wrap::None);
+            buffer.set_monospace_width(Some(layout.cell_width.max(1.0)));
             buffer
         };
         Self {
@@ -379,6 +380,15 @@ impl PaneBuffers {
             active: false,
             has_selection: false,
         }
+    }
+
+    fn set_layout(&mut self, layout: TextLayout) {
+        self.layout = layout;
+        let cell_width = Some(layout.cell_width.max(1.0));
+        self.text.set_monospace_width(cell_width);
+        self.selection.set_monospace_width(cell_width);
+        self.cursor_glyph.set_monospace_width(cell_width);
+        self.focus.set_monospace_width(cell_width);
     }
 }
 
@@ -600,7 +610,7 @@ impl GpuRenderer {
                 .panes
                 .get_mut(&pane.pane)
                 .expect("pane buffers were inserted");
-            buffers.layout = layout;
+            buffers.set_layout(layout);
             buffers.cursor = pane.cursor;
             buffers.rect = pane.rect;
             buffers.active = pane.active;
@@ -1597,6 +1607,37 @@ mod tests {
             surface_resize(PhysicalSize::new(640, 360)),
         );
         assert_eq!(snapshot, include_str!("snapshots/render_plan.snap"));
+    }
+
+    #[test]
+    fn terminal_buffers_use_the_configured_cell_width() {
+        let mut font_system = FontSystem::new();
+        let initial_layout = TextLayout {
+            font_size: 14.0,
+            line_height: 18.0,
+            cell_width: 9.0,
+            horizontal_padding: 8.0,
+            vertical_padding: 8.0,
+        };
+        let mut buffers = PaneBuffers::new(
+            &mut font_system,
+            Metrics::new(initial_layout.font_size, initial_layout.line_height),
+            initial_layout,
+        );
+
+        assert_eq!(buffers.text.monospace_width(), Some(9.0));
+        assert_eq!(buffers.selection.monospace_width(), Some(9.0));
+        assert_eq!(buffers.cursor_glyph.monospace_width(), Some(9.0));
+
+        buffers.set_layout(TextLayout {
+            cell_width: 13.5,
+            ..initial_layout
+        });
+
+        assert_eq!(buffers.text.monospace_width(), Some(13.5));
+        assert_eq!(buffers.selection.monospace_width(), Some(13.5));
+        assert_eq!(buffers.cursor_glyph.monospace_width(), Some(13.5));
+        assert_eq!(buffers.focus.monospace_width(), Some(13.5));
     }
 
     #[test]
