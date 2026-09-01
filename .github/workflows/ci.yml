@@ -55,7 +55,14 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - name: Install display test dependencies
-        run: sudo apt-get update && sudo apt-get install -y xvfb weston
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libvulkan1 \
+            libxkbcommon-x11-0 \
+            mesa-vulkan-drivers \
+            weston \
+            xvfb
       - name: X11 GUI smoke test
         if: matrix.display == 'x11'
         run: xvfb-run -a cargo run --locked -- gui-smoke-test
