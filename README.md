@@ -165,6 +165,10 @@ The embedded runtime is mruby, not CRuby. CRuby gems, native extensions, and the
 - Drag with the left mouse button: select text
 - Mouse wheel: scroll through history, or report wheel input when the terminal application requests mouse reporting
 
+### Clipboard security
+
+OSC 52 clipboard access is disabled in v0.1. Terminal output may originate from an untrusted local process or remote host, so allowing OSC 52 would let it write the host clipboard without an explicit user gesture; clipboard query responses could also expose clipboard contents. The built-in copy and paste shortcuts remain available. Future OSC 52 support must be opt-in, keep clipboard reads disabled by default, and provide an explicit permission or confirmation UI with a payload size limit.
+
 ## CLI
 
 ```text

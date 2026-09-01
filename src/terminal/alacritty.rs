@@ -4,7 +4,7 @@ use alacritty_terminal::grid::{Dimensions, Scroll};
 use alacritty_terminal::index::{Column, Line, Point, Side};
 use alacritty_terminal::selection::{Selection, SelectionType};
 use alacritty_terminal::term::cell::Flags;
-use alacritty_terminal::term::{Config, MIN_COLUMNS, MIN_SCREEN_LINES, TermMode};
+use alacritty_terminal::term::{Config, MIN_COLUMNS, MIN_SCREEN_LINES, Osc52, TermMode};
 use alacritty_terminal::vte::ansi::{
     Color, CursorShape as AlacrittyCursorShape, NamedColor, Processor,
 };
@@ -29,10 +29,7 @@ impl AlacrittyTerminalBackend {
 
     pub fn with_scrollback(columns: u16, rows: u16, scrollback_lines: usize) -> Self {
         let size = TermSize::new(columns, rows);
-        let config = Config {
-            scrolling_history: scrollback_lines,
-            ..Config::default()
-        };
+        let config = terminal_config(scrollback_lines);
         Self {
             processor: Processor::new(),
             terminal: Term::new(config, &size, VoidListener),
@@ -54,6 +51,17 @@ impl AlacrittyTerminalBackend {
         let column = usize::from(column).min(grid.columns().saturating_sub(1));
         let row = i32::from(row).min(grid.screen_lines().saturating_sub(1) as i32);
         Point::new(Line(row - grid.display_offset() as i32), Column(column))
+    }
+}
+
+fn terminal_config(scrollback_lines: usize) -> Config {
+    Config {
+        scrolling_history: scrollback_lines,
+        // OSC 52 allows terminal output, including output from a remote host,
+        // to access the host clipboard without an explicit user gesture. Keep
+        // it disabled until toyoterm has an opt-in permission and confirmation UI.
+        osc52: Osc52::Disabled,
+        ..Config::default()
     }
 }
 
@@ -441,6 +449,19 @@ mod tests {
         let snapshot = backend.snapshot();
         assert_eq!((snapshot.columns, snapshot.rows), (120, 40));
         assert_eq!(snapshot.lines.len(), 40);
+    }
+
+    #[test]
+    fn disables_osc52_clipboard_access_without_disrupting_terminal_output() {
+        assert_eq!(
+            terminal_config(DEFAULT_SCROLLBACK_LINES).osc52,
+            Osc52::Disabled
+        );
+
+        let mut backend = AlacrittyTerminalBackend::new(20, 2);
+        backend.advance(b"before\x1b]52;c;dG95b3Rlcm0=\x07after");
+
+        assert_eq!(backend.snapshot().lines[0], "beforeafter");
     }
 
     #[test]
