@@ -166,6 +166,10 @@ impl PtyError {
     pub fn operation(&self) -> &'static str {
         self.operation
     }
+
+    pub fn message(&self) -> &str {
+        &self.message
+    }
 }
 
 impl fmt::Display for PtyError {

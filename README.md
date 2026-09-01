@@ -169,6 +169,8 @@ TOYOTERM_LOG=debug toyoterm
 TOYOTERM_LOG=warn,pty=trace,render=debug toyoterm
 ```
 
+v0.1 writes logs only to stderr and does not create or rotate log files. Redirecting stderr is an explicit user choice, so retention and rotation then belong to the surrounding process manager. Logs never intentionally include PTY input/output, clipboard contents, or configuration source text. Diagnostics can include configuration paths, process and pane identifiers, callback names, dimensions, error messages, and Ruby backtraces; review them before sharing.
+
 ## Controls
 
 - Type normally to send input to the PTY

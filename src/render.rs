@@ -136,6 +136,14 @@ impl RenderError {
             message: error.to_string(),
         }
     }
+
+    pub fn operation(&self) -> &'static str {
+        self.operation
+    }
+
+    pub fn message(&self) -> &str {
+        &self.message
+    }
 }
 
 impl fmt::Display for RenderError {
@@ -1256,7 +1264,10 @@ mod tests {
         assert_eq!(style.font_weight, 500);
         assert_eq!(style.foreground, [0xaa, 0xbb, 0xcc]);
         assert_eq!(style.opacity, 0.9);
-        assert!(RenderStyle::from_hex("mono", 400, "bad", "#fff", "#fff", "#fff", 1.0).is_err());
+        let error =
+            RenderStyle::from_hex("mono", 400, "bad", "#fff", "#fff", "#fff", 1.0).unwrap_err();
+        assert_eq!(error.operation(), "parse color");
+        assert!(error.message().contains("expected #RRGGBB"));
     }
 
     #[test]

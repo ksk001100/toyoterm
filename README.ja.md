@@ -169,6 +169,8 @@ TOYOTERM_LOG=debug toyoterm
 TOYOTERM_LOG=warn,pty=trace,render=debug toyoterm
 ```
 
+v0.1のログ出力先は標準エラー出力のみで、ログファイルの作成やrotationは行いません。標準エラー出力のredirectはユーザーの明示的な選択とし、その場合の保存期間とrotationはprocess manager側の責務とします。PTYの入出力、クリップボード内容、設定source本文は意図的にログへ含めません。設定path、process・Pane ID、callback名、画面寸法、エラーメッセージ、Ruby backtraceは診断情報へ含まれる場合があるため、共有前に内容を確認してください。
+
 ## 操作
 
 - 通常のキー入力：PTYへ入力を送信

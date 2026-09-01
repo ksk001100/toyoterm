@@ -152,8 +152,26 @@ pub fn run_gui() -> Result<(), AppError> {
 
 pub fn run_gui_with_config_path(config_path: Option<&Path>) -> Result<(), AppError> {
     let (config_manager, startup_config_error) =
-        ConfigManager::load_startup_recovering(config_path)
-            .map_err(|error| AppError(error.to_string()))?;
+        ConfigManager::load_startup_recovering(config_path).map_err(|error| {
+            tracing::error!(
+                target: "toyoterm::config",
+                operation = error.operation(),
+                config_path = ?config_path,
+                %error,
+                "load startup config failed"
+            );
+            AppError(error.to_string())
+        })?;
+    let startup_config_error = startup_config_error.map(|error| {
+        tracing::warn!(
+            target: "toyoterm::config",
+            operation = error.operation(),
+            config_path = ?config_path,
+            %error,
+            "startup config rejected; using defaults"
+        );
+        error.to_string()
+    });
     let config = config_manager.config();
     let render_style = RenderStyle::from_hex(
         &config.font.family,
@@ -164,7 +182,15 @@ pub fn run_gui_with_config_path(config_path: Option<&Path>) -> Result<(), AppErr
         &config.colors.selection,
         config.window_opacity,
     )
-    .map_err(|error| AppError(error.to_string()))?;
+    .map_err(|error| {
+        tracing::error!(
+            target: "toyoterm::render",
+            operation = error.operation(),
+            %error,
+            "build render style failed"
+        );
+        AppError(error.to_string())
+    })?;
     let event_loop = EventLoop::<AppEvent>::with_user_event()
         .build()
         .map_err(|error| AppError(error.to_string()))?;
@@ -173,7 +199,7 @@ pub fn run_gui_with_config_path(config_path: Option<&Path>) -> Result<(), AppErr
         event_loop.create_proxy(),
         config_manager,
         render_style,
-        startup_config_error.map(|error| error.to_string()),
+        startup_config_error,
     )
     .map_err(AppError)?;
     event_loop
@@ -265,6 +291,15 @@ impl ApplicationHandler<AppEvent> for ToyotermApplication {
         let mut renderer = match pollster::block_on(GpuRenderer::new(window.clone())) {
             Ok(renderer) => renderer,
             Err(error) => {
+                tracing::error!(
+                    target: "toyoterm::render",
+                    operation = error.operation(),
+                    width = window.inner_size().width,
+                    height = window.inner_size().height,
+                    scale_factor = window.scale_factor(),
+                    %error,
+                    "initialize renderer failed"
+                );
                 self.fail(event_loop, error.to_string());
                 return;
             }
@@ -487,7 +522,12 @@ impl ApplicationHandler<AppEvent> for ToyotermApplication {
                 if let Some(renderer) = self.renderer.as_mut()
                     && let Err(error) = renderer.render()
                 {
-                    tracing::error!(target: "toyoterm::render", %error, "render failed");
+                    tracing::error!(
+                        target: "toyoterm::render",
+                        operation = error.operation(),
+                        %error,
+                        "render failed"
+                    );
                     self.fail(event_loop, error.to_string());
                 }
             }
@@ -510,7 +550,13 @@ impl ApplicationHandler<AppEvent> for ToyotermApplication {
             }
             AppEvent::Eof { pane } => self.mark_pane_exited(pane, None),
             AppEvent::Error { pane, message } => {
-                tracing::error!(target: "toyoterm::pty", %pane, %message, "PTY reader failed");
+                tracing::error!(
+                    target: "toyoterm::pty",
+                    operation = "read PTY output",
+                    %pane,
+                    %message,
+                    "PTY reader failed"
+                );
                 self.mark_pane_exited(pane, Some(message));
             }
         }
@@ -574,10 +620,28 @@ impl ToyotermApplication {
             None => PtyCommand::default_shell(),
         };
         command.env("TERM", "xterm-256color");
-        let mut session = NativePty
-            .spawn(command, size)
-            .map_err(|error| error.to_string())?;
-        let reader = session.take_reader().map_err(|error| error.to_string())?;
+        let mut session = NativePty.spawn(command, size).map_err(|error| {
+            tracing::error!(
+                target: "toyoterm::pty",
+                operation = error.operation(),
+                %pane,
+                columns = size.columns,
+                rows = size.rows,
+                %error,
+                "start pane shell failed"
+            );
+            error.to_string()
+        })?;
+        let reader = session.take_reader().map_err(|error| {
+            tracing::error!(
+                target: "toyoterm::pty",
+                operation = error.operation(),
+                %pane,
+                %error,
+                "open pane PTY reader failed"
+            );
+            error.to_string()
+        })?;
         let process_id = session.process_id();
         spawn_pty_reader(pane, reader, self.event_proxy.clone())?;
         Ok(PaneRuntime {
@@ -634,7 +698,14 @@ impl ToyotermApplication {
                 Ok(true) => {}
                 Ok(false) => continue,
                 Err(error) => {
-                    tracing::warn!(target: "toyoterm::script", %error, key, "Ruby key binding failed");
+                    tracing::warn!(
+                        target: "toyoterm::script",
+                        operation = error.operation(),
+                        %pane,
+                        key,
+                        %error,
+                        "Ruby key binding failed"
+                    );
                     return Ok(true);
                 }
             }
@@ -871,7 +942,6 @@ impl ToyotermApplication {
         match self.reload_config() {
             Ok(()) => self.config_error_notice = None,
             Err(error) => {
-                tracing::warn!(target: "toyoterm::config", %error, "config reload failed");
                 self.config_error_notice = Some(ConfigErrorNotice {
                     message: error,
                     log_expanded: false,
@@ -888,10 +958,20 @@ impl ToyotermApplication {
     }
 
     fn reload_config(&mut self) -> Result<(), String> {
+        let config_path = self.config_manager.source_path().map(Path::to_owned);
         let config = self
             .config_manager
             .reload_file()
-            .map_err(|error| error.to_string())?
+            .map_err(|error| {
+                tracing::warn!(
+                    target: "toyoterm::config",
+                    operation = error.operation(),
+                    ?config_path,
+                    %error,
+                    "config reload failed"
+                );
+                error.to_string()
+            })?
             .clone();
         self.leader_deadline = None;
         let render_style = RenderStyle::from_hex(
@@ -949,7 +1029,14 @@ impl ToyotermApplication {
             }
             Ok(false) => Ok(()),
             Err(error) => {
-                tracing::warn!(target: "toyoterm::script", %error, event = name, "Ruby event failed");
+                tracing::warn!(
+                    target: "toyoterm::script",
+                    operation = error.operation(),
+                    %pane,
+                    event = name,
+                    %error,
+                    "Ruby event failed"
+                );
                 Ok(())
             }
         }
@@ -983,7 +1070,18 @@ impl ToyotermApplication {
             if let Some(runtime) = self.pane_runtimes.get_mut(&pane) {
                 runtime.terminal.resize(size.columns, size.rows);
                 if let Some(session) = runtime.pty_session.as_mut() {
-                    session.resize(size).map_err(|error| error.to_string())?;
+                    session.resize(size).map_err(|error| {
+                        tracing::error!(
+                            target: "toyoterm::pty",
+                            operation = error.operation(),
+                            %pane,
+                            columns = size.columns,
+                            rows = size.rows,
+                            %error,
+                            "resize pane PTY failed"
+                        );
+                        error.to_string()
+                    })?;
                 }
             }
         }
@@ -1004,7 +1102,17 @@ impl ToyotermApplication {
             .get_mut(&pane)
             .ok_or_else(|| format!("pane {pane} has no runtime"))?;
         if let Some(session) = runtime.pty_session.as_mut() {
-            session.write(bytes).map_err(|error| error.to_string())?;
+            session.write(bytes).map_err(|error| {
+                tracing::error!(
+                    target: "toyoterm::pty",
+                    operation = error.operation(),
+                    %pane,
+                    bytes = bytes.len(),
+                    %error,
+                    "write pane PTY failed"
+                );
+                error.to_string()
+            })?;
         }
         Ok(())
     }
@@ -1472,7 +1580,12 @@ impl ToyotermApplication {
             })
             .ok();
         if let Err(error) = self.config_manager.set_clipboard_text(text.as_deref()) {
-            tracing::warn!(target: "toyoterm::script", %error, "update Ruby clipboard snapshot failed");
+            tracing::warn!(
+                target: "toyoterm::script",
+                operation = error.operation(),
+                %error,
+                "update Ruby clipboard snapshot failed"
+            );
         }
     }
 
