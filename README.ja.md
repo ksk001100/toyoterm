@@ -24,6 +24,8 @@ toyotermは、Rustと組み込みmrubyで作る実験的なプログラマブル
 - Paneごとのresizeとfocusに対応した分割Pane描画
 - マウス操作とキーボード操作に対応したタブバー
 - Workspaceごとのfocus復元に対応したWorkspaceバー
+- fuzzy検索対応のCommand Paletteとユーザー定義Rubyコマンド
+- 起動中GUIの単一mruby VMへ接続するライブRuby REPL
 
 ## 現在の状態
 
@@ -32,7 +34,6 @@ toyotermは、Rustと組み込みmrubyで作る実験的なプログラマブル
 GUIへ未接続の機能：
 
 - 複数OSウィンドウ
-- ライブRuby REPLとリモート操作CLI
 - 検索、リンク、画像プロトコル、セッション永続化
 
 ## ビルドと起動
@@ -64,6 +65,14 @@ cargo build --release --locked
 ```sh
 cargo run -- --config /path/to/config.rb
 ```
+
+起動中のGUIへライブRuby REPLで接続するには、別の端末で次を実行します。複数行入力、`:history`、`exit`に対応します。
+
+```sh
+cargo run -- ruby console
+```
+
+Command Paletteは`Ctrl+Shift+P`（macOSでは`Cmd+Shift+P`）または右上のCommandsボタンで開きます。
 
 ## 設定
 

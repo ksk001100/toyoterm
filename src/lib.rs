@@ -6,9 +6,11 @@
 pub mod api;
 pub mod app;
 pub mod input;
+pub mod ipc;
 pub mod layout;
 pub mod logging;
 pub mod mux;
+pub mod palette;
 pub mod pty;
 pub mod render;
 pub mod script;
@@ -23,16 +25,18 @@ pub use input::{
     BindingKey, KeyChord, KeyModifiers, KeyPress, KeypadKey, MouseWheelDirection, TerminalKey,
     encode_key, encode_mouse_wheel, encode_paste,
 };
+pub use ipc::{IpcServer, eval_remote, run_console};
 pub use layout::{
     CommandMenuLayout, ConfigErrorLayout, PaneLayout, PanePlacement, PaneRect, SplitAxis,
     SplitBoundary, TabPlacement, TabStripLayout, WorkspacePlacement, WorkspaceStripLayout,
 };
 pub use logging::init_logging;
 pub use mux::{Mux, MuxError, PaneNode};
+pub use palette::{CommandPalette, PaletteAction, PaletteItem, filter_items};
 pub use pty::{NativePty, Pty, PtyCommand, PtyError, PtyExitStatus, PtySession, PtySize};
 pub use render::{
-    CommandMenuRenderData, ConfigErrorRenderData, GpuRenderer, PaneRenderData, RenderError,
-    RenderOutcome, RenderStyle, TabRenderData, TextLayout, WorkspaceRenderData,
+    CommandMenuRenderData, ConfigErrorRenderData, GpuRenderer, PaletteRenderData, PaneRenderData,
+    RenderError, RenderOutcome, RenderStyle, TabRenderData, TextLayout, WorkspaceRenderData,
 };
 pub use script::{
     ColorConfig, ConfigManager, FontConfig, LeaderConfig, MrubyRuntime, ScriptError,

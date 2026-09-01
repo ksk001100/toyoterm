@@ -18,6 +18,7 @@ const SLOW_CALLBACK_THRESHOLD: Duration = Duration::from_millis(100);
 enum CallbackKind {
     KeyBinding,
     Event,
+    UserCommand,
 }
 
 impl CallbackKind {
@@ -25,6 +26,7 @@ impl CallbackKind {
         match self {
             Self::KeyBinding => "key_binding",
             Self::Event => "event",
+            Self::UserCommand => "user_command",
         }
     }
 }
@@ -80,6 +82,8 @@ module Toyoterm
     end
   end
 
+  CommandContext = KeyBindingContext
+
   class Event
     attr_reader :name, :workspace, :window, :tab, :pane, :title, :cwd
 
@@ -122,6 +126,16 @@ module Toyoterm
 
     def reload_config
       @config.__register_static(@key, :reload_config, nil)
+      self
+    end
+
+    def command_palette
+      @config.__register_static(@key, :command_palette, nil)
+      self
+    end
+
+    def command(name)
+      @config.__register_static(@key, :user_command, name)
       self
     end
   end
@@ -502,6 +516,7 @@ module Toyoterm
   @commands = []
   @current_command = nil
   @event_handlers = {}
+  @user_commands = {}
   @live_handles = {
     workspace: [0],
     window: [0],
@@ -571,6 +586,36 @@ module Toyoterm
     raise ArgumentError, "event name cannot be empty" if name.empty?
     (@event_handlers[name] ||= []) << block
     block
+  end
+
+  def self.command(name, &block)
+    raise ArgumentError, "user command requires a block" unless block
+    name = name.to_s
+    raise ArgumentError, "user command name cannot be empty" if name.empty?
+    raise ArgumentError, "duplicate user command: #{name}" if @user_commands.key?(name)
+    @user_commands[name] = block
+    block
+  end
+
+  def self.__command_count
+    @user_commands.length
+  end
+
+  def self.__command_name(index)
+    @user_commands.keys[index]
+  end
+
+  def self.__invoke_command(name, pane)
+    callback = @user_commands[name.to_s]
+    raise ArgumentError, "undefined user command: #{name}" unless callback
+    checkpoint = __command_checkpoint
+    begin
+      callback.call(CommandContext.new(pane))
+    rescue => error
+      __rollback_commands(checkpoint)
+      raise error
+    end
+    true
   end
 
   def self.__event_count
@@ -1222,6 +1267,7 @@ pub struct ConfigManager {
     keybindings: HashSet<String>,
     native_actions: HashMap<String, NativeAction>,
     event_names: HashSet<String>,
+    user_command_names: HashSet<String>,
     source_path: Option<PathBuf>,
 }
 
@@ -1231,6 +1277,7 @@ struct LoadedConfig {
     keybindings: HashSet<String>,
     native_actions: HashMap<String, NativeAction>,
     event_names: HashSet<String>,
+    user_command_names: HashSet<String>,
 }
 
 impl ConfigManager {
@@ -1242,6 +1289,7 @@ impl ConfigManager {
             keybindings: loaded.keybindings,
             native_actions: loaded.native_actions,
             event_names: loaded.event_names,
+            user_command_names: loaded.user_command_names,
             source_path: None,
         })
     }
@@ -1309,6 +1357,7 @@ impl ConfigManager {
         self.keybindings = loaded.keybindings;
         self.native_actions = loaded.native_actions;
         self.event_names = loaded.event_names;
+        self.user_command_names = loaded.user_command_names;
         tracing::info!(target: "toyoterm::config", filename, "config loaded");
         Ok(&self.config)
     }
@@ -1317,8 +1366,23 @@ impl ConfigManager {
         self.runtime.eval(source)
     }
 
+    /// Evaluates interactive Ruby and returns the value's `inspect` representation.
+    pub fn eval_inspect(&mut self, source: &str) -> Result<String, ScriptError> {
+        let checkpoint = self.runtime.eval("Toyoterm.__command_checkpoint")?;
+        let result = self.runtime.eval_with_filename(
+            &format!("(begin\n{source}\nend).inspect"),
+            "(toyoterm ruby console)",
+        );
+        if result.is_err() {
+            let _ = self
+                .runtime
+                .eval(&format!("Toyoterm.__rollback_commands({checkpoint})"));
+        }
+        result
+    }
+
     pub fn native_action(&self, key: &str) -> Option<NativeAction> {
-        self.native_actions.get(&key.to_uppercase()).copied()
+        self.native_actions.get(&key.to_uppercase()).cloned()
     }
 
     pub fn has_dynamic_keybinding(&self, key: &str) -> bool {
@@ -1327,6 +1391,35 @@ impl ConfigManager {
 
     pub(crate) fn has_event_handler(&self, name: &str) -> bool {
         self.event_names.contains(name)
+    }
+
+    pub fn user_command_names(&self) -> impl Iterator<Item = &str> {
+        self.user_command_names.iter().map(String::as_str)
+    }
+
+    pub fn trigger_user_command(
+        &mut self,
+        name: &str,
+        current_pane: PaneId,
+    ) -> Result<bool, ScriptError> {
+        if !self.user_command_names.contains(name) {
+            return Err(ScriptError::new(
+                "invoke user command",
+                format!("undefined user command: {name}"),
+            ));
+        }
+        self.set_current_pane(current_pane)?;
+        let source = format!(
+            "Toyoterm.__invoke_command({}, Toyoterm.current_pane)",
+            ruby_string_literal(name)
+        );
+        match self.eval_callback(CallbackKind::UserCommand, name, &source)? {
+            value if value == "true" => Ok(true),
+            _ => Err(ScriptError::new(
+                "invoke user command",
+                "callback returned an invalid state",
+            )),
+        }
     }
 
     /// Updates the pane exposed by `Toyoterm.current_pane` for subsequent evaluations.
@@ -1729,12 +1822,22 @@ fn load_config(source: &str, filename: &str) -> Result<LoadedConfig, ScriptError
         event_names.insert(runtime.eval(&format!("Toyoterm.__event_name({index})"))?);
     }
 
+    let user_command_count = runtime
+        .eval("Toyoterm.__command_count")?
+        .parse::<usize>()
+        .map_err(|_| ScriptError::new("load user commands", "command count is invalid"))?;
+    let mut user_command_names = HashSet::with_capacity(user_command_count);
+    for index in 0..user_command_count {
+        user_command_names.insert(runtime.eval(&format!("Toyoterm.__command_name({index})"))?);
+    }
+
     Ok(LoadedConfig {
         runtime,
         config,
         keybindings,
         native_actions,
         event_names,
+        user_command_names,
     })
 }
 
@@ -1751,6 +1854,12 @@ fn decode_native_action(action: &str, argument: &str) -> Result<NativeAction, Sc
         "new_tab" => Ok(NativeAction::NewTab),
         "close_pane" => Ok(NativeAction::ClosePane),
         "reload_config" => Ok(NativeAction::ReloadConfig),
+        "command_palette" => Ok(NativeAction::CommandPalette),
+        "user_command" if !argument.is_empty() => Ok(NativeAction::UserCommand(argument.into())),
+        "user_command" => Err(ScriptError::new(
+            "load key bindings",
+            "user command name cannot be empty",
+        )),
         "split" => parse_direction(argument).map(NativeAction::Split),
         "activate_pane" => parse_direction(argument).map(NativeAction::ActivatePane),
         other => Err(ScriptError::new(
@@ -2626,6 +2735,91 @@ fail_config
         assert!(error.message().contains("broken event"));
         assert!(manager.drain_commands(PaneId(3)).unwrap().is_empty());
         assert_eq!(manager.eval("21 * 2").unwrap(), "42");
+    }
+
+    #[test]
+    fn user_commands_are_listed_and_dispatch_native_commands() {
+        let mut manager = ConfigManager::new().unwrap();
+        manager
+            .reload(
+                r#"
+            Toyoterm.command :git_status do |ctx|
+              ctx.pane.send_text("git status\n")
+            end
+            Toyoterm.configure do |config|
+              config.keys { leader("g").command(:git_status) }
+            end
+        "#,
+            )
+            .unwrap();
+
+        assert_eq!(
+            manager.user_command_names().collect::<Vec<_>>(),
+            vec!["git_status"]
+        );
+        assert_eq!(
+            manager.native_action("LEADER+G"),
+            Some(NativeAction::UserCommand("git_status".into()))
+        );
+        assert!(
+            manager
+                .trigger_user_command("git_status", PaneId(8))
+                .unwrap()
+        );
+        assert_eq!(
+            manager.drain_commands(PaneId(8)).unwrap(),
+            vec![NativeCommand::Mux(Command::SendText {
+                pane: PaneId(8),
+                text: "git status\n".into()
+            })]
+        );
+    }
+
+    #[test]
+    fn user_command_validation_and_callback_failures_are_isolated() {
+        let mut manager = ConfigManager::new().unwrap();
+        let duplicate = manager
+            .reload(
+                r#"
+            Toyoterm.command(:same) {}
+            Toyoterm.command(:same) {}
+        "#,
+            )
+            .unwrap_err();
+        assert!(duplicate.message().contains("duplicate user command"));
+
+        manager
+            .reload(
+                r#"
+            Toyoterm.command :broken do |ctx|
+              ctx.pane.send_text("must not run\n")
+              raise "broken command"
+            end
+        "#,
+            )
+            .unwrap();
+        let undefined = manager
+            .trigger_user_command("missing", PaneId(2))
+            .unwrap_err();
+        assert!(undefined.message().contains("undefined user command"));
+        let broken = manager
+            .trigger_user_command("broken", PaneId(2))
+            .unwrap_err();
+        assert!(broken.message().contains("broken command"));
+        assert!(manager.drain_commands(PaneId(2)).unwrap().is_empty());
+        assert_eq!(manager.eval("6 * 7").unwrap(), "42");
+    }
+
+    #[test]
+    fn interactive_evaluation_returns_inspect_output() {
+        let mut manager = ConfigManager::new().unwrap();
+        assert_eq!(manager.eval_inspect("[1, 'two']").unwrap(), "[1, \"two\"]");
+        assert!(
+            manager
+                .eval_inspect("Toyoterm.current_pane.send_text('leak'); raise 'nope'")
+                .is_err()
+        );
+        assert!(manager.drain_commands(PaneId(1)).unwrap().is_empty());
     }
 
     #[test]

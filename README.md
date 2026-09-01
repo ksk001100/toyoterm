@@ -24,6 +24,8 @@ toyoterm is an experimental, programmable terminal emulator powered by Rust and 
 - Rendered split panes with per-pane resize and focus
 - A clickable tab bar with keyboard tab navigation
 - A clickable workspace bar with per-workspace focus restoration
+- A fuzzy-search command palette and user-defined Ruby commands
+- A live Ruby REPL connected to the running GUI's single mruby VM
 
 ## Current status
 
@@ -32,7 +34,6 @@ The primary development environment is Linux. The architecture and dependencies 
 Not yet exposed in the GUI:
 
 - Multiple OS windows
-- Live Ruby REPL and remote-control CLI
 - Search, links, image protocols, and session persistence
 
 ## Build and run
@@ -64,6 +65,14 @@ Use an explicit configuration file:
 ```sh
 cargo run -- --config /path/to/config.rb
 ```
+
+Connect a live Ruby REPL to the running GUI from another terminal. It supports multiline input, `:history`, and `exit`.
+
+```sh
+cargo run -- ruby console
+```
+
+Open the Command Palette with `Ctrl+Shift+P` (`Cmd+Shift+P` on macOS), or the Commands button in the top-right corner.
 
 ## Configuration
 

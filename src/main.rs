@@ -4,7 +4,7 @@ use std::process::ExitCode;
 
 use toyoterm::{
     AlacrittyTerminalBackend, Command, Mux, NativePty, Pty, PtyCommand, PtySize, SplitDirection,
-    TerminalBackend, init_logging, run_gui, run_gui_with_config_path,
+    TerminalBackend, init_logging, run_console, run_gui, run_gui_with_config_path,
 };
 
 fn main() -> ExitCode {
@@ -53,6 +53,13 @@ fn run(mut args: impl Iterator<Item = String>) -> Result<(), String> {
         }
         Some("pty-demo") => run_pty_demo(),
         Some("screen-demo") => run_screen_demo(),
+        Some("ruby") => match args.next().as_deref() {
+            None | Some("console") => {
+                ensure_no_arguments(&mut args)?;
+                run_console()
+            }
+            Some(argument) => Err(format!("unexpected ruby argument `{argument}`")),
+        },
         Some("gui") => match args.next().as_deref() {
             None => run_gui().map_err(|error| error.to_string()),
             Some("--config") => {
@@ -184,6 +191,6 @@ fn print_help() {
     println!(
         "toyoterm - a programmable terminal emulator powered by Rust and mruby\n\n\
          Usage:\n  toyoterm [--config PATH]\n  toyoterm [COMMAND]\n\n\
-         Commands:\n  gui         Open the native GPU window (default)\n  list        Show the native mux state\n  demo        Exercise tabs and pane splitting\n  pty-demo    Spawn a process in a native PTY\n  screen-demo Parse PTY output into a terminal snapshot\n  version     Print version\n  help        Print this help"
+         Commands:\n  gui         Open the native GPU window (default)\n  ruby console Connect to the running GUI Ruby VM\n  list        Show the native mux state\n  demo        Exercise tabs and pane splitting\n  pty-demo    Spawn a process in a native PTY\n  screen-demo Parse PTY output into a terminal snapshot\n  version     Print version\n  help        Print this help"
     );
 }

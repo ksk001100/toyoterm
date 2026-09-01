@@ -3,6 +3,7 @@ use std::fmt;
 use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::sync::mpsc;
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -17,12 +18,13 @@ use winit::window::{Window, WindowId};
 use crate::script::{RubyEvent, RubyObjectModel, RubyPane, RubyTab, RubyWindow, RubyWorkspace};
 use crate::{
     AlacrittyTerminalBackend, BindingKey, Command, CommandMenuLayout, CommandMenuRenderData,
-    ConfigErrorLayout, ConfigErrorRenderData, ConfigManager, Event as MuxEvent, GpuRenderer,
-    KeyChord, KeyModifiers, KeyPress, KeypadKey, MouseWheelDirection, Mux, NativeAction,
-    NativeCommand, NativePty, PaneId, PaneLayout, PaneRect, PaneRenderData, Pty, PtyCommand,
-    PtySession, PtySize, RenderOutcome, RenderStyle, SelectionKind, SplitDirection, TabRenderData,
-    TabStripLayout, TerminalBackend, TerminalEvent, TerminalKey, TextLayout, WorkspaceRenderData,
-    WorkspaceStripLayout, encode_key, encode_mouse_wheel, encode_paste,
+    CommandPalette, ConfigErrorLayout, ConfigErrorRenderData, ConfigManager, Event as MuxEvent,
+    GpuRenderer, IpcServer, KeyChord, KeyModifiers, KeyPress, KeypadKey, MouseWheelDirection, Mux,
+    NativeAction, NativeCommand, NativePty, PaletteAction, PaletteItem, PaletteRenderData, PaneId,
+    PaneLayout, PaneRect, PaneRenderData, Pty, PtyCommand, PtySession, PtySize, RenderOutcome,
+    RenderStyle, SelectionKind, SplitDirection, TabRenderData, TabStripLayout, TerminalBackend,
+    TerminalEvent, TerminalKey, TextLayout, WorkspaceRenderData, WorkspaceStripLayout, encode_key,
+    encode_mouse_wheel, encode_paste, filter_items,
 };
 
 const MULTI_CLICK_INTERVAL: Duration = Duration::from_millis(500);
@@ -217,9 +219,21 @@ pub fn run_gui_with_config_path(config_path: Option<&Path>) -> Result<(), AppErr
 
 #[derive(Debug)]
 enum AppEvent {
-    Output { pane: PaneId, bytes: Vec<u8> },
-    Eof { pane: PaneId },
-    Error { pane: PaneId, message: String },
+    Output {
+        pane: PaneId,
+        bytes: Vec<u8>,
+    },
+    Eof {
+        pane: PaneId,
+    },
+    Error {
+        pane: PaneId,
+        message: String,
+    },
+    RubyEval {
+        source: String,
+        response: mpsc::Sender<Result<String, String>>,
+    },
 }
 
 struct PaneRuntime {
@@ -256,6 +270,8 @@ struct ToyotermApplication {
     workspace_layout: WorkspaceStripLayout,
     command_menu_layout: CommandMenuLayout,
     command_menu_open: bool,
+    palette: CommandPalette,
+    _ipc_server: Option<IpcServer>,
     config_error_layout: ConfigErrorLayout,
     config_error_notice: Option<ConfigErrorNotice>,
     ime_preedit: Option<String>,
@@ -394,6 +410,7 @@ impl ApplicationHandler<AppEvent> for ToyotermApplication {
                     self.leader_deadline = None;
                     if self.command_menu_open {
                         self.command_menu_open = false;
+                        self.palette.close();
                         self.sync_active_renderer(window.scale_factor());
                         window.request_redraw();
                     }
@@ -454,6 +471,15 @@ impl ApplicationHandler<AppEvent> for ToyotermApplication {
                     && matches!(event.logical_key, Key::Named(NamedKey::Escape))
                 {
                     self.command_menu_open = false;
+                    self.palette.close();
+                    self.sync_active_renderer(window.scale_factor());
+                    window.request_redraw();
+                    return;
+                }
+                if self.command_menu_open {
+                    if let Err(error) = self.handle_palette_key(&event) {
+                        tracing::warn!(target: "toyoterm::app", %error, "command palette action failed");
+                    }
                     self.sync_active_renderer(window.scale_factor());
                     window.request_redraw();
                     return;
@@ -516,6 +542,12 @@ impl ApplicationHandler<AppEvent> for ToyotermApplication {
             WindowEvent::Ime(Ime::Commit(text)) => {
                 self.leader_deadline = None;
                 self.ime_preedit = None;
+                if self.command_menu_open {
+                    self.palette.insert(&text);
+                    self.sync_active_renderer(window.scale_factor());
+                    window.request_redraw();
+                    return;
+                }
                 if let Err(error) = self.write_pty(text.as_bytes()) {
                     self.fail(event_loop, error);
                 }
@@ -618,6 +650,14 @@ impl ApplicationHandler<AppEvent> for ToyotermApplication {
                 );
                 self.mark_pane_exited(pane, Some(message));
             }
+            AppEvent::RubyEval { source, response } => {
+                let result = self.evaluate_ruby(&source);
+                let _ = response.send(result);
+                if let Some(window) = self.window.clone() {
+                    self.sync_active_renderer(window.scale_factor());
+                    window.request_redraw();
+                }
+            }
         }
     }
 }
@@ -634,6 +674,17 @@ impl ToyotermApplication {
         let startup_effects = dispatch_script_commands(&mut config_manager, &mut mux)?;
         let config = config_manager.config();
         let font_scale = f64::from(config.font.size) / 14.0;
+        let ipc_proxy = event_proxy.clone();
+        let ipc_server = IpcServer::start(move |source, response| {
+            ipc_proxy
+                .send_event(AppEvent::RubyEval { source, response })
+                .map_err(|_| "toyoterm GUI event loop is closed".to_owned())
+        })
+        .map_err(|error| {
+            tracing::warn!(target: "toyoterm::script", %error, "live Ruby console unavailable");
+            error
+        })
+        .ok();
         Ok(Self {
             event_proxy,
             window: None,
@@ -644,6 +695,8 @@ impl ToyotermApplication {
             workspace_layout: WorkspaceStripLayout::default(),
             command_menu_layout: CommandMenuLayout::default(),
             command_menu_open: false,
+            palette: CommandPalette::default(),
+            _ipc_server: ipc_server,
             config_error_layout: ConfigErrorLayout::default(),
             config_error_notice: startup_config_error.map(|message| ConfigErrorNotice {
                 message,
@@ -841,9 +894,177 @@ impl ToyotermApplication {
                 self.dispatch_gui_command(Command::ClosePane(pane))
             }
             NativeAction::ReloadConfig => self.reload_config_with_notification(),
+            NativeAction::CommandPalette => {
+                self.open_command_palette();
+                Ok(())
+            }
+            NativeAction::UserCommand(name) => self.execute_user_command(&name),
             NativeAction::Split(direction) => self.split_active_pane(direction),
             NativeAction::ActivatePane(direction) => self.focus_neighbor(direction),
         }
+    }
+
+    fn open_command_palette(&mut self) {
+        self.command_menu_open = true;
+        self.palette.open();
+    }
+
+    fn open_ruby_console(&mut self) {
+        self.command_menu_open = true;
+        self.palette.open_console();
+    }
+
+    fn palette_items(&self) -> Vec<PaletteItem> {
+        let mut items = vec![
+            PaletteItem {
+                label: "Reload Config".into(),
+                action: PaletteAction::ReloadConfig,
+            },
+            PaletteItem {
+                label: "New Tab".into(),
+                action: PaletteAction::NewTab,
+            },
+            PaletteItem {
+                label: "Split Right".into(),
+                action: PaletteAction::Split(SplitDirection::Right),
+            },
+            PaletteItem {
+                label: "Split Down".into(),
+                action: PaletteAction::Split(SplitDirection::Down),
+            },
+            PaletteItem {
+                label: "Close Pane".into(),
+                action: PaletteAction::ClosePane,
+            },
+            PaletteItem {
+                label: "Ruby Console".into(),
+                action: PaletteAction::RubyConsole,
+            },
+        ];
+        for workspace in self.mux.workspaces() {
+            if let Some(name) = self.mux.workspace_name(workspace) {
+                items.push(PaletteItem {
+                    label: format!("Switch Workspace: {name}"),
+                    action: PaletteAction::SwitchWorkspace(name.to_owned()),
+                });
+            }
+        }
+        let mut names = self
+            .config_manager
+            .user_command_names()
+            .map(str::to_owned)
+            .collect::<Vec<_>>();
+        names.sort();
+        items.extend(names.into_iter().map(|name| PaletteItem {
+            label: name.clone(),
+            action: PaletteAction::UserCommand(name),
+        }));
+        items
+    }
+
+    fn handle_palette_key(&mut self, event: &KeyEvent) -> Result<(), String> {
+        match &event.logical_key {
+            Key::Named(NamedKey::ArrowUp) => {
+                let count = filter_items(&self.palette_items(), self.palette.query()).len();
+                self.palette.move_selection(-1, count);
+            }
+            Key::Named(NamedKey::ArrowDown) => {
+                let count = filter_items(&self.palette_items(), self.palette.query()).len();
+                self.palette.move_selection(1, count);
+            }
+            Key::Named(NamedKey::Backspace) => self.palette.backspace(),
+            Key::Named(NamedKey::Enter) if self.palette.is_console() => {
+                let source = self.palette.take_input();
+                if !source.trim().is_empty() {
+                    let result = self.evaluate_ruby(&source);
+                    match result {
+                        Ok(value) => self.palette.push_console_result(&source, Ok(&value)),
+                        Err(error) if crate::ipc::is_incomplete_ruby_error(&error) => {
+                            self.palette.insert(&source);
+                            self.palette.insert("\n");
+                        }
+                        Err(error) => self.palette.push_console_result(&source, Err(&error)),
+                    }
+                }
+            }
+            Key::Named(NamedKey::Enter) => {
+                let items = filter_items(&self.palette_items(), self.palette.query());
+                if let Some(item) = items.get(self.palette.selected()).cloned() {
+                    self.command_menu_open = false;
+                    self.palette.close();
+                    self.execute_palette_action(item.action)?;
+                }
+            }
+            Key::Character(text)
+                if !self.modifiers.control_key() && !self.modifiers.super_key() =>
+            {
+                self.palette.insert(text);
+            }
+            _ => {}
+        }
+        Ok(())
+    }
+
+    fn execute_palette_action(&mut self, action: PaletteAction) -> Result<(), String> {
+        match action {
+            PaletteAction::ReloadConfig => self.reload_config_with_notification(),
+            PaletteAction::NewTab => self.dispatch_gui_command(Command::NewTab),
+            PaletteAction::Split(direction) => self.split_active_pane(direction),
+            PaletteAction::ClosePane => {
+                let pane = self
+                    .mux
+                    .current_pane()
+                    .ok_or_else(|| "mux has no current pane".to_owned())?;
+                self.dispatch_gui_command(Command::ClosePane(pane))
+            }
+            PaletteAction::SwitchWorkspace(name) => {
+                self.dispatch_gui_command(Command::SwitchWorkspace(name))
+            }
+            PaletteAction::RubyConsole => {
+                self.open_ruby_console();
+                Ok(())
+            }
+            PaletteAction::UserCommand(name) => self.execute_user_command(&name),
+        }
+    }
+
+    fn execute_user_command(&mut self, name: &str) -> Result<(), String> {
+        let pane = self
+            .mux
+            .current_pane()
+            .ok_or_else(|| "mux has no current pane".to_owned())?;
+        self.refresh_script_clipboard();
+        self.sync_script_object_model()?;
+        self.config_manager
+            .trigger_user_command(name, pane)
+            .map_err(|error| error.to_string())?;
+        let reload = self.dispatch_pending_script_commands()?;
+        self.reconcile_pane_runtimes()?;
+        self.deliver_runtime_events()?;
+        self.flush_mux_input()?;
+        if reload {
+            self.reload_config_with_notification()?;
+        }
+        Ok(())
+    }
+
+    fn evaluate_ruby(&mut self, source: &str) -> Result<String, String> {
+        self.refresh_script_clipboard();
+        self.sync_script_object_model()?;
+        let result = self
+            .config_manager
+            .eval_inspect(source)
+            .map_err(|error| error.to_string());
+        if result.is_ok() {
+            let reload = self.dispatch_pending_script_commands()?;
+            self.reconcile_pane_runtimes()?;
+            self.deliver_runtime_events()?;
+            self.flush_mux_input()?;
+            if reload {
+                self.reload_config_with_notification()?;
+            }
+        }
+        result
     }
 
     fn handle_tab_shortcut(
@@ -858,6 +1079,7 @@ impl ToyotermApplication {
                 GuiManagementShortcut::ReloadConfig => {
                     self.reload_config_with_notification()?;
                 }
+                GuiManagementShortcut::CommandPalette => self.open_command_palette(),
                 GuiManagementShortcut::NewTab => {
                     self.dispatch_gui_command(Command::NewTab)?;
                 }
@@ -1592,6 +1814,11 @@ impl ToyotermApplication {
                 .button_contains(self.mouse_position.x, self.mouse_position.y)
             {
                 self.command_menu_open = !self.command_menu_open;
+                if self.command_menu_open {
+                    self.palette.open();
+                } else {
+                    self.palette.close();
+                }
                 self.sync_active_renderer(window.scale_factor());
                 window.request_redraw();
                 return;
@@ -1601,6 +1828,7 @@ impl ToyotermApplication {
                     .command_menu_layout
                     .reload_config_contains(self.mouse_position.x, self.mouse_position.y);
                 self.command_menu_open = false;
+                self.palette.close();
                 if reload_config {
                     if let Err(error) = self.reload_config_with_notification() {
                         tracing::warn!(target: "toyoterm::config", %error, "update config error notification failed");
@@ -1629,13 +1857,14 @@ impl ToyotermApplication {
                     .dismiss_contains(self.mouse_position.x, self.mouse_position.y);
                 if dismiss {
                     self.config_error_notice = None;
-                } else if let Some(notice) = self.config_error_notice.as_mut() {
-                    if open_log {
-                        notice.log_expanded = !notice.log_expanded;
-                        notice.console_hint = false;
-                    } else if open_ruby_console {
-                        notice.console_hint = true;
-                    }
+                } else if let Some(notice) = self.config_error_notice.as_mut()
+                    && open_log
+                {
+                    notice.log_expanded = !notice.log_expanded;
+                    notice.console_hint = false;
+                }
+                if open_ruby_console {
+                    self.open_ruby_console();
                 }
                 if open_log || open_ruby_console || dismiss {
                     if let Err(error) =
@@ -1914,6 +2143,22 @@ impl ToyotermApplication {
                 })
         });
         let layout = self.cell_metrics.text_layout(scale_factor);
+        let palette_text = self.palette_render_text();
+        let palette_rect = self.window.as_ref().map(|window| {
+            let size = window.inner_size();
+            let width = size
+                .width
+                .min((560.0 * scale_factor.max(0.1)).round() as u32);
+            let height = size
+                .height
+                .min((360.0 * scale_factor.max(0.1)).round() as u32);
+            PaneRect::new(
+                (size.width - width) / 2,
+                (size.height - height) / 4,
+                width,
+                height,
+            )
+        });
         if let Some(renderer) = self.renderer.as_mut() {
             renderer.update_panes(&panes, layout);
             renderer.update_tabs(&tabs, layout);
@@ -1921,10 +2166,15 @@ impl ToyotermApplication {
             renderer.update_command_menu(
                 CommandMenuRenderData {
                     button_rect: self.command_menu_layout.button(),
-                    reload_config_rect: self
-                        .command_menu_open
-                        .then_some(self.command_menu_layout.reload_config()),
+                    reload_config_rect: None,
                 },
+                layout,
+            );
+            renderer.update_palette(
+                self.command_menu_open.then(|| PaletteRenderData {
+                    rect: palette_rect.unwrap_or_default(),
+                    text: &palette_text,
+                }),
                 layout,
             );
             renderer.update_config_error(config_error, layout);
@@ -1932,6 +2182,41 @@ impl ToyotermApplication {
         }
         self.update_ime_cursor_area(scale_factor);
         self.update_window_title();
+    }
+
+    fn palette_render_text(&self) -> String {
+        if self.palette.is_console() {
+            let mut lines = vec!["Ruby Console  (Esc to close)".to_owned()];
+            lines.extend(self.palette.console_output().iter().cloned());
+            lines.push(format!("toyoterm> {}▏", self.palette.query()));
+            return lines.join("\n");
+        }
+        let items = filter_items(&self.palette_items(), self.palette.query());
+        let mut lines = vec![format!("> {}▏", self.palette.query())];
+        if items.is_empty() {
+            lines.push("  No matching commands".into());
+        } else {
+            let start = self.palette.selected().saturating_sub(11);
+            lines.extend(
+                items
+                    .iter()
+                    .enumerate()
+                    .skip(start)
+                    .take(12)
+                    .map(|(index, item)| {
+                        format!(
+                            "{} {}",
+                            if index == self.palette.selected() {
+                                "›"
+                            } else {
+                                " "
+                            },
+                            item.label
+                        )
+                    }),
+            );
+        }
+        lines.join("\n")
     }
 
     fn update_ime_cursor_area(&self, scale_factor: f64) {
@@ -2355,6 +2640,7 @@ enum ShortcutPlatform {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum GuiManagementShortcut {
     ReloadConfig,
+    CommandPalette,
     NewTab,
     NewWorkspace,
     CloseTab,
@@ -2401,6 +2687,9 @@ fn gui_management_shortcut(
                 Some(key) if key.eq_ignore_ascii_case("r") => {
                     Some(GuiManagementShortcut::ReloadConfig)
                 }
+                Some(key) if key.eq_ignore_ascii_case("p") => {
+                    Some(GuiManagementShortcut::CommandPalette)
+                }
                 Some(key) if key.eq_ignore_ascii_case("t") => Some(GuiManagementShortcut::NewTab),
                 Some(key) if key.eq_ignore_ascii_case("n") => {
                     Some(GuiManagementShortcut::NewWorkspace)
@@ -2417,6 +2706,9 @@ fn gui_management_shortcut(
         ShortcutPlatform::MacOs if modifiers.super_key() => match character {
             Some(key) if key.eq_ignore_ascii_case("r") && modifiers.shift_key() => {
                 Some(GuiManagementShortcut::ReloadConfig)
+            }
+            Some(key) if key.eq_ignore_ascii_case("p") && modifiers.shift_key() => {
+                Some(GuiManagementShortcut::CommandPalette)
             }
             Some(key) if key.eq_ignore_ascii_case("t") && !modifiers.shift_key() => {
                 Some(GuiManagementShortcut::NewTab)
@@ -2642,6 +2934,22 @@ mod tests {
 
     #[test]
     fn gui_management_shortcuts_follow_platform_conventions() {
+        assert_eq!(
+            gui_management_shortcut(
+                &Key::Character("p".into()),
+                ModifiersState::CONTROL | ModifiersState::SHIFT,
+                ShortcutPlatform::LinuxOrWindows,
+            ),
+            Some(GuiManagementShortcut::CommandPalette)
+        );
+        assert_eq!(
+            gui_management_shortcut(
+                &Key::Character("p".into()),
+                ModifiersState::SUPER | ModifiersState::SHIFT,
+                ShortcutPlatform::MacOs,
+            ),
+            Some(GuiManagementShortcut::CommandPalette)
+        );
         assert_eq!(
             gui_management_shortcut(
                 &Key::Character("t".into()),

@@ -90,11 +90,13 @@ pub enum SplitDirection {
     Down,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub enum NativeAction {
     NewTab,
     ClosePane,
     ReloadConfig,
+    CommandPalette,
+    UserCommand(String),
     Split(SplitDirection),
     ActivatePane(SplitDirection),
 }

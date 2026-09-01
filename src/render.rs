@@ -65,6 +65,12 @@ pub struct CommandMenuRenderData {
 }
 
 #[derive(Clone, Copy, Debug)]
+pub struct PaletteRenderData<'a> {
+    pub rect: PaneRect,
+    pub text: &'a str,
+}
+
+#[derive(Clone, Copy, Debug)]
 pub struct ConfigErrorRenderData<'a> {
     pub message: &'a str,
     pub notice_rect: PaneRect,
@@ -217,6 +223,7 @@ pub struct GpuRenderer {
     tabs: HashMap<TabId, TabBuffer>,
     workspaces: HashMap<WorkspaceId, TabBuffer>,
     command_menu: CommandMenuBuffers,
+    palette: OverlayBuffer,
     config_error: ConfigErrorBuffers,
     preedit: Buffer,
     has_preedit: bool,
@@ -234,6 +241,11 @@ struct CommandMenuBuffers {
     reload_config: Buffer,
     button_rect: PaneRect,
     reload_config_rect: Option<PaneRect>,
+}
+
+struct OverlayBuffer {
+    text: Buffer,
+    rect: Option<PaneRect>,
 }
 
 struct ConfigErrorBuffers {
@@ -431,6 +443,8 @@ impl GpuRenderer {
         command_button.set_wrap(Wrap::None);
         let mut reload_config = Buffer::new(&mut font_system, Metrics::new(14.0, 18.0));
         reload_config.set_wrap(Wrap::None);
+        let mut palette_text = Buffer::new(&mut font_system, Metrics::new(14.0, 18.0));
+        palette_text.set_wrap(Wrap::None);
         let mut config_error_buffer = || {
             let mut buffer = Buffer::new(&mut font_system, Metrics::new(14.0, 18.0));
             buffer.set_wrap(Wrap::None);
@@ -470,6 +484,10 @@ impl GpuRenderer {
                 reload_config,
                 button_rect: PaneRect::default(),
                 reload_config_rect: None,
+            },
+            palette: OverlayBuffer {
+                text: palette_text,
+                rect: None,
             },
             config_error,
             preedit,
@@ -514,6 +532,12 @@ impl GpuRenderer {
             reload_config,
             button_rect,
             reload_config_rect,
+        };
+        let mut palette_text = Buffer::new(&mut self.font_system, Metrics::new(14.0, 18.0));
+        palette_text.set_wrap(Wrap::None);
+        self.palette = OverlayBuffer {
+            text: palette_text,
+            rect: None,
         };
 
         let mut buffer = || {
@@ -790,6 +814,31 @@ impl GpuRenderer {
         }
     }
 
+    pub fn update_palette(&mut self, palette: Option<PaletteRenderData<'_>>, layout: TextLayout) {
+        let Some(palette) = palette else {
+            self.palette.rect = None;
+            return;
+        };
+        self.palette.rect = Some(palette.rect);
+        let metrics = Metrics::new(layout.font_size.max(1.0), layout.line_height.max(1.0));
+        self.palette.text.set_metrics_and_size(
+            metrics,
+            Some(palette.rect.width.saturating_sub(24) as f32),
+            Some(palette.rect.height.saturating_sub(16) as f32),
+        );
+        self.palette.text.set_text(
+            palette.text,
+            &Attrs::new()
+                .family(Family::Name(&self.style.font_family))
+                .weight(Weight(self.style.font_weight)),
+            Shaping::Advanced,
+            None,
+        );
+        self.palette
+            .text
+            .shape_until_scroll(&mut self.font_system, false);
+    }
+
     pub fn update_config_error(
         &mut self,
         error: Option<ConfigErrorRenderData<'_>>,
@@ -970,6 +1019,17 @@ impl GpuRenderer {
                 buffer: &self.command_menu.reload_config,
                 left: rect.x as f32 + 8.0,
                 top: rect.y as f32 + 4.0,
+                scale: 1.0,
+                bounds: pane_bounds(rect),
+                default_color: glyph_color(self.style.cursor, 255),
+                custom_glyphs: &[],
+            });
+        }
+        if let Some(rect) = self.palette.rect {
+            text_areas.push(TextArea {
+                buffer: &self.palette.text,
+                left: rect.x as f32 + 12.0,
+                top: rect.y as f32 + 8.0,
                 scale: 1.0,
                 bounds: pane_bounds(rect),
                 default_color: glyph_color(self.style.cursor, 255),
