@@ -509,6 +509,30 @@ unsafe extern "C" {
         filename: *const c_char,
         output: *mut *mut c_char,
     ) -> i32;
+    fn toyoterm_mruby_set_current_pane(
+        state: *mut c_void,
+        pane_id: u64,
+        error_output: *mut *mut c_char,
+    ) -> i32;
+    fn toyoterm_mruby_set_live_handles(
+        state: *mut c_void,
+        workspaces: *const u64,
+        workspace_count: usize,
+        windows: *const u64,
+        window_count: usize,
+        tabs: *const u64,
+        tab_count: usize,
+        panes: *const u64,
+        pane_count: usize,
+        error_output: *mut *mut c_char,
+    ) -> i32;
+    fn toyoterm_mruby_set_clipboard_text(
+        state: *mut c_void,
+        text: *const c_char,
+        length: usize,
+        available: i32,
+        error_output: *mut *mut c_char,
+    ) -> i32;
     fn toyoterm_mruby_string_free(string: *mut c_char);
 }
 
@@ -623,6 +647,59 @@ impl MrubyRuntime {
         self.eval_with_filename(source, "(eval)")
     }
 
+    fn set_current_pane(&mut self, pane: PaneId) -> Result<(), ScriptError> {
+        let mut error = std::ptr::null_mut();
+        // SAFETY: The VM is exclusively borrowed and the shim initializes `error`.
+        let status =
+            unsafe { toyoterm_mruby_set_current_pane(self.state.as_ptr(), pane.0, &mut error) };
+        typed_call_result("set current pane", status, error)
+    }
+
+    fn set_live_handles(
+        &mut self,
+        workspaces: &[u64],
+        windows: &[u64],
+        tabs: &[u64],
+        panes: &[u64],
+    ) -> Result<(), ScriptError> {
+        let mut error = std::ptr::null_mut();
+        // SAFETY: All slices remain live for the call and the VM is exclusively borrowed.
+        let status = unsafe {
+            toyoterm_mruby_set_live_handles(
+                self.state.as_ptr(),
+                workspaces.as_ptr(),
+                workspaces.len(),
+                windows.as_ptr(),
+                windows.len(),
+                tabs.as_ptr(),
+                tabs.len(),
+                panes.as_ptr(),
+                panes.len(),
+                &mut error,
+            )
+        };
+        typed_call_result("set live handles", status, error)
+    }
+
+    fn set_clipboard_text(&mut self, text: Option<&str>) -> Result<(), ScriptError> {
+        let (pointer, length, available) = match text {
+            Some(text) => (text.as_ptr().cast::<c_char>(), text.len(), 1),
+            None => (std::ptr::null(), 0, 0),
+        };
+        let mut error = std::ptr::null_mut();
+        // SAFETY: The optional string remains live for the call and length bounds the pointer.
+        let status = unsafe {
+            toyoterm_mruby_set_clipboard_text(
+                self.state.as_ptr(),
+                pointer,
+                length,
+                available,
+                &mut error,
+            )
+        };
+        typed_call_result("set clipboard text", status, error)
+    }
+
     fn eval_with_filename(&mut self, source: &str, filename: &str) -> Result<String, ScriptError> {
         let source = CString::new(source)
             .map_err(|_| ScriptError::new("evaluate mruby", "source contains a NUL byte"))?;
@@ -655,6 +732,33 @@ impl MrubyRuntime {
                 "mruby evaluation failed",
             )),
         }
+    }
+}
+
+fn typed_call_result(
+    operation: &'static str,
+    status: i32,
+    error: *mut c_char,
+) -> Result<(), ScriptError> {
+    let message = NonNull::new(error).map(|error| {
+        // SAFETY: Error strings are NUL-terminated allocations owned by the shim.
+        let message = unsafe { CStr::from_ptr(error.as_ptr()) }
+            .to_string_lossy()
+            .into_owned();
+        // SAFETY: The allocation came from the shim and is freed exactly once.
+        unsafe { toyoterm_mruby_string_free(error.as_ptr()) };
+        message
+    });
+    match status {
+        0 => Ok(()),
+        1 => Err(ScriptError::new(
+            operation,
+            message.unwrap_or_else(|| "mruby call failed without an exception".to_owned()),
+        )),
+        _ => Err(ScriptError::new(
+            operation,
+            message.unwrap_or_else(|| "mruby typed call failed".to_owned()),
+        )),
     }
 }
 
@@ -776,9 +880,7 @@ impl ConfigManager {
 
     /// Updates the pane exposed by `Toyoterm.current_pane` for subsequent evaluations.
     pub fn set_current_pane(&mut self, pane: PaneId) -> Result<(), ScriptError> {
-        self.runtime
-            .eval(&format!("Toyoterm.__set_current_pane({})", pane.0))?;
-        Ok(())
+        self.runtime.set_current_pane(pane)
     }
 
     pub fn set_live_handles(
@@ -797,33 +899,17 @@ impl ConfigManager {
                 HandleKind::Pane => panes.push(handle.id()),
             }
         }
-        let ruby_array = |mut ids: Vec<u64>| {
-            ids.sort_unstable();
-            let ids = ids
-                .into_iter()
-                .map(|id| id.to_string())
-                .collect::<Vec<_>>()
-                .join(",");
-            format!("[{ids}]")
-        };
-        self.runtime.eval(&format!(
-            "Toyoterm.__replace_live_handles({},{},{},{})",
-            ruby_array(workspaces),
-            ruby_array(windows),
-            ruby_array(tabs),
-            ruby_array(panes),
-        ))?;
-        Ok(())
+        workspaces.sort_unstable();
+        windows.sort_unstable();
+        tabs.sort_unstable();
+        panes.sort_unstable();
+        self.runtime
+            .set_live_handles(&workspaces, &windows, &tabs, &panes)
     }
 
     /// Updates the clipboard snapshot exposed to the next Ruby callback.
     pub fn set_clipboard_text(&mut self, text: Option<&str>) -> Result<(), ScriptError> {
-        let text = text
-            .map(ruby_string_literal)
-            .unwrap_or_else(|| "nil".into());
-        self.runtime
-            .eval(&format!("Toyoterm.__set_clipboard_text({text})"))?;
-        Ok(())
+        self.runtime.set_clipboard_text(text)
     }
 
     /// Runs a configured callback only when the native key resolver found a match.
@@ -1559,6 +1645,33 @@ fail_config
         manager.set_clipboard_text(Some(text)).unwrap();
 
         assert_eq!(manager.eval("Toyoterm.clipboard.read").unwrap(), text);
+    }
+
+    #[test]
+    fn typed_clipboard_transfer_preserves_embedded_nul_bytes() {
+        let mut manager = ConfigManager::new().unwrap();
+        manager.set_clipboard_text(Some("left\0right")).unwrap();
+
+        assert_eq!(
+            manager
+                .eval("Toyoterm.clipboard.read.bytes.join(',')")
+                .unwrap(),
+            "108,101,102,116,0,114,105,103,104,116"
+        );
+    }
+
+    #[test]
+    fn typed_mruby_calls_preserve_ruby_exceptions() {
+        let mut manager = ConfigManager::new().unwrap();
+        manager
+            .eval(
+                "def Toyoterm.__set_current_pane(id); raise ArgumentError, \"bad pane #{id}\"; end",
+            )
+            .unwrap();
+
+        let error = manager.set_current_pane(PaneId(23)).unwrap_err();
+        assert_eq!(error.operation(), "set current pane");
+        assert!(error.message().contains("bad pane 23"));
     }
 
     #[test]

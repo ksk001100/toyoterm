@@ -56,6 +56,75 @@ static mrb_value format_exception(mrb_state *mrb, mrb_value exception) {
   return message;
 }
 
+static int finish_typed_call(mrb_state *mrb, char **error_output) {
+  if (mrb->exc == NULL) {
+    return 0;
+  }
+  mrb_value exception = mrb_obj_value(mrb->exc);
+  mrb->exc = NULL;
+  mrb_value error = format_exception(mrb, exception);
+  *error_output = copy_mruby_string(error);
+  mrb->exc = NULL;
+  return *error_output == NULL ? 2 : 1;
+}
+
+static mrb_value toyoterm_module(mrb_state *mrb) {
+  return mrb_obj_value(mrb_module_get(mrb, "Toyoterm"));
+}
+
+static mrb_value integer_array(mrb_state *mrb, const uint64_t *values,
+                               size_t length) {
+  mrb_value array = mrb_ary_new_capa(mrb, (mrb_int)length);
+  for (size_t index = 0; index < length; index++) {
+    mrb_ary_push(mrb, array, mrb_int_value(mrb, (mrb_int)values[index]));
+  }
+  return array;
+}
+
+int toyoterm_mruby_set_current_pane(void *state, uint64_t pane_id,
+                                    char **error_output) {
+  mrb_state *mrb = (mrb_state *)state;
+  *error_output = NULL;
+  mrb->exc = NULL;
+  mrb_value argument = mrb_int_value(mrb, (mrb_int)pane_id);
+  mrb_funcall_argv(mrb, toyoterm_module(mrb),
+                   mrb_intern_lit(mrb, "__set_current_pane"), 1, &argument);
+  return finish_typed_call(mrb, error_output);
+}
+
+int toyoterm_mruby_set_live_handles(
+    void *state, const uint64_t *workspaces, size_t workspace_count,
+    const uint64_t *windows, size_t window_count, const uint64_t *tabs,
+    size_t tab_count, const uint64_t *panes, size_t pane_count,
+    char **error_output) {
+  mrb_state *mrb = (mrb_state *)state;
+  *error_output = NULL;
+  mrb->exc = NULL;
+  mrb_value arguments[4] = {
+      integer_array(mrb, workspaces, workspace_count),
+      integer_array(mrb, windows, window_count),
+      integer_array(mrb, tabs, tab_count),
+      integer_array(mrb, panes, pane_count),
+  };
+  mrb_funcall_argv(mrb, toyoterm_module(mrb),
+                   mrb_intern_lit(mrb, "__replace_live_handles"), 4,
+                   arguments);
+  return finish_typed_call(mrb, error_output);
+}
+
+int toyoterm_mruby_set_clipboard_text(void *state, const char *text,
+                                      size_t length, int available,
+                                      char **error_output) {
+  mrb_state *mrb = (mrb_state *)state;
+  *error_output = NULL;
+  mrb->exc = NULL;
+  mrb_value argument = available ? mrb_str_new(mrb, text, (mrb_int)length)
+                                 : mrb_nil_value();
+  mrb_funcall_argv(mrb, toyoterm_module(mrb),
+                   mrb_intern_lit(mrb, "__set_clipboard_text"), 1, &argument);
+  return finish_typed_call(mrb, error_output);
+}
+
 int toyoterm_mruby_eval(void *state, const char *source, const char *filename,
                         char **output) {
   mrb_state *mrb = (mrb_state *)state;
