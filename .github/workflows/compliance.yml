@@ -11,7 +11,7 @@ jobs:
   licenses:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Verify vendored notices
         run: sh scripts/check-licenses.sh
       - name: Check Cargo dependency licenses
