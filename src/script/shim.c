@@ -112,6 +112,90 @@ int toyoterm_mruby_set_live_handles(
   return finish_typed_call(mrb, error_output);
 }
 
+int toyoterm_mruby_reset_object_model(void *state, uint64_t workspace_id,
+                                      uint64_t window_id, uint64_t tab_id,
+                                      uint64_t pane_id, char **error_output) {
+  mrb_state *mrb = (mrb_state *)state;
+  *error_output = NULL;
+  mrb->exc = NULL;
+  mrb_value arguments[4] = {
+      mrb_int_value(mrb, (mrb_int)workspace_id),
+      mrb_int_value(mrb, (mrb_int)window_id),
+      mrb_int_value(mrb, (mrb_int)tab_id),
+      mrb_int_value(mrb, (mrb_int)pane_id),
+  };
+  mrb_funcall_argv(mrb, toyoterm_module(mrb),
+                   mrb_intern_lit(mrb, "__reset_object_model"), 4, arguments);
+  return finish_typed_call(mrb, error_output);
+}
+
+int toyoterm_mruby_add_workspace(void *state, uint64_t workspace_id,
+                                 const char *name, size_t name_length,
+                                 const uint64_t *windows, size_t window_count,
+                                 char **error_output) {
+  mrb_state *mrb = (mrb_state *)state;
+  *error_output = NULL;
+  mrb->exc = NULL;
+  mrb_value arguments[3] = {
+      mrb_int_value(mrb, (mrb_int)workspace_id),
+      mrb_str_new(mrb, name, (mrb_int)name_length),
+      integer_array(mrb, windows, window_count),
+  };
+  mrb_funcall_argv(mrb, toyoterm_module(mrb),
+                   mrb_intern_lit(mrb, "__add_workspace"), 3, arguments);
+  return finish_typed_call(mrb, error_output);
+}
+
+int toyoterm_mruby_add_window(void *state, uint64_t window_id,
+                              const uint64_t *tabs, size_t tab_count,
+                              char **error_output) {
+  mrb_state *mrb = (mrb_state *)state;
+  *error_output = NULL;
+  mrb->exc = NULL;
+  mrb_value arguments[2] = {
+      mrb_int_value(mrb, (mrb_int)window_id),
+      integer_array(mrb, tabs, tab_count),
+  };
+  mrb_funcall_argv(mrb, toyoterm_module(mrb),
+                   mrb_intern_lit(mrb, "__add_window"), 2, arguments);
+  return finish_typed_call(mrb, error_output);
+}
+
+int toyoterm_mruby_add_tab(void *state, uint64_t tab_id, const char *title,
+                           size_t title_length, const uint64_t *panes,
+                           size_t pane_count, char **error_output) {
+  mrb_state *mrb = (mrb_state *)state;
+  *error_output = NULL;
+  mrb->exc = NULL;
+  mrb_value arguments[3] = {
+      mrb_int_value(mrb, (mrb_int)tab_id),
+      mrb_str_new(mrb, title, (mrb_int)title_length),
+      integer_array(mrb, panes, pane_count),
+  };
+  mrb_funcall_argv(mrb, toyoterm_module(mrb),
+                   mrb_intern_lit(mrb, "__add_tab"), 3, arguments);
+  return finish_typed_call(mrb, error_output);
+}
+
+int toyoterm_mruby_add_pane(void *state, uint64_t pane_id, const char *title,
+                            size_t title_length, const char *cwd,
+                            size_t cwd_length, int cwd_available, uint64_t pid,
+                            int pid_available, char **error_output) {
+  mrb_state *mrb = (mrb_state *)state;
+  *error_output = NULL;
+  mrb->exc = NULL;
+  mrb_value arguments[4] = {
+      mrb_int_value(mrb, (mrb_int)pane_id),
+      mrb_str_new(mrb, title, (mrb_int)title_length),
+      cwd_available ? mrb_str_new(mrb, cwd, (mrb_int)cwd_length)
+                    : mrb_nil_value(),
+      pid_available ? mrb_int_value(mrb, (mrb_int)pid) : mrb_nil_value(),
+  };
+  mrb_funcall_argv(mrb, toyoterm_module(mrb),
+                   mrb_intern_lit(mrb, "__add_pane"), 4, arguments);
+  return finish_typed_call(mrb, error_output);
+}
+
 int toyoterm_mruby_set_clipboard_text(void *state, const char *text,
                                       size_t length, int available,
                                       char **error_output) {

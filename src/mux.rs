@@ -145,8 +145,10 @@ struct Workspace {
 #[derive(Debug, Eq, PartialEq)]
 pub enum MuxError {
     UnknownWorkspace(WorkspaceId),
+    UnknownWindow(WindowId),
     UnknownPane(PaneId),
     UnknownTab(TabId),
+    CannotCloseLastWindow(WindowId),
     CannotCloseLastPane(PaneId),
     CannotCloseLastTab(TabId),
 }
@@ -155,8 +157,12 @@ impl fmt::Display for MuxError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::UnknownWorkspace(id) => write!(formatter, "unknown workspace {id}"),
+            Self::UnknownWindow(id) => write!(formatter, "unknown window {id}"),
             Self::UnknownPane(id) => write!(formatter, "unknown pane {id}"),
             Self::UnknownTab(id) => write!(formatter, "unknown tab {id}"),
+            Self::CannotCloseLastWindow(id) => {
+                write!(formatter, "cannot close the last window {id}")
+            }
             Self::CannotCloseLastPane(id) => write!(formatter, "cannot close the last pane {id}"),
             Self::CannotCloseLastTab(id) => write!(formatter, "cannot close the last tab {id}"),
         }
@@ -217,6 +223,12 @@ impl Mux {
             .map(|workspace| workspace.name.as_str())
     }
 
+    pub fn workspace_windows(&self, workspace: WorkspaceId) -> Option<&[WindowId]> {
+        self.workspaces
+            .get(&workspace)
+            .map(|workspace| workspace.windows.as_slice())
+    }
+
     pub fn current_window(&self) -> Option<WindowId> {
         self.workspaces
             .get(&self.current_workspace)
@@ -243,6 +255,10 @@ impl Mux {
         self.windows
             .get(&window)
             .map(|window| window.tabs.as_slice())
+    }
+
+    pub fn tab_panes(&self, tab: TabId) -> Option<Vec<PaneId>> {
+        self.tabs.get(&tab).map(|tab| tab.root.panes())
     }
 
     pub fn pane_ids(&self) -> impl Iterator<Item = PaneId> + '_ {
@@ -282,7 +298,22 @@ impl Mux {
     pub fn dispatch(&mut self, command: Command) -> Result<CommandResult, MuxError> {
         tracing::debug!(target: "toyoterm::mux", ?command, "dispatch command");
         match command {
-            Command::NewTab => Ok(CommandResult::Tab(self.new_tab())),
+            Command::NewTab => {
+                let window = self.current_window().expect("mux has an active window");
+                self.new_tab(window).map(CommandResult::Tab)
+            }
+            Command::NewTabIn(window) => self.new_tab(window).map(CommandResult::Tab),
+            Command::CreateWindow(workspace) => {
+                self.create_window(workspace).map(CommandResult::Window)
+            }
+            Command::ActivateWindow(window) => {
+                self.activate_window(window)?;
+                Ok(CommandResult::Window(window))
+            }
+            Command::CloseWindow(window) => {
+                self.close_window(window)?;
+                Ok(CommandResult::None)
+            }
             Command::ActivateTab(tab) => {
                 self.activate_tab(tab)?;
                 Ok(CommandResult::Tab(tab))
@@ -460,10 +491,99 @@ impl Mux {
         workspace
     }
 
-    fn new_tab(&mut self) -> TabId {
-        let window = self
-            .current_window()
-            .expect("mux always has an active window");
+    fn create_window(&mut self, workspace: WorkspaceId) -> Result<WindowId, MuxError> {
+        if !self.workspaces.contains_key(&workspace) {
+            return Err(MuxError::UnknownWorkspace(workspace));
+        }
+        let window = WindowId(self.allocate_id());
+        let tab = TabId(self.allocate_id());
+        let pane = PaneId(self.allocate_id());
+        self.panes.insert(
+            pane,
+            Pane {
+                tab,
+                pending_input: Vec::new(),
+            },
+        );
+        self.tabs.insert(
+            tab,
+            Tab {
+                window,
+                root: PaneNode::Leaf(pane),
+                active_pane: pane,
+            },
+        );
+        self.windows.insert(
+            window,
+            Window {
+                workspace,
+                tabs: vec![tab],
+                active_tab: tab,
+            },
+        );
+        let state = self
+            .workspaces
+            .get_mut(&workspace)
+            .expect("validated workspace exists");
+        state.windows.push(window);
+        state.active_window = window;
+        self.current_workspace = workspace;
+        self.events.push_back(Event::WindowCreated { window });
+        self.events.push_back(Event::TabCreated { tab });
+        self.events.push_back(Event::PaneCreated { pane });
+        Ok(window)
+    }
+
+    fn activate_window(&mut self, window: WindowId) -> Result<(), MuxError> {
+        let workspace = self
+            .windows
+            .get(&window)
+            .ok_or(MuxError::UnknownWindow(window))?
+            .workspace;
+        self.workspaces
+            .get_mut(&workspace)
+            .expect("window workspace exists")
+            .active_window = window;
+        self.current_workspace = workspace;
+        self.events.push_back(Event::WorkspaceChanged { workspace });
+        Ok(())
+    }
+
+    fn close_window(&mut self, window: WindowId) -> Result<(), MuxError> {
+        let state = self
+            .windows
+            .get(&window)
+            .ok_or(MuxError::UnknownWindow(window))?
+            .clone();
+        if self.workspaces[&state.workspace].windows.len() == 1 {
+            return Err(MuxError::CannotCloseLastWindow(window));
+        }
+        for tab in &state.tabs {
+            let panes = self.tabs[tab].root.panes();
+            for pane in panes {
+                self.panes.remove(&pane);
+                self.events.push_back(Event::PaneClosed { pane });
+            }
+            self.tabs.remove(tab);
+            self.events.push_back(Event::TabClosed { tab: *tab });
+        }
+        self.windows.remove(&window);
+        let workspace = self
+            .workspaces
+            .get_mut(&state.workspace)
+            .expect("window workspace exists");
+        workspace.windows.retain(|candidate| *candidate != window);
+        if workspace.active_window == window {
+            workspace.active_window = workspace.windows[0];
+        }
+        self.events.push_back(Event::WindowClosed { window });
+        Ok(())
+    }
+
+    fn new_tab(&mut self, window: WindowId) -> Result<TabId, MuxError> {
+        if !self.windows.contains_key(&window) {
+            return Err(MuxError::UnknownWindow(window));
+        }
         let tab = TabId(self.allocate_id());
         let pane = PaneId(self.allocate_id());
         self.panes.insert(
@@ -486,7 +606,7 @@ impl Mux {
         state.active_tab = tab;
         self.events.push_back(Event::TabCreated { tab });
         self.events.push_back(Event::PaneCreated { pane });
-        tab
+        Ok(tab)
     }
 
     fn split_pane(&mut self, pane: PaneId, direction: SplitDirection) -> Result<PaneId, MuxError> {
@@ -835,6 +955,36 @@ mod tests {
         mux.dispatch(Command::CloseTab(third)).unwrap();
         assert_eq!(mux.current_tab(), Some(first));
         assert_eq!(mux.tabs(mux.current_window().unwrap()), Some(&[first][..]));
+    }
+
+    #[test]
+    fn window_commands_cover_create_activate_tab_and_close_lifecycle() {
+        let mut mux = Mux::new();
+        let workspace = mux.current_workspace();
+        let first = mux.current_window().unwrap();
+        assert_eq!(
+            mux.dispatch(Command::CloseWindow(first)),
+            Err(MuxError::CannotCloseLastWindow(first))
+        );
+
+        let CommandResult::Window(second) = mux.dispatch(Command::CreateWindow(workspace)).unwrap()
+        else {
+            panic!("create window did not return a window");
+        };
+        assert_eq!(mux.current_window(), Some(second));
+        assert_eq!(mux.workspace_windows(workspace), Some(&[first, second][..]));
+
+        let CommandResult::Tab(second_tab) = mux.dispatch(Command::NewTabIn(second)).unwrap()
+        else {
+            panic!("new tab did not return a tab");
+        };
+        assert_eq!(mux.current_tab(), Some(second_tab));
+        mux.dispatch(Command::ActivateWindow(first)).unwrap();
+        assert_eq!(mux.current_window(), Some(first));
+
+        mux.dispatch(Command::CloseWindow(second)).unwrap();
+        assert_eq!(mux.workspace_windows(workspace), Some(&[first][..]));
+        assert!(!mux.native_handles().contains(&NativeHandle::from(second)));
     }
 
     #[test]

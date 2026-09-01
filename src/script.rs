@@ -8,7 +8,8 @@ use std::rc::Rc;
 use std::time::{Duration, Instant};
 
 use crate::{
-    Command, HandleKind, NativeAction, NativeCommand, NativeHandle, PaneId, SplitDirection,
+    Command, HandleKind, NativeAction, NativeCommand, NativeHandle, PaneId, SplitDirection, TabId,
+    WindowId, WorkspaceId,
 };
 
 const SLOW_CALLBACK_THRESHOLD: Duration = Duration::from_millis(100);
@@ -321,21 +322,137 @@ module Toyoterm
   end
 
   class Workspace < NativeHandle
+    def name
+      validate!
+      Toyoterm.__object_data(:workspace, @id)[0]
+    end
+
+    def windows
+      validate!
+      Toyoterm.__object_data(:workspace, @id)[1].map { |id| Window.new(id) }
+    end
+
+    def activate
+      validate!
+      Toyoterm.__queue_command(:activate_workspace, @id, nil)
+      self
+    end
+
+    def create_window
+      validate!
+      Toyoterm.__queue_command(:create_window, @id, nil)
+      self
+    end
+
     private
     def __native_kind; :workspace; end
   end
 
   class Window < NativeHandle
+    def tabs
+      validate!
+      Toyoterm.__object_data(:window, @id)[0].map { |id| Tab.new(id) }
+    end
+
+    def new_tab
+      validate!
+      Toyoterm.__queue_command(:new_tab, @id, nil)
+      self
+    end
+
+    def close
+      validate!
+      Toyoterm.__queue_command(:close_window, @id, nil)
+      self
+    end
+
+    def focus
+      validate!
+      Toyoterm.__queue_command(:activate_window, @id, nil)
+      self
+    end
+
     private
     def __native_kind; :window; end
   end
 
   class Tab < NativeHandle
+    def title
+      validate!
+      Toyoterm.__object_data(:tab, @id)[0]
+    end
+
+    def panes
+      validate!
+      Toyoterm.__object_data(:tab, @id)[1].map { |id| Pane.new(id) }
+    end
+
+    def close
+      validate!
+      Toyoterm.__queue_command(:close_tab, @id, nil)
+      self
+    end
+
+    def focus
+      validate!
+      Toyoterm.__queue_command(:activate_tab, @id, nil)
+      self
+    end
+
+    alias activate focus
+
     private
     def __native_kind; :tab; end
   end
 
   class Pane < NativeHandle
+
+    def title
+      validate!
+      Toyoterm.__object_data(:pane, @id)[0]
+    end
+
+    def cwd
+      validate!
+      Toyoterm.__object_data(:pane, @id)[1]
+    end
+
+    def pid
+      validate!
+      Toyoterm.__object_data(:pane, @id)[2]
+    end
+
+    def split(direction)
+      validate!
+      direction = direction.to_s.downcase
+      unless ["left", "right", "up", "down"].include?(direction)
+        raise ArgumentError, "split direction must be left, right, up, or down"
+      end
+      Toyoterm.__queue_command(:split, @id, direction)
+      self
+    end
+
+    def close
+      validate!
+      Toyoterm.__queue_command(:close_pane, @id, nil)
+      self
+    end
+
+    def focus
+      validate!
+      Toyoterm.__queue_command(:activate_pane, @id, nil)
+      self
+    end
+
+    def badge
+      validate!
+      Toyoterm.__pane_badge(@id)
+    end
+
+    def badge=(value)
+      validate!
+      Toyoterm.__set_pane_badge(@id, value.nil? ? nil : value.to_s)
+    end
 
     def send_text(text)
       validate!
@@ -373,16 +490,21 @@ module Toyoterm
 
   @config = Config.new
   @current_pane = Pane.new(0)
+  @current_tab = Tab.new(0)
+  @current_window = Window.new(0)
+  @current_workspace = Workspace.new(0)
   @clipboard = Clipboard.new
   @commands = []
   @current_command = nil
   @event_handlers = {}
   @live_handles = {
-    workspace: [],
-    window: [],
-    tab: [],
+    workspace: [0],
+    window: [0],
+    tab: [0],
     pane: [0]
   }
+  @object_data = { workspace: {}, window: {}, tab: {}, pane: {} }
+  @pane_badges = {}
 
   def self.configure(&block)
     block.call(@config)
@@ -394,6 +516,31 @@ module Toyoterm
 
   def self.current_pane
     @current_pane
+  end
+
+  def self.current_tab
+    @current_tab
+  end
+
+  def self.current_window
+    @current_window
+  end
+
+  def self.current_workspace
+    @current_workspace
+  end
+
+  def self.windows
+    @object_data[:window].keys.sort.map { |id| Window.new(id) }
+  end
+
+  def self.workspaces
+    @object_data[:workspace].keys.sort.map { |id| Workspace.new(id) }
+  end
+
+  def self.workspace(name)
+    pair = @object_data[:workspace].find { |_id, data| data[0] == name.to_s }
+    pair ? Workspace.new(pair[0]) : nil
   end
 
   def self.clipboard
@@ -446,6 +593,44 @@ module Toyoterm
   def self.__set_current_pane(id)
     @current_pane = Pane.new(id)
     @live_handles[:pane] << id unless @live_handles[:pane].include?(id)
+  end
+
+  def self.__reset_object_model(workspace, window, tab, pane)
+    @current_workspace = Workspace.new(workspace)
+    @current_window = Window.new(window)
+    @current_tab = Tab.new(tab)
+    @current_pane = Pane.new(pane)
+    @object_data = { workspace: {}, window: {}, tab: {}, pane: {} }
+  end
+
+  def self.__add_workspace(id, name, windows)
+    @object_data[:workspace][id] = [name, windows]
+  end
+
+  def self.__add_window(id, tabs)
+    @object_data[:window][id] = [tabs]
+  end
+
+  def self.__add_tab(id, title, panes)
+    @object_data[:tab][id] = [title, panes]
+  end
+
+  def self.__add_pane(id, title, cwd, pid)
+    @object_data[:pane][id] = [title, cwd, pid]
+  end
+
+  def self.__object_data(kind, id)
+    data = @object_data[kind][id]
+    raise InvalidHandleError.new(kind, id) if data.nil?
+    data
+  end
+
+  def self.__pane_badge(id)
+    @pane_badges[id]
+  end
+
+  def self.__set_pane_badge(id, value)
+    value.nil? ? @pane_badges.delete(id) : @pane_badges[id] = value
   end
 
   def self.__replace_live_handles(workspaces, windows, tabs, panes)
@@ -515,6 +700,51 @@ unsafe extern "C" {
         pane_count: usize,
         error_output: *mut *mut c_char,
     ) -> i32;
+    fn toyoterm_mruby_reset_object_model(
+        state: *mut c_void,
+        workspace_id: u64,
+        window_id: u64,
+        tab_id: u64,
+        pane_id: u64,
+        error_output: *mut *mut c_char,
+    ) -> i32;
+    fn toyoterm_mruby_add_workspace(
+        state: *mut c_void,
+        workspace_id: u64,
+        name: *const c_char,
+        name_length: usize,
+        windows: *const u64,
+        window_count: usize,
+        error_output: *mut *mut c_char,
+    ) -> i32;
+    fn toyoterm_mruby_add_window(
+        state: *mut c_void,
+        window_id: u64,
+        tabs: *const u64,
+        tab_count: usize,
+        error_output: *mut *mut c_char,
+    ) -> i32;
+    fn toyoterm_mruby_add_tab(
+        state: *mut c_void,
+        tab_id: u64,
+        title: *const c_char,
+        title_length: usize,
+        panes: *const u64,
+        pane_count: usize,
+        error_output: *mut *mut c_char,
+    ) -> i32;
+    fn toyoterm_mruby_add_pane(
+        state: *mut c_void,
+        pane_id: u64,
+        title: *const c_char,
+        title_length: usize,
+        cwd: *const c_char,
+        cwd_length: usize,
+        cwd_available: i32,
+        pid: u64,
+        pid_available: i32,
+        error_output: *mut *mut c_char,
+    ) -> i32;
     fn toyoterm_mruby_set_clipboard_text(
         state: *mut c_void,
         text: *const c_char,
@@ -555,6 +785,46 @@ pub struct ToyotermConfig {
     pub default_shell: Option<String>,
     pub scrollback_lines: usize,
     pub leader: Option<LeaderConfig>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct RubyObjectModel {
+    pub current_workspace: WorkspaceId,
+    pub current_window: WindowId,
+    pub current_tab: TabId,
+    pub current_pane: PaneId,
+    pub workspaces: Vec<RubyWorkspace>,
+    pub windows: Vec<RubyWindow>,
+    pub tabs: Vec<RubyTab>,
+    pub panes: Vec<RubyPane>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct RubyWorkspace {
+    pub id: WorkspaceId,
+    pub name: String,
+    pub windows: Vec<WindowId>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct RubyWindow {
+    pub id: WindowId,
+    pub tabs: Vec<TabId>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct RubyTab {
+    pub id: TabId,
+    pub title: String,
+    pub panes: Vec<PaneId>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct RubyPane {
+    pub id: PaneId,
+    pub title: String,
+    pub cwd: Option<String>,
+    pub pid: Option<u32>,
 }
 
 impl Default for ToyotermConfig {
@@ -668,6 +938,100 @@ impl MrubyRuntime {
             )
         };
         typed_call_result("set live handles", status, error)
+    }
+
+    fn set_object_model(&mut self, model: &RubyObjectModel) -> Result<(), ScriptError> {
+        let mut error = std::ptr::null_mut();
+        // SAFETY: The VM is exclusively borrowed and the shim initializes `error`.
+        let status = unsafe {
+            toyoterm_mruby_reset_object_model(
+                self.state.as_ptr(),
+                model.current_workspace.0,
+                model.current_window.0,
+                model.current_tab.0,
+                model.current_pane.0,
+                &mut error,
+            )
+        };
+        typed_call_result("reset object model", status, error)?;
+
+        for workspace in &model.workspaces {
+            let windows = workspace
+                .windows
+                .iter()
+                .map(|window| window.0)
+                .collect::<Vec<_>>();
+            let mut error = std::ptr::null_mut();
+            // SAFETY: String and slice storage remains live for the duration of the call.
+            let status = unsafe {
+                toyoterm_mruby_add_workspace(
+                    self.state.as_ptr(),
+                    workspace.id.0,
+                    workspace.name.as_ptr().cast(),
+                    workspace.name.len(),
+                    windows.as_ptr(),
+                    windows.len(),
+                    &mut error,
+                )
+            };
+            typed_call_result("add workspace object", status, error)?;
+        }
+        for window in &model.windows {
+            let tabs = window.tabs.iter().map(|tab| tab.0).collect::<Vec<_>>();
+            let mut error = std::ptr::null_mut();
+            // SAFETY: Slice storage remains live for the duration of the call.
+            let status = unsafe {
+                toyoterm_mruby_add_window(
+                    self.state.as_ptr(),
+                    window.id.0,
+                    tabs.as_ptr(),
+                    tabs.len(),
+                    &mut error,
+                )
+            };
+            typed_call_result("add window object", status, error)?;
+        }
+        for tab in &model.tabs {
+            let panes = tab.panes.iter().map(|pane| pane.0).collect::<Vec<_>>();
+            let mut error = std::ptr::null_mut();
+            // SAFETY: String and slice storage remains live for the duration of the call.
+            let status = unsafe {
+                toyoterm_mruby_add_tab(
+                    self.state.as_ptr(),
+                    tab.id.0,
+                    tab.title.as_ptr().cast(),
+                    tab.title.len(),
+                    panes.as_ptr(),
+                    panes.len(),
+                    &mut error,
+                )
+            };
+            typed_call_result("add tab object", status, error)?;
+        }
+        for pane in &model.panes {
+            let (cwd, cwd_len, cwd_available) =
+                pane.cwd.as_deref().map_or((std::ptr::null(), 0, 0), |cwd| {
+                    (cwd.as_ptr().cast::<c_char>(), cwd.len(), 1)
+                });
+            let mut error = std::ptr::null_mut();
+            // SAFETY: Optional string storage remains live for the duration of the call.
+            let status = unsafe {
+                toyoterm_mruby_add_pane(
+                    self.state.as_ptr(),
+                    pane.id.0,
+                    pane.title.as_ptr().cast(),
+                    pane.title.len(),
+                    cwd,
+                    cwd_len,
+                    cwd_available,
+                    pane.pid.unwrap_or_default().into(),
+                    i32::from(pane.pid.is_some()),
+                    &mut error,
+                )
+            };
+            typed_call_result("add pane object", status, error)?;
+        }
+        Ok(())
     }
 
     fn set_clipboard_text(&mut self, text: Option<&str>) -> Result<(), ScriptError> {
@@ -896,6 +1260,10 @@ impl ConfigManager {
             .set_live_handles(&workspaces, &windows, &tabs, &panes)
     }
 
+    pub(crate) fn set_object_model(&mut self, model: &RubyObjectModel) -> Result<(), ScriptError> {
+        self.runtime.set_object_model(model)
+    }
+
     /// Updates the clipboard snapshot exposed to the next Ruby callback.
     pub fn set_clipboard_text(&mut self, text: Option<&str>) -> Result<(), ScriptError> {
         self.runtime.set_clipboard_text(text)
@@ -959,8 +1327,19 @@ impl ConfigManager {
     /// Converts commands queued by Ruby into the native command API.
     ///
     /// Pane id zero is a bootstrap placeholder used while startup config is loading.
+    #[cfg(test)]
     pub(crate) fn drain_commands(
         &mut self,
+        current_pane: PaneId,
+    ) -> Result<Vec<NativeCommand>, ScriptError> {
+        self.drain_commands_with_context(WorkspaceId(0), WindowId(0), TabId(0), current_pane)
+    }
+
+    pub(crate) fn drain_commands_with_context(
+        &mut self,
+        current_workspace: WorkspaceId,
+        current_window: WindowId,
+        current_tab: TabId,
         current_pane: PaneId,
     ) -> Result<Vec<NativeCommand>, ScriptError> {
         let mut commands = Vec::new();
@@ -970,19 +1349,51 @@ impl ConfigManager {
                 break;
             }
 
-            let pane = self
+            let raw_id = self
                 .runtime
                 .eval("Toyoterm.__current_command_pane")?
                 .parse::<u64>()
-                .map(PaneId)
-                .map_err(|_| ScriptError::new("decode mruby command", "pane id is invalid"))?;
-            let pane = if pane.0 == 0 { current_pane } else { pane };
+                .map_err(|_| ScriptError::new("decode mruby command", "handle id is invalid"))?;
+            let pane = if raw_id == 0 {
+                current_pane
+            } else {
+                PaneId(raw_id)
+            };
             let payload = self.runtime.eval("Toyoterm.__current_command_payload")?;
             match command_type.as_str() {
                 "send_text" => commands.push(NativeCommand::Mux(Command::SendText {
                     pane,
                     text: payload,
                 })),
+                "split" => commands.push(NativeCommand::Mux(Command::Split {
+                    pane,
+                    direction: parse_direction(&payload)?,
+                })),
+                "close_pane" => commands.push(NativeCommand::Mux(Command::ClosePane(pane))),
+                "activate_pane" => commands.push(NativeCommand::Mux(Command::ActivatePane(pane))),
+                "close_tab" => commands.push(NativeCommand::Mux(Command::CloseTab(TabId(
+                    resolve_bootstrap_id(raw_id, current_tab.0),
+                )))),
+                "activate_tab" => commands.push(NativeCommand::Mux(Command::ActivateTab(TabId(
+                    resolve_bootstrap_id(raw_id, current_tab.0),
+                )))),
+                "new_tab" => commands.push(NativeCommand::Mux(Command::NewTabIn(WindowId(
+                    resolve_bootstrap_id(raw_id, current_window.0),
+                )))),
+                "close_window" => commands.push(NativeCommand::Mux(Command::CloseWindow(
+                    WindowId(resolve_bootstrap_id(raw_id, current_window.0)),
+                ))),
+                "activate_window" => commands.push(NativeCommand::Mux(Command::ActivateWindow(
+                    WindowId(resolve_bootstrap_id(raw_id, current_window.0)),
+                ))),
+                "activate_workspace" => {
+                    commands.push(NativeCommand::Mux(Command::ActivateWorkspace(WorkspaceId(
+                        resolve_bootstrap_id(raw_id, current_workspace.0),
+                    ))))
+                }
+                "create_window" => commands.push(NativeCommand::Mux(Command::CreateWindow(
+                    WorkspaceId(resolve_bootstrap_id(raw_id, current_workspace.0)),
+                ))),
                 "clipboard_write" => commands.push(NativeCommand::ClipboardWrite(payload)),
                 "reload_config" => commands.push(NativeCommand::ReloadConfig),
                 other => {
@@ -995,6 +1406,10 @@ impl ConfigManager {
         }
         Ok(commands)
     }
+}
+
+const fn resolve_bootstrap_id(id: u64, current: u64) -> u64 {
+    if id == 0 { current } else { id }
 }
 
 fn record_callback_duration(kind: CallbackKind, name: &str, elapsed: Duration, succeeded: bool) {
@@ -1534,6 +1949,113 @@ fail_config
             })]
         );
         assert!(manager.drain_commands(PaneId(42)).unwrap().is_empty());
+    }
+
+    #[test]
+    fn exposes_the_synced_ruby_object_model() {
+        let mut manager = ConfigManager::new().unwrap();
+        manager
+            .set_live_handles([
+                NativeHandle::from(WorkspaceId(10)),
+                NativeHandle::from(WindowId(20)),
+                NativeHandle::from(TabId(30)),
+                NativeHandle::from(PaneId(40)),
+            ])
+            .unwrap();
+        manager
+            .set_object_model(&RubyObjectModel {
+                current_workspace: WorkspaceId(10),
+                current_window: WindowId(20),
+                current_tab: TabId(30),
+                current_pane: PaneId(40),
+                workspaces: vec![RubyWorkspace {
+                    id: WorkspaceId(10),
+                    name: "backend".into(),
+                    windows: vec![WindowId(20)],
+                }],
+                windows: vec![RubyWindow {
+                    id: WindowId(20),
+                    tabs: vec![TabId(30)],
+                }],
+                tabs: vec![RubyTab {
+                    id: TabId(30),
+                    title: "server".into(),
+                    panes: vec![PaneId(40)],
+                }],
+                panes: vec![RubyPane {
+                    id: PaneId(40),
+                    title: "shell".into(),
+                    cwd: Some("/srv/app".into()),
+                    pid: Some(1234),
+                }],
+            })
+            .unwrap();
+
+        assert_eq!(
+            manager.eval("Toyoterm.current_workspace.name").unwrap(),
+            "backend"
+        );
+        assert_eq!(
+            manager.eval("Toyoterm.workspace('backend').id").unwrap(),
+            "10"
+        );
+        assert_eq!(
+            manager.eval("Toyoterm.workspaces.map(&:id)").unwrap(),
+            "[10]"
+        );
+        assert_eq!(manager.eval("Toyoterm.windows.map(&:id)").unwrap(), "[20]");
+        assert_eq!(
+            manager.eval("Toyoterm.current_window.tabs[0].id").unwrap(),
+            "30"
+        );
+        assert_eq!(
+            manager.eval("Toyoterm.current_tab.title").unwrap(),
+            "server"
+        );
+        assert_eq!(
+            manager.eval("Toyoterm.current_tab.panes[0].title").unwrap(),
+            "shell"
+        );
+        assert_eq!(
+            manager.eval("Toyoterm.current_pane.cwd").unwrap(),
+            "/srv/app"
+        );
+        assert_eq!(manager.eval("Toyoterm.current_pane.pid").unwrap(), "1234");
+        assert_eq!(manager.eval("Toyoterm.workspace('missing')").unwrap(), "");
+
+        manager.eval("Toyoterm.current_pane.badge = 'dev'").unwrap();
+        assert_eq!(manager.eval("Toyoterm.current_pane.badge").unwrap(), "dev");
+    }
+
+    #[test]
+    fn converts_object_model_operations_to_native_commands() {
+        let mut manager = ConfigManager::new().unwrap();
+        manager
+            .eval(
+                "Toyoterm.current_pane.split(:left); Toyoterm.current_pane.focus; \
+                 Toyoterm.current_tab.close; Toyoterm.current_window.new_tab; \
+                 Toyoterm.current_window.close; Toyoterm.current_workspace.activate; \
+                 Toyoterm.current_workspace.create_window",
+            )
+            .unwrap();
+
+        assert_eq!(
+            manager
+                .drain_commands_with_context(WorkspaceId(10), WindowId(20), TabId(30), PaneId(40),)
+                .unwrap(),
+            vec![
+                NativeCommand::Mux(Command::Split {
+                    pane: PaneId(40),
+                    direction: SplitDirection::Left,
+                }),
+                NativeCommand::Mux(Command::ActivatePane(PaneId(40))),
+                NativeCommand::Mux(Command::CloseTab(TabId(30))),
+                NativeCommand::Mux(Command::NewTabIn(WindowId(20))),
+                NativeCommand::Mux(Command::CloseWindow(WindowId(20))),
+                NativeCommand::Mux(Command::ActivateWorkspace(WorkspaceId(10))),
+                NativeCommand::Mux(Command::CreateWindow(WorkspaceId(10))),
+            ]
+        );
     }
 
     #[test]

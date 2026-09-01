@@ -147,6 +147,12 @@ config.bind "CTRL+SHIFT+P" do |context|
 end
 ```
 
+### Ruby object model
+
+Each callback receives a current snapshot through `Toyoterm.current_workspace`, `current_window`, `current_tab`, and `current_pane`. `Toyoterm.workspaces`, `windows`, and `workspace(name)` provide lookup; workspace, window, and tab objects expose their children. Pane metadata includes `title`, `cwd`, and `pid`. Mutating methods such as `split`, `close`, `focus`/`activate`, `new_tab`, and `create_window` enqueue native commands and take effect after the callback returns successfully. A saved object raises `Toyoterm::InvalidHandleError` after its native object is deleted.
+
+`pane.badge` is callback-owned display metadata stored by pane ID for the lifetime of the current Ruby VM. Rendering badges is intentionally separate from this API contract. `pane.chdir` is not provided: the shell owns its working directory, so configurations that want shell-specific directory changes should use `pane.send_text("cd ...\n")` with appropriate shell escaping.
+
 ### Hot reload
 
 `Toyoterm.reload_config` reloads the same file selected at startup. The new source is evaluated and validated in a fresh mruby VM before it replaces the active configuration. A successful reload updates colors, font metrics, opacity, scrollback, key bindings, and event handlers without replacing the running terminal session.

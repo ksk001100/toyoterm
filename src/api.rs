@@ -109,6 +109,10 @@ pub enum NativeCommand {
 #[derive(Clone, Debug, PartialEq)]
 pub enum Command {
     NewTab,
+    NewTabIn(WindowId),
+    CreateWindow(WorkspaceId),
+    ActivateWindow(WindowId),
+    CloseWindow(WindowId),
     ActivateTab(TabId),
     CloseTab(TabId),
     Split {
@@ -129,6 +133,7 @@ pub enum Command {
 pub enum CommandResult {
     None,
     Workspace(WorkspaceId),
+    Window(WindowId),
     Tab(TabId),
     Pane(PaneId),
 }
@@ -136,6 +141,8 @@ pub enum CommandResult {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum Event {
     WorkspaceChanged { workspace: WorkspaceId },
+    WindowCreated { window: WindowId },
+    WindowClosed { window: WindowId },
     TabCreated { tab: TabId },
     TabClosed { tab: TabId },
     PaneCreated { pane: PaneId },
