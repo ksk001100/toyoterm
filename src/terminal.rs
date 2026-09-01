@@ -29,6 +29,35 @@ pub struct SelectionSpan {
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum CellColor {
+    #[default]
+    Default,
+    Indexed(u8),
+    Rgb(u8, u8, u8),
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct CellAttributes {
+    pub foreground: CellColor,
+    pub background: CellColor,
+    pub bold: bool,
+    pub italic: bool,
+    pub underline: bool,
+    pub strikethrough: bool,
+    pub dim: bool,
+    pub inverse: bool,
+    pub hidden: bool,
+}
+
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct TerminalCell {
+    pub column: u16,
+    pub text: String,
+    pub width: u8,
+    pub attributes: CellAttributes,
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub enum SelectionKind {
     #[default]
     Simple,
@@ -41,6 +70,7 @@ pub struct TerminalSnapshot {
     pub columns: u16,
     pub rows: u16,
     pub lines: Vec<String>,
+    pub cells: Vec<Vec<TerminalCell>>,
     pub selection: Vec<SelectionSpan>,
 }
 

@@ -4,7 +4,8 @@ use std::sync::Arc;
 
 use glyphon::{
     Attrs, Buffer, Cache as GlyphCache, Color as GlyphColor, Family, FontSystem, Metrics,
-    Resolution, Shaping, SwashCache, TextArea, TextAtlas, TextBounds, TextRenderer, Viewport, Wrap,
+    Resolution, Shaping, Style, SwashCache, TextArea, TextAtlas, TextBounds, TextRenderer,
+    Viewport, Weight, Wrap,
 };
 use wgpu::{
     Color, CommandEncoderDescriptor, CompositeAlphaMode, CurrentSurfaceTexture, Device,
@@ -14,7 +15,10 @@ use wgpu::{
 use winit::dpi::PhysicalSize;
 use winit::window::Window;
 
-use crate::{CursorShape, CursorState, PaneId, PaneRect, TabId, TerminalSnapshot, WorkspaceId};
+use crate::{
+    CellAttributes, CellColor, CursorShape, CursorState, PaneId, PaneRect, TabId, TerminalSnapshot,
+    WorkspaceId,
+};
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct TextLayout {
@@ -273,7 +277,11 @@ impl GpuRenderer {
         let active_panes = panes.iter().map(|pane| pane.pane).collect::<HashSet<_>>();
         self.panes.retain(|pane, _| active_panes.contains(pane));
         let metrics = Metrics::new(layout.font_size.max(1.0), layout.line_height.max(1.0));
+        let font_family = self.style.font_family.clone();
+        let foreground = self.style.foreground;
+        let background = self.style.background;
         for pane in panes {
+            let rich_text = terminal_rich_text(pane.snapshot, &font_family, foreground, background);
             if !self.panes.contains_key(&pane.pane) {
                 self.panes.insert(
                     pane.pane,
@@ -301,12 +309,24 @@ impl GpuRenderer {
             buffers
                 .text
                 .set_metrics_and_size(metrics, Some(content_width), Some(content_height));
-            buffers.text.set_text(
-                &pane.snapshot.lines.join("\n"),
-                &Attrs::new().family(Family::Name(&self.style.font_family)),
-                Shaping::Basic,
-                None,
-            );
+            let default_attrs = Attrs::new().family(Family::Name(&font_family));
+            if rich_text.is_empty() {
+                buffers.text.set_text(
+                    &pane.snapshot.lines.join("\n"),
+                    &default_attrs,
+                    Shaping::Basic,
+                    None,
+                );
+            } else {
+                buffers.text.set_rich_text(
+                    rich_text
+                        .iter()
+                        .map(|(text, attrs)| (text.as_str(), attrs.clone())),
+                    &default_attrs,
+                    Shaping::Basic,
+                    None,
+                );
+            }
             buffers
                 .text
                 .shape_until_scroll(&mut self.font_system, false);
@@ -683,6 +703,129 @@ fn selection_text(snapshot: &TerminalSnapshot) -> String {
     text
 }
 
+fn terminal_rich_text<'a>(
+    snapshot: &TerminalSnapshot,
+    font_family: &'a str,
+    default_foreground: [u8; 3],
+    default_background: [u8; 3],
+) -> Vec<(String, Attrs<'a>)> {
+    if snapshot.cells.is_empty() {
+        return Vec::new();
+    }
+
+    let default_attrs = Attrs::new().family(Family::Name(font_family));
+    let mut spans = Vec::new();
+    for row in 0..snapshot.rows {
+        if row > 0 {
+            spans.push(("\n".to_owned(), default_attrs.clone()));
+        }
+        let Some(cells) = snapshot.cells.get(usize::from(row)) else {
+            continue;
+        };
+        let mut column = 0;
+        for cell in cells {
+            if cell.column > column {
+                spans.push((
+                    " ".repeat(usize::from(cell.column - column)),
+                    default_attrs.clone(),
+                ));
+            }
+            spans.push((
+                cell.text.clone(),
+                glyph_attrs(
+                    cell.attributes,
+                    font_family,
+                    default_foreground,
+                    default_background,
+                ),
+            ));
+            column = cell.column.saturating_add(u16::from(cell.width.max(1)));
+        }
+    }
+    spans
+}
+
+fn glyph_attrs<'a>(
+    attributes: CellAttributes,
+    font_family: &'a str,
+    default_foreground: [u8; 3],
+    default_background: [u8; 3],
+) -> Attrs<'a> {
+    let foreground = if attributes.inverse {
+        resolve_cell_color(attributes.background, default_background)
+    } else {
+        resolve_cell_color(attributes.foreground, default_foreground)
+    };
+    let alpha = if attributes.hidden {
+        0
+    } else if attributes.dim {
+        150
+    } else {
+        255
+    };
+    let mut attrs = Attrs::new()
+        .family(Family::Name(font_family))
+        .color(glyph_color(foreground, alpha));
+    if attributes.bold {
+        attrs = attrs.weight(Weight::BOLD);
+    }
+    if attributes.italic {
+        attrs = attrs.style(Style::Italic);
+    }
+    if attributes.underline {
+        attrs = attrs.underline(glyphon::cosmic_text::UnderlineStyle::Single);
+    }
+    if attributes.strikethrough {
+        attrs = attrs.strikethrough();
+    }
+    attrs
+}
+
+fn resolve_cell_color(color: CellColor, default: [u8; 3]) -> [u8; 3] {
+    match color {
+        CellColor::Default => default,
+        CellColor::Rgb(red, green, blue) => [red, green, blue],
+        CellColor::Indexed(index) => xterm_color(index),
+    }
+}
+
+fn xterm_color(index: u8) -> [u8; 3] {
+    const ANSI: [[u8; 3]; 16] = [
+        [0, 0, 0],
+        [205, 0, 0],
+        [0, 205, 0],
+        [205, 205, 0],
+        [0, 0, 238],
+        [205, 0, 205],
+        [0, 205, 205],
+        [229, 229, 229],
+        [127, 127, 127],
+        [255, 0, 0],
+        [0, 255, 0],
+        [255, 255, 0],
+        [92, 92, 255],
+        [255, 0, 255],
+        [0, 255, 255],
+        [255, 255, 255],
+    ];
+    match index {
+        0..=15 => ANSI[usize::from(index)],
+        16..=231 => {
+            let index = index - 16;
+            let component = |value: u8| if value == 0 { 0 } else { value * 40 + 55 };
+            [
+                component(index / 36),
+                component(index / 6 % 6),
+                component(index % 6),
+            ]
+        }
+        232..=255 => {
+            let level = (index - 232) * 10 + 8;
+            [level, level, level]
+        }
+    }
+}
+
 fn parse_rgb(value: &str) -> Result<[u8; 3], RenderError> {
     let hex = value.strip_prefix('#').unwrap_or(value);
     if hex.len() != 6 {
@@ -745,6 +888,7 @@ mod tests {
             columns: 8,
             rows: 3,
             lines: vec!["alpha".into(), "beta".into(), "gamma".into()],
+            cells: Vec::new(),
             selection: vec![
                 SelectionSpan {
                     row: 0,
@@ -759,6 +903,29 @@ mod tests {
             ],
         };
         assert_eq!(selection_text(&snapshot), "  ███\n██\n");
+    }
+
+    #[test]
+    fn maps_xterm_palette_and_rich_cell_attributes() {
+        assert_eq!(xterm_color(1), [205, 0, 0]);
+        assert_eq!(xterm_color(21), [0, 0, 255]);
+        assert_eq!(xterm_color(232), [8, 8, 8]);
+
+        let attrs = glyph_attrs(
+            CellAttributes {
+                foreground: CellColor::Rgb(1, 2, 3),
+                bold: true,
+                italic: true,
+                dim: true,
+                ..CellAttributes::default()
+            },
+            "monospace",
+            [200, 200, 200],
+            [0, 0, 0],
+        );
+        assert_eq!(attrs.color_opt, Some(GlyphColor::rgba(1, 2, 3, 150)));
+        assert_eq!(attrs.weight, Weight::BOLD);
+        assert_eq!(attrs.style, Style::Italic);
     }
 
     #[test]

@@ -5,11 +5,13 @@ use alacritty_terminal::index::{Column, Line, Point, Side};
 use alacritty_terminal::selection::{Selection, SelectionType};
 use alacritty_terminal::term::cell::Flags;
 use alacritty_terminal::term::{Config, MIN_COLUMNS, MIN_SCREEN_LINES, TermMode};
-use alacritty_terminal::vte::ansi::{CursorShape as AlacrittyCursorShape, Processor};
+use alacritty_terminal::vte::ansi::{
+    Color, CursorShape as AlacrittyCursorShape, NamedColor, Processor,
+};
 
 use super::{
-    CursorShape, CursorState, SelectionKind, SelectionSpan, TerminalBackend, TerminalMode,
-    TerminalSnapshot,
+    CellAttributes, CellColor, CursorShape, CursorState, SelectionKind, SelectionSpan,
+    TerminalBackend, TerminalCell, TerminalMode, TerminalSnapshot,
 };
 
 pub const DEFAULT_SCROLLBACK_LINES: usize = 10_000;
@@ -73,6 +75,7 @@ impl TerminalBackend for AlacrittyTerminalBackend {
         let (columns, rows) = self.dimensions();
         let display_offset = grid.display_offset() as i32;
         let mut lines = Vec::with_capacity(rows as usize);
+        let mut rows_of_cells = Vec::with_capacity(rows as usize);
         let selection_range = self
             .terminal
             .selection
@@ -83,6 +86,7 @@ impl TerminalBackend for AlacrittyTerminalBackend {
         for viewport_row in 0..rows {
             let line = Line(viewport_row as i32 - display_offset);
             let mut text = String::with_capacity(columns as usize);
+            let mut cells = Vec::with_capacity(columns as usize);
             for column in 0..columns {
                 let cell = &grid[line][Column(column as usize)];
                 if cell
@@ -92,11 +96,27 @@ impl TerminalBackend for AlacrittyTerminalBackend {
                     continue;
                 }
                 text.push(cell.c);
+                let mut cell_text = cell.c.to_string();
                 if let Some(zerowidth) = cell.zerowidth() {
                     text.extend(zerowidth);
+                    cell_text.extend(zerowidth);
                 }
+                cells.push(TerminalCell {
+                    column,
+                    text: cell_text,
+                    width: if cell.flags.contains(Flags::WIDE_CHAR) {
+                        2
+                    } else {
+                        1
+                    },
+                    attributes: cell_attributes(cell.fg, cell.bg, cell.flags),
+                });
             }
             lines.push(text.trim_end().to_owned());
+            while cells.last().is_some_and(is_default_blank_cell) {
+                cells.pop();
+            }
+            rows_of_cells.push(cells);
             if let Some(range) = selection_range {
                 let mut selected_columns = (0..columns).filter(|column| {
                     range.contains(Point::new(line, Column(usize::from(*column))))
@@ -116,6 +136,7 @@ impl TerminalBackend for AlacrittyTerminalBackend {
             columns,
             rows,
             lines,
+            cells: rows_of_cells,
             selection,
         }
     }
@@ -181,6 +202,61 @@ impl TerminalBackend for AlacrittyTerminalBackend {
     }
 }
 
+fn is_default_blank_cell(cell: &TerminalCell) -> bool {
+    cell.text == " " && cell.attributes == CellAttributes::default()
+}
+
+fn cell_attributes(foreground: Color, background: Color, flags: Flags) -> CellAttributes {
+    CellAttributes {
+        foreground: cell_color(foreground, false),
+        background: cell_color(background, true),
+        bold: flags.contains(Flags::BOLD),
+        italic: flags.contains(Flags::ITALIC),
+        underline: flags.intersects(Flags::ALL_UNDERLINES),
+        strikethrough: flags.contains(Flags::STRIKEOUT),
+        dim: flags.contains(Flags::DIM),
+        inverse: flags.contains(Flags::INVERSE),
+        hidden: flags.contains(Flags::HIDDEN),
+    }
+}
+
+fn cell_color(color: Color, background: bool) -> CellColor {
+    match color {
+        Color::Spec(rgb) => CellColor::Rgb(rgb.r, rgb.g, rgb.b),
+        Color::Indexed(index) => CellColor::Indexed(index),
+        Color::Named(NamedColor::Black) | Color::Named(NamedColor::DimBlack) => {
+            CellColor::Indexed(0)
+        }
+        Color::Named(NamedColor::Red) | Color::Named(NamedColor::DimRed) => CellColor::Indexed(1),
+        Color::Named(NamedColor::Green) | Color::Named(NamedColor::DimGreen) => {
+            CellColor::Indexed(2)
+        }
+        Color::Named(NamedColor::Yellow) | Color::Named(NamedColor::DimYellow) => {
+            CellColor::Indexed(3)
+        }
+        Color::Named(NamedColor::Blue) | Color::Named(NamedColor::DimBlue) => CellColor::Indexed(4),
+        Color::Named(NamedColor::Magenta) | Color::Named(NamedColor::DimMagenta) => {
+            CellColor::Indexed(5)
+        }
+        Color::Named(NamedColor::Cyan) | Color::Named(NamedColor::DimCyan) => CellColor::Indexed(6),
+        Color::Named(NamedColor::White) | Color::Named(NamedColor::DimWhite) => {
+            CellColor::Indexed(7)
+        }
+        Color::Named(named)
+            if (NamedColor::BrightBlack..=NamedColor::BrightWhite).contains(&named) =>
+        {
+            CellColor::Indexed(named as u8)
+        }
+        Color::Named(NamedColor::Foreground)
+        | Color::Named(NamedColor::Background)
+        | Color::Named(NamedColor::Cursor)
+        | Color::Named(NamedColor::BrightForeground)
+        | Color::Named(NamedColor::DimForeground) => CellColor::Default,
+        Color::Named(_) if background => CellColor::Default,
+        Color::Named(_) => CellColor::Default,
+    }
+}
+
 #[derive(Clone, Copy, Debug)]
 struct TermSize {
     columns: usize,
@@ -241,6 +317,53 @@ mod tests {
     }
 
     #[test]
+    fn tracks_wide_combining_cjk_and_emoji_cell_widths() {
+        let mut backend = AlacrittyTerminalBackend::new(20, 2);
+        backend.advance("A界e\u{301}😀".as_bytes());
+
+        let snapshot = backend.snapshot();
+        assert_eq!(snapshot.lines[0], "A界e\u{301}😀");
+        assert_eq!(
+            snapshot.cells[0]
+                .iter()
+                .map(|cell| (cell.column, cell.text.as_str(), cell.width))
+                .collect::<Vec<_>>(),
+            [(0, "A", 1), (1, "界", 2), (3, "e\u{301}", 1), (4, "😀", 2),]
+        );
+        assert_eq!(backend.cursor().column, 6);
+    }
+
+    #[test]
+    fn exposes_sgr_colors_and_text_attributes_in_snapshot_cells() {
+        let mut backend = AlacrittyTerminalBackend::new(10, 2);
+        backend.advance(b"\x1b[1;2;3;4;7;9;38;5;196;48;2;1;2;3mX");
+
+        let cell = &backend.snapshot().cells[0][0];
+        assert_eq!(cell.text, "X");
+        assert_eq!(cell.attributes.foreground, CellColor::Indexed(196));
+        assert_eq!(cell.attributes.background, CellColor::Rgb(1, 2, 3));
+        assert!(cell.attributes.bold);
+        assert!(cell.attributes.dim);
+        assert!(cell.attributes.italic);
+        assert!(cell.attributes.underline);
+        assert!(cell.attributes.inverse);
+        assert!(cell.attributes.strikethrough);
+    }
+
+    #[test]
+    fn exposes_true_color_and_reset_attributes() {
+        let mut backend = AlacrittyTerminalBackend::new(10, 2);
+        backend.advance(b"\x1b[38;2;12;34;56mA\x1b[0mB");
+
+        let snapshot = backend.snapshot();
+        assert_eq!(
+            snapshot.cells[0][0].attributes.foreground,
+            CellColor::Rgb(12, 34, 56)
+        );
+        assert_eq!(snapshot.cells[0][1].attributes, CellAttributes::default());
+    }
+
+    #[test]
     fn tracks_terminal_modes_and_cursor_visibility() {
         let mut backend = AlacrittyTerminalBackend::new(10, 2);
         backend.advance(b"\x1b[?1h\x1b[?2004h\x1b[?1000h\x1b[?25l");
@@ -285,6 +408,31 @@ mod tests {
         assert_eq!(backend.snapshot().lines, ["one", "two"]);
         backend.scroll_display(-1);
         assert_eq!(backend.snapshot().lines, ["two", "three"]);
+    }
+
+    #[test]
+    fn selects_words_from_the_scrollback_viewport() {
+        let mut backend = AlacrittyTerminalBackend::new(12, 2);
+        backend.advance(b"first line\r\nsecond line\r\nthird line");
+        backend.scroll_display(1);
+
+        backend.start_selection(2, 0, SelectionKind::Word);
+
+        assert_eq!(backend.selected_text().as_deref(), Some("first"));
+        assert_eq!(backend.snapshot().selection[0].row, 0);
+    }
+
+    #[test]
+    fn selects_text_on_the_alternate_screen_and_restores_primary_screen() {
+        let mut backend = AlacrittyTerminalBackend::new(12, 2);
+        backend.advance(b"primary");
+        backend.advance(b"\x1b[?1049h\x1b[Halternate");
+
+        backend.start_selection(2, 0, SelectionKind::Word);
+        assert_eq!(backend.selected_text().as_deref(), Some("alternate"));
+
+        backend.advance(b"\x1b[?1049l");
+        assert_eq!(backend.snapshot().lines[0], "primary");
     }
 
     #[test]
