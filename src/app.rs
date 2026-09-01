@@ -546,7 +546,7 @@ impl ApplicationHandler<AppEvent> for ToyotermApplication {
         }
     }
 
-    fn user_event(&mut self, _event_loop: &ActiveEventLoop, event: AppEvent) {
+    fn user_event(&mut self, event_loop: &ActiveEventLoop, event: AppEvent) {
         match event {
             AppEvent::Output { pane, bytes } => {
                 if let Some(runtime) = self.pane_runtimes.get_mut(&pane) {
@@ -559,7 +559,11 @@ impl ApplicationHandler<AppEvent> for ToyotermApplication {
                     window.request_redraw();
                 }
             }
-            AppEvent::Eof { pane } => self.mark_pane_exited(pane, None),
+            AppEvent::Eof { pane } => {
+                if let Err(error) = self.close_exited_pane(event_loop, pane) {
+                    self.fail(event_loop, error);
+                }
+            }
             AppEvent::Error { pane, message } => {
                 tracing::error!(
                     target: "toyoterm::pty",
@@ -1323,6 +1327,32 @@ impl ToyotermApplication {
             self.sync_active_renderer(window.scale_factor());
             window.request_redraw();
         }
+    }
+
+    fn close_exited_pane(
+        &mut self,
+        event_loop: &ActiveEventLoop,
+        pane: PaneId,
+    ) -> Result<(), String> {
+        // Closing a pane also closes its PTY reader, which can leave a stale
+        // EOF event in the queue. There is nothing left to reconcile then.
+        if !self.pane_runtimes.contains_key(&pane) {
+            return Ok(());
+        }
+        if self
+            .mux
+            .close_exited_pane(pane)
+            .map_err(|error| error.to_string())?
+        {
+            event_loop.exit();
+            return Ok(());
+        }
+        self.reconcile_pane_runtimes()?;
+        if let Some(window) = self.window.clone() {
+            self.sync_active_renderer(window.scale_factor());
+            window.request_redraw();
+        }
+        Ok(())
     }
 
     fn handle_mouse_wheel(

@@ -318,6 +318,68 @@ impl Mux {
         }
     }
 
+    /// Removes a pane whose child process has exited, collapsing empty mux
+    /// containers on the way up. Returns `true` when this is the final pane,
+    /// allowing the GUI to terminate instead of leaving an unusable mux.
+    pub fn close_exited_pane(&mut self, pane: PaneId) -> Result<bool, MuxError> {
+        let tab = self
+            .panes
+            .get(&pane)
+            .ok_or(MuxError::UnknownPane(pane))?
+            .tab;
+        if !matches!(self.tabs[&tab].root, PaneNode::Leaf(_)) {
+            self.close_pane(pane)?;
+            return Ok(false);
+        }
+
+        let window = self.tabs[&tab].window;
+        if self.windows[&window].tabs.len() > 1 {
+            self.close_tab(tab)?;
+            return Ok(false);
+        }
+
+        if self.panes.len() == 1 {
+            return Ok(true);
+        }
+
+        let workspace = self.windows[&window].workspace;
+        self.panes.remove(&pane);
+        self.tabs.remove(&tab);
+        self.windows.remove(&window);
+        self.events.push_back(Event::PaneClosed { pane });
+        self.events.push_back(Event::TabClosed { tab });
+
+        let remove_workspace = self.workspaces[&workspace].windows.len() == 1;
+        if remove_workspace {
+            let removed = self
+                .workspaces
+                .remove(&workspace)
+                .expect("pane workspace exists");
+            self.workspace_names.remove(&removed.name);
+            if self.current_workspace == workspace {
+                self.current_workspace = *self
+                    .workspaces
+                    .keys()
+                    .min()
+                    .expect("a non-final pane retains a workspace");
+                self.events.push_back(Event::WorkspaceChanged {
+                    workspace: self.current_workspace,
+                });
+            }
+        } else {
+            let state = self
+                .workspaces
+                .get_mut(&workspace)
+                .expect("pane workspace exists");
+            state.windows.retain(|candidate| *candidate != window);
+            if state.active_window == window {
+                state.active_window = state.windows[0];
+            }
+        }
+
+        Ok(false)
+    }
+
     pub fn summary(&self) -> String {
         let workspace = &self.workspaces[&self.current_workspace];
         let window_count = workspace.windows.len();
@@ -642,6 +704,44 @@ mod tests {
             mux.dispatch(Command::CloseTab(tab)),
             Err(MuxError::CannotCloseLastTab(tab))
         );
+    }
+
+    #[test]
+    fn exited_panes_collapse_their_empty_containers() {
+        let mut mux = Mux::new();
+        let first_pane = mux.current_pane().unwrap();
+        let first_tab = mux.current_tab().unwrap();
+        mux.dispatch(Command::NewTab).unwrap();
+        let second_pane = mux.current_pane().unwrap();
+
+        assert!(!mux.close_exited_pane(second_pane).unwrap());
+        assert_eq!(mux.current_tab(), Some(first_tab));
+        assert_eq!(mux.current_pane(), Some(first_pane));
+        assert_eq!(mux.pane_ids().collect::<Vec<_>>(), vec![first_pane]);
+    }
+
+    #[test]
+    fn exited_pane_removes_an_empty_workspace() {
+        let mut mux = Mux::new();
+        let default_workspace = mux.current_workspace();
+        let default_pane = mux.current_pane().unwrap();
+        mux.dispatch(Command::SwitchWorkspace("temporary".into()))
+            .unwrap();
+        let temporary_pane = mux.current_pane().unwrap();
+
+        assert!(!mux.close_exited_pane(temporary_pane).unwrap());
+        assert_eq!(mux.current_workspace(), default_workspace);
+        assert_eq!(mux.current_pane(), Some(default_pane));
+        assert_eq!(mux.workspaces(), vec![default_workspace]);
+    }
+
+    #[test]
+    fn final_exited_pane_requests_application_exit() {
+        let mut mux = Mux::new();
+        let pane = mux.current_pane().unwrap();
+
+        assert!(mux.close_exited_pane(pane).unwrap());
+        assert_eq!(mux.current_pane(), Some(pane));
     }
 
     #[test]

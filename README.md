@@ -193,6 +193,8 @@ v0.1 writes logs only to stderr and does not create or rotate log files. Redirec
 - Drag with the left mouse button: select text
 - Mouse wheel: scroll through history, or report wheel input when the terminal application requests mouse reporting
 
+When a shell exits, toyoterm closes its pane automatically. Empty tabs and workspaces are collapsed, and exiting the final pane closes toyoterm. A pane is retained after a PTY read error so the failure remains visible for diagnosis.
+
 ### Clipboard security
 
 OSC 52 clipboard access is disabled in v0.1. Terminal output may originate from an untrusted local process or remote host, so allowing OSC 52 would let it write the host clipboard without an explicit user gesture; clipboard query responses could also expose clipboard contents. The built-in copy and paste shortcuts and the trusted-configuration Ruby API remain available. Future OSC 52 support must be opt-in, keep clipboard reads disabled by default, and provide an explicit permission or confirmation UI with a payload size limit.
