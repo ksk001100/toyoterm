@@ -15,15 +15,20 @@ use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop, EventLoopProxy}
 use winit::keyboard::{Key, KeyCode, ModifiersState, NamedKey, PhysicalKey};
 use winit::window::{Window, WindowId};
 
-use crate::script::{RubyEvent, RubyObjectModel, RubyPane, RubyTab, RubyWindow, RubyWorkspace};
+#[cfg(test)]
+use crate::ConfigManager;
+use crate::script::{
+    RubyEvent, RubyObjectModel, RubyPane, RubyTab, RubyWindow, RubyWorkspace, ScriptCompletion,
+    ScriptContext, ScriptInvocation, ScriptRequest, ScriptSnapshot, ScriptThread,
+};
 use crate::{
     AlacrittyTerminalBackend, BindingKey, Command, CommandMenuLayout, CommandMenuRenderData,
-    CommandPalette, ConfigErrorLayout, ConfigErrorRenderData, ConfigManager, Event as MuxEvent,
-    GpuRenderer, IpcServer, KeyChord, KeyModifiers, KeyPress, KeypadKey, MouseWheelDirection, Mux,
-    NativeAction, NativeCommand, NativePty, PaletteAction, PaletteItem, PaletteRenderData, PaneId,
-    PaneLayout, PaneRect, PaneRenderData, Pty, PtyCommand, PtySession, PtySize, RenderOutcome,
-    RenderStyle, SelectionKind, SplitDirection, TabRenderData, TabStripLayout, TerminalBackend,
-    TerminalEvent, TerminalKey, TextLayout, WorkspaceRenderData, WorkspaceStripLayout, encode_key,
+    CommandPalette, ConfigErrorLayout, ConfigErrorRenderData, Event as MuxEvent, GpuRenderer,
+    IpcServer, KeyChord, KeyModifiers, KeyPress, KeypadKey, MouseWheelDirection, Mux, NativeAction,
+    NativeCommand, NativePty, PaletteAction, PaletteItem, PaletteRenderData, PaneId, PaneLayout,
+    PaneRect, PaneRenderData, Pty, PtyCommand, PtySession, PtySize, RenderOutcome, RenderStyle,
+    SelectionKind, SplitDirection, TabRenderData, TabStripLayout, TerminalBackend, TerminalEvent,
+    TerminalKey, TextLayout, WorkspaceRenderData, WorkspaceStripLayout, encode_key,
     encode_mouse_wheel, encode_paste, filter_items,
 };
 
@@ -154,8 +159,17 @@ pub fn run_gui() -> Result<(), AppError> {
 }
 
 pub fn run_gui_with_config_path(config_path: Option<&Path>) -> Result<(), AppError> {
-    let (config_manager, startup_config_error) =
-        ConfigManager::load_startup_recovering(config_path).map_err(|error| {
+    let event_loop = EventLoop::<AppEvent>::with_user_event()
+        .build()
+        .map_err(|error| AppError(error.to_string()))?;
+    event_loop.set_control_flow(ControlFlow::Wait);
+    let event_proxy = event_loop.create_proxy();
+    let completion_proxy = event_proxy.clone();
+    let (script_thread, startup) =
+        ScriptThread::start(config_path.map(Path::to_owned), move |completion| {
+            let _ = completion_proxy.send_event(AppEvent::ScriptCompleted(Box::new(completion)));
+        })
+        .map_err(|error| {
             tracing::error!(
                 target: "toyoterm::config",
                 operation = error.operation(),
@@ -165,7 +179,7 @@ pub fn run_gui_with_config_path(config_path: Option<&Path>) -> Result<(), AppErr
             );
             AppError(error.to_string())
         })?;
-    let startup_config_error = startup_config_error.map(|error| {
+    let startup_config_error = startup.config_error.map(|error| {
         tracing::warn!(
             target: "toyoterm::config",
             operation = error.operation(),
@@ -175,7 +189,7 @@ pub fn run_gui_with_config_path(config_path: Option<&Path>) -> Result<(), AppErr
         );
         error.to_string()
     });
-    let config = config_manager.config();
+    let config = &startup.snapshot.config;
     let render_style = RenderStyle::from_hex(
         &config.font.family,
         config.font.fallback.clone(),
@@ -197,17 +211,16 @@ pub fn run_gui_with_config_path(config_path: Option<&Path>) -> Result<(), AppErr
         );
         AppError(error.to_string())
     })?;
-    let event_loop = EventLoop::<AppEvent>::with_user_event()
-        .build()
-        .map_err(|error| AppError(error.to_string()))?;
-    event_loop.set_control_flow(ControlFlow::Wait);
     let mut app = ToyotermApplication::new(
-        event_loop.create_proxy(),
-        config_manager,
+        event_proxy,
+        script_thread,
+        startup.snapshot,
         render_style,
         startup_config_error,
     )
     .map_err(AppError)?;
+    app.submit_script(ScriptInvocation::DrainStartup)
+        .map_err(AppError)?;
     event_loop
         .run_app(&mut app)
         .map_err(|error| AppError(error.to_string()))?;
@@ -234,6 +247,12 @@ enum AppEvent {
         source: String,
         response: mpsc::Sender<Result<String, String>>,
     },
+    ScriptCompleted(Box<ScriptCompletion>),
+}
+
+enum EvalWaiter {
+    Ipc(mpsc::Sender<Result<String, String>>),
+    Palette(String),
 }
 
 struct PaneRuntime {
@@ -285,9 +304,13 @@ struct ToyotermApplication {
     clipboard: Option<Clipboard>,
     pending_clipboard_writes: Vec<String>,
     runtime_events: VecDeque<RubyEvent>,
-    delivering_runtime_events: bool,
+    next_script_request: u64,
+    script_in_flight: bool,
+    pending_script: VecDeque<(u64, ScriptInvocation)>,
+    eval_waiters: HashMap<u64, EvalWaiter>,
     cell_metrics: CellMetrics,
-    config_manager: ConfigManager,
+    script_thread: ScriptThread,
+    script_snapshot: ScriptSnapshot,
     mux: Mux,
     render_style: RenderStyle,
     fatal_error: Option<String>,
@@ -300,7 +323,7 @@ impl ApplicationHandler<AppEvent> for ToyotermApplication {
         }
         let attributes = Window::default_attributes()
             .with_title("toyoterm")
-            .with_transparent(self.config_manager.config().window_opacity < 1.0)
+            .with_transparent(self.script_snapshot.config.window_opacity < 1.0)
             .with_inner_size(LogicalSize::new(960.0, 600.0))
             .with_min_inner_size(LogicalSize::new(320.0, 180.0));
         let window = match event_loop.create_window(attributes) {
@@ -651,8 +674,23 @@ impl ApplicationHandler<AppEvent> for ToyotermApplication {
                 self.mark_pane_exited(pane, Some(message));
             }
             AppEvent::RubyEval { source, response } => {
-                let result = self.evaluate_ruby(&source);
-                let _ = response.send(result);
+                match self.submit_script(ScriptInvocation::Eval(source)) {
+                    Ok(id) => {
+                        self.eval_waiters.insert(id, EvalWaiter::Ipc(response));
+                    }
+                    Err(error) => {
+                        let _ = response.send(Err(error));
+                    }
+                }
+            }
+            AppEvent::ScriptCompleted(completion) => {
+                if let Err(error) = self.handle_script_completion(*completion) {
+                    tracing::warn!(target: "toyoterm::script", %error, "apply script result failed");
+                }
+                self.script_in_flight = false;
+                if let Err(error) = self.start_next_script() {
+                    tracing::warn!(target: "toyoterm::script", %error, "submit queued script request failed");
+                }
                 if let Some(window) = self.window.clone() {
                     self.sync_active_renderer(window.scale_factor());
                     window.request_redraw();
@@ -665,14 +703,13 @@ impl ApplicationHandler<AppEvent> for ToyotermApplication {
 impl ToyotermApplication {
     fn new(
         event_proxy: EventLoopProxy<AppEvent>,
-        config_manager: ConfigManager,
+        script_thread: ScriptThread,
+        script_snapshot: ScriptSnapshot,
         render_style: RenderStyle,
         startup_config_error: Option<String>,
     ) -> Result<Self, String> {
-        let mut config_manager = config_manager;
-        let mut mux = Mux::new();
-        let startup_effects = dispatch_script_commands(&mut config_manager, &mut mux)?;
-        let config = config_manager.config();
+        let mux = Mux::new();
+        let config = &script_snapshot.config;
         let font_scale = f64::from(config.font.size) / 14.0;
         let ipc_proxy = event_proxy.clone();
         let ipc_server = IpcServer::start(move |source, response| {
@@ -712,16 +749,20 @@ impl ToyotermApplication {
             selecting: false,
             click_tracker: ClickTracker::default(),
             clipboard: None,
-            pending_clipboard_writes: startup_effects.clipboard_writes,
+            pending_clipboard_writes: Vec::new(),
             runtime_events: VecDeque::new(),
-            delivering_runtime_events: false,
+            next_script_request: 1,
+            script_in_flight: false,
+            pending_script: VecDeque::new(),
+            eval_waiters: HashMap::new(),
             cell_metrics: CellMetrics {
                 width: 9.0 * font_scale,
                 height: 18.0 * font_scale,
                 font_size: config.font.size,
                 ..CellMetrics::default()
             },
-            config_manager,
+            script_thread,
+            script_snapshot,
             mux,
             render_style,
             fatal_error: None,
@@ -729,7 +770,7 @@ impl ToyotermApplication {
     }
 
     fn start_shell(&mut self, pane: PaneId, size: PtySize) -> Result<PaneRuntime, String> {
-        let mut command = match self.config_manager.config().default_shell.as_deref() {
+        let mut command = match self.script_snapshot.config.default_shell.as_deref() {
             Some(shell) => PtyCommand::new(shell),
             None => PtyCommand::default_shell(),
         };
@@ -762,7 +803,7 @@ impl ToyotermApplication {
             terminal: AlacrittyTerminalBackend::with_scrollback(
                 size.columns,
                 size.rows,
-                self.config_manager.config().scrollback_lines,
+                self.script_snapshot.config.scrollback_lines,
             ),
             pty_session: Some(session),
             process_id,
@@ -800,38 +841,14 @@ impl ToyotermApplication {
             .current_pane()
             .ok_or_else(|| "mux has no current pane".to_owned())?;
         for key in keys {
-            if let Some(action) = self.config_manager.native_action(&key) {
+            if let Some(action) = self.script_snapshot.native_actions.get(&key).cloned() {
                 self.execute_native_action(action)?;
                 return Ok(true);
             }
-            if !self.config_manager.has_dynamic_keybinding(&key) {
+            if !self.script_snapshot.keybindings.contains(&key) {
                 continue;
             }
-            self.refresh_script_clipboard();
-            self.sync_script_object_model()?;
-            match self.config_manager.trigger_keybinding(&key, pane) {
-                Ok(true) => {}
-                Ok(false) => continue,
-                Err(error) => {
-                    tracing::warn!(
-                        target: "toyoterm::script",
-                        operation = error.operation(),
-                        %pane,
-                        key,
-                        %error,
-                        "Ruby key binding failed"
-                    );
-                    return Ok(true);
-                }
-            }
-
-            let reload_requested = self.dispatch_pending_script_commands()?;
-            self.reconcile_pane_runtimes()?;
-            self.deliver_runtime_events()?;
-            self.flush_mux_input()?;
-            if reload_requested {
-                self.reload_config_with_notification()?;
-            }
+            self.submit_script(ScriptInvocation::KeyBinding { key, pane })?;
             return Ok(true);
         }
         Ok(false)
@@ -863,7 +880,7 @@ impl ToyotermApplication {
             return Ok(false);
         }
 
-        let Some(leader) = self.config_manager.config().leader.as_ref() else {
+        let Some(leader) = self.script_snapshot.config.leader.as_ref() else {
             return Ok(false);
         };
         let matches_leader = keybinding_names(event, modifiers)
@@ -950,9 +967,10 @@ impl ToyotermApplication {
             }
         }
         let mut names = self
-            .config_manager
-            .user_command_names()
-            .map(str::to_owned)
+            .script_snapshot
+            .user_command_names
+            .iter()
+            .cloned()
             .collect::<Vec<_>>();
         names.sort();
         items.extend(names.into_iter().map(|name| PaletteItem {
@@ -976,15 +994,8 @@ impl ToyotermApplication {
             Key::Named(NamedKey::Enter) if self.palette.is_console() => {
                 let source = self.palette.take_input();
                 if !source.trim().is_empty() {
-                    let result = self.evaluate_ruby(&source);
-                    match result {
-                        Ok(value) => self.palette.push_console_result(&source, Ok(&value)),
-                        Err(error) if crate::ipc::is_incomplete_ruby_error(&error) => {
-                            self.palette.insert(&source);
-                            self.palette.insert("\n");
-                        }
-                        Err(error) => self.palette.push_console_result(&source, Err(&error)),
-                    }
+                    let id = self.submit_script(ScriptInvocation::Eval(source.clone()))?;
+                    self.eval_waiters.insert(id, EvalWaiter::Palette(source));
                 }
             }
             Key::Named(NamedKey::Enter) => {
@@ -1033,38 +1044,11 @@ impl ToyotermApplication {
             .mux
             .current_pane()
             .ok_or_else(|| "mux has no current pane".to_owned())?;
-        self.refresh_script_clipboard();
-        self.sync_script_object_model()?;
-        self.config_manager
-            .trigger_user_command(name, pane)
-            .map_err(|error| error.to_string())?;
-        let reload = self.dispatch_pending_script_commands()?;
-        self.reconcile_pane_runtimes()?;
-        self.deliver_runtime_events()?;
-        self.flush_mux_input()?;
-        if reload {
-            self.reload_config_with_notification()?;
-        }
+        self.submit_script(ScriptInvocation::UserCommand {
+            name: name.to_owned(),
+            pane,
+        })?;
         Ok(())
-    }
-
-    fn evaluate_ruby(&mut self, source: &str) -> Result<String, String> {
-        self.refresh_script_clipboard();
-        self.sync_script_object_model()?;
-        let result = self
-            .config_manager
-            .eval_inspect(source)
-            .map_err(|error| error.to_string());
-        if result.is_ok() {
-            let reload = self.dispatch_pending_script_commands()?;
-            self.reconcile_pane_runtimes()?;
-            self.deliver_runtime_events()?;
-            self.flush_mux_input()?;
-            if reload {
-                self.reload_config_with_notification()?;
-            }
-        }
-        result
     }
 
     fn handle_tab_shortcut(
@@ -1219,40 +1203,11 @@ impl ToyotermApplication {
     }
 
     fn reload_config_with_notification(&mut self) -> Result<(), String> {
-        match self.reload_config() {
-            Ok(()) => self.config_error_notice = None,
-            Err(error) => {
-                self.config_error_notice = Some(ConfigErrorNotice {
-                    message: error,
-                    log_expanded: false,
-                    console_hint: false,
-                });
-            }
-        }
-        if let Some(window) = self.window.clone() {
-            self.resize_panes(window.inner_size(), window.scale_factor())?;
-            self.sync_active_renderer(window.scale_factor());
-            window.request_redraw();
-        }
-        Ok(())
+        self.submit_script(ScriptInvocation::Reload).map(|_| ())
     }
 
-    fn reload_config(&mut self) -> Result<(), String> {
-        let config_path = self.config_manager.source_path().map(Path::to_owned);
-        let config = self
-            .config_manager
-            .reload_file()
-            .map_err(|error| {
-                tracing::warn!(
-                    target: "toyoterm::config",
-                    operation = error.operation(),
-                    ?config_path,
-                    %error,
-                    "config reload failed"
-                );
-                error.to_string()
-            })?
-            .clone();
+    fn apply_script_snapshot(&mut self, snapshot: ScriptSnapshot) -> Result<(), String> {
+        let config = snapshot.config.clone();
         self.leader_deadline = None;
         let render_style = RenderStyle::from_hex(
             &config.font.family,
@@ -1267,11 +1222,6 @@ impl ToyotermApplication {
             config.window_opacity,
         )
         .map_err(|error| error.to_string())?;
-        // A reload command in the newly loaded file is not recursively executed.
-        let _reload_requested = self.dispatch_pending_script_commands()?;
-        self.reconcile_pane_runtimes()?;
-        self.deliver_runtime_events()?;
-
         let font_scale = f64::from(config.font.size) / 14.0;
         self.cell_metrics.width = 9.0 * font_scale;
         self.cell_metrics.height = 18.0 * font_scale;
@@ -1282,6 +1232,7 @@ impl ToyotermApplication {
                 .set_scrollback_lines(config.scrollback_lines);
         }
         self.render_style = render_style.clone();
+        self.script_snapshot = snapshot;
         if let Some(renderer) = self.renderer.as_mut() {
             renderer.set_style(render_style);
         }
@@ -1292,7 +1243,6 @@ impl ToyotermApplication {
             window.request_redraw();
         }
         self.emit_script_event("config_reloaded")?;
-        self.flush_mux_input()?;
         Ok(())
     }
 
@@ -1310,16 +1260,6 @@ impl ToyotermApplication {
         event.pane = Some(pane);
         self.runtime_events.push_back(event);
         self.deliver_runtime_events()
-    }
-
-    fn sync_script_object_model(&mut self) -> Result<(), String> {
-        let model = ruby_object_model(&self.mux, Some(&self.pane_runtimes))?;
-        self.config_manager
-            .set_live_handles(self.mux.native_handles())
-            .map_err(|error| error.to_string())?;
-        self.config_manager
-            .set_object_model(&model)
-            .map_err(|error| error.to_string())
     }
 
     fn collect_mux_events(&mut self) {
@@ -1373,56 +1313,20 @@ impl ToyotermApplication {
     }
 
     fn deliver_runtime_events(&mut self) -> Result<(), String> {
-        if self.delivering_runtime_events {
-            return Ok(());
-        }
-        self.delivering_runtime_events = true;
-        let result = self.deliver_runtime_events_inner();
-        self.delivering_runtime_events = false;
-        if result? {
-            self.reload_config_with_notification()?;
-        }
-        Ok(())
-    }
-
-    fn deliver_runtime_events_inner(&mut self) -> Result<bool, String> {
         const MAX_EVENTS_PER_TURN: usize = 1_024;
         let mut delivered = 0;
-        let mut reload_requested = false;
         self.collect_mux_events();
         while let Some(event) = self.runtime_events.pop_front() {
             delivered += 1;
             if delivered > MAX_EVENTS_PER_TURN {
                 return Err("Ruby runtime event delivery exceeded 1024 events".to_owned());
             }
-            if !self.config_manager.has_event_handler(event.name) {
+            if !self.script_snapshot.event_names.contains(event.name) {
                 continue;
             }
-            self.refresh_script_clipboard();
-            self.sync_script_object_model()?;
-            match self.config_manager.emit_native_event(&event) {
-                Ok(true) => {
-                    let event_reload_requested = self.dispatch_pending_script_commands()?;
-                    if event.name != "config_reloaded" {
-                        reload_requested |= event_reload_requested;
-                    }
-                    self.reconcile_pane_runtimes()?;
-                    self.flush_mux_input()?;
-                    self.collect_mux_events();
-                }
-                Ok(false) => {}
-                Err(error) => {
-                    tracing::warn!(
-                        target: "toyoterm::script",
-                        operation = error.operation(),
-                        event = event.name,
-                        %error,
-                        "Ruby runtime event failed"
-                    );
-                }
-            }
+            self.submit_script(ScriptInvocation::Event(event))?;
         }
-        Ok(reload_requested)
+        Ok(())
     }
 
     fn resize_panes(
@@ -1987,8 +1891,8 @@ impl ToyotermApplication {
         Ok(self.clipboard.as_mut().expect("clipboard was initialized"))
     }
 
-    fn refresh_script_clipboard(&mut self) {
-        let text = self
+    fn script_context(&mut self) -> Result<ScriptContext, String> {
+        let clipboard = self
             .clipboard()
             .and_then(|clipboard| {
                 clipboard
@@ -1996,22 +1900,116 @@ impl ToyotermApplication {
                     .map_err(|error| format!("read clipboard for Ruby: {error}"))
             })
             .ok();
-        if let Err(error) = self.config_manager.set_clipboard_text(text.as_deref()) {
-            tracing::warn!(
-                target: "toyoterm::script",
-                operation = error.operation(),
-                %error,
-                "update Ruby clipboard snapshot failed"
-            );
-        }
+        Ok(ScriptContext {
+            model: ruby_object_model(&self.mux, Some(&self.pane_runtimes))?,
+            handles: self.mux.native_handles(),
+            clipboard,
+        })
     }
 
-    fn dispatch_pending_script_commands(&mut self) -> Result<bool, String> {
-        let effects = dispatch_script_commands(&mut self.config_manager, &mut self.mux)?;
-        self.pending_clipboard_writes
-            .extend(effects.clipboard_writes);
-        self.flush_script_clipboard_writes()?;
-        Ok(effects.reload_requested)
+    fn submit_script(&mut self, invocation: ScriptInvocation) -> Result<u64, String> {
+        let id = self.next_script_request;
+        self.next_script_request = self.next_script_request.wrapping_add(1).max(1);
+        self.pending_script.push_back((id, invocation));
+        self.start_next_script()?;
+        Ok(id)
+    }
+
+    fn start_next_script(&mut self) -> Result<(), String> {
+        if self.script_in_flight {
+            return Ok(());
+        }
+        let Some((id, invocation)) = self.pending_script.pop_front() else {
+            return Ok(());
+        };
+        let request = ScriptRequest {
+            id,
+            context: self.script_context()?,
+            invocation,
+        };
+        self.script_thread
+            .submit(request)
+            .map_err(|error| error.to_string())?;
+        self.script_in_flight = true;
+        Ok(())
+    }
+
+    fn handle_script_completion(&mut self, completion: ScriptCompletion) -> Result<(), String> {
+        let waiter = self.eval_waiters.remove(&completion.id);
+        let is_reload = matches!(completion.invocation, ScriptInvocation::Reload);
+        let result = match completion.result {
+            Ok(result) => result,
+            Err(error) => {
+                let message = error.to_string();
+                tracing::warn!(
+                    target: "toyoterm::script",
+                    operation = error.operation(),
+                    request_id = completion.id,
+                    %error,
+                    "script request failed"
+                );
+                if is_reload {
+                    self.config_error_notice = Some(ConfigErrorNotice {
+                        message: message.clone(),
+                        log_expanded: false,
+                        console_hint: false,
+                    });
+                }
+                self.finish_eval(waiter, Err(message));
+                return Ok(());
+            }
+        };
+
+        let value = result.value.unwrap_or_default();
+        let apply_result: Result<(), String> = (|| {
+            if let Some(snapshot) = result.snapshot {
+                self.config_error_notice = None;
+                self.apply_script_snapshot(snapshot)?;
+            }
+            let mut reload_requested = false;
+            for command in result.commands {
+                match command {
+                    NativeCommand::Mux(command) => {
+                        self.mux
+                            .dispatch(command)
+                            .map_err(|error| error.to_string())?;
+                    }
+                    NativeCommand::ClipboardWrite(text) => self.pending_clipboard_writes.push(text),
+                    NativeCommand::ReloadConfig => reload_requested = true,
+                }
+            }
+            self.flush_script_clipboard_writes()?;
+            self.reconcile_pane_runtimes()?;
+            self.flush_mux_input()?;
+            self.deliver_runtime_events()?;
+            if reload_requested && !is_reload {
+                self.reload_config_with_notification()?;
+            }
+            Ok(())
+        })();
+        if let Err(error) = apply_result {
+            self.finish_eval(waiter, Err(error.clone()));
+            return Err(error);
+        }
+        self.finish_eval(waiter, Ok(value));
+        Ok(())
+    }
+
+    fn finish_eval(&mut self, waiter: Option<EvalWaiter>, result: Result<String, String>) {
+        match waiter {
+            Some(EvalWaiter::Ipc(response)) => {
+                let _ = response.send(result);
+            }
+            Some(EvalWaiter::Palette(source)) => match result {
+                Ok(value) => self.palette.push_console_result(&source, Ok(&value)),
+                Err(error) if crate::ipc::is_incomplete_ruby_error(&error) => {
+                    self.palette.insert(&source);
+                    self.palette.insert("\n");
+                }
+                Err(error) => self.palette.push_console_result(&source, Err(&error)),
+            },
+            None => {}
+        }
     }
 
     fn flush_script_clipboard_writes(&mut self) -> Result<(), String> {
@@ -2293,6 +2291,7 @@ impl ToyotermApplication {
     }
 }
 
+#[cfg(test)]
 #[derive(Debug, Default, Eq, PartialEq)]
 struct NativeCommandEffects {
     clipboard_writes: Vec<String>,
@@ -2382,6 +2381,7 @@ fn ruby_object_model(
     })
 }
 
+#[cfg(test)]
 fn dispatch_script_commands(
     config_manager: &mut ConfigManager,
     mux: &mut Mux,

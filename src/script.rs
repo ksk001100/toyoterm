@@ -5,6 +5,8 @@ use std::marker::PhantomData;
 use std::path::{Path, PathBuf};
 use std::ptr::NonNull;
 use std::rc::Rc;
+use std::sync::mpsc;
+use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
 use crate::{
@@ -920,6 +922,144 @@ pub(crate) struct RubyEvent {
     pub cwd: Option<String>,
 }
 
+/// Immutable script registry mirrored on the main thread.  It contains no VM
+/// state and is safe to use for native key resolution and palette rendering.
+#[derive(Clone, Debug)]
+pub(crate) struct ScriptSnapshot {
+    pub config: ToyotermConfig,
+    pub native_actions: HashMap<String, NativeAction>,
+    pub keybindings: HashSet<String>,
+    pub event_names: HashSet<String>,
+    pub user_command_names: HashSet<String>,
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct ScriptContext {
+    pub model: RubyObjectModel,
+    pub handles: Vec<NativeHandle>,
+    pub clipboard: Option<String>,
+}
+
+#[derive(Debug)]
+pub(crate) enum ScriptInvocation {
+    DrainStartup,
+    KeyBinding { key: String, pane: PaneId },
+    UserCommand { name: String, pane: PaneId },
+    Event(RubyEvent),
+    Eval(String),
+    Reload,
+}
+
+#[derive(Debug)]
+pub(crate) struct ScriptRequest {
+    pub id: u64,
+    pub context: ScriptContext,
+    pub invocation: ScriptInvocation,
+}
+
+#[derive(Debug)]
+pub(crate) struct ScriptCompletion {
+    pub id: u64,
+    pub invocation: ScriptInvocation,
+    pub result: Result<ScriptResult, ScriptError>,
+}
+
+#[derive(Debug)]
+pub(crate) struct ScriptResult {
+    pub value: Option<String>,
+    pub commands: Vec<NativeCommand>,
+    pub snapshot: Option<ScriptSnapshot>,
+}
+
+#[derive(Debug)]
+pub(crate) struct ScriptStartup {
+    pub snapshot: ScriptSnapshot,
+    pub config_error: Option<ScriptError>,
+}
+
+/// Channel endpoint for the single owner thread of the GUI's mruby VM.
+///
+/// `MrubyRuntime` is deliberately `!Send + !Sync`; it is constructed, used,
+/// reloaded, and dropped inside the named worker.  Main/PTY/render code can
+/// only exchange owned snapshots, invocations, and native commands with it.
+pub(crate) struct ScriptThread {
+    requests: mpsc::Sender<ScriptRequest>,
+    worker: Option<JoinHandle<()>>,
+}
+
+impl ScriptThread {
+    pub(crate) fn start(
+        config_path: Option<PathBuf>,
+        notify: impl Fn(ScriptCompletion) + Send + 'static,
+    ) -> Result<(Self, ScriptStartup), ScriptError> {
+        let (request_tx, request_rx) = mpsc::channel::<ScriptRequest>();
+        let (startup_tx, startup_rx) = mpsc::sync_channel(1);
+        let worker = thread::Builder::new()
+            .name("toyoterm-script".into())
+            .spawn(move || {
+                let startup = ConfigManager::load_startup_recovering(config_path.as_deref());
+                let (mut manager, config_error) = match startup {
+                    Ok(value) => value,
+                    Err(error) => {
+                        let _ = startup_tx.send(Err(error));
+                        return;
+                    }
+                };
+                if startup_tx
+                    .send(Ok(ScriptStartup {
+                        snapshot: manager.snapshot(),
+                        config_error,
+                    }))
+                    .is_err()
+                {
+                    return;
+                }
+                while let Ok(request) = request_rx.recv() {
+                    let ScriptRequest {
+                        id,
+                        context,
+                        invocation,
+                    } = request;
+                    let result = run_script_request(&mut manager, &context, &invocation);
+                    notify(ScriptCompletion {
+                        id,
+                        invocation,
+                        result,
+                    });
+                }
+            })
+            .map_err(|error| ScriptError::new("start script thread", error.to_string()))?;
+        let startup = startup_rx.recv().map_err(|_| {
+            ScriptError::new("start script thread", "worker exited during startup")
+        })??;
+        Ok((
+            Self {
+                requests: request_tx,
+                worker: Some(worker),
+            },
+            startup,
+        ))
+    }
+
+    pub(crate) fn submit(&self, request: ScriptRequest) -> Result<(), ScriptError> {
+        self.requests
+            .send(request)
+            .map_err(|_| ScriptError::new("submit script request", "script thread has stopped"))
+    }
+}
+
+impl Drop for ScriptThread {
+    fn drop(&mut self) {
+        // Closing the channel lets an idle worker drop the VM on its owner
+        // thread. Do not join here: an unbounded Ruby callback must not hang
+        // GUI shutdown. Dropping a JoinHandle detaches it until process exit.
+        let (replacement, receiver) = mpsc::channel();
+        drop(receiver);
+        drop(std::mem::replace(&mut self.requests, replacement));
+        drop(self.worker.take());
+    }
+}
+
 impl RubyEvent {
     pub(crate) const fn new(name: &'static str) -> Self {
         Self {
@@ -1298,6 +1438,16 @@ impl ConfigManager {
         &self.config
     }
 
+    fn snapshot(&self) -> ScriptSnapshot {
+        ScriptSnapshot {
+            config: self.config.clone(),
+            native_actions: self.native_actions.clone(),
+            keybindings: self.keybindings.clone(),
+            event_names: self.event_names.clone(),
+            user_command_names: self.user_command_names.clone(),
+        }
+    }
+
     pub fn load_startup(explicit_path: Option<&Path>) -> Result<Self, ScriptError> {
         let (manager, error) = Self::load_startup_recovering(explicit_path)?;
         match error {
@@ -1387,10 +1537,6 @@ impl ConfigManager {
 
     pub fn has_dynamic_keybinding(&self, key: &str) -> bool {
         self.keybindings.contains(&key.to_uppercase())
-    }
-
-    pub(crate) fn has_event_handler(&self, name: &str) -> bool {
-        self.event_names.contains(name)
     }
 
     pub fn user_command_names(&self) -> impl Iterator<Item = &str> {
@@ -1612,6 +1758,49 @@ impl ConfigManager {
         }
         Ok(commands)
     }
+}
+
+fn run_script_request(
+    manager: &mut ConfigManager,
+    context: &ScriptContext,
+    invocation: &ScriptInvocation,
+) -> Result<ScriptResult, ScriptError> {
+    manager.set_live_handles(context.handles.iter().copied())?;
+    manager.set_object_model(&context.model)?;
+    manager.set_clipboard_text(context.clipboard.as_deref())?;
+
+    let (value, snapshot) = match invocation {
+        ScriptInvocation::DrainStartup => (None, None),
+        ScriptInvocation::KeyBinding { key, pane } => {
+            manager.trigger_keybinding(key, *pane)?;
+            (None, None)
+        }
+        ScriptInvocation::UserCommand { name, pane } => {
+            manager.trigger_user_command(name, *pane)?;
+            (None, None)
+        }
+        ScriptInvocation::Event(event) => {
+            manager.emit_native_event(event)?;
+            (None, None)
+        }
+        ScriptInvocation::Eval(source) => (Some(manager.eval_inspect(source)?), None),
+        ScriptInvocation::Reload => {
+            manager.reload_file()?;
+            (None, Some(manager.snapshot()))
+        }
+    };
+    let model = &context.model;
+    let commands = manager.drain_commands_with_context(
+        model.current_workspace,
+        model.current_window,
+        model.current_tab,
+        model.current_pane,
+    )?;
+    Ok(ScriptResult {
+        value,
+        commands,
+        snapshot,
+    })
 }
 
 const fn resolve_bootstrap_id(id: u64, current: u64) -> u64 {
@@ -1940,6 +2129,71 @@ fn parse_f32(name: &str, value: &str) -> Result<f32, ScriptError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn script_test_context() -> ScriptContext {
+        ScriptContext {
+            model: RubyObjectModel {
+                current_workspace: WorkspaceId(1),
+                current_window: WindowId(2),
+                current_tab: TabId(3),
+                current_pane: PaneId(4),
+                workspaces: vec![RubyWorkspace {
+                    id: WorkspaceId(1),
+                    name: "default".into(),
+                    windows: vec![WindowId(2)],
+                }],
+                windows: vec![RubyWindow {
+                    id: WindowId(2),
+                    tabs: vec![TabId(3)],
+                }],
+                tabs: vec![RubyTab {
+                    id: TabId(3),
+                    title: "Tab 3".into(),
+                    panes: vec![PaneId(4)],
+                }],
+                panes: vec![RubyPane {
+                    id: PaneId(4),
+                    title: "Pane 4".into(),
+                    cwd: None,
+                    pid: None,
+                }],
+            },
+            handles: vec![
+                WorkspaceId(1).into(),
+                WindowId(2).into(),
+                TabId(3).into(),
+                PaneId(4).into(),
+            ],
+            clipboard: None,
+        }
+    }
+
+    #[test]
+    fn script_thread_owns_vm_and_submission_does_not_wait_for_evaluation() {
+        let (completion_tx, completion_rx) = mpsc::channel();
+        let (thread, _) = ScriptThread::start(None, move |completion| {
+            completion_tx
+                .send((thread::current().name().map(str::to_owned), completion))
+                .unwrap();
+        })
+        .unwrap();
+        let started = Instant::now();
+        thread
+            .submit(ScriptRequest {
+                id: 7,
+                context: script_test_context(),
+                invocation: ScriptInvocation::Eval(
+                    "i = 0; while i < 2_000_000; i += 1; end; 42".into(),
+                ),
+            })
+            .unwrap();
+        assert!(started.elapsed() < Duration::from_millis(50));
+
+        let (owner, completion) = completion_rx.recv_timeout(Duration::from_secs(10)).unwrap();
+        assert_eq!(owner.as_deref(), Some("toyoterm-script"));
+        assert_eq!(completion.id, 7);
+        assert_eq!(completion.result.unwrap().value.as_deref(), Some("42"));
+    }
 
     #[test]
     fn classifies_callbacks_at_the_slow_threshold() {
