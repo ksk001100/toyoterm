@@ -38,7 +38,7 @@ jobs:
         run: cargo run --locked -- gui-smoke-test
       - name: Package
         run: sh scripts/package.sh
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: toyoterm-${{ runner.os }}-${{ runner.arch }}
           path: dist/*
