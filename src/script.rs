@@ -101,6 +101,15 @@ module Toyoterm
       binding(key, "CTRL+SHIFT")
     end
 
+    def primary(key)
+      binding(key, Toyoterm.__primary_modifier)
+    end
+
+    def primary_shift(key)
+      mods = Toyoterm.__primary_modifier
+      binding(key, mods == "SUPER" ? "SHIFT+SUPER" : "#{mods}+SHIFT")
+    end
+
     def alt(key)
       binding(key, "ALT")
     end
@@ -261,6 +270,10 @@ module Toyoterm
 
   def self.current_pane
     @current_pane
+  end
+
+  def self.__primary_modifier
+    "__TOYOTERM_PRIMARY_MODIFIER__"
   end
 
   def self.reload_config
@@ -731,7 +744,9 @@ fn resolve_config_path(
 
 fn load_config(source: &str, filename: &str) -> Result<LoadedConfig, ScriptError> {
     let mut runtime = MrubyRuntime::new()?;
-    runtime.eval_with_filename(CONFIG_DSL, "(toyoterm DSL)")?;
+    let config_dsl =
+        CONFIG_DSL.replace("__TOYOTERM_PRIMARY_MODIFIER__", platform_primary_modifier());
+    runtime.eval_with_filename(&config_dsl, "(toyoterm DSL)")?;
     runtime.eval_with_filename(source, filename)?;
 
     let defaults = ToyotermConfig::default();
@@ -850,6 +865,14 @@ fn load_config(source: &str, filename: &str) -> Result<LoadedConfig, ScriptError
         native_actions,
         event_names,
     })
+}
+
+fn platform_primary_modifier() -> &'static str {
+    if cfg!(target_os = "macos") {
+        "SUPER"
+    } else {
+        "CTRL"
+    }
 }
 
 fn decode_native_action(action: &str, argument: &str) -> Result<NativeAction, ScriptError> {
@@ -1201,6 +1224,8 @@ fail_config
                     ctrl_shift("j").activate_pane(:down)
                     ctrl("t").new_tab
                     alt("q").close_pane
+                    primary("p").close_pane
+                    primary_shift("o").reload_config
                     ctrl_shift("r").reload_config
                     physical("KeyH", "CTRL").activate_pane(:left)
                   end
@@ -1228,6 +1253,18 @@ fail_config
         );
         assert_eq!(
             manager.native_action("CTRL+SHIFT+R"),
+            Some(NativeAction::ReloadConfig)
+        );
+        assert_eq!(
+            manager.native_action(&format!("{}+P", platform_primary_modifier())),
+            Some(NativeAction::ClosePane)
+        );
+        assert_eq!(
+            manager.native_action(if cfg!(target_os = "macos") {
+                "SHIFT+SUPER+O"
+            } else {
+                "CTRL+SHIFT+O"
+            }),
             Some(NativeAction::ReloadConfig)
         );
     }

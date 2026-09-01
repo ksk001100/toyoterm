@@ -126,7 +126,7 @@ end
 
 Key names are case-insensitive. Modifiers use names such as `CTRL`, `SHIFT`, `ALT`, and `SUPER`. Named keys include `ENTER`, `TAB`, `SPACE`, arrow keys, navigation keys, and `F1` through `F12`.
 
-`config.keys` provides `ctrl`, `ctrl_shift`, `alt`, `super_key`, `leader`, and `physical` helpers. The `physical` helper distinguishes a hardware position from the logical character, for example `physical("KeyH", "CTRL")`. When both match, physical bindings take priority over logical bindings. User-configured bindings take priority over built-in GUI shortcuts. Defining the same chord more than once is a configuration error.
+`config.keys` provides `ctrl`, `ctrl_shift`, `primary`, `primary_shift`, `alt`, `super_key`, `leader`, and `physical` helpers. `primary` resolves to `SUPER` on macOS and `CTRL` on Linux/Windows, so one configuration can follow each platform's conventions. Modifier names are portable: `ALT` is the Option key on macOS, while `SUPER` is Command on macOS and the Windows key on Windows. The `physical` helper distinguishes a hardware position from the logical character, for example `physical("KeyH", "CTRL")`. When both match, physical bindings take priority over logical bindings. User-configured bindings take priority over built-in GUI shortcuts. Defining the same chord more than once is a configuration error.
 
 `config.leader` defines a native leader prefix with a timeout in milliseconds. `leader("v")` bindings are resolved without invoking mruby. The leader prefix is discarded; an unmatched or expired suffix continues through normal key handling. Leader state is cleared by repeat events, IME activity, focus loss, and configuration reload.
 
@@ -151,15 +151,15 @@ The embedded runtime is mruby, not CRuby. CRuby gems, native extensions, and the
 - Type normally to send input to the PTY
 - `Ctrl+Shift+C` on Linux/Windows or `Cmd+C` on macOS: copy the selection
 - `Ctrl+Shift+V` on Linux/Windows or `Cmd+V` on macOS: paste
-- `Ctrl+Shift+T`: open a new tab
-- `Ctrl+Shift+R`: reload the active configuration file
+- `Ctrl+Shift+T` on Linux/Windows or `Cmd+T` on macOS: open a new tab
+- `Ctrl+Shift+R` on Linux/Windows or `Cmd+Shift+R` on macOS: reload the active configuration file
 - Click `Commands` → `Reload Config`: reload the active configuration file from the GUI
-- `Ctrl+Shift+W`: close the active tab (the final tab is kept open)
+- `Ctrl+Shift+W` on Linux/Windows or `Cmd+W` on macOS: close the active tab (the final tab is kept open)
 - `Ctrl+Tab` / `Ctrl+Shift+Tab`: activate the next / previous tab
-- `Ctrl+Shift+\` / `Ctrl+Shift+-`: split the active pane right / down
-- `Ctrl+Shift+Arrow`: focus the nearest pane in that direction
-- `Ctrl+Shift+Q`: close the active pane (the final pane is kept open)
-- `Ctrl+Shift+N`: create and activate a workspace
+- `Ctrl+Shift+\` / `Ctrl+Shift+-` on Linux/Windows or `Cmd+D` / `Cmd+Shift+D` on macOS: split the active pane right / down
+- `Ctrl+Shift+Arrow` on Linux/Windows or `Cmd+Option+Arrow` on macOS: focus the nearest pane in that direction
+- `Ctrl+Shift+Q` on Linux/Windows or `Cmd+Shift+W` on macOS: close the active pane (the final pane is kept open)
+- `Ctrl+Shift+N` on Linux/Windows or `Cmd+N` on macOS: create and activate a workspace
 - `Ctrl+Alt+Left` / `Ctrl+Alt+Right`: activate the previous / next workspace
 - Click a workspace or tab label to activate it
 - Drag with the left mouse button: select text

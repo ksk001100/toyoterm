@@ -714,56 +714,37 @@ impl ToyotermApplication {
         event: &KeyEvent,
         modifiers: ModifiersState,
     ) -> Result<bool, String> {
-        if modifiers.control_key() && modifiers.shift_key() {
-            if matches!(&event.logical_key, Key::Character(key) if key.eq_ignore_ascii_case("r")) {
-                self.reload_config_with_notification()?;
-                return Ok(true);
+        if let Some(shortcut) =
+            gui_management_shortcut(&event.logical_key, modifiers, current_shortcut_platform())
+        {
+            match shortcut {
+                GuiManagementShortcut::ReloadConfig => {
+                    self.reload_config_with_notification()?;
+                }
+                GuiManagementShortcut::NewTab => {
+                    self.dispatch_gui_command(Command::NewTab)?;
+                }
+                GuiManagementShortcut::NewWorkspace => {
+                    self.create_workspace()?;
+                }
+                GuiManagementShortcut::CloseTab => {
+                    let tab = self
+                        .mux
+                        .current_tab()
+                        .ok_or_else(|| "mux has no current tab".to_owned())?;
+                    self.dispatch_gui_command(Command::CloseTab(tab))?;
+                }
+                GuiManagementShortcut::Split(direction) => self.split_active_pane(direction)?,
+                GuiManagementShortcut::ClosePane => {
+                    let pane = self
+                        .mux
+                        .current_pane()
+                        .ok_or_else(|| "mux has no current pane".to_owned())?;
+                    self.dispatch_gui_command(Command::ClosePane(pane))?;
+                }
+                GuiManagementShortcut::Focus(direction) => self.focus_neighbor(direction)?,
             }
-            if matches!(&event.logical_key, Key::Character(key) if key.eq_ignore_ascii_case("t")) {
-                self.dispatch_gui_command(Command::NewTab)?;
-                return Ok(true);
-            }
-            if matches!(&event.logical_key, Key::Character(key) if key.eq_ignore_ascii_case("n")) {
-                self.create_workspace()?;
-                return Ok(true);
-            }
-            if matches!(&event.logical_key, Key::Character(key) if key.eq_ignore_ascii_case("w")) {
-                let tab = self
-                    .mux
-                    .current_tab()
-                    .ok_or_else(|| "mux has no current tab".to_owned())?;
-                self.dispatch_gui_command(Command::CloseTab(tab))?;
-                return Ok(true);
-            }
-            if matches!(&event.logical_key, Key::Character(key) if matches!(key.as_str(), "\\" | "|"))
-            {
-                self.split_active_pane(SplitDirection::Right)?;
-                return Ok(true);
-            }
-            if matches!(&event.logical_key, Key::Character(key) if matches!(key.as_str(), "-" | "_"))
-            {
-                self.split_active_pane(SplitDirection::Down)?;
-                return Ok(true);
-            }
-            if matches!(&event.logical_key, Key::Character(key) if key.eq_ignore_ascii_case("q")) {
-                let pane = self
-                    .mux
-                    .current_pane()
-                    .ok_or_else(|| "mux has no current pane".to_owned())?;
-                self.dispatch_gui_command(Command::ClosePane(pane))?;
-                return Ok(true);
-            }
-            let direction = match &event.logical_key {
-                Key::Named(NamedKey::ArrowLeft) => Some(SplitDirection::Left),
-                Key::Named(NamedKey::ArrowRight) => Some(SplitDirection::Right),
-                Key::Named(NamedKey::ArrowUp) => Some(SplitDirection::Up),
-                Key::Named(NamedKey::ArrowDown) => Some(SplitDirection::Down),
-                _ => None,
-            };
-            if let Some(direction) = direction {
-                self.focus_neighbor(direction)?;
-                return Ok(true);
-            }
+            return Ok(true);
         }
 
         if modifiers.control_key() && matches!(&event.logical_key, Key::Named(NamedKey::Tab)) {
@@ -1885,9 +1866,103 @@ fn is_clipboard_shortcut(event: &KeyEvent, modifiers: ModifiersState, character:
     let Key::Character(key) = &event.logical_key else {
         return false;
     };
-    let primary_modifier =
-        modifiers.super_key() || (modifiers.control_key() && modifiers.shift_key());
+    let primary_modifier = has_gui_primary_modifier(modifiers, current_shortcut_platform());
     primary_modifier && key.eq_ignore_ascii_case(&character.to_string())
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ShortcutPlatform {
+    MacOs,
+    LinuxOrWindows,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum GuiManagementShortcut {
+    ReloadConfig,
+    NewTab,
+    NewWorkspace,
+    CloseTab,
+    Split(SplitDirection),
+    ClosePane,
+    Focus(SplitDirection),
+}
+
+fn current_shortcut_platform() -> ShortcutPlatform {
+    if cfg!(target_os = "macos") {
+        ShortcutPlatform::MacOs
+    } else {
+        ShortcutPlatform::LinuxOrWindows
+    }
+}
+
+fn has_gui_primary_modifier(modifiers: ModifiersState, platform: ShortcutPlatform) -> bool {
+    match platform {
+        ShortcutPlatform::MacOs => modifiers.super_key(),
+        ShortcutPlatform::LinuxOrWindows => modifiers.control_key() && modifiers.shift_key(),
+    }
+}
+
+fn gui_management_shortcut(
+    key: &Key,
+    modifiers: ModifiersState,
+    platform: ShortcutPlatform,
+) -> Option<GuiManagementShortcut> {
+    let character = match key {
+        Key::Character(character) => Some(character.as_str()),
+        _ => None,
+    };
+    let arrow = match key {
+        Key::Named(NamedKey::ArrowLeft) => Some(SplitDirection::Left),
+        Key::Named(NamedKey::ArrowRight) => Some(SplitDirection::Right),
+        Key::Named(NamedKey::ArrowUp) => Some(SplitDirection::Up),
+        Key::Named(NamedKey::ArrowDown) => Some(SplitDirection::Down),
+        _ => None,
+    };
+
+    match platform {
+        ShortcutPlatform::LinuxOrWindows if modifiers.control_key() && modifiers.shift_key() => {
+            match character {
+                Some(key) if key.eq_ignore_ascii_case("r") => {
+                    Some(GuiManagementShortcut::ReloadConfig)
+                }
+                Some(key) if key.eq_ignore_ascii_case("t") => Some(GuiManagementShortcut::NewTab),
+                Some(key) if key.eq_ignore_ascii_case("n") => {
+                    Some(GuiManagementShortcut::NewWorkspace)
+                }
+                Some(key) if key.eq_ignore_ascii_case("w") => Some(GuiManagementShortcut::CloseTab),
+                Some("\\" | "|") => Some(GuiManagementShortcut::Split(SplitDirection::Right)),
+                Some("-" | "_") => Some(GuiManagementShortcut::Split(SplitDirection::Down)),
+                Some(key) if key.eq_ignore_ascii_case("q") => {
+                    Some(GuiManagementShortcut::ClosePane)
+                }
+                _ => arrow.map(GuiManagementShortcut::Focus),
+            }
+        }
+        ShortcutPlatform::MacOs if modifiers.super_key() => match character {
+            Some(key) if key.eq_ignore_ascii_case("r") && modifiers.shift_key() => {
+                Some(GuiManagementShortcut::ReloadConfig)
+            }
+            Some(key) if key.eq_ignore_ascii_case("t") && !modifiers.shift_key() => {
+                Some(GuiManagementShortcut::NewTab)
+            }
+            Some(key) if key.eq_ignore_ascii_case("n") && !modifiers.shift_key() => {
+                Some(GuiManagementShortcut::NewWorkspace)
+            }
+            Some(key) if key.eq_ignore_ascii_case("w") && modifiers.shift_key() => {
+                Some(GuiManagementShortcut::ClosePane)
+            }
+            Some(key) if key.eq_ignore_ascii_case("w") => Some(GuiManagementShortcut::CloseTab),
+            Some(key) if key.eq_ignore_ascii_case("d") && modifiers.shift_key() => {
+                Some(GuiManagementShortcut::Split(SplitDirection::Down))
+            }
+            Some(key) if key.eq_ignore_ascii_case("d") => {
+                Some(GuiManagementShortcut::Split(SplitDirection::Right))
+            }
+            _ if modifiers.alt_key() => arrow.map(GuiManagementShortcut::Focus),
+            _ => None,
+        },
+        _ => None,
+    }
 }
 
 fn named_key(key: &NamedKey) -> Option<TerminalKey> {
@@ -2033,6 +2108,62 @@ mod tests {
         assert_eq!(
             keybinding_name(&Key::Character("x".into()), modifiers).as_deref(),
             Some("CTRL+ALT+X")
+        );
+    }
+
+    #[test]
+    fn gui_primary_modifier_matches_each_platform_default() {
+        assert!(has_gui_primary_modifier(
+            ModifiersState::SUPER,
+            ShortcutPlatform::MacOs,
+        ));
+        assert!(!has_gui_primary_modifier(
+            ModifiersState::CONTROL | ModifiersState::SHIFT,
+            ShortcutPlatform::MacOs,
+        ));
+        assert!(has_gui_primary_modifier(
+            ModifiersState::CONTROL | ModifiersState::SHIFT,
+            ShortcutPlatform::LinuxOrWindows,
+        ));
+        assert!(!has_gui_primary_modifier(
+            ModifiersState::SUPER,
+            ShortcutPlatform::LinuxOrWindows,
+        ));
+    }
+
+    #[test]
+    fn gui_management_shortcuts_follow_platform_conventions() {
+        assert_eq!(
+            gui_management_shortcut(
+                &Key::Character("t".into()),
+                ModifiersState::CONTROL | ModifiersState::SHIFT,
+                ShortcutPlatform::LinuxOrWindows,
+            ),
+            Some(GuiManagementShortcut::NewTab)
+        );
+        assert_eq!(
+            gui_management_shortcut(
+                &Key::Character("t".into()),
+                ModifiersState::SUPER,
+                ShortcutPlatform::MacOs,
+            ),
+            Some(GuiManagementShortcut::NewTab)
+        );
+        assert_eq!(
+            gui_management_shortcut(
+                &Key::Character("d".into()),
+                ModifiersState::SUPER | ModifiersState::SHIFT,
+                ShortcutPlatform::MacOs,
+            ),
+            Some(GuiManagementShortcut::Split(SplitDirection::Down))
+        );
+        assert_eq!(
+            gui_management_shortcut(
+                &Key::Character("q".into()),
+                ModifiersState::SUPER,
+                ShortcutPlatform::MacOs,
+            ),
+            None
         );
     }
 

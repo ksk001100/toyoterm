@@ -126,7 +126,7 @@ end
 
 キー名は大文字・小文字を区別しません。修飾キーには`CTRL`、`SHIFT`、`ALT`、`SUPER`などを使用します。名前付きキーは`ENTER`、`TAB`、`SPACE`、矢印キー、ナビゲーションキー、`F1`から`F12`に対応しています。
 
-`config.keys`では`ctrl`、`ctrl_shift`、`alt`、`super_key`、`leader`、`physical`ヘルパーを使用できます。`physical("KeyH", "CTRL")`のように指定すると、論理文字ではなく物理キー位置へ割り当てられます。両方が一致した場合はphysical設定、組み込みGUIショートカットと競合した場合はユーザー設定を優先します。同じchordの重複定義は設定エラーです。
+`config.keys`では`ctrl`、`ctrl_shift`、`primary`、`primary_shift`、`alt`、`super_key`、`leader`、`physical`ヘルパーを使用できます。`primary`はmacOSで`SUPER`、Linux・Windowsで`CTRL`に展開されるため、1つの設定でOSごとの慣習に合わせられます。modifier名はOS間で共通で、macOSのOptionは`ALT`、macOSのCommandとWindowsキーは`SUPER`です。`physical("KeyH", "CTRL")`のように指定すると、論理文字ではなく物理キー位置へ割り当てられます。両方が一致した場合はphysical設定、組み込みGUIショートカットと競合した場合はユーザー設定を優先します。同じchordの重複定義は設定エラーです。
 
 `config.leader`では、ミリ秒単位のtimeout付きLeader prefixをネイティブ側へ設定できます。`leader("v")`の割り当てはmrubyを呼ばずに解決されます。Leader prefix自体は破棄し、不一致またはtimeout後の次キーは通常のキー処理へ戻します。repeat、IME入力、フォーカス喪失、設定reloadではLeader待機状態を解除します。
 
@@ -151,15 +151,15 @@ GUIで設定の読込に失敗すると、アプリを終了せずエラーバ�
 - 通常のキー入力：PTYへ入力を送信
 - Linux・Windowsの`Ctrl+Shift+C`またはmacOSの`Cmd+C`：選択範囲をコピー
 - Linux・Windowsの`Ctrl+Shift+V`またはmacOSの`Cmd+V`：貼り付け
-- `Ctrl+Shift+T`：新しいタブを作成
-- `Ctrl+Shift+R`：有効な設定ファイルを再読込
+- Linux・Windowsの`Ctrl+Shift+T`またはmacOSの`Cmd+T`：新しいタブを作成
+- Linux・Windowsの`Ctrl+Shift+R`またはmacOSの`Cmd+Shift+R`：有効な設定ファイルを再読込
 - `Commands` → `Reload Config`をクリック：GUIから有効な設定ファイルを再読込
-- `Ctrl+Shift+W`：active Tabを閉じる（最後のタブは維持）
+- Linux・Windowsの`Ctrl+Shift+W`またはmacOSの`Cmd+W`：active Tabを閉じる（最後のタブは維持）
 - `Ctrl+Tab` / `Ctrl+Shift+Tab`：次／前のタブをactivate
-- `Ctrl+Shift+\` / `Ctrl+Shift+-`：active Paneを右／下へ分割
-- `Ctrl+Shift+矢印`：指定方向の最寄りPaneへfocus
-- `Ctrl+Shift+Q`：active Paneを閉じる（最後のPaneは維持）
-- `Ctrl+Shift+N`：Workspaceを作成してactivate
+- Linux・Windowsの`Ctrl+Shift+\` / `Ctrl+Shift+-`またはmacOSの`Cmd+D` / `Cmd+Shift+D`：active Paneを右／下へ分割
+- Linux・Windowsの`Ctrl+Shift+矢印`またはmacOSの`Cmd+Option+矢印`：指定方向の最寄りPaneへfocus
+- Linux・Windowsの`Ctrl+Shift+Q`またはmacOSの`Cmd+Shift+W`：active Paneを閉じる（最後のPaneは維持）
+- Linux・Windowsの`Ctrl+Shift+N`またはmacOSの`Cmd+N`：Workspaceを作成してactivate
 - `Ctrl+Alt+Left` / `Ctrl+Alt+Right`：前／次のWorkspaceをactivate
 - Workspaceまたはタブのラベルをクリック：対象をactivate
 - 左マウスボタンでドラッグ：テキストを選択
