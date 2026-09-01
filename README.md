@@ -132,6 +132,18 @@ Key names are case-insensitive. Modifiers use names such as `CTRL`, `SHIFT`, `AL
 
 Unmatched keys bypass mruby and go directly through the native terminal key encoder. If a Ruby callback raises an exception, toyoterm logs the error and keeps the shell running.
 
+Ruby callbacks can access the host text clipboard through `Toyoterm.clipboard.read` and `Toyoterm.clipboard.write(text)`. The clipboard snapshot is refreshed immediately before each dynamic key-binding or event callback. `read` raises `RuntimeError` when the platform clipboard is unavailable. Writes are applied only after the callback completes successfully, so a callback exception rolls them back together with its other queued commands.
+
+```ruby
+config.bind "CTRL+SHIFT+Y" do
+  Toyoterm.clipboard.write("pane #{Toyoterm.current_pane.id}")
+end
+
+config.bind "CTRL+SHIFT+P" do |context|
+  context.pane.send_text(Toyoterm.clipboard.read)
+end
+```
+
 ### Hot reload
 
 `Toyoterm.reload_config` reloads the same file selected at startup. The new source is evaluated and validated in a fresh mruby VM before it replaces the active configuration. A successful reload updates colors, font metrics, opacity, scrollback, key bindings, and event handlers without replacing the running terminal session.
@@ -167,7 +179,7 @@ The embedded runtime is mruby, not CRuby. CRuby gems, native extensions, and the
 
 ### Clipboard security
 
-OSC 52 clipboard access is disabled in v0.1. Terminal output may originate from an untrusted local process or remote host, so allowing OSC 52 would let it write the host clipboard without an explicit user gesture; clipboard query responses could also expose clipboard contents. The built-in copy and paste shortcuts remain available. Future OSC 52 support must be opt-in, keep clipboard reads disabled by default, and provide an explicit permission or confirmation UI with a payload size limit.
+OSC 52 clipboard access is disabled in v0.1. Terminal output may originate from an untrusted local process or remote host, so allowing OSC 52 would let it write the host clipboard without an explicit user gesture; clipboard query responses could also expose clipboard contents. The built-in copy and paste shortcuts and the trusted-configuration Ruby API remain available. Future OSC 52 support must be opt-in, keep clipboard reads disabled by default, and provide an explicit permission or confirmation UI with a payload size limit.
 
 ## CLI
 

@@ -14,6 +14,7 @@ use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop, EventLoopProxy}
 use winit::keyboard::{Key, KeyCode, ModifiersState, NamedKey, PhysicalKey};
 use winit::window::{Window, WindowId};
 
+use crate::script::ScriptCommand;
 use crate::{
     AlacrittyTerminalBackend, BindingKey, Command, CommandMenuLayout, CommandMenuRenderData,
     ConfigErrorLayout, ConfigErrorRenderData, ConfigManager, GpuRenderer, KeyChord, KeyModifiers,
@@ -236,6 +237,7 @@ struct ToyotermApplication {
     selecting: bool,
     click_tracker: ClickTracker,
     clipboard: Option<Clipboard>,
+    pending_clipboard_writes: Vec<String>,
     cell_metrics: CellMetrics,
     config_manager: ConfigManager,
     mux: Mux,
@@ -274,6 +276,10 @@ impl ApplicationHandler<AppEvent> for ToyotermApplication {
         window.set_ime_allowed(true);
         self.renderer = Some(renderer);
         self.window = Some(window);
+        if let Err(error) = self.flush_script_clipboard_writes() {
+            self.fail(event_loop, error);
+            return;
+        }
         self.refresh_pane_layout();
         if let Err(error) = self.sync_pane_runtimes(size) {
             self.fail(event_loop, error);
@@ -519,7 +525,7 @@ impl ToyotermApplication {
     ) -> Result<Self, String> {
         let mut config_manager = config_manager;
         let mut mux = Mux::new();
-        dispatch_script_commands(&mut config_manager, &mut mux)?;
+        let pending_clipboard_writes = dispatch_script_commands(&mut config_manager, &mut mux)?;
         let config = config_manager.config();
         let font_scale = f64::from(config.font.size) / 14.0;
         Ok(Self {
@@ -547,6 +553,7 @@ impl ToyotermApplication {
             selecting: false,
             click_tracker: ClickTracker::default(),
             clipboard: None,
+            pending_clipboard_writes,
             cell_metrics: CellMetrics {
                 width: 9.0 * font_scale,
                 height: 18.0 * font_scale,
@@ -621,6 +628,7 @@ impl ToyotermApplication {
             if !self.config_manager.has_dynamic_keybinding(&key) {
                 continue;
             }
+            self.refresh_script_clipboard();
             match self.config_manager.trigger_keybinding(&key, pane) {
                 Ok(true) => {}
                 Ok(false) => continue,
@@ -639,7 +647,7 @@ impl ToyotermApplication {
                 return Ok(true);
             }
 
-            dispatch_script_commands(&mut self.config_manager, &mut self.mux)?;
+            self.dispatch_pending_script_commands()?;
             self.reconcile_pane_runtimes()?;
             self.flush_mux_input()?;
             return Ok(true);
@@ -899,7 +907,7 @@ impl ToyotermApplication {
         self.config_manager
             .take_reload_request()
             .map_err(|error| error.to_string())?;
-        dispatch_script_commands(&mut self.config_manager, &mut self.mux)?;
+        self.dispatch_pending_script_commands()?;
         self.reconcile_pane_runtimes()?;
 
         let font_scale = f64::from(config.font.size) / 14.0;
@@ -931,9 +939,10 @@ impl ToyotermApplication {
             .mux
             .current_pane()
             .ok_or_else(|| "mux has no current pane".to_owned())?;
+        self.refresh_script_clipboard();
         match self.config_manager.emit_event(name, pane) {
             Ok(true) => {
-                dispatch_script_commands(&mut self.config_manager, &mut self.mux)?;
+                self.dispatch_pending_script_commands()?;
                 self.reconcile_pane_runtimes()?;
                 self.flush_mux_input()
             }
@@ -1452,6 +1461,39 @@ impl ToyotermApplication {
         Ok(self.clipboard.as_mut().expect("clipboard was initialized"))
     }
 
+    fn refresh_script_clipboard(&mut self) {
+        let text = self
+            .clipboard()
+            .and_then(|clipboard| {
+                clipboard
+                    .get_text()
+                    .map_err(|error| format!("read clipboard for Ruby: {error}"))
+            })
+            .ok();
+        if let Err(error) = self.config_manager.set_clipboard_text(text.as_deref()) {
+            eprintln!("toyoterm: {error}");
+        }
+    }
+
+    fn dispatch_pending_script_commands(&mut self) -> Result<(), String> {
+        let writes = dispatch_script_commands(&mut self.config_manager, &mut self.mux)?;
+        self.pending_clipboard_writes.extend(writes);
+        self.flush_script_clipboard_writes()
+    }
+
+    fn flush_script_clipboard_writes(&mut self) -> Result<(), String> {
+        if self.pending_clipboard_writes.is_empty() {
+            return Ok(());
+        }
+        let writes = std::mem::take(&mut self.pending_clipboard_writes);
+        for text in writes {
+            self.clipboard()?
+                .set_text(text)
+                .map_err(|error| format!("write clipboard from Ruby: {error}"))?;
+        }
+        Ok(())
+    }
+
     fn sync_active_renderer(&mut self, scale_factor: f64) {
         let active = self.mux.current_pane();
         let snapshots = self
@@ -1642,20 +1684,26 @@ impl ToyotermApplication {
 fn dispatch_script_commands(
     config_manager: &mut ConfigManager,
     mux: &mut Mux,
-) -> Result<(), String> {
+) -> Result<Vec<String>, String> {
     let current_pane = mux
         .current_pane()
         .ok_or_else(|| "mux has no current pane".to_owned())?;
     config_manager
         .set_current_pane(current_pane)
         .map_err(|error| error.to_string())?;
+    let mut clipboard_writes = Vec::new();
     for command in config_manager
         .drain_commands(current_pane)
         .map_err(|error| error.to_string())?
     {
-        mux.dispatch(command).map_err(|error| error.to_string())?;
+        match command {
+            ScriptCommand::Native(command) => {
+                mux.dispatch(command).map_err(|error| error.to_string())?;
+            }
+            ScriptCommand::ClipboardWrite(text) => clipboard_writes.push(text),
+        }
     }
-    Ok(())
+    Ok(clipboard_writes)
 }
 
 fn tab_bar_height(scale_factor: f64) -> u32 {
@@ -2053,9 +2101,24 @@ mod tests {
         let mut mux = Mux::new();
         let pane = mux.current_pane().unwrap();
 
-        dispatch_script_commands(&mut config_manager, &mut mux).unwrap();
+        let clipboard_writes = dispatch_script_commands(&mut config_manager, &mut mux).unwrap();
 
         assert_eq!(mux.take_pending_input(pane).unwrap(), b"echo hello\n");
+        assert!(clipboard_writes.is_empty());
+    }
+
+    #[test]
+    fn separates_ruby_clipboard_writes_from_mux_commands() {
+        let mut config_manager = ConfigManager::new().unwrap();
+        config_manager
+            .eval(r#"Toyoterm.clipboard.write("from Ruby")"#)
+            .unwrap();
+        let mut mux = Mux::new();
+
+        assert_eq!(
+            dispatch_script_commands(&mut config_manager, &mut mux).unwrap(),
+            vec!["from Ruby".to_owned()]
+        );
     }
 
     #[test]

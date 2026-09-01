@@ -8,6 +8,12 @@ use std::rc::Rc;
 
 use crate::{Command, NativeAction, PaneId, SplitDirection};
 
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) enum ScriptCommand {
+    Native(Command),
+    ClipboardWrite(String),
+}
+
 const CONFIG_DSL: &str = r##"
 module Toyoterm
   class FontConfig
@@ -253,8 +259,31 @@ module Toyoterm
     end
   end
 
+  class Clipboard
+    def initialize
+      @text = nil
+    end
+
+    def read
+      raise RuntimeError, "clipboard is unavailable" if @text.nil?
+      @text.dup
+    end
+
+    def write(text)
+      text = text.to_s
+      raise ArgumentError, "clipboard text contains a NUL byte" if text.index("\0")
+      Toyoterm.__queue_command(:clipboard_write, 0, text)
+      self
+    end
+
+    def __replace(text)
+      @text = text
+    end
+  end
+
   @config = Config.new
   @current_pane = Pane.new(0)
+  @clipboard = Clipboard.new
   @commands = []
   @current_command = nil
   @reload_requested = false
@@ -270,6 +299,14 @@ module Toyoterm
 
   def self.current_pane
     @current_pane
+  end
+
+  def self.clipboard
+    @clipboard
+  end
+
+  def self.__set_clipboard_text(text)
+    @clipboard.__replace(text)
   end
 
   def self.__primary_modifier
@@ -625,6 +662,16 @@ impl ConfigManager {
         Ok(())
     }
 
+    /// Updates the clipboard snapshot exposed to the next Ruby callback.
+    pub fn set_clipboard_text(&mut self, text: Option<&str>) -> Result<(), ScriptError> {
+        let text = text
+            .map(ruby_string_literal)
+            .unwrap_or_else(|| "nil".into());
+        self.runtime
+            .eval(&format!("Toyoterm.__set_clipboard_text({text})"))?;
+        Ok(())
+    }
+
     /// Runs a configured callback only when the native key resolver found a match.
     pub fn trigger_keybinding(
         &mut self,
@@ -686,7 +733,10 @@ impl ConfigManager {
     /// Converts commands queued by Ruby into the native command API.
     ///
     /// Pane id zero is a bootstrap placeholder used while startup config is loading.
-    pub fn drain_commands(&mut self, current_pane: PaneId) -> Result<Vec<Command>, ScriptError> {
+    pub(crate) fn drain_commands(
+        &mut self,
+        current_pane: PaneId,
+    ) -> Result<Vec<ScriptCommand>, ScriptError> {
         let mut commands = Vec::new();
         loop {
             let command_type = self.runtime.eval("Toyoterm.__next_command")?;
@@ -703,10 +753,11 @@ impl ConfigManager {
             let pane = if pane.0 == 0 { current_pane } else { pane };
             let payload = self.runtime.eval("Toyoterm.__current_command_payload")?;
             match command_type.as_str() {
-                "send_text" => commands.push(Command::SendText {
+                "send_text" => commands.push(ScriptCommand::Native(Command::SendText {
                     pane,
                     text: payload,
-                }),
+                })),
+                "clipboard_write" => commands.push(ScriptCommand::ClipboardWrite(payload)),
                 other => {
                     return Err(ScriptError::new(
                         "decode mruby command",
@@ -909,6 +960,7 @@ fn ruby_string_literal(value: &str) -> String {
         match character {
             '\\' => literal.push_str("\\\\"),
             '"' => literal.push_str("\\\""),
+            '#' => literal.push_str("\\#"),
             '\n' => literal.push_str("\\n"),
             '\r' => literal.push_str("\\r"),
             '\t' => literal.push_str("\\t"),
@@ -1154,12 +1206,70 @@ fail_config
 
         assert_eq!(
             manager.drain_commands(PaneId(42)).unwrap(),
-            vec![Command::SendText {
+            vec![ScriptCommand::Native(Command::SendText {
                 pane: PaneId(42),
                 text: "echo hello\n".into(),
-            }]
+            })]
         );
         assert!(manager.drain_commands(PaneId(42)).unwrap().is_empty());
+    }
+
+    #[test]
+    fn exposes_clipboard_read_and_write_to_ruby() {
+        let mut manager = ConfigManager::new().unwrap();
+        manager
+            .set_clipboard_text(Some("こんにちは\nclipboard"))
+            .unwrap();
+
+        assert_eq!(
+            manager.eval("Toyoterm.clipboard.read").unwrap(),
+            "こんにちは\nclipboard"
+        );
+        manager
+            .eval(r#"Toyoterm.clipboard.write("copied from Ruby")"#)
+            .unwrap();
+        assert_eq!(
+            manager.drain_commands(PaneId(42)).unwrap(),
+            vec![ScriptCommand::ClipboardWrite("copied from Ruby".into())]
+        );
+    }
+
+    #[test]
+    fn clipboard_text_cannot_interpolate_ruby_source() {
+        let mut manager = ConfigManager::new().unwrap();
+        let text = r#"#{raise "clipboard interpolation ran"}"#;
+
+        manager.set_clipboard_text(Some(text)).unwrap();
+
+        assert_eq!(manager.eval("Toyoterm.clipboard.read").unwrap(), text);
+    }
+
+    #[test]
+    fn reports_an_unavailable_clipboard_to_ruby() {
+        let mut manager = ConfigManager::new().unwrap();
+        let error = manager.eval("Toyoterm.clipboard.read").unwrap_err();
+        assert!(error.message().contains("clipboard is unavailable"));
+    }
+
+    #[test]
+    fn ruby_callback_errors_roll_back_clipboard_writes() {
+        let mut manager = ConfigManager::new().unwrap();
+        manager
+            .reload(
+                r#"
+                Toyoterm.configure do |config|
+                  config.bind "CTRL+C" do
+                    Toyoterm.clipboard.write("must not be copied")
+                    raise "broken clipboard callback"
+                  end
+                end
+                "#,
+            )
+            .unwrap();
+
+        let error = manager.trigger_keybinding("CTRL+C", PaneId(4)).unwrap_err();
+        assert!(error.message().contains("broken clipboard callback"));
+        assert!(manager.drain_commands(PaneId(4)).unwrap().is_empty());
     }
 
     #[test]
@@ -1171,10 +1281,10 @@ fail_config
 
         assert_eq!(
             manager.drain_commands(PaneId(7)).unwrap(),
-            vec![Command::SendText {
+            vec![ScriptCommand::Native(Command::SendText {
                 pane: PaneId(7),
                 text: "pwd\n".into(),
-            }]
+            })]
         );
     }
 
@@ -1205,10 +1315,10 @@ fail_config
         assert_eq!(manager.eval("$callback_count").unwrap(), "1");
         assert_eq!(
             manager.drain_commands(PaneId(9)).unwrap(),
-            vec![Command::SendText {
+            vec![ScriptCommand::Native(Command::SendText {
                 pane: PaneId(9),
                 text: "echo from ruby\n".into(),
-            }]
+            })]
         );
     }
 
@@ -1398,10 +1508,10 @@ fail_config
         assert_eq!(manager.eval("$event_pane").unwrap(), "12");
         assert_eq!(
             manager.drain_commands(PaneId(12)).unwrap(),
-            vec![Command::SendText {
+            vec![ScriptCommand::Native(Command::SendText {
                 pane: PaneId(12),
                 text: "echo app started\n".into(),
-            }]
+            })]
         );
     }
 
