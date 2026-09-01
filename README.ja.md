@@ -181,6 +181,14 @@ end
 
 native側の発生元はmrubyを直接呼ばず、すべてのイベントを単一のFIFO queueへ追加します。各callbackを最後まで実行し、queueされたcommandを反映してから次のイベントを配送します。そのcommandから発生したイベントはqueue末尾へ追加するため、callbackへ再入しません。自己生成イベントの無限loopを防ぐため、1 application turnあたり1,024件を上限とします。handler未登録のイベントはRuby VMを呼ぶ前に破棄します。
 
+optionalなstatus barは`Toyoterm.status(interval: 1.0)`で設定できます。callbackのcontextから現在の`workspace`、`window`、`tab`、`pane`を参照でき、戻り値を文字列として表示します。callback未設定時はbarを表示しません。100ms未満のintervalは拒否し、callbackはscript workerで実行するため、遅いstatus生成がterminal描画をblockしません。status callbackがqueueしたcommandは破棄します。
+
+```ruby
+Toyoterm.status(interval: 1.0) do |context|
+  [context.workspace.name, context.pane.cwd].compact.join(" | ")
+end
+```
+
 ### ホットリロード
 
 `Toyoterm.reload_config`は、起動時に選択されたものと同じファイルを再読込します。新しいソースは別のmruby VMで評価・検証され、成功した場合だけ有効な設定と入れ替わります。正常に再読込できると、実行中のターミナルセッションを維持したまま、配色、フォントメトリクス、透明度、スクロールバック、キーバインド、イベントハンドラを更新します。

@@ -71,6 +71,12 @@ pub struct PaletteRenderData<'a> {
 }
 
 #[derive(Clone, Copy, Debug)]
+pub struct StatusBarRenderData<'a> {
+    pub rect: PaneRect,
+    pub text: &'a str,
+}
+
+#[derive(Clone, Copy, Debug)]
 pub struct ConfigErrorRenderData<'a> {
     pub message: &'a str,
     pub notice_rect: PaneRect,
@@ -224,6 +230,7 @@ pub struct GpuRenderer {
     workspaces: HashMap<WorkspaceId, TabBuffer>,
     command_menu: CommandMenuBuffers,
     palette: OverlayBuffer,
+    status_bar: OverlayBuffer,
     config_error: ConfigErrorBuffers,
     preedit: Buffer,
     has_preedit: bool,
@@ -445,6 +452,8 @@ impl GpuRenderer {
         reload_config.set_wrap(Wrap::None);
         let mut palette_text = Buffer::new(&mut font_system, Metrics::new(14.0, 18.0));
         palette_text.set_wrap(Wrap::None);
+        let mut status_text = Buffer::new(&mut font_system, Metrics::new(12.0, 15.0));
+        status_text.set_wrap(Wrap::None);
         let mut config_error_buffer = || {
             let mut buffer = Buffer::new(&mut font_system, Metrics::new(14.0, 18.0));
             buffer.set_wrap(Wrap::None);
@@ -487,6 +496,10 @@ impl GpuRenderer {
             },
             palette: OverlayBuffer {
                 text: palette_text,
+                rect: None,
+            },
+            status_bar: OverlayBuffer {
+                text: status_text,
                 rect: None,
             },
             config_error,
@@ -537,6 +550,12 @@ impl GpuRenderer {
         palette_text.set_wrap(Wrap::None);
         self.palette = OverlayBuffer {
             text: palette_text,
+            rect: None,
+        };
+        let mut status_text = Buffer::new(&mut self.font_system, Metrics::new(12.0, 15.0));
+        status_text.set_wrap(Wrap::None);
+        self.status_bar = OverlayBuffer {
+            text: status_text,
             rect: None,
         };
 
@@ -839,6 +858,38 @@ impl GpuRenderer {
             .shape_until_scroll(&mut self.font_system, false);
     }
 
+    pub fn update_status_bar(
+        &mut self,
+        status: Option<StatusBarRenderData<'_>>,
+        layout: TextLayout,
+    ) {
+        let Some(status) = status else {
+            self.status_bar.rect = None;
+            return;
+        };
+        self.status_bar.rect = Some(status.rect);
+        let metrics = Metrics::new(
+            (layout.font_size * 0.85).max(1.0),
+            (layout.line_height * 0.85).max(1.0),
+        );
+        self.status_bar.text.set_metrics_and_size(
+            metrics,
+            Some(status.rect.width.saturating_sub(16) as f32),
+            Some(status.rect.height as f32),
+        );
+        self.status_bar.text.set_text(
+            status.text,
+            &Attrs::new()
+                .family(Family::Name(&self.style.font_family))
+                .weight(Weight(self.style.font_weight)),
+            Shaping::Advanced,
+            None,
+        );
+        self.status_bar
+            .text
+            .shape_until_scroll(&mut self.font_system, false);
+    }
+
     pub fn update_config_error(
         &mut self,
         error: Option<ConfigErrorRenderData<'_>>,
@@ -1033,6 +1084,17 @@ impl GpuRenderer {
                 scale: 1.0,
                 bounds: pane_bounds(rect),
                 default_color: glyph_color(self.style.cursor, 255),
+                custom_glyphs: &[],
+            });
+        }
+        if let Some(rect) = self.status_bar.rect {
+            text_areas.push(TextArea {
+                buffer: &self.status_bar.text,
+                left: rect.x as f32 + 8.0,
+                top: rect.y as f32 + 2.0,
+                scale: 1.0,
+                bounds: pane_bounds(rect),
+                default_color: glyph_color(self.style.foreground, 190),
                 custom_glyphs: &[],
             });
         }

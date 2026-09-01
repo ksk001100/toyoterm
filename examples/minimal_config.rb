@@ -36,3 +36,7 @@ end
 Toyoterm.command :git_status do |context|
   context.pane.send_text("git status\n")
 end
+
+Toyoterm.status(interval: 1.0) do |context|
+  [context.workspace.name, context.pane.cwd].compact.join(" | ")
+end

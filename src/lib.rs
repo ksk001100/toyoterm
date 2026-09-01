@@ -39,7 +39,8 @@ pub use palette::{CommandPalette, PaletteAction, PaletteItem, filter_items};
 pub use pty::{NativePty, Pty, PtyCommand, PtyError, PtyExitStatus, PtySession, PtySize};
 pub use render::{
     CommandMenuRenderData, ConfigErrorRenderData, GpuRenderer, PaletteRenderData, PaneRenderData,
-    RenderError, RenderOutcome, RenderStyle, TabRenderData, TextLayout, WorkspaceRenderData,
+    RenderError, RenderOutcome, RenderStyle, StatusBarRenderData, TabRenderData, TextLayout,
+    WorkspaceRenderData,
 };
 pub use script::{
     ColorConfig, ConfigManager, FontConfig, LeaderConfig, MrubyRuntime, ScriptError,

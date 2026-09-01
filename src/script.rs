@@ -21,6 +21,7 @@ enum CallbackKind {
     KeyBinding,
     Event,
     UserCommand,
+    Status,
 }
 
 impl CallbackKind {
@@ -29,6 +30,7 @@ impl CallbackKind {
             Self::KeyBinding => "key_binding",
             Self::Event => "event",
             Self::UserCommand => "user_command",
+            Self::Status => "status",
         }
     }
 }
@@ -85,6 +87,17 @@ module Toyoterm
   end
 
   CommandContext = KeyBindingContext
+
+  class StatusContext
+    attr_reader :workspace, :window, :tab, :pane
+
+    def initialize(workspace, window, tab, pane)
+      @workspace = workspace
+      @window = window
+      @tab = tab
+      @pane = pane
+    end
+  end
 
   class Event
     attr_reader :name, :workspace, :window, :tab, :pane, :title, :cwd
@@ -529,6 +542,8 @@ module Toyoterm
   @current_command = nil
   @event_handlers = {}
   @user_commands = {}
+  @status_callback = nil
+  @status_interval = nil
   @live_handles = {
     workspace: [0],
     window: [0],
@@ -607,6 +622,32 @@ module Toyoterm
     raise ArgumentError, "duplicate user command: #{name}" if @user_commands.key?(name)
     @user_commands[name] = block
     block
+  end
+
+  def self.status(interval: 1.0, &block)
+    raise ArgumentError, "status callback requires a block" unless block
+    raise ArgumentError, "status callback is already configured" if @status_callback
+    @status_interval = interval
+    @status_callback = block
+    block
+  end
+
+  def self.__status_interval
+    unless @status_interval.nil? || @status_interval.is_a?(Numeric)
+      raise TypeError, "status interval must be numeric"
+    end
+    @status_interval
+  end
+
+  def self.__invoke_status
+    return nil unless @status_callback
+    context = StatusContext.new(current_workspace, current_window, current_tab, current_pane)
+    checkpoint = __command_checkpoint
+    begin
+      @status_callback.call(context).to_s
+    ensure
+      __rollback_commands(checkpoint)
+    end
   end
 
   def self.__command_count
@@ -882,6 +923,7 @@ pub struct ToyotermConfig {
     pub default_shell: Option<String>,
     pub scrollback_lines: usize,
     pub leader: Option<LeaderConfig>,
+    pub status_interval: Option<Duration>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -963,6 +1005,7 @@ pub(crate) enum ScriptInvocation {
     Event(RubyEvent),
     Eval(String),
     Reload,
+    Status,
 }
 
 #[derive(Debug)]
@@ -1108,6 +1151,7 @@ impl Default for ToyotermConfig {
             default_shell: None,
             scrollback_lines: 10_000,
             leader: None,
+            status_interval: None,
         }
     }
 }
@@ -1586,6 +1630,10 @@ impl ConfigManager {
         }
     }
 
+    pub(crate) fn render_status(&mut self) -> Result<String, ScriptError> {
+        self.eval_callback(CallbackKind::Status, "status", "Toyoterm.__invoke_status")
+    }
+
     /// Updates the pane exposed by `Toyoterm.current_pane` for subsequent evaluations.
     pub fn set_current_pane(&mut self, pane: PaneId) -> Result<(), ScriptError> {
         self.runtime.set_current_pane(pane)
@@ -1806,6 +1854,7 @@ fn run_script_request(
             manager.reload_file()?;
             (None, Some(manager.snapshot()))
         }
+        ScriptInvocation::Status => (Some(manager.render_status()?), None),
     };
     let model = &context.model;
     let commands = manager.drain_commands_with_context(
@@ -1968,6 +2017,21 @@ fn load_config(source: &str, filename: &str) -> Result<LoadedConfig, ScriptError
             timeout_ms,
         })
     };
+    let status_interval = match runtime.eval("Toyoterm.__status_interval")?.as_str() {
+        "" => None,
+        value => {
+            let seconds = value.parse::<f64>().map_err(|_| {
+                ScriptError::new("validate status", "status interval must be numeric")
+            })?;
+            if !seconds.is_finite() || seconds < 0.1 {
+                return Err(ScriptError::new(
+                    "validate status",
+                    "status interval must be at least 0.1 seconds",
+                ));
+            }
+            Some(Duration::from_secs_f64(seconds))
+        }
+    };
 
     let config = ToyotermConfig {
         font: FontConfig {
@@ -1990,6 +2054,7 @@ fn load_config(source: &str, filename: &str) -> Result<LoadedConfig, ScriptError
         },
         scrollback_lines,
         leader,
+        status_interval,
     };
     validate_color("background", &config.colors.background)?;
     validate_color("foreground", &config.colors.foreground)?;
@@ -2219,6 +2284,49 @@ mod tests {
     fn classifies_callbacks_at_the_slow_threshold() {
         assert!(!is_slow_callback(Duration::from_millis(99)));
         assert!(is_slow_callback(Duration::from_millis(100)));
+    }
+
+    #[test]
+    fn status_dsl_uses_typed_context_and_discards_commands() {
+        let mut manager = ConfigManager::new().unwrap();
+        manager
+            .reload(
+                r#"
+                Toyoterm.status(interval: 0.25) do |ctx|
+                  ctx.pane.send_text("must not run")
+                  [ctx.workspace.name, ctx.tab.title, ctx.pane.title].join(" | ")
+                end
+                "#,
+            )
+            .unwrap();
+        let context = script_test_context();
+        manager
+            .set_live_handles(context.handles.iter().copied())
+            .unwrap();
+        manager.set_object_model(&context.model).unwrap();
+
+        assert_eq!(
+            manager.config().status_interval,
+            Some(Duration::from_millis(250))
+        );
+        assert_eq!(manager.render_status().unwrap(), "default | Tab 3 | Pane 4");
+        assert!(manager.drain_commands(PaneId(4)).unwrap().is_empty());
+    }
+
+    #[test]
+    fn status_interval_defaults_to_one_second_and_rejects_values_below_100ms() {
+        let mut manager = ConfigManager::new().unwrap();
+        manager.reload("Toyoterm.status { 'ready' }").unwrap();
+        assert_eq!(
+            manager.config().status_interval,
+            Some(Duration::from_secs(1))
+        );
+
+        let error = manager
+            .reload("Toyoterm.status(interval: 0.099) { 'too fast' }")
+            .unwrap_err();
+        assert!(error.message().contains("at least 0.1 seconds"));
+        assert_eq!(manager.render_status().unwrap(), "ready");
     }
 
     #[test]

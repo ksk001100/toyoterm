@@ -184,6 +184,14 @@ Each callback receives a current snapshot through `Toyoterm.current_workspace`, 
 
 Native producers append events to one FIFO queue and never call mruby directly. Each callback runs to completion, then its queued commands are applied before the next event. Events caused by those commands are appended to the queue, preventing recursive callback entry. Delivery is limited to 1,024 events per application turn to stop self-generating event loops. Events without registered handlers are discarded before any Ruby VM call.
 
+An optional status bar can be configured with `Toyoterm.status(interval: 1.0)`. The callback receives a context exposing the current `workspace`, `window`, `tab`, and `pane`, and its return value is converted to text. The bar is hidden when no callback is configured. Intervals shorter than 100 ms are rejected, and callbacks run on the script worker so slow status generation does not block terminal rendering. Commands queued by a status callback are discarded.
+
+```ruby
+Toyoterm.status(interval: 1.0) do |context|
+  [context.workspace.name, context.pane.cwd].compact.join(" | ")
+end
+```
+
 ### Hot reload
 
 `Toyoterm.reload_config` reloads the same file selected at startup. The new source is evaluated and validated in a fresh mruby VM before it replaces the active configuration. A successful reload updates colors, font metrics, opacity, scrollback, key bindings, and event handlers without replacing the running terminal session.

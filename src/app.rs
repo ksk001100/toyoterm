@@ -27,9 +27,10 @@ use crate::{
     IpcRequest, IpcResponse, IpcServer, KeyChord, KeyModifiers, KeyPress, KeypadKey,
     MouseWheelDirection, Mux, NativeAction, NativeCommand, NativePty, PaletteAction, PaletteItem,
     PaletteRenderData, PaneId, PaneLayout, PaneRect, PaneRenderData, Pty, PtyCommand, PtySession,
-    PtySize, RenderOutcome, RenderStyle, SelectionKind, SplitDirection, TabRenderData,
-    TabStripLayout, TerminalBackend, TerminalEvent, TerminalKey, TextLayout, WorkspaceRenderData,
-    WorkspaceStripLayout, encode_key, encode_mouse_wheel, encode_paste, filter_items,
+    PtySize, RenderOutcome, RenderStyle, SelectionKind, SplitDirection, StatusBarRenderData,
+    TabRenderData, TabStripLayout, TerminalBackend, TerminalEvent, TerminalKey, TextLayout,
+    WorkspaceRenderData, WorkspaceStripLayout, encode_key, encode_mouse_wheel, encode_paste,
+    filter_items,
 };
 
 const MULTI_CLICK_INTERVAL: Duration = Duration::from_millis(500);
@@ -323,6 +324,9 @@ struct ToyotermApplication {
     cell_metrics: CellMetrics,
     script_thread: ScriptThread,
     script_snapshot: ScriptSnapshot,
+    status_text: String,
+    status_pending: bool,
+    next_status_at: Option<Instant>,
     mux: Mux,
     render_style: RenderStyle,
     fatal_error: Option<String>,
@@ -623,6 +627,36 @@ impl ApplicationHandler<AppEvent> for ToyotermApplication {
         }
     }
 
+    fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
+        let Some(interval) = self.script_snapshot.config.status_interval else {
+            self.next_status_at = None;
+            event_loop.set_control_flow(ControlFlow::Wait);
+            return;
+        };
+        if self.status_pending || self.window.is_none() {
+            event_loop.set_control_flow(ControlFlow::Wait);
+            return;
+        }
+        let now = Instant::now();
+        let deadline = *self.next_status_at.get_or_insert(now);
+        if now < deadline {
+            event_loop.set_control_flow(ControlFlow::WaitUntil(deadline));
+            return;
+        }
+        match self.submit_script(ScriptInvocation::Status) {
+            Ok(_) => {
+                self.status_pending = true;
+                self.next_status_at = None;
+                event_loop.set_control_flow(ControlFlow::Wait);
+            }
+            Err(error) => {
+                tracing::warn!(target: "toyoterm::script", %error, "submit status callback failed");
+                self.next_status_at = Some(now + interval);
+                event_loop.set_control_flow(ControlFlow::WaitUntil(now + interval));
+            }
+        }
+    }
+
     fn exiting(&mut self, _event_loop: &ActiveEventLoop) {
         self.shutdown();
     }
@@ -817,6 +851,9 @@ impl ToyotermApplication {
             },
             script_thread,
             script_snapshot,
+            status_text: String::new(),
+            status_pending: false,
+            next_status_at: None,
             mux,
             render_style,
             fatal_error: None,
@@ -1351,6 +1388,12 @@ impl ToyotermApplication {
         }
         self.render_style = render_style.clone();
         self.script_snapshot = snapshot;
+        self.status_text.clear();
+        self.next_status_at = self
+            .script_snapshot
+            .config
+            .status_interval
+            .map(|_| Instant::now());
         if let Some(renderer) = self.renderer.as_mut() {
             renderer.set_style(render_style);
         }
@@ -1643,13 +1686,23 @@ impl ToyotermApplication {
             .saturating_add(tab_bar_height(scale_factor))
             .saturating_add(notification_height)
             .min(window_size.height);
+        let status_height = self
+            .script_snapshot
+            .config
+            .status_interval
+            .map(|_| status_bar_height(scale_factor))
+            .unwrap_or(0)
+            .min(window_size.height.saturating_sub(chrome_height));
         PaneLayout::calculate(
             root,
             PaneRect::new(
                 0,
                 chrome_height,
                 window_size.width,
-                window_size.height.saturating_sub(chrome_height),
+                window_size
+                    .height
+                    .saturating_sub(chrome_height)
+                    .saturating_sub(status_height),
             ),
             (2.0 * scale_factor.max(0.1)).round() as u32,
         )
@@ -2055,7 +2108,8 @@ impl ToyotermApplication {
     fn handle_script_completion(&mut self, completion: ScriptCompletion) -> Result<(), String> {
         let waiter = self.eval_waiters.remove(&completion.id);
         let is_reload = matches!(completion.invocation, ScriptInvocation::Reload);
-        let result = match completion.result {
+        let is_status = matches!(completion.invocation, ScriptInvocation::Status);
+        let mut result = match completion.result {
             Ok(result) => result,
             Err(error) => {
                 let message = error.to_string();
@@ -2073,11 +2127,28 @@ impl ToyotermApplication {
                         console_hint: false,
                     });
                 }
+                if is_status {
+                    self.status_pending = false;
+                    self.next_status_at = self
+                        .script_snapshot
+                        .config
+                        .status_interval
+                        .map(|interval| Instant::now() + interval);
+                }
                 self.finish_eval(waiter, Err(message));
                 return Ok(());
             }
         };
 
+        if is_status {
+            self.status_pending = false;
+            self.status_text = result.value.take().unwrap_or_default();
+            self.next_status_at = self
+                .script_snapshot
+                .config
+                .status_interval
+                .map(|interval| Instant::now() + interval);
+        }
         let value = result.value.unwrap_or_default();
         let apply_result: Result<(), String> = (|| {
             if let Some(snapshot) = result.snapshot {
@@ -2291,6 +2362,22 @@ impl ToyotermApplication {
                     rect: palette_rect.unwrap_or_default(),
                     text: &palette_text,
                 }),
+                layout,
+            );
+            renderer.update_status_bar(
+                self.script_snapshot
+                    .config
+                    .status_interval
+                    .map(|_| StatusBarRenderData {
+                        rect: status_bar_rect(
+                            self.window
+                                .as_ref()
+                                .map(|window| window.inner_size())
+                                .unwrap_or_default(),
+                            scale_factor,
+                        ),
+                        text: &self.status_text,
+                    }),
                 layout,
             );
             renderer.update_config_error(config_error, layout);
@@ -2574,6 +2661,20 @@ fn tab_bar_height(scale_factor: f64) -> u32 {
 
 fn workspace_bar_height(scale_factor: f64) -> u32 {
     (24.0 * scale_factor.max(0.1)).round() as u32
+}
+
+fn status_bar_height(scale_factor: f64) -> u32 {
+    (24.0 * scale_factor.max(0.1)).round() as u32
+}
+
+fn status_bar_rect(window_size: PhysicalSize<u32>, scale_factor: f64) -> PaneRect {
+    let height = status_bar_height(scale_factor).min(window_size.height);
+    PaneRect::new(
+        0,
+        window_size.height.saturating_sub(height),
+        window_size.width,
+        height,
+    )
 }
 
 fn command_menu_width(scale_factor: f64) -> u32 {
@@ -3299,6 +3400,18 @@ mod tests {
                 target
             ),
             1
+        );
+    }
+
+    #[test]
+    fn status_bar_occupies_the_scaled_bottom_edge() {
+        assert_eq!(
+            status_bar_rect(PhysicalSize::new(960, 600), 1.0),
+            PaneRect::new(0, 576, 960, 24)
+        );
+        assert_eq!(
+            status_bar_rect(PhysicalSize::new(1200, 750), 1.5),
+            PaneRect::new(0, 714, 1200, 36)
         );
     }
 
