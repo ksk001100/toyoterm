@@ -709,6 +709,9 @@ impl ToyotermApplication {
                 continue;
             }
             self.refresh_script_clipboard();
+            self.config_manager
+                .set_live_handles(self.mux.native_handles())
+                .map_err(|error| error.to_string())?;
             match self.config_manager.trigger_keybinding(&key, pane) {
                 Ok(true) => {}
                 Ok(false) => continue,
@@ -1039,6 +1042,9 @@ impl ToyotermApplication {
             .current_pane()
             .ok_or_else(|| "mux has no current pane".to_owned())?;
         self.refresh_script_clipboard();
+        self.config_manager
+            .set_live_handles(self.mux.native_handles())
+            .map_err(|error| error.to_string())?;
         match self.config_manager.emit_event(name, pane) {
             Ok(true) => {
                 self.dispatch_pending_script_commands()?;
@@ -1869,6 +1875,9 @@ fn dispatch_script_commands(
     let current_pane = mux
         .current_pane()
         .ok_or_else(|| "mux has no current pane".to_owned())?;
+    config_manager
+        .set_live_handles(mux.native_handles())
+        .map_err(|error| error.to_string())?;
     config_manager
         .set_current_pane(current_pane)
         .map_err(|error| error.to_string())?;

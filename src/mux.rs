@@ -3,7 +3,8 @@ use std::error::Error;
 use std::fmt;
 
 use crate::api::{
-    Command, CommandResult, Event, PaneId, SplitDirection, TabId, WindowId, WorkspaceId,
+    Command, CommandResult, Event, NativeHandle, PaneId, SplitDirection, TabId, WindowId,
+    WorkspaceId,
 };
 
 #[derive(Clone, Debug, PartialEq)]
@@ -246,6 +247,17 @@ impl Mux {
 
     pub fn pane_ids(&self) -> impl Iterator<Item = PaneId> + '_ {
         self.panes.keys().copied()
+    }
+
+    pub fn native_handles(&self) -> Vec<NativeHandle> {
+        self.workspaces
+            .keys()
+            .copied()
+            .map(NativeHandle::from)
+            .chain(self.windows.keys().copied().map(NativeHandle::from))
+            .chain(self.tabs.keys().copied().map(NativeHandle::from))
+            .chain(self.panes.keys().copied().map(NativeHandle::from))
+            .collect()
     }
 
     pub fn pending_input(&self, pane: PaneId) -> Option<&[u8]> {
@@ -823,5 +835,25 @@ mod tests {
         mux.dispatch(Command::CloseTab(third)).unwrap();
         assert_eq!(mux.current_tab(), Some(first));
         assert_eq!(mux.tabs(mux.current_window().unwrap()), Some(&[first][..]));
+    }
+
+    #[test]
+    fn native_handle_snapshot_drops_closed_ids() {
+        let mut mux = Mux::new();
+        let first = mux.current_pane().unwrap();
+        let CommandResult::Pane(second) = mux
+            .dispatch(Command::Split {
+                pane: first,
+                direction: SplitDirection::Right,
+            })
+            .unwrap()
+        else {
+            panic!("split did not return a pane");
+        };
+        assert!(mux.native_handles().contains(&NativeHandle::from(second)));
+
+        mux.dispatch(Command::ClosePane(second)).unwrap();
+        assert!(!mux.native_handles().contains(&NativeHandle::from(second)));
+        assert!(mux.native_handles().contains(&NativeHandle::from(first)));
     }
 }

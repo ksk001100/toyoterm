@@ -7,7 +7,7 @@ use std::ptr::NonNull;
 use std::rc::Rc;
 use std::time::{Duration, Instant};
 
-use crate::{Command, NativeAction, PaneId, SplitDirection};
+use crate::{Command, HandleKind, NativeAction, NativeHandle, PaneId, SplitDirection};
 
 const SLOW_CALLBACK_THRESHOLD: Duration = Duration::from_millis(100);
 
@@ -274,6 +274,16 @@ module Toyoterm
     end
   end
 
+  class InvalidHandleError < RuntimeError
+    attr_reader :kind, :id
+
+    def initialize(kind, id)
+      @kind = kind
+      @id = id
+      super("invalid #{kind} handle #{id}")
+    end
+  end
+
   class NativeHandle
     attr_reader :id
 
@@ -297,25 +307,50 @@ module Toyoterm
     def inspect
       "#<#{self.class}:#{@id}>"
     end
+
+    def valid?
+      Toyoterm.__handle_valid?(__native_kind, @id)
+    end
+
+    def validate!
+      raise InvalidHandleError.new(__native_kind, @id) unless valid?
+      self
+    end
+
+    private
+
+    def __native_kind
+      raise NotImplementedError, "native handle kind is not defined"
+    end
   end
 
   class Workspace < NativeHandle
+    private
+    def __native_kind; :workspace; end
   end
 
   class Window < NativeHandle
+    private
+    def __native_kind; :window; end
   end
 
   class Tab < NativeHandle
+    private
+    def __native_kind; :tab; end
   end
 
   class Pane < NativeHandle
 
     def send_text(text)
+      validate!
       text = text.to_s
       raise ArgumentError, "text contains a NUL byte" if text.index("\0")
       Toyoterm.__queue_command(:send_text, @id, text)
       self
     end
+
+    private
+    def __native_kind; :pane; end
   end
 
   class Clipboard
@@ -347,6 +382,12 @@ module Toyoterm
   @current_command = nil
   @reload_requested = false
   @event_handlers = {}
+  @live_handles = {
+    workspace: [],
+    window: [],
+    tab: [],
+    pane: [0]
+  }
 
   def self.configure(&block)
     block.call(@config)
@@ -415,6 +456,21 @@ module Toyoterm
 
   def self.__set_current_pane(id)
     @current_pane = Pane.new(id)
+    @live_handles[:pane] << id unless @live_handles[:pane].include?(id)
+  end
+
+  def self.__replace_live_handles(workspaces, windows, tabs, panes)
+    @live_handles = {
+      workspace: workspaces,
+      window: windows,
+      tab: tabs,
+      pane: panes
+    }
+  end
+
+  def self.__handle_valid?(kind, id)
+    ids = @live_handles[kind]
+    !ids.nil? && ids.include?(id)
   end
 
   def self.__queue_command(type, pane_id, payload)
@@ -722,6 +778,41 @@ impl ConfigManager {
     pub fn set_current_pane(&mut self, pane: PaneId) -> Result<(), ScriptError> {
         self.runtime
             .eval(&format!("Toyoterm.__set_current_pane({})", pane.0))?;
+        Ok(())
+    }
+
+    pub fn set_live_handles(
+        &mut self,
+        handles: impl IntoIterator<Item = NativeHandle>,
+    ) -> Result<(), ScriptError> {
+        let mut workspaces = Vec::new();
+        let mut windows = Vec::new();
+        let mut tabs = Vec::new();
+        let mut panes = Vec::new();
+        for handle in handles {
+            match handle.kind() {
+                HandleKind::Workspace => workspaces.push(handle.id()),
+                HandleKind::Window => windows.push(handle.id()),
+                HandleKind::Tab => tabs.push(handle.id()),
+                HandleKind::Pane => panes.push(handle.id()),
+            }
+        }
+        let ruby_array = |mut ids: Vec<u64>| {
+            ids.sort_unstable();
+            let ids = ids
+                .into_iter()
+                .map(|id| id.to_string())
+                .collect::<Vec<_>>()
+                .join(",");
+            format!("[{ids}]")
+        };
+        self.runtime.eval(&format!(
+            "Toyoterm.__replace_live_handles({},{},{},{})",
+            ruby_array(workspaces),
+            ruby_array(windows),
+            ruby_array(tabs),
+            ruby_array(panes),
+        ))?;
         Ok(())
     }
 
@@ -1415,6 +1506,29 @@ fail_config
 
         let error = manager.eval("Toyoterm::Pane.new(-1)").unwrap_err();
         assert!(error.message().contains("non-negative integer"));
+    }
+
+    #[test]
+    fn deleted_ruby_handles_raise_a_typed_exception() {
+        let mut manager = ConfigManager::new().unwrap();
+        manager
+            .set_live_handles([
+                NativeHandle::new(HandleKind::Workspace, 1),
+                NativeHandle::new(HandleKind::Pane, 7),
+            ])
+            .unwrap();
+        manager.set_current_pane(PaneId(7)).unwrap();
+        manager.eval("$saved_pane = Toyoterm.current_pane").unwrap();
+        assert_eq!(manager.eval("$saved_pane.valid?").unwrap(), "true");
+
+        manager
+            .set_live_handles([NativeHandle::new(HandleKind::Workspace, 1)])
+            .unwrap();
+        assert_eq!(manager.eval("$saved_pane.valid?").unwrap(), "false");
+        let error = manager.eval("$saved_pane.send_text('stale')").unwrap_err();
+        assert!(error.message().contains("Toyoterm::InvalidHandleError"));
+        assert!(error.message().contains("invalid pane handle 7"));
+        assert!(manager.drain_commands(PaneId(9)).unwrap().is_empty());
     }
 
     #[test]
