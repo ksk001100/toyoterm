@@ -24,12 +24,12 @@ use crate::script::{
 use crate::{
     AlacrittyTerminalBackend, BindingKey, Command, CommandMenuLayout, CommandMenuRenderData,
     CommandPalette, ConfigErrorLayout, ConfigErrorRenderData, Event as MuxEvent, GpuRenderer,
-    IpcServer, KeyChord, KeyModifiers, KeyPress, KeypadKey, MouseWheelDirection, Mux, NativeAction,
-    NativeCommand, NativePty, PaletteAction, PaletteItem, PaletteRenderData, PaneId, PaneLayout,
-    PaneRect, PaneRenderData, Pty, PtyCommand, PtySession, PtySize, RenderOutcome, RenderStyle,
-    SelectionKind, SplitDirection, TabRenderData, TabStripLayout, TerminalBackend, TerminalEvent,
-    TerminalKey, TextLayout, WorkspaceRenderData, WorkspaceStripLayout, encode_key,
-    encode_mouse_wheel, encode_paste, filter_items,
+    IpcRequest, IpcResponse, IpcServer, KeyChord, KeyModifiers, KeyPress, KeypadKey,
+    MouseWheelDirection, Mux, NativeAction, NativeCommand, NativePty, PaletteAction, PaletteItem,
+    PaletteRenderData, PaneId, PaneLayout, PaneRect, PaneRenderData, Pty, PtyCommand, PtySession,
+    PtySize, RenderOutcome, RenderStyle, SelectionKind, SplitDirection, TabRenderData,
+    TabStripLayout, TerminalBackend, TerminalEvent, TerminalKey, TextLayout, WorkspaceRenderData,
+    WorkspaceStripLayout, encode_key, encode_mouse_wheel, encode_paste, filter_items,
 };
 
 const MULTI_CLICK_INTERVAL: Duration = Duration::from_millis(500);
@@ -253,9 +253,9 @@ enum AppEvent {
         pane: PaneId,
         message: String,
     },
-    RubyEval {
-        source: String,
-        response: mpsc::Sender<Result<String, String>>,
+    Ipc {
+        request: IpcRequest,
+        response: IpcResponse,
     },
     ScriptCompleted(Box<ScriptCompletion>),
 }
@@ -691,14 +691,28 @@ impl ApplicationHandler<AppEvent> for ToyotermApplication {
                 );
                 self.mark_pane_exited(pane, Some(message));
             }
-            AppEvent::RubyEval { source, response } => {
-                match self.submit_script(ScriptInvocation::Eval(source)) {
-                    Ok(id) => {
-                        self.eval_waiters.insert(id, EvalWaiter::Ipc(response));
+            AppEvent::Ipc { request, response } => {
+                if let IpcRequest::Eval(source) = request {
+                    match self.submit_script(ScriptInvocation::Eval(source)) {
+                        Ok(id) => {
+                            self.eval_waiters.insert(id, EvalWaiter::Ipc(response));
+                        }
+                        Err(error) => {
+                            let _ = response.send(Err(error));
+                        }
                     }
-                    Err(error) => {
-                        let _ = response.send(Err(error));
+                } else if matches!(request, IpcRequest::Reload) {
+                    match self.submit_script(ScriptInvocation::Reload) {
+                        Ok(id) => {
+                            self.eval_waiters.insert(id, EvalWaiter::Ipc(response));
+                        }
+                        Err(error) => {
+                            let _ = response.send(Err(error));
+                        }
                     }
+                } else {
+                    let result = self.handle_ipc_request(&request);
+                    let _ = response.send(result);
                 }
             }
             AppEvent::ScriptCompleted(completion) => {
@@ -742,9 +756,9 @@ impl ToyotermApplication {
         let config = &script_snapshot.config;
         let font_scale = f64::from(config.font.size) / 14.0;
         let ipc_proxy = event_proxy.clone();
-        let ipc_server = IpcServer::start(move |source, response| {
+        let ipc_server = IpcServer::start(move |request, response| {
             ipc_proxy
-                .send_event(AppEvent::RubyEval { source, response })
+                .send_event(AppEvent::Ipc { request, response })
                 .map_err(|_| "toyoterm GUI event loop is closed".to_owned())
         })
         .map_err(|error| {
@@ -1048,19 +1062,20 @@ impl ToyotermApplication {
     }
 
     fn execute_palette_action(&mut self, action: PaletteAction) -> Result<(), String> {
+        if let Some(command) = palette_native_command(&action, self.mux.current_pane())? {
+            return match command {
+                NativeCommand::Mux(command) => self.dispatch_gui_command(command),
+                NativeCommand::ReloadConfig => self.reload_config_with_notification(),
+                NativeCommand::ClipboardWrite(_) => unreachable!("palette has no clipboard action"),
+            };
+        }
         match action {
-            PaletteAction::ReloadConfig => self.reload_config_with_notification(),
-            PaletteAction::NewTab => self.dispatch_gui_command(Command::NewTab),
-            PaletteAction::Split(direction) => self.split_active_pane(direction),
-            PaletteAction::ClosePane => {
-                let pane = self
-                    .mux
-                    .current_pane()
-                    .ok_or_else(|| "mux has no current pane".to_owned())?;
-                self.dispatch_gui_command(Command::ClosePane(pane))
-            }
-            PaletteAction::SwitchWorkspace(name) => {
-                self.dispatch_gui_command(Command::SwitchWorkspace(name))
+            PaletteAction::ReloadConfig
+            | PaletteAction::NewTab
+            | PaletteAction::Split(_)
+            | PaletteAction::ClosePane
+            | PaletteAction::SwitchWorkspace(_) => {
+                unreachable!("native palette action was normalized")
             }
             PaletteAction::RubyConsole => {
                 self.open_ruby_console();
@@ -1212,6 +1227,64 @@ impl ToyotermApplication {
             window.request_redraw();
         }
         Ok(())
+    }
+
+    fn handle_ipc_request(&mut self, request: &IpcRequest) -> Result<String, String> {
+        match request {
+            IpcRequest::List => return Ok(self.mux.summary()),
+            IpcRequest::ListPanes => return Ok(self.ipc_pane_list()),
+            IpcRequest::Eval(_) | IpcRequest::Reload => {
+                return Err("script IPC request reached native command handler".to_owned());
+            }
+            IpcRequest::SendText { .. }
+            | IpcRequest::Split { .. }
+            | IpcRequest::ActivateWorkspace(_) => {}
+        }
+        let command = request
+            .native_command(self.mux.current_pane())?
+            .ok_or_else(|| "IPC request has no native command".to_owned())?;
+        match command {
+            NativeCommand::Mux(command) => {
+                self.dispatch_gui_command(command)?;
+                self.flush_mux_input()?;
+            }
+            NativeCommand::ReloadConfig => self.reload_config_with_notification()?,
+            NativeCommand::ClipboardWrite(_) => {
+                return Err("clipboard commands are not exposed over IPC".to_owned());
+            }
+        }
+        Ok("ok".to_owned())
+    }
+
+    fn ipc_pane_list(&self) -> String {
+        let active = self.mux.current_pane();
+        let mut panes = self.mux.pane_ids().collect::<Vec<_>>();
+        panes.sort_unstable();
+        let mut output = String::from("ID\tACTIVE\tPID\tCWD\tTITLE");
+        for pane in panes {
+            let runtime = self.pane_runtimes.get(&pane);
+            let pid = runtime
+                .and_then(|runtime| runtime.process_id)
+                .map(|pid| pid.to_string())
+                .unwrap_or_else(|| "-".into());
+            let cwd = runtime
+                .and_then(|runtime| runtime.cwd.as_ref())
+                .map(|path| path.display().to_string())
+                .unwrap_or_else(|| "-".into())
+                .replace(['\t', '\n'], " ");
+            let title = runtime
+                .map(|runtime| runtime.title.replace(['\t', '\n'], " "))
+                .unwrap_or_else(|| format!("Pane {}", pane.0));
+            output.push_str(&format!(
+                "\n{}\t{}\t{}\t{}\t{}",
+                pane.0,
+                if active == Some(pane) { "*" } else { "" },
+                pid,
+                cwd,
+                title
+            ));
+        }
+        output
     }
 
     fn split_active_pane(&mut self, direction: SplitDirection) -> Result<(), String> {
@@ -2322,6 +2395,27 @@ impl ToyotermApplication {
     }
 }
 
+fn palette_native_command(
+    action: &PaletteAction,
+    current_pane: Option<PaneId>,
+) -> Result<Option<NativeCommand>, String> {
+    Ok(match action {
+        PaletteAction::ReloadConfig => Some(NativeCommand::ReloadConfig),
+        PaletteAction::NewTab => Some(NativeCommand::Mux(Command::NewTab)),
+        PaletteAction::Split(direction) => Some(NativeCommand::Mux(Command::Split {
+            pane: current_pane.ok_or_else(|| "mux has no current pane".to_owned())?,
+            direction: *direction,
+        })),
+        PaletteAction::ClosePane => Some(NativeCommand::Mux(Command::ClosePane(
+            current_pane.ok_or_else(|| "mux has no current pane".to_owned())?,
+        ))),
+        PaletteAction::SwitchWorkspace(name) => {
+            Some(NativeCommand::Mux(Command::SwitchWorkspace(name.clone())))
+        }
+        PaletteAction::RubyConsole | PaletteAction::UserCommand(_) => None,
+    })
+}
+
 impl Drop for ToyotermApplication {
     fn drop(&mut self) {
         // This is also reached while unwinding from a panic. PaneRuntime and
@@ -2860,6 +2954,30 @@ mod tests {
         }
 
         assert_eq!(kills.load(std::sync::atomic::Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn cli_ruby_and_palette_normalize_to_the_same_command() {
+        let pane = PaneId(42);
+        let expected = NativeCommand::Mux(Command::Split {
+            pane,
+            direction: SplitDirection::Right,
+        });
+
+        let ipc = IpcRequest::Split {
+            direction: SplitDirection::Right,
+        }
+        .native_command(Some(pane))
+        .unwrap();
+        let palette =
+            palette_native_command(&PaletteAction::Split(SplitDirection::Right), Some(pane))
+                .unwrap();
+        let mut ruby = ConfigManager::new().unwrap();
+        ruby.reload("Toyoterm.current_pane.split(:right)").unwrap();
+
+        assert_eq!(ipc, Some(expected.clone()));
+        assert_eq!(palette, Some(expected.clone()));
+        assert_eq!(ruby.drain_commands(pane).unwrap(), vec![expected]);
     }
 
     #[test]

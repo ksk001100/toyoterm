@@ -26,7 +26,7 @@ pub use input::{
     BindingKey, KeyChord, KeyModifiers, KeyPress, KeypadKey, MouseWheelDirection, TerminalKey,
     encode_key, encode_mouse_wheel, encode_paste,
 };
-pub use ipc::{IpcServer, eval_remote, run_console};
+pub use ipc::{IpcRequest, IpcResponse, IpcServer, eval_remote, request_remote, run_console};
 pub use layout::{
     CommandMenuLayout, ConfigErrorLayout, PaneLayout, PanePlacement, PaneRect, SplitAxis,
     SplitBoundary, TabPlacement, TabStripLayout, WorkspacePlacement, WorkspaceStripLayout,

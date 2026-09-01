@@ -239,6 +239,12 @@ v0.1ではOSC 52によるクリップボードアクセスを無効にします�
 toyoterm [--config PATH]
 toyoterm gui [--config PATH]
 toyoterm list
+toyoterm reload
+toyoterm ruby console
+toyoterm cli list-panes
+toyoterm cli send-text --pane ID TEXT
+toyoterm cli split [left|right|up|down]
+toyoterm cli activate-workspace NAME
 toyoterm demo
 toyoterm pty-demo
 toyoterm screen-demo
@@ -246,7 +252,9 @@ toyoterm version
 toyoterm help
 ```
 
-現在の`list`と`demo`はメモリ上のMuxモデルを確認するためのコマンドです。起動済みGUIの状態確認や操作は行いません。
+ローカル実行の`demo`系コマンドを除き、Unix domain socketまたはWindows Named Pipeで起動中GUIへ接続します。`list`はGUIの最新Mux状態を表示し、`cli`の変更操作はRuby・Command Paletteと同じNative Commandモデルを使います。複数GUIが動作している場合は最後に起動したinstanceを選びます。安定した名前で対象を指定する場合は、GUI起動時とclient実行時の両方で同じ`TOYOTERM_INSTANCE=name`を設定してください。
+
+IPCの状態directoryとUnix socketは所有者専用です。各requestはinstanceごとのrandom tokenとprotocol versionも送信します。protocolとsecurity boundaryの詳細は[Local IPC設計](docs/ipc.md)を参照してください。
 
 ## セキュリティ
 

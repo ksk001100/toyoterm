@@ -242,6 +242,12 @@ OSC 52 clipboard access is disabled in v0.1. Terminal output may originate from 
 toyoterm [--config PATH]
 toyoterm gui [--config PATH]
 toyoterm list
+toyoterm reload
+toyoterm ruby console
+toyoterm cli list-panes
+toyoterm cli send-text --pane ID TEXT
+toyoterm cli split [left|right|up|down]
+toyoterm cli activate-workspace NAME
 toyoterm demo
 toyoterm pty-demo
 toyoterm screen-demo
@@ -249,7 +255,9 @@ toyoterm version
 toyoterm help
 ```
 
-The `list` and `demo` commands currently exercise the in-memory mux model; they do not inspect or control an already-running GUI instance.
+Except for the local `demo` commands, these commands connect to a running GUI over a Unix domain socket or Windows named pipe. `list` reports its live mux state; the `cli` mutations use the same native command model as Ruby and the command palette. If multiple GUIs are running, the most recently started one is selected. Set the same `TOYOTERM_INSTANCE=name` when starting the GUI and invoking a client to address a stable named instance.
+
+The IPC state directory and Unix socket are owner-only. Each request also carries a random per-instance token and a protocol version. See [Local IPC design](docs/ipc.md) for the protocol and security boundaries.
 
 ## Security
 

@@ -4,9 +4,9 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 
 use toyoterm::{
-    AlacrittyTerminalBackend, Command, Mux, NativePty, Pty, PtyCommand, PtySize, SplitDirection,
-    TerminalBackend, init_logging, run_console, run_gui, run_gui_smoke_test,
-    run_gui_with_config_path,
+    AlacrittyTerminalBackend, Command, IpcRequest, Mux, NativePty, PaneId, Pty, PtyCommand,
+    PtySize, SplitDirection, TerminalBackend, init_logging, request_remote, run_console, run_gui,
+    run_gui_smoke_test, run_gui_with_config_path,
 };
 
 fn main() -> ExitCode {
@@ -47,10 +47,17 @@ fn run(mut args: impl Iterator<Item = String>) -> Result<(), String> {
             Ok(())
         }
         Some("list") => {
-            let mux = Mux::new();
-            println!("{}", mux.summary());
+            ensure_no_arguments(&mut args)?;
+            println!("{}", request_remote(IpcRequest::List)?);
             Ok(())
         }
+        Some("reload") => {
+            ensure_no_arguments(&mut args)?;
+            request_remote(IpcRequest::Reload)?;
+            println!("config reloaded");
+            Ok(())
+        }
+        Some("cli") => run_cli(&mut args),
         Some("demo") => {
             let mut mux = Mux::new();
             let pane = mux.current_pane().ok_or("no active pane")?;
@@ -105,6 +112,78 @@ fn ensure_no_arguments(args: &mut impl Iterator<Item = String>) -> Result<(), St
     match args.next() {
         Some(argument) => Err(format!("unexpected argument `{argument}`")),
         None => Ok(()),
+    }
+}
+
+fn run_cli(args: &mut impl Iterator<Item = String>) -> Result<(), String> {
+    let request = match args.next().as_deref() {
+        Some("list-panes") => {
+            ensure_no_arguments(args)?;
+            IpcRequest::ListPanes
+        }
+        Some("send-text") => {
+            if args.next().as_deref() != Some("--pane") {
+                return Err("send-text requires --pane ID TEXT".to_owned());
+            }
+            let pane = args
+                .next()
+                .ok_or("--pane requires an ID")?
+                .parse::<u64>()
+                .map_err(|_| "pane ID must be an unsigned integer".to_owned())?;
+            let text = args.collect::<Vec<_>>().join(" ");
+            if text.is_empty() {
+                return Err("send-text requires TEXT".to_owned());
+            }
+            IpcRequest::SendText {
+                pane: PaneId(pane),
+                text,
+            }
+        }
+        Some("split") => {
+            let first = args.next();
+            let direction = match first.as_deref() {
+                None => SplitDirection::Right,
+                Some("--direction") => parse_direction(
+                    &args
+                        .next()
+                        .ok_or("--direction requires left, right, up, or down")?,
+                )?,
+                Some(value) => parse_direction(value)?,
+            };
+            ensure_no_arguments(args)?;
+            IpcRequest::Split { direction }
+        }
+        Some("activate-workspace") => {
+            let name = args
+                .next()
+                .filter(|name| !name.is_empty())
+                .ok_or("activate-workspace requires NAME")?;
+            ensure_no_arguments(args)?;
+            IpcRequest::ActivateWorkspace(name)
+        }
+        Some(command) => {
+            return Err(format!(
+                "unknown cli command `{command}`; try `toyoterm help`"
+            ));
+        }
+        None => return Err("cli requires a command; try `toyoterm help`".to_owned()),
+    };
+    let output = request_remote(request)?;
+    if !output.is_empty() {
+        println!("{output}");
+    }
+    Ok(())
+}
+
+fn parse_direction(value: &str) -> Result<SplitDirection, String> {
+    match value {
+        "left" => Ok(SplitDirection::Left),
+        "right" => Ok(SplitDirection::Right),
+        "up" => Ok(SplitDirection::Up),
+        "down" => Ok(SplitDirection::Down),
+        _ => Err(format!(
+            "invalid split direction `{value}`; expected left, right, up, or down"
+        )),
     }
 }
 
@@ -214,6 +293,6 @@ fn print_help() {
     println!(
         "toyoterm - a programmable terminal emulator powered by Rust and mruby\n\n\
          Usage:\n  toyoterm [--config PATH]\n  toyoterm [COMMAND]\n\n\
-         Commands:\n  gui         Open the native GPU window (default)\n  ruby console Connect to the running GUI Ruby VM\n  list        Show the native mux state\n  demo        Exercise tabs and pane splitting\n  pty-demo    Spawn a process in a native PTY\n  screen-demo Parse PTY output into a terminal snapshot\n  version     Print version\n  help        Print this help"
+         Commands:\n  gui                              Open the native GPU window (default)\n  ruby console                     Connect to the running GUI Ruby VM\n  list                             Show the running GUI mux state\n  reload                           Reload the running GUI configuration\n  cli list-panes                   List panes in the running GUI\n  cli send-text --pane ID TEXT     Send text to a pane\n  cli split [DIRECTION]            Split the active pane (default: right)\n  cli activate-workspace NAME      Activate or create a workspace\n  demo                             Exercise tabs and pane splitting\n  pty-demo                         Spawn a process in a native PTY\n  screen-demo                      Parse PTY output into a terminal snapshot\n  version                          Print version\n  help                             Print this help\n\nEnvironment:\n  TOYOTERM_INSTANCE                Select a named running GUI instance"
     );
 }
