@@ -8,7 +8,8 @@ use alacritty_terminal::term::{Config, MIN_COLUMNS, MIN_SCREEN_LINES, TermMode};
 use alacritty_terminal::vte::ansi::{CursorShape as AlacrittyCursorShape, Processor};
 
 use super::{
-    CursorShape, CursorState, SelectionSpan, TerminalBackend, TerminalMode, TerminalSnapshot,
+    CursorShape, CursorState, SelectionKind, SelectionSpan, TerminalBackend, TerminalMode,
+    TerminalSnapshot,
 };
 
 pub const DEFAULT_SCROLLBACK_LINES: usize = 10_000;
@@ -154,9 +155,14 @@ impl TerminalBackend for AlacrittyTerminalBackend {
         self.terminal.scroll_display(Scroll::Delta(lines));
     }
 
-    fn start_selection(&mut self, column: u16, row: u16) {
+    fn start_selection(&mut self, column: u16, row: u16, kind: SelectionKind) {
         let point = self.viewport_point(column, row);
-        self.terminal.selection = Some(Selection::new(SelectionType::Simple, point, Side::Left));
+        let selection_type = match kind {
+            SelectionKind::Simple => SelectionType::Simple,
+            SelectionKind::Word => SelectionType::Semantic,
+            SelectionKind::Line => SelectionType::Lines,
+        };
+        self.terminal.selection = Some(Selection::new(selection_type, point, Side::Left));
     }
 
     fn update_selection(&mut self, column: u16, row: u16) {
@@ -304,7 +310,7 @@ mod tests {
     fn selects_visible_cells_and_extracts_text() {
         let mut backend = AlacrittyTerminalBackend::new(10, 2);
         backend.advance(b"hello world");
-        backend.start_selection(1, 0);
+        backend.start_selection(1, 0, SelectionKind::Simple);
         backend.update_selection(3, 0);
 
         assert_eq!(backend.selected_text().as_deref(), Some("ell"));
@@ -318,5 +324,17 @@ mod tests {
         );
         backend.clear_selection();
         assert_eq!(backend.selected_text(), None);
+    }
+
+    #[test]
+    fn selects_words_and_lines() {
+        let mut backend = AlacrittyTerminalBackend::new(20, 2);
+        backend.advance(b"alpha beta\r\nsecond line");
+
+        backend.start_selection(7, 0, SelectionKind::Word);
+        assert_eq!(backend.selected_text().as_deref(), Some("beta"));
+
+        backend.start_selection(3, 1, SelectionKind::Line);
+        assert_eq!(backend.selected_text().as_deref(), Some("second line\n"));
     }
 }

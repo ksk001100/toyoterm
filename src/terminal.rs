@@ -28,6 +28,14 @@ pub struct SelectionSpan {
     pub end_column: u16,
 }
 
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum SelectionKind {
+    #[default]
+    Simple,
+    Word,
+    Line,
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct TerminalSnapshot {
     pub columns: u16,
@@ -44,7 +52,7 @@ pub trait TerminalBackend: Send {
     fn cursor(&self) -> CursorState;
     fn mode(&self) -> TerminalMode;
     fn scroll_display(&mut self, lines: i32);
-    fn start_selection(&mut self, column: u16, row: u16);
+    fn start_selection(&mut self, column: u16, row: u16, kind: SelectionKind);
     fn update_selection(&mut self, column: u16, row: u16);
     fn clear_selection(&mut self);
     fn selected_text(&self) -> Option<String>;

@@ -4,6 +4,7 @@ use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::thread;
+use std::time::{Duration, Instant};
 
 use arboard::Clipboard;
 use winit::application::ApplicationHandler;
@@ -16,10 +17,40 @@ use winit::window::{Window, WindowId};
 use crate::{
     AlacrittyTerminalBackend, BindingKey, Command, ConfigManager, GpuRenderer, KeyChord,
     KeyModifiers, KeyPress, MouseWheelDirection, Mux, NativeAction, NativePty, PaneId, PaneLayout,
-    PaneRect, PaneRenderData, Pty, PtyCommand, PtySession, PtySize, RenderStyle, SplitDirection,
-    TabRenderData, TabStripLayout, TerminalBackend, TerminalKey, TextLayout, WorkspaceRenderData,
-    WorkspaceStripLayout, encode_key, encode_mouse_wheel, encode_paste,
+    PaneRect, PaneRenderData, Pty, PtyCommand, PtySession, PtySize, RenderStyle, SelectionKind,
+    SplitDirection, TabRenderData, TabStripLayout, TerminalBackend, TerminalKey, TextLayout,
+    WorkspaceRenderData, WorkspaceStripLayout, encode_key, encode_mouse_wheel, encode_paste,
 };
+
+const MULTI_CLICK_INTERVAL: Duration = Duration::from_millis(500);
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct ClickTarget {
+    pane: PaneId,
+    column: u16,
+    row: u16,
+}
+
+#[derive(Default)]
+struct ClickTracker {
+    previous: Option<(Instant, ClickTarget, u8)>,
+}
+
+impl ClickTracker {
+    fn register(&mut self, now: Instant, target: ClickTarget) -> u8 {
+        let count = match self.previous {
+            Some((previous, previous_target, count))
+                if target == previous_target
+                    && now.saturating_duration_since(previous) <= MULTI_CLICK_INTERVAL =>
+            {
+                count % 3 + 1
+            }
+            _ => 1,
+        };
+        self.previous = Some((now, target, count));
+        count
+    }
+}
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct CellMetrics {
@@ -167,9 +198,11 @@ struct ToyotermApplication {
     workspace_layout: WorkspaceStripLayout,
     ime_preedit: Option<String>,
     modifiers: ModifiersState,
+    alt_graph_active: bool,
     mouse_position: PhysicalPosition<f64>,
     wheel_line_accumulator: f64,
     selecting: bool,
+    click_tracker: ClickTracker,
     clipboard: Option<Clipboard>,
     cell_metrics: CellMetrics,
     config_manager: ConfigManager,
@@ -269,6 +302,13 @@ impl ApplicationHandler<AppEvent> for ToyotermApplication {
                 window.request_redraw();
             }
             WindowEvent::ModifiersChanged(modifiers) => self.modifiers = modifiers.state(),
+            WindowEvent::Focused(false) => {
+                // A platform is not required to send key-release events after
+                // the window loses focus. Do not leave modifiers (especially
+                // AltGraph) stuck when focus returns.
+                self.modifiers = ModifiersState::empty();
+                self.alt_graph_active = false;
+            }
             WindowEvent::CursorMoved { position, .. } => {
                 self.mouse_position = position;
                 if self.selecting {
@@ -290,14 +330,22 @@ impl ApplicationHandler<AppEvent> for ToyotermApplication {
             WindowEvent::MouseWheel { delta, .. } => {
                 self.handle_mouse_wheel(event_loop, &window, delta);
             }
-            WindowEvent::KeyboardInput { event, .. } if event.state == ElementState::Pressed => {
-                if is_clipboard_shortcut(&event, self.modifiers, 'c') {
+            WindowEvent::KeyboardInput { event, .. } => {
+                if matches!(event.logical_key, Key::Named(NamedKey::AltGraph)) {
+                    self.alt_graph_active = event.state == ElementState::Pressed;
+                    return;
+                }
+                if event.state != ElementState::Pressed {
+                    return;
+                }
+                let modifiers = effective_modifiers(self.modifiers, self.alt_graph_active);
+                if is_clipboard_shortcut(&event, modifiers, 'c') {
                     if let Err(error) = self.copy_selection() {
                         eprintln!("toyoterm: {error}");
                     }
                     return;
                 }
-                if is_clipboard_shortcut(&event, self.modifiers, 'v') {
+                if is_clipboard_shortcut(&event, modifiers, 'v') {
                     if let Err(error) = self.paste_clipboard() {
                         eprintln!("toyoterm: {error}");
                     }
@@ -305,7 +353,7 @@ impl ApplicationHandler<AppEvent> for ToyotermApplication {
                 }
                 // Configured bindings override built-in GUI shortcuts. Physical
                 // bindings are checked before logical bindings by the resolver.
-                match self.handle_keybinding(&event) {
+                match self.handle_keybinding(&event, modifiers) {
                     Ok(true) => return,
                     Ok(false) => {}
                     Err(error) => {
@@ -313,7 +361,7 @@ impl ApplicationHandler<AppEvent> for ToyotermApplication {
                         return;
                     }
                 }
-                match self.handle_tab_shortcut(&event) {
+                match self.handle_tab_shortcut(&event, modifiers) {
                     Ok(true) => return,
                     Ok(false) => {}
                     Err(error) => {
@@ -321,7 +369,7 @@ impl ApplicationHandler<AppEvent> for ToyotermApplication {
                         return;
                     }
                 }
-                if let Some(press) = key_press(&event, self.modifiers)
+                if let Some(press) = key_press(&event, modifiers)
                     && let Some(bytes) = encode_key(
                         &press,
                         self.active_terminal()
@@ -405,9 +453,11 @@ impl ToyotermApplication {
             workspace_layout: WorkspaceStripLayout::default(),
             ime_preedit: None,
             modifiers: ModifiersState::empty(),
+            alt_graph_active: false,
             mouse_position: PhysicalPosition::new(0.0, 0.0),
             wheel_line_accumulator: 0.0,
             selecting: false,
+            click_tracker: ClickTracker::default(),
             clipboard: None,
             cell_metrics: CellMetrics {
                 width: 9.0 * font_scale,
@@ -462,12 +512,16 @@ impl ToyotermApplication {
         Ok(())
     }
 
-    fn handle_keybinding(&mut self, event: &KeyEvent) -> Result<bool, String> {
+    fn handle_keybinding(
+        &mut self,
+        event: &KeyEvent,
+        modifiers: ModifiersState,
+    ) -> Result<bool, String> {
         let pane = self
             .mux
             .current_pane()
             .ok_or_else(|| "mux has no current pane".to_owned())?;
-        for key in keybinding_names(event, self.modifiers) {
+        for key in keybinding_names(event, modifiers) {
             if let Some(action) = self.config_manager.native_action(&key) {
                 self.execute_native_action(action)?;
                 return Ok(true);
@@ -518,8 +572,12 @@ impl ToyotermApplication {
         }
     }
 
-    fn handle_tab_shortcut(&mut self, event: &KeyEvent) -> Result<bool, String> {
-        if self.modifiers.control_key() && self.modifiers.shift_key() {
+    fn handle_tab_shortcut(
+        &mut self,
+        event: &KeyEvent,
+        modifiers: ModifiersState,
+    ) -> Result<bool, String> {
+        if modifiers.control_key() && modifiers.shift_key() {
             if matches!(&event.logical_key, Key::Character(key) if key.eq_ignore_ascii_case("t")) {
                 self.dispatch_gui_command(Command::NewTab)?;
                 return Ok(true);
@@ -567,11 +625,11 @@ impl ToyotermApplication {
             }
         }
 
-        if self.modifiers.control_key() && matches!(&event.logical_key, Key::Named(NamedKey::Tab)) {
-            self.cycle_tab(self.modifiers.shift_key())?;
+        if modifiers.control_key() && matches!(&event.logical_key, Key::Named(NamedKey::Tab)) {
+            self.cycle_tab(modifiers.shift_key())?;
             return Ok(true);
         }
-        if self.modifiers.control_key() && self.modifiers.alt_key() {
+        if modifiers.control_key() && modifiers.alt_key() {
             let backwards = match &event.logical_key {
                 Key::Named(NamedKey::ArrowLeft) => Some(true),
                 Key::Named(NamedKey::ArrowRight) => Some(false),
@@ -1060,9 +1118,20 @@ impl ToyotermApplication {
         let (column, row) = self.mouse_cell(window.scale_factor());
         match state {
             ElementState::Pressed => {
+                let Some(pane) = self.mux.current_pane() else {
+                    return;
+                };
+                let click_count = self
+                    .click_tracker
+                    .register(Instant::now(), ClickTarget { pane, column, row });
+                let kind = match click_count {
+                    2 => SelectionKind::Word,
+                    3 => SelectionKind::Line,
+                    _ => SelectionKind::Simple,
+                };
                 if let Some(terminal) = self.active_terminal_mut() {
                     terminal.clear_selection();
-                    terminal.start_selection(column, row);
+                    terminal.start_selection(column, row, kind);
                 }
                 self.selecting = true;
             }
@@ -1355,6 +1424,16 @@ fn key_press(event: &KeyEvent, modifiers: ModifiersState) -> Option<KeyPress> {
     Some(KeyPress::new(key, key_modifiers(modifiers)))
 }
 
+fn effective_modifiers(mut modifiers: ModifiersState, alt_graph_active: bool) -> ModifiersState {
+    if alt_graph_active {
+        // AltGr is commonly exposed as the right Alt key together with a
+        // synthetic Control modifier. Treat it as a text-layout modifier,
+        // rather than emitting a control byte with an escape prefix.
+        modifiers.remove(ModifiersState::CONTROL | ModifiersState::ALT);
+    }
+    modifiers
+}
+
 fn keybinding_names(event: &KeyEvent, modifiers: ModifiersState) -> Vec<String> {
     let modifiers = key_modifiers(modifiers);
     let physical = match event.physical_key {
@@ -1548,6 +1627,83 @@ mod tests {
                 },
             ),
             vec!["CTRL+PHYSICAL:KEYY", "CTRL+Z"]
+        );
+    }
+
+    #[test]
+    fn alt_graph_is_not_treated_as_control_alt() {
+        let modifiers = effective_modifiers(ModifiersState::CONTROL | ModifiersState::ALT, true);
+        assert!(!modifiers.control_key());
+        assert!(!modifiers.alt_key());
+
+        let press = KeyPress::new(TerminalKey::Text("@".into()), key_modifiers(modifiers));
+        assert_eq!(
+            encode_key(&press, crate::TerminalMode::default()),
+            Some(b"@".to_vec())
+        );
+    }
+
+    #[test]
+    fn real_control_alt_remains_available_for_bindings() {
+        let modifiers = effective_modifiers(ModifiersState::CONTROL | ModifiersState::ALT, false);
+        assert_eq!(
+            keybinding_name(&Key::Character("x".into()), modifiers).as_deref(),
+            Some("CTRL+ALT+X")
+        );
+    }
+
+    #[test]
+    fn click_tracker_recognizes_double_and_triple_clicks() {
+        let mut tracker = ClickTracker::default();
+        let start = Instant::now();
+        let target = ClickTarget {
+            pane: PaneId(1),
+            column: 4,
+            row: 2,
+        };
+
+        assert_eq!(tracker.register(start, target), 1);
+        assert_eq!(
+            tracker.register(start + Duration::from_millis(100), target),
+            2
+        );
+        assert_eq!(
+            tracker.register(start + Duration::from_millis(200), target),
+            3
+        );
+        assert_eq!(
+            tracker.register(start + Duration::from_millis(300), target),
+            1
+        );
+    }
+
+    #[test]
+    fn click_tracker_resets_for_a_new_cell_or_after_timeout() {
+        let mut tracker = ClickTracker::default();
+        let start = Instant::now();
+        let target = ClickTarget {
+            pane: PaneId(1),
+            column: 4,
+            row: 2,
+        };
+        tracker.register(start, target);
+
+        assert_eq!(
+            tracker.register(
+                start + Duration::from_millis(100),
+                ClickTarget {
+                    column: 5,
+                    ..target
+                },
+            ),
+            1
+        );
+        assert_eq!(
+            tracker.register(
+                start + MULTI_CLICK_INTERVAL + Duration::from_millis(200),
+                target
+            ),
+            1
         );
     }
 

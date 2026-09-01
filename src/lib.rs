@@ -37,6 +37,6 @@ pub use script::{
     default_config_path,
 };
 pub use terminal::{
-    AlacrittyTerminalBackend, CursorShape, CursorState, DEFAULT_SCROLLBACK_LINES, SelectionSpan,
-    TerminalBackend, TerminalMode, TerminalSnapshot,
+    AlacrittyTerminalBackend, CursorShape, CursorState, DEFAULT_SCROLLBACK_LINES, SelectionKind,
+    SelectionSpan, TerminalBackend, TerminalMode, TerminalSnapshot,
 };
