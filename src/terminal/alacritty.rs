@@ -1,5 +1,7 @@
+use std::sync::mpsc::{self, Receiver, Sender};
+
 use alacritty_terminal::Term;
-use alacritty_terminal::event::VoidListener;
+use alacritty_terminal::event::{Event as AlacrittyEvent, EventListener};
 use alacritty_terminal::grid::{Dimensions, Scroll};
 use alacritty_terminal::index::{Column, Line, Point, Side};
 use alacritty_terminal::selection::{Selection, SelectionType};
@@ -16,9 +18,138 @@ use super::{
 
 pub const DEFAULT_SCROLLBACK_LINES: usize = 10_000;
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum TerminalEvent {
+    TitleChanged(String),
+    TitleReset,
+    CwdChanged(String),
+    Bell,
+}
+
+#[derive(Default)]
+enum Osc7State {
+    #[default]
+    Ground,
+    Escape,
+    Command(Vec<u8>),
+    Payload(Vec<u8>),
+    PayloadEscape(Vec<u8>),
+    Ignore,
+    IgnoreEscape,
+}
+
+#[derive(Default)]
+struct Osc7Parser {
+    state: Osc7State,
+}
+
+impl Osc7Parser {
+    fn advance(&mut self, bytes: &[u8]) -> Vec<String> {
+        let mut paths = Vec::new();
+        for &byte in bytes {
+            let state = std::mem::take(&mut self.state);
+            self.state = match state {
+                Osc7State::Ground if byte == b'\x1b' => Osc7State::Escape,
+                Osc7State::Ground => Osc7State::Ground,
+                Osc7State::Escape if byte == b']' => Osc7State::Command(Vec::new()),
+                Osc7State::Escape => Osc7State::Ground,
+                Osc7State::Command(command) if byte == b';' && command == b"7" => {
+                    Osc7State::Payload(Vec::new())
+                }
+                Osc7State::Command(_) if byte == b';' => Osc7State::Ignore,
+                Osc7State::Command(_) if byte == b'\x07' => Osc7State::Ground,
+                Osc7State::Command(mut command) if command.len() < 16 => {
+                    command.push(byte);
+                    Osc7State::Command(command)
+                }
+                Osc7State::Command(_) => Osc7State::Ignore,
+                Osc7State::Payload(payload) if byte == b'\x07' => {
+                    if let Some(path) = osc7_path(&payload) {
+                        paths.push(path);
+                    }
+                    Osc7State::Ground
+                }
+                Osc7State::Payload(payload) if byte == b'\x1b' => Osc7State::PayloadEscape(payload),
+                Osc7State::Payload(mut payload) if payload.len() < 8_192 => {
+                    payload.push(byte);
+                    Osc7State::Payload(payload)
+                }
+                Osc7State::Payload(_) => Osc7State::Ignore,
+                Osc7State::PayloadEscape(payload) if byte == b'\\' => {
+                    if let Some(path) = osc7_path(&payload) {
+                        paths.push(path);
+                    }
+                    Osc7State::Ground
+                }
+                Osc7State::PayloadEscape(mut payload) => {
+                    payload.push(b'\x1b');
+                    payload.push(byte);
+                    Osc7State::Payload(payload)
+                }
+                Osc7State::Ignore if byte == b'\x07' => Osc7State::Ground,
+                Osc7State::Ignore if byte == b'\x1b' => Osc7State::IgnoreEscape,
+                Osc7State::Ignore => Osc7State::Ignore,
+                Osc7State::IgnoreEscape if byte == b'\\' => Osc7State::Ground,
+                Osc7State::IgnoreEscape => Osc7State::Ignore,
+            };
+        }
+        paths
+    }
+}
+
+fn osc7_path(payload: &[u8]) -> Option<String> {
+    let payload = payload.strip_prefix(b"file://")?;
+    let path_start = payload.iter().position(|byte| *byte == b'/')?;
+    let path = &payload[path_start..];
+    let mut decoded = Vec::with_capacity(path.len());
+    let mut index = 0;
+    while index < path.len() {
+        if path[index] == b'%'
+            && index + 2 < path.len()
+            && let (Some(high), Some(low)) =
+                (hex_digit(path[index + 1]), hex_digit(path[index + 2]))
+        {
+            decoded.push(high * 16 + low);
+            index += 3;
+        } else {
+            decoded.push(path[index]);
+            index += 1;
+        }
+    }
+    String::from_utf8(decoded).ok()
+}
+
+const fn hex_digit(byte: u8) -> Option<u8> {
+    match byte {
+        b'0'..=b'9' => Some(byte - b'0'),
+        b'a'..=b'f' => Some(byte - b'a' + 10),
+        b'A'..=b'F' => Some(byte - b'A' + 10),
+        _ => None,
+    }
+}
+
+struct TerminalEventSender(Sender<TerminalEvent>);
+
+impl EventListener for TerminalEventSender {
+    fn send_event(&self, event: AlacrittyEvent) {
+        let event = match event {
+            AlacrittyEvent::Title(title) => Some(TerminalEvent::TitleChanged(title)),
+            AlacrittyEvent::ResetTitle => Some(TerminalEvent::TitleReset),
+            AlacrittyEvent::Bell => Some(TerminalEvent::Bell),
+            _ => None,
+        };
+        if let Some(event) = event {
+            let _ = self.0.send(event);
+        }
+    }
+}
+
 pub struct AlacrittyTerminalBackend {
     processor: Processor,
-    terminal: Term<VoidListener>,
+    terminal: Term<TerminalEventSender>,
+    events: Receiver<TerminalEvent>,
+    osc7: Osc7Parser,
+    pending_events: Vec<TerminalEvent>,
     selection_anchor: Option<Point>,
 }
 
@@ -30,11 +161,21 @@ impl AlacrittyTerminalBackend {
     pub fn with_scrollback(columns: u16, rows: u16, scrollback_lines: usize) -> Self {
         let size = TermSize::new(columns, rows);
         let config = terminal_config(scrollback_lines);
+        let (event_sender, events) = mpsc::channel();
         Self {
             processor: Processor::new(),
-            terminal: Term::new(config, &size, VoidListener),
+            terminal: Term::new(config, &size, TerminalEventSender(event_sender)),
+            events,
+            osc7: Osc7Parser::default(),
+            pending_events: Vec::new(),
             selection_anchor: None,
         }
+    }
+
+    pub fn drain_events(&mut self) -> Vec<TerminalEvent> {
+        let mut events = std::mem::take(&mut self.pending_events);
+        events.extend(self.events.try_iter());
+        events
     }
 
     pub fn set_scrollback_lines(&mut self, scrollback_lines: usize) {
@@ -73,7 +214,11 @@ impl Default for AlacrittyTerminalBackend {
 
 impl TerminalBackend for AlacrittyTerminalBackend {
     fn advance(&mut self, bytes: &[u8]) {
+        let cwd_events = self.osc7.advance(bytes);
         self.processor.advance(&mut self.terminal, bytes);
+        for cwd in cwd_events {
+            self.pending_events.push(TerminalEvent::CwdChanged(cwd));
+        }
     }
 
     fn resize(&mut self, columns: u16, rows: u16) {
@@ -578,5 +723,19 @@ mod tests {
 
         backend.start_selection(3, 1, SelectionKind::Line);
         assert_eq!(backend.selected_text().as_deref(), Some("second line\n"));
+    }
+
+    #[test]
+    fn exposes_title_cwd_and_bell_terminal_events() {
+        let mut backend = AlacrittyTerminalBackend::new(20, 2);
+        backend.advance(b"\x1b]0;build server\x07");
+        backend.advance(b"\x1b]7;file://localhost/srv/my%20app");
+        backend.advance(b"\x1b\\\x07");
+
+        let events = backend.drain_events();
+        assert!(events.contains(&TerminalEvent::TitleChanged("build server".into())));
+        assert!(events.contains(&TerminalEvent::CwdChanged("/srv/my app".into())));
+        assert!(events.contains(&TerminalEvent::Bell));
+        assert!(backend.drain_events().is_empty());
     }
 }

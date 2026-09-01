@@ -1,4 +1,5 @@
 #include <stdlib.h>
+#include <stdint.h>
 #include <string.h>
 
 #include "mruby.h"
@@ -193,6 +194,35 @@ int toyoterm_mruby_add_pane(void *state, uint64_t pane_id, const char *title,
   };
   mrb_funcall_argv(mrb, toyoterm_module(mrb),
                    mrb_intern_lit(mrb, "__add_pane"), 4, arguments);
+  return finish_typed_call(mrb, error_output);
+}
+
+static mrb_value optional_integer(mrb_state *mrb, uint64_t value) {
+  return value == UINT64_MAX ? mrb_nil_value()
+                             : mrb_int_value(mrb, (mrb_int)value);
+}
+
+int toyoterm_mruby_emit_event(
+    void *state, const char *name, size_t name_length, uint64_t workspace_id,
+    uint64_t window_id, uint64_t tab_id, uint64_t pane_id, const char *title,
+    size_t title_length, int title_available, const char *cwd, size_t cwd_length,
+    int cwd_available, char **error_output) {
+  mrb_state *mrb = (mrb_state *)state;
+  *error_output = NULL;
+  mrb->exc = NULL;
+  mrb_value arguments[7] = {
+      mrb_str_new(mrb, name, (mrb_int)name_length),
+      optional_integer(mrb, workspace_id),
+      optional_integer(mrb, window_id),
+      optional_integer(mrb, tab_id),
+      optional_integer(mrb, pane_id),
+      title_available ? mrb_str_new(mrb, title, (mrb_int)title_length)
+                      : mrb_nil_value(),
+      cwd_available ? mrb_str_new(mrb, cwd, (mrb_int)cwd_length)
+                    : mrb_nil_value(),
+  };
+  mrb_funcall_argv(mrb, toyoterm_module(mrb),
+                   mrb_intern_lit(mrb, "__emit_native_event"), 7, arguments);
   return finish_typed_call(mrb, error_output);
 }
 

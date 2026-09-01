@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::fmt;
 use std::io::Read;
 use std::path::{Path, PathBuf};
@@ -14,15 +14,15 @@ use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop, EventLoopProxy}
 use winit::keyboard::{Key, KeyCode, ModifiersState, NamedKey, PhysicalKey};
 use winit::window::{Window, WindowId};
 
-use crate::script::{RubyObjectModel, RubyPane, RubyTab, RubyWindow, RubyWorkspace};
+use crate::script::{RubyEvent, RubyObjectModel, RubyPane, RubyTab, RubyWindow, RubyWorkspace};
 use crate::{
     AlacrittyTerminalBackend, BindingKey, Command, CommandMenuLayout, CommandMenuRenderData,
-    ConfigErrorLayout, ConfigErrorRenderData, ConfigManager, GpuRenderer, KeyChord, KeyModifiers,
-    KeyPress, KeypadKey, MouseWheelDirection, Mux, NativeAction, NativeCommand, NativePty, PaneId,
-    PaneLayout, PaneRect, PaneRenderData, Pty, PtyCommand, PtySession, PtySize, RenderOutcome,
-    RenderStyle, SelectionKind, SplitDirection, TabRenderData, TabStripLayout, TerminalBackend,
-    TerminalKey, TextLayout, WorkspaceRenderData, WorkspaceStripLayout, encode_key,
-    encode_mouse_wheel, encode_paste,
+    ConfigErrorLayout, ConfigErrorRenderData, ConfigManager, Event as MuxEvent, GpuRenderer,
+    KeyChord, KeyModifiers, KeyPress, KeypadKey, MouseWheelDirection, Mux, NativeAction,
+    NativeCommand, NativePty, PaneId, PaneLayout, PaneRect, PaneRenderData, Pty, PtyCommand,
+    PtySession, PtySize, RenderOutcome, RenderStyle, SelectionKind, SplitDirection, TabRenderData,
+    TabStripLayout, TerminalBackend, TerminalEvent, TerminalKey, TextLayout, WorkspaceRenderData,
+    WorkspaceStripLayout, encode_key, encode_mouse_wheel, encode_paste,
 };
 
 const MULTI_CLICK_INTERVAL: Duration = Duration::from_millis(500);
@@ -268,6 +268,8 @@ struct ToyotermApplication {
     click_tracker: ClickTracker,
     clipboard: Option<Clipboard>,
     pending_clipboard_writes: Vec<String>,
+    runtime_events: VecDeque<RubyEvent>,
+    delivering_runtime_events: bool,
     cell_metrics: CellMetrics,
     config_manager: ConfigManager,
     mux: Mux,
@@ -321,6 +323,10 @@ impl ApplicationHandler<AppEvent> for ToyotermApplication {
         }
         self.refresh_pane_layout();
         if let Err(error) = self.sync_pane_runtimes(size) {
+            self.fail(event_loop, error);
+            return;
+        }
+        if let Err(error) = self.deliver_runtime_events() {
             self.fail(event_loop, error);
             return;
         }
@@ -549,8 +555,46 @@ impl ApplicationHandler<AppEvent> for ToyotermApplication {
     fn user_event(&mut self, event_loop: &ActiveEventLoop, event: AppEvent) {
         match event {
             AppEvent::Output { pane, bytes } => {
+                let mut terminal_events = Vec::new();
                 if let Some(runtime) = self.pane_runtimes.get_mut(&pane) {
                     runtime.terminal.advance(&bytes);
+                    terminal_events = runtime.terminal.drain_events();
+                    for event in &terminal_events {
+                        match event {
+                            TerminalEvent::TitleChanged(title) => runtime.title = title.clone(),
+                            TerminalEvent::TitleReset => runtime.title = format!("Pane {}", pane.0),
+                            TerminalEvent::CwdChanged(cwd) => {
+                                runtime.cwd = Some(PathBuf::from(cwd))
+                            }
+                            TerminalEvent::Bell => {}
+                        }
+                    }
+                }
+                for event in terminal_events {
+                    let mut runtime_event = match event {
+                        TerminalEvent::TitleChanged(title) => {
+                            let mut event = RubyEvent::new("title_changed");
+                            event.title = Some(title);
+                            event
+                        }
+                        TerminalEvent::TitleReset => {
+                            let mut event = RubyEvent::new("title_changed");
+                            event.title = Some(format!("Pane {}", pane.0));
+                            event
+                        }
+                        TerminalEvent::CwdChanged(cwd) => {
+                            let mut event = RubyEvent::new("cwd_changed");
+                            event.cwd = Some(cwd);
+                            event
+                        }
+                        TerminalEvent::Bell => RubyEvent::new("bell"),
+                    };
+                    runtime_event.pane = Some(pane);
+                    self.runtime_events.push_back(runtime_event);
+                }
+                if let Err(error) = self.deliver_runtime_events() {
+                    self.fail(event_loop, error);
+                    return;
                 }
                 if self.pane_layout.rect(pane).is_some()
                     && let Some(window) = self.window.clone()
@@ -616,6 +660,8 @@ impl ToyotermApplication {
             click_tracker: ClickTracker::default(),
             clipboard: None,
             pending_clipboard_writes: startup_effects.clipboard_writes,
+            runtime_events: VecDeque::new(),
+            delivering_runtime_events: false,
             cell_metrics: CellMetrics {
                 width: 9.0 * font_scale,
                 height: 18.0 * font_scale,
@@ -728,6 +774,7 @@ impl ToyotermApplication {
 
             let reload_requested = self.dispatch_pending_script_commands()?;
             self.reconcile_pane_runtimes()?;
+            self.deliver_runtime_events()?;
             self.flush_mux_input()?;
             if reload_requested {
                 self.reload_config_with_notification()?;
@@ -922,6 +969,7 @@ impl ToyotermApplication {
             self.ime_preedit = None;
         }
         self.reconcile_pane_runtimes()?;
+        self.deliver_runtime_events()?;
         if let Some(window) = self.window.clone() {
             self.sync_active_renderer(window.scale_factor());
             window.request_redraw();
@@ -1000,6 +1048,7 @@ impl ToyotermApplication {
         // A reload command in the newly loaded file is not recursively executed.
         let _reload_requested = self.dispatch_pending_script_commands()?;
         self.reconcile_pane_runtimes()?;
+        self.deliver_runtime_events()?;
 
         let font_scale = f64::from(config.font.size) / 14.0;
         self.cell_metrics.width = 9.0 * font_scale;
@@ -1030,31 +1079,15 @@ impl ToyotermApplication {
             .mux
             .current_pane()
             .ok_or_else(|| "mux has no current pane".to_owned())?;
-        self.refresh_script_clipboard();
-        self.sync_script_object_model()?;
-        match self.config_manager.emit_event(name, pane) {
-            Ok(true) => {
-                let reload_requested = self.dispatch_pending_script_commands()?;
-                self.reconcile_pane_runtimes()?;
-                self.flush_mux_input()?;
-                if reload_requested && name != "config_reloaded" {
-                    self.reload_config_with_notification()?;
-                }
-                Ok(())
-            }
-            Ok(false) => Ok(()),
-            Err(error) => {
-                tracing::warn!(
-                    target: "toyoterm::script",
-                    operation = error.operation(),
-                    %pane,
-                    event = name,
-                    %error,
-                    "Ruby event failed"
-                );
-                Ok(())
-            }
-        }
+        let name = match name {
+            "app_started" => "app_started",
+            "config_reloaded" => "config_reloaded",
+            _ => return Err(format!("unsupported application event {name}")),
+        };
+        let mut event = RubyEvent::new(name);
+        event.pane = Some(pane);
+        self.runtime_events.push_back(event);
+        self.deliver_runtime_events()
     }
 
     fn sync_script_object_model(&mut self) -> Result<(), String> {
@@ -1065,6 +1098,109 @@ impl ToyotermApplication {
         self.config_manager
             .set_object_model(&model)
             .map_err(|error| error.to_string())
+    }
+
+    fn collect_mux_events(&mut self) {
+        let events = self.mux.drain_events().collect::<Vec<_>>();
+        for event in events {
+            let event = match event {
+                MuxEvent::WorkspaceChanged { workspace } => {
+                    let mut event = RubyEvent::new("workspace_changed");
+                    event.workspace = Some(workspace);
+                    Some(event)
+                }
+                MuxEvent::WindowCreated { window } => {
+                    let mut event = RubyEvent::new("window_created");
+                    event.window = Some(window);
+                    Some(event)
+                }
+                MuxEvent::WindowClosed { window } => {
+                    let mut event = RubyEvent::new("window_closed");
+                    event.window = Some(window);
+                    Some(event)
+                }
+                MuxEvent::TabCreated { tab } => {
+                    let mut event = RubyEvent::new("tab_created");
+                    event.tab = Some(tab);
+                    Some(event)
+                }
+                MuxEvent::TabClosed { tab } => {
+                    let mut event = RubyEvent::new("tab_closed");
+                    event.tab = Some(tab);
+                    Some(event)
+                }
+                MuxEvent::PaneCreated { pane } => {
+                    let mut event = RubyEvent::new("pane_created");
+                    event.pane = Some(pane);
+                    Some(event)
+                }
+                MuxEvent::PaneClosed { pane } => {
+                    let mut event = RubyEvent::new("pane_closed");
+                    event.pane = Some(pane);
+                    Some(event)
+                }
+                MuxEvent::PaneFocused { pane } => {
+                    let mut event = RubyEvent::new("pane_focused");
+                    event.pane = Some(pane);
+                    Some(event)
+                }
+                MuxEvent::TextQueued { .. } => None,
+            };
+            self.runtime_events.extend(event);
+        }
+    }
+
+    fn deliver_runtime_events(&mut self) -> Result<(), String> {
+        if self.delivering_runtime_events {
+            return Ok(());
+        }
+        self.delivering_runtime_events = true;
+        let result = self.deliver_runtime_events_inner();
+        self.delivering_runtime_events = false;
+        if result? {
+            self.reload_config_with_notification()?;
+        }
+        Ok(())
+    }
+
+    fn deliver_runtime_events_inner(&mut self) -> Result<bool, String> {
+        const MAX_EVENTS_PER_TURN: usize = 1_024;
+        let mut delivered = 0;
+        let mut reload_requested = false;
+        self.collect_mux_events();
+        while let Some(event) = self.runtime_events.pop_front() {
+            delivered += 1;
+            if delivered > MAX_EVENTS_PER_TURN {
+                return Err("Ruby runtime event delivery exceeded 1024 events".to_owned());
+            }
+            if !self.config_manager.has_event_handler(event.name) {
+                continue;
+            }
+            self.refresh_script_clipboard();
+            self.sync_script_object_model()?;
+            match self.config_manager.emit_native_event(&event) {
+                Ok(true) => {
+                    let event_reload_requested = self.dispatch_pending_script_commands()?;
+                    if event.name != "config_reloaded" {
+                        reload_requested |= event_reload_requested;
+                    }
+                    self.reconcile_pane_runtimes()?;
+                    self.flush_mux_input()?;
+                    self.collect_mux_events();
+                }
+                Ok(false) => {}
+                Err(error) => {
+                    tracing::warn!(
+                        target: "toyoterm::script",
+                        operation = error.operation(),
+                        event = event.name,
+                        %error,
+                        "Ruby runtime event failed"
+                    );
+                }
+            }
+        }
+        Ok(reload_requested)
     }
 
     fn resize_panes(
@@ -1355,6 +1491,7 @@ impl ToyotermApplication {
             return Ok(());
         }
         self.reconcile_pane_runtimes()?;
+        self.deliver_runtime_events()?;
         if let Some(window) = self.window.clone() {
             self.sync_active_renderer(window.scale_factor());
             window.request_redraw();

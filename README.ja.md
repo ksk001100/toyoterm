@@ -153,6 +153,12 @@ end
 
 `pane.badge`はPane IDに紐づくcallback用表示メタデータとして、現在のRuby VMが生存する間保持します。badgeの描画はこのAPI契約から分離しています。`pane.chdir`は提供しません。作業ディレクトリはshellが所有するため、設定から変更する場合は対象shell向けに適切にescapeした`pane.send_text("cd ...\n")`を使用します。
 
+### Runtime event
+
+`Toyoterm.on`では、起動・reloadイベントに加えて、`window_created`、`window_closed`、`tab_created`、`tab_closed`、`pane_created`、`pane_closed`、`pane_focused`、`title_changed`、`cwd_changed`、`bell`、`workspace_changed`を購読できます。`Toyoterm::Event`は`name`、`workspace`、`window`、`tab`、`pane`、`title`、`cwd`を公開し、イベントと無関係な属性は`nil`です。削除イベントには削除済みオブジェクトの型付きIDが残りますが、その状態を参照すると`Toyoterm::InvalidHandleError`が発生します。`cwd_changed`はshellが出力するOSC 7の`file://`通知から生成します。
+
+native側の発生元はmrubyを直接呼ばず、すべてのイベントを単一のFIFO queueへ追加します。各callbackを最後まで実行し、queueされたcommandを反映してから次のイベントを配送します。そのcommandから発生したイベントはqueue末尾へ追加するため、callbackへ再入しません。自己生成イベントの無限loopを防ぐため、1 application turnあたり1,024件を上限とします。handler未登録のイベントはRuby VMを呼ぶ前に破棄します。
+
 ### ホットリロード
 
 `Toyoterm.reload_config`は、起動時に選択されたものと同じファイルを再読込します。新しいソースは別のmruby VMで評価・検証され、成功した場合だけ有効な設定と入れ替わります。正常に再読込できると、実行中のターミナルセッションを維持したまま、配色、フォントメトリクス、透明度、スクロールバック、キーバインド、イベントハンドラを更新します。

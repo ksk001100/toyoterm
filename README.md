@@ -153,6 +153,12 @@ Each callback receives a current snapshot through `Toyoterm.current_workspace`, 
 
 `pane.badge` is callback-owned display metadata stored by pane ID for the lifetime of the current Ruby VM. Rendering badges is intentionally separate from this API contract. `pane.chdir` is not provided: the shell owns its working directory, so configurations that want shell-specific directory changes should use `pane.send_text("cd ...\n")` with appropriate shell escaping.
 
+### Runtime events
+
+`Toyoterm.on` supports `window_created`, `window_closed`, `tab_created`, `tab_closed`, `pane_created`, `pane_closed`, `pane_focused`, `title_changed`, `cwd_changed`, `bell`, and `workspace_changed`, in addition to the startup and reload events. `Toyoterm::Event` exposes `name`, `workspace`, `window`, `tab`, `pane`, `title`, and `cwd`; fields unrelated to an event are `nil`. Closed-object events retain the deleted object's typed ID, but dereferencing its state raises `Toyoterm::InvalidHandleError`. `cwd_changed` is generated from OSC 7 `file://` notifications emitted by the shell.
+
+Native producers append events to one FIFO queue and never call mruby directly. Each callback runs to completion, then its queued commands are applied before the next event. Events caused by those commands are appended to the queue, preventing recursive callback entry. Delivery is limited to 1,024 events per application turn to stop self-generating event loops. Events without registered handlers are discarded before any Ruby VM call.
+
 ### Hot reload
 
 `Toyoterm.reload_config` reloads the same file selected at startup. The new source is evaluated and validated in a fresh mruby VM before it replaces the active configuration. A successful reload updates colors, font metrics, opacity, scrollback, key bindings, and event handlers without replacing the running terminal session.

@@ -41,5 +41,5 @@ pub use script::{
 pub use terminal::{
     AlacrittyTerminalBackend, CellAttributes, CellColor, CursorShape, CursorState,
     DEFAULT_SCROLLBACK_LINES, SelectionKind, SelectionSpan, TerminalBackend, TerminalCell,
-    TerminalMode, TerminalSnapshot,
+    TerminalEvent, TerminalMode, TerminalSnapshot,
 };

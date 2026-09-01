@@ -356,6 +356,8 @@ impl Mux {
                 };
                 self.current_workspace = workspace;
                 self.events.push_back(Event::WorkspaceChanged { workspace });
+                let pane = self.current_pane().expect("workspace has an active pane");
+                self.events.push_back(Event::PaneFocused { pane });
                 Ok(CommandResult::Workspace(workspace))
             }
         }
@@ -385,12 +387,14 @@ impl Mux {
             return Ok(true);
         }
 
+        let was_current = self.current_pane() == Some(pane);
         let workspace = self.windows[&window].workspace;
         self.panes.remove(&pane);
         self.tabs.remove(&tab);
         self.windows.remove(&window);
         self.events.push_back(Event::PaneClosed { pane });
         self.events.push_back(Event::TabClosed { tab });
+        self.events.push_back(Event::WindowClosed { window });
 
         let remove_workspace = self.workspaces[&workspace].windows.len() == 1;
         if remove_workspace {
@@ -418,6 +422,13 @@ impl Mux {
             if state.active_window == window {
                 state.active_window = state.windows[0];
             }
+        }
+
+        if was_current {
+            let pane = self
+                .current_pane()
+                .expect("another workspace retains a pane");
+            self.events.push_back(Event::PaneFocused { pane });
         }
 
         Ok(false)
@@ -487,7 +498,6 @@ impl Mux {
             },
         );
         self.workspace_names.insert(name, workspace);
-        self.events.push_back(Event::WorkspaceChanged { workspace });
         workspace
     }
 
@@ -531,6 +541,7 @@ impl Mux {
         self.events.push_back(Event::WindowCreated { window });
         self.events.push_back(Event::TabCreated { tab });
         self.events.push_back(Event::PaneCreated { pane });
+        self.events.push_back(Event::PaneFocused { pane });
         Ok(window)
     }
 
@@ -546,10 +557,13 @@ impl Mux {
             .active_window = window;
         self.current_workspace = workspace;
         self.events.push_back(Event::WorkspaceChanged { workspace });
+        let pane = self.current_pane().expect("window has an active pane");
+        self.events.push_back(Event::PaneFocused { pane });
         Ok(())
     }
 
     fn close_window(&mut self, window: WindowId) -> Result<(), MuxError> {
+        let was_current = self.current_window() == Some(window);
         let state = self
             .windows
             .get(&window)
@@ -577,6 +591,12 @@ impl Mux {
             workspace.active_window = workspace.windows[0];
         }
         self.events.push_back(Event::WindowClosed { window });
+        if was_current {
+            let pane = self
+                .current_pane()
+                .expect("workspace retains an active pane");
+            self.events.push_back(Event::PaneFocused { pane });
+        }
         Ok(())
     }
 
@@ -584,6 +604,7 @@ impl Mux {
         if !self.windows.contains_key(&window) {
             return Err(MuxError::UnknownWindow(window));
         }
+        let is_current_window = self.current_window() == Some(window);
         let tab = TabId(self.allocate_id());
         let pane = PaneId(self.allocate_id());
         self.panes.insert(
@@ -606,6 +627,9 @@ impl Mux {
         state.active_tab = tab;
         self.events.push_back(Event::TabCreated { tab });
         self.events.push_back(Event::PaneCreated { pane });
+        if is_current_window {
+            self.events.push_back(Event::PaneFocused { pane });
+        }
         Ok(tab)
     }
 
@@ -667,6 +691,8 @@ impl Mux {
         }
         self.current_workspace = workspace;
         self.events.push_back(Event::WorkspaceChanged { workspace });
+        let pane = self.current_pane().expect("workspace has an active pane");
+        self.events.push_back(Event::PaneFocused { pane });
         Ok(())
     }
 
@@ -710,6 +736,7 @@ impl Mux {
     }
 
     fn close_tab(&mut self, tab: TabId) -> Result<(), MuxError> {
+        let was_current = self.current_tab() == Some(tab);
         let tab_state = self.tabs.get(&tab).ok_or(MuxError::UnknownTab(tab))?;
         let window = tab_state.window;
         if self.windows[&window].tabs.len() == 1 {
@@ -727,6 +754,10 @@ impl Mux {
             window.active_tab = window.tabs[0];
         }
         self.events.push_back(Event::TabClosed { tab });
+        if was_current {
+            let pane = self.current_pane().expect("window retains an active pane");
+            self.events.push_back(Event::PaneFocused { pane });
+        }
         Ok(())
     }
 }
@@ -955,6 +986,34 @@ mod tests {
         mux.dispatch(Command::CloseTab(third)).unwrap();
         assert_eq!(mux.current_tab(), Some(first));
         assert_eq!(mux.tabs(mux.current_window().unwrap()), Some(&[first][..]));
+    }
+
+    #[test]
+    fn lifecycle_events_preserve_command_order() {
+        let mut mux = Mux::new();
+        let first_pane = mux.current_pane().unwrap();
+        let CommandResult::Tab(tab) = mux.dispatch(Command::NewTab).unwrap() else {
+            panic!("new tab did not return a tab");
+        };
+        let created_pane = mux.current_pane().unwrap();
+        assert_eq!(
+            mux.drain_events().collect::<Vec<_>>(),
+            vec![
+                Event::TabCreated { tab },
+                Event::PaneCreated { pane: created_pane },
+                Event::PaneFocused { pane: created_pane },
+            ]
+        );
+
+        mux.dispatch(Command::CloseTab(tab)).unwrap();
+        assert_eq!(
+            mux.drain_events().collect::<Vec<_>>(),
+            vec![
+                Event::PaneClosed { pane: created_pane },
+                Event::TabClosed { tab },
+                Event::PaneFocused { pane: first_pane },
+            ]
+        );
     }
 
     #[test]

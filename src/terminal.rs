@@ -94,4 +94,4 @@ pub trait TerminalBackend: Send {
 
 mod alacritty;
 
-pub use alacritty::{AlacrittyTerminalBackend, DEFAULT_SCROLLBACK_LINES};
+pub use alacritty::{AlacrittyTerminalBackend, DEFAULT_SCROLLBACK_LINES, TerminalEvent};

@@ -81,11 +81,16 @@ module Toyoterm
   end
 
   class Event
-    attr_reader :name, :pane
+    attr_reader :name, :workspace, :window, :tab, :pane, :title, :cwd
 
-    def initialize(name, pane)
+    def initialize(name, workspace = nil, window = nil, tab = nil, pane = nil, title = nil, cwd = nil)
       @name = name
+      @workspace = workspace
+      @window = window
+      @tab = tab
       @pane = pane
+      @title = title
+      @cwd = cwd
     end
   end
 
@@ -577,11 +582,27 @@ module Toyoterm
   end
 
   def self.__emit_event(name, pane)
+    __dispatch_event(name, Event.new(name.to_sym, nil, nil, nil, pane))
+  end
+
+  def self.__emit_native_event(name, workspace_id, window_id, tab_id, pane_id, title, cwd)
+    event = Event.new(
+      name.to_sym,
+      workspace_id.nil? ? nil : Workspace.new(workspace_id),
+      window_id.nil? ? nil : Window.new(window_id),
+      tab_id.nil? ? nil : Tab.new(tab_id),
+      pane_id.nil? ? nil : Pane.new(pane_id),
+      title,
+      cwd
+    )
+    __dispatch_event(name, event)
+  end
+
+  def self.__dispatch_event(name, event)
     handlers = @event_handlers[name.to_s]
     return false unless handlers
     checkpoint = __command_checkpoint
     begin
-      event = Event.new(name.to_sym, pane)
       handlers.each { |handler| handler.call(event) }
     rescue => error
       __rollback_commands(checkpoint)
@@ -745,6 +766,22 @@ unsafe extern "C" {
         pid_available: i32,
         error_output: *mut *mut c_char,
     ) -> i32;
+    fn toyoterm_mruby_emit_event(
+        state: *mut c_void,
+        name: *const c_char,
+        name_length: usize,
+        workspace_id: u64,
+        window_id: u64,
+        tab_id: u64,
+        pane_id: u64,
+        title: *const c_char,
+        title_length: usize,
+        title_available: i32,
+        cwd: *const c_char,
+        cwd_length: usize,
+        cwd_available: i32,
+        error_output: *mut *mut c_char,
+    ) -> i32;
     fn toyoterm_mruby_set_clipboard_text(
         state: *mut c_void,
         text: *const c_char,
@@ -825,6 +862,31 @@ pub(crate) struct RubyPane {
     pub title: String,
     pub cwd: Option<String>,
     pub pid: Option<u32>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct RubyEvent {
+    pub name: &'static str,
+    pub workspace: Option<WorkspaceId>,
+    pub window: Option<WindowId>,
+    pub tab: Option<TabId>,
+    pub pane: Option<PaneId>,
+    pub title: Option<String>,
+    pub cwd: Option<String>,
+}
+
+impl RubyEvent {
+    pub(crate) const fn new(name: &'static str) -> Self {
+        Self {
+            name,
+            workspace: None,
+            window: None,
+            tab: None,
+            pane: None,
+            title: None,
+            cwd: None,
+        }
+    }
 }
 
 impl Default for ToyotermConfig {
@@ -1053,6 +1115,32 @@ impl MrubyRuntime {
         typed_call_result("set clipboard text", status, error)
     }
 
+    fn emit_event(&mut self, event: &RubyEvent) -> Result<(), ScriptError> {
+        let (title, title_length, title_available) = optional_string_parts(event.title.as_deref());
+        let (cwd, cwd_length, cwd_available) = optional_string_parts(event.cwd.as_deref());
+        let mut error = std::ptr::null_mut();
+        // SAFETY: All optional string storage remains live for the duration of the call.
+        let status = unsafe {
+            toyoterm_mruby_emit_event(
+                self.state.as_ptr(),
+                event.name.as_ptr().cast(),
+                event.name.len(),
+                event.workspace.map_or(u64::MAX, |id| id.0),
+                event.window.map_or(u64::MAX, |id| id.0),
+                event.tab.map_or(u64::MAX, |id| id.0),
+                event.pane.map_or(u64::MAX, |id| id.0),
+                title,
+                title_length,
+                title_available,
+                cwd,
+                cwd_length,
+                cwd_available,
+                &mut error,
+            )
+        };
+        typed_call_result("emit native event", status, error)
+    }
+
     fn eval_with_filename(&mut self, source: &str, filename: &str) -> Result<String, ScriptError> {
         let source = CString::new(source)
             .map_err(|_| ScriptError::new("evaluate mruby", "source contains a NUL byte"))?;
@@ -1113,6 +1201,12 @@ fn typed_call_result(
             message.unwrap_or_else(|| "mruby typed call failed".to_owned()),
         )),
     }
+}
+
+fn optional_string_parts(value: Option<&str>) -> (*const c_char, usize, i32) {
+    value.map_or((std::ptr::null(), 0, 0), |value| {
+        (value.as_ptr().cast(), value.len(), 1)
+    })
 }
 
 impl Drop for MrubyRuntime {
@@ -1231,6 +1325,10 @@ impl ConfigManager {
         self.keybindings.contains(&key.to_uppercase())
     }
 
+    pub(crate) fn has_event_handler(&self, name: &str) -> bool {
+        self.event_names.contains(name)
+    }
+
     /// Updates the pane exposed by `Toyoterm.current_pane` for subsequent evaluations.
     pub fn set_current_pane(&mut self, pane: PaneId) -> Result<(), ScriptError> {
         self.runtime.set_current_pane(pane)
@@ -1310,6 +1408,21 @@ impl ConfigManager {
                 "event handler returned an invalid state",
             )),
         }
+    }
+
+    pub(crate) fn emit_native_event(&mut self, event: &RubyEvent) -> Result<bool, ScriptError> {
+        if !self.event_names.contains(event.name) {
+            return Ok(false);
+        }
+        let started = Instant::now();
+        let result = self.runtime.emit_event(event);
+        record_callback_duration(
+            CallbackKind::Event,
+            event.name,
+            started.elapsed(),
+            result.is_ok(),
+        );
+        result.map(|()| true)
     }
 
     fn eval_callback(
@@ -2442,6 +2555,54 @@ fail_config
                 pane: PaneId(12),
                 text: "echo app started\n".into(),
             })]
+        );
+    }
+
+    #[test]
+    fn emits_typed_native_event_payloads() {
+        let mut manager = ConfigManager::new().unwrap();
+        manager
+            .reload(
+                r#"
+                Toyoterm.on :title_changed do |event|
+                  $native_event = [
+                    event.name, event.workspace.id, event.window.id,
+                    event.tab.id, event.pane.id, event.title, event.cwd
+                  ]
+                end
+                "#,
+            )
+            .unwrap();
+        let event = RubyEvent {
+            name: "title_changed",
+            workspace: Some(WorkspaceId(1)),
+            window: Some(WindowId(2)),
+            tab: Some(TabId(3)),
+            pane: Some(PaneId(4)),
+            title: Some("server \"one\"".into()),
+            cwd: Some("/srv/日本語".into()),
+        };
+
+        assert!(manager.emit_native_event(&event).unwrap());
+        assert_eq!(
+            manager.eval("$native_event[0, 5].inspect").unwrap(),
+            "[:title_changed, 1, 2, 3, 4]"
+        );
+        assert_eq!(manager.eval("$native_event[5]").unwrap(), "server \"one\"");
+        assert_eq!(manager.eval("$native_event[6]").unwrap(), "/srv/日本語");
+    }
+
+    #[test]
+    fn unregistered_native_events_do_not_call_the_ruby_vm() {
+        let mut manager = ConfigManager::new().unwrap();
+        manager
+            .eval("def Toyoterm.__emit_native_event(*args); raise 'VM must not be called'; end")
+            .unwrap();
+
+        assert!(
+            !manager
+                .emit_native_event(&RubyEvent::new("pane_created"))
+                .unwrap()
         );
     }
 
