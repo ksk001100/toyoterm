@@ -4,6 +4,8 @@
 
 toyoterm is an experimental, programmable terminal emulator powered by Rust and embedded mruby. Its terminal hot path stays native, while Ruby is used for configuration, dynamic key bindings, runtime events, and commands.
 
+This is a personal project built for my own use and an experimental toy.
+
 > [!IMPORTANT]
 > toyoterm is under active development. GUI workspaces, tabs, and split panes have independent PTY and terminal sessions. Multiple OS windows are intentionally deferred until after the initial release.
 
