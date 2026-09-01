@@ -350,6 +350,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "conpty-oxide"
+version = "0.1.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "17f99041be76720d952c719b4f405f538019fe111c3512b3b337d1261a4eee87"
+dependencies = [
+ "thiserror 2.0.20",
+ "tracing",
+ "windows-spawn",
+ "windows-sys 0.61.2",
+]
+
+[[package]]
 name = "core-foundation"
 version = "0.9.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2294,6 +2306,7 @@ dependencies = [
  "alacritty_terminal",
  "arboard",
  "cc",
+ "conpty-oxide",
  "glyphon",
  "pollster",
  "portable-pty",
@@ -2311,7 +2324,19 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "63e71662fa4b2a2c3a26f570f037eb95bb1f85397f3cd8076caed2f026a6d100"
 dependencies = [
  "pin-project-lite",
+ "tracing-attributes",
  "tracing-core",
+]
+
+[[package]]
+name = "tracing-attributes"
+version = "0.1.31"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7490cfa5ec963746568740651ac6781f701c9c5ea257c58e057f3ba8cf69e8da"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 2.0.119",
 ]
 
 [[package]]
@@ -2896,6 +2921,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7781fa89eaf60850ac3d2da7af8e5242a5ea78d1a11c49bf2910bb5a73853eb5"
 dependencies = [
  "windows-link",
+]
+
+[[package]]
+name = "windows-spawn"
+version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2de3bd5b666ddb82bdd91c438afbe6a413fc21725d10e3e0b8d1d1c4afdd91c6"
+dependencies = [
+ "windows-sys 0.61.2",
 ]
 
 [[package]]

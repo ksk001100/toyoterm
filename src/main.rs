@@ -95,13 +95,16 @@ fn run_screen_demo() -> Result<(), String> {
     let mut session = NativePty
         .spawn(screen_demo_command(), PtySize::new(40, 6))
         .map_err(|error| error.to_string())?;
-    let mut output = Vec::new();
-    session
-        .take_reader()
-        .map_err(|error| error.to_string())?
-        .read_to_end(&mut output)
-        .map_err(|error| format!("read PTY output: {error}"))?;
+    let mut reader = session.take_reader().map_err(|error| error.to_string())?;
+    let reader_thread = std::thread::spawn(move || {
+        let mut output = Vec::new();
+        reader.read_to_end(&mut output).map(|_| output)
+    });
     let status = session.wait().map_err(|error| error.to_string())?;
+    let output = reader_thread
+        .join()
+        .map_err(|_| "PTY reader thread panicked".to_owned())?
+        .map_err(|error| format!("read PTY output: {error}"))?;
     if status.code != 0 {
         return Err(format!("PTY process exited with code {}", status.code));
     }
@@ -135,13 +138,16 @@ fn run_pty_demo() -> Result<(), String> {
                 .map_err(|error| error.to_string())?,
         )
         .map_err(|error| error.to_string())?;
-    let mut output = String::new();
-    session
-        .take_reader()
-        .map_err(|error| error.to_string())?
-        .read_to_string(&mut output)
-        .map_err(|error| format!("read PTY output: {error}"))?;
+    let mut reader = session.take_reader().map_err(|error| error.to_string())?;
+    let reader_thread = std::thread::spawn(move || {
+        let mut output = String::new();
+        reader.read_to_string(&mut output).map(|_| output)
+    });
     let status = session.wait().map_err(|error| error.to_string())?;
+    let output = reader_thread
+        .join()
+        .map_err(|_| "PTY reader thread panicked".to_owned())?
+        .map_err(|error| format!("read PTY output: {error}"))?;
     print!("{output}");
     if status.code == 0 {
         Ok(())

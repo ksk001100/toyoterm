@@ -37,7 +37,7 @@ fn ruby_callback_exception_does_not_terminate_the_pty_child() {
 
     mux.dispatch(Command::SendText {
         pane,
-        text: "terminal-still-alive\n".into(),
+        text: waiting_input().into(),
     })
     .expect("queue native input after callback failure");
     session
@@ -46,11 +46,15 @@ fn ruby_callback_exception_does_not_terminate_the_pty_child() {
                 .expect("take native input after callback failure"),
         )
         .expect("write to PTY after callback failure");
-    let mut output = String::new();
-    reader
-        .read_to_string(&mut output)
-        .expect("read PTY response after callback failure");
+    let reader_thread = std::thread::spawn(move || {
+        let mut output = String::new();
+        reader
+            .read_to_string(&mut output)
+            .expect("read PTY response after callback failure");
+        output
+    });
     let status = session.wait().expect("wait for PTY child");
+    let output = reader_thread.join().expect("join PTY reader");
 
     assert_eq!(status.code, 0, "unexpected PTY status: {status:?}");
     assert!(
@@ -81,4 +85,14 @@ fn waiting_command() -> PtyCommand {
         "$line = [Console]::ReadLine(); [Console]::Write('AFTER:' + $line)",
     ]);
     command
+}
+
+#[cfg(unix)]
+fn waiting_input() -> &'static str {
+    "terminal-still-alive\n"
+}
+
+#[cfg(windows)]
+fn waiting_input() -> &'static str {
+    "terminal-still-alive\r"
 }

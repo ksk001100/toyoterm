@@ -12,12 +12,17 @@ arboard = { version = "3.6.1", default-features = false, features = [
 ] }
 glyphon = "0.12.0"
 pollster = "1.0.1"
-portable-pty = "0.9.0"
 sys-locale = "0.3.2"
 tracing = { version = "0.1.44", default-features = false, features = ["std"] }
 unicode-script = "0.5.8"
 wgpu = "30.0.1"
 winit = "0.30.13"
+
+[target.'cfg(unix)'.dependencies]
+portable-pty = "0.9.0"
+
+[target.'cfg(windows)'.dependencies]
+conpty-oxide = { version = "0.1.2", features = ["tracing"] }
 
 [build-dependencies]
 cc = "1.2.56"
