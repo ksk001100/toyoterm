@@ -1,0 +1,9 @@
+background_rgba=(0.062745,0.125490,0.250980,0.500000)
+glyph_origin=(14.0,26.0)
+cursor_origin=(41.0,62.0)
+clip=(10,20,320,180)
+selection_mask:
+··███
+██
+resize_minimized=Suspend
+resize_restored=Configure { width: 640, height: 360 }

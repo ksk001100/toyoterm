@@ -128,6 +128,21 @@ pub enum RenderOutcome {
     Skipped,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct PaneTextPlacement {
+    bounds: PaneRect,
+    text_left: f32,
+    text_top: f32,
+    cursor_left: f32,
+    cursor_top: f32,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum SurfaceResize {
+    Suspend,
+    Configure { width: u32, height: u32 },
+}
+
 #[derive(Debug)]
 pub struct RenderError {
     operation: &'static str,
@@ -839,13 +854,17 @@ impl GpuRenderer {
     }
 
     pub fn resize(&mut self, size: PhysicalSize<u32>) {
-        self.suspended = size.width == 0 || size.height == 0;
-        if self.suspended {
-            return;
+        match surface_resize(size) {
+            SurfaceResize::Suspend => {
+                self.suspended = true;
+            }
+            SurfaceResize::Configure { width, height } => {
+                self.suspended = false;
+                self.configuration.width = width;
+                self.configuration.height = height;
+                self.surface.configure(&self.device, &self.configuration);
+            }
         }
-        self.configuration.width = size.width;
-        self.configuration.height = size.height;
-        self.surface.configure(&self.device, &self.configuration);
     }
 
     pub fn size(&self) -> PhysicalSize<u32> {
@@ -955,14 +974,13 @@ impl GpuRenderer {
             }
         }
         for pane in self.panes.values() {
-            let bounds = pane_bounds(pane.rect);
-            let left = pane.rect.x as f32 + pane.layout.horizontal_padding;
-            let top = pane.rect.y as f32 + pane.layout.vertical_padding;
+            let placement = pane_text_placement(pane.rect, pane.layout, pane.cursor);
+            let bounds = pane_bounds(placement.bounds);
             if pane.has_selection {
                 text_areas.push(TextArea {
                     buffer: &pane.selection,
-                    left,
-                    top,
+                    left: placement.text_left,
+                    top: placement.text_top,
                     scale: 1.0,
                     bounds,
                     default_color: glyph_color(self.style.selection, 210),
@@ -971,8 +989,8 @@ impl GpuRenderer {
             }
             text_areas.push(TextArea {
                 buffer: &pane.text,
-                left,
-                top,
+                left: placement.text_left,
+                top: placement.text_top,
                 scale: 1.0,
                 bounds,
                 default_color: glyph_color(self.style.foreground, 255),
@@ -992,8 +1010,8 @@ impl GpuRenderer {
             if pane.active && pane.cursor.visible {
                 text_areas.push(TextArea {
                     buffer: &pane.cursor_glyph,
-                    left: left + f32::from(pane.cursor.column) * pane.layout.cell_width,
-                    top: top + f32::from(pane.cursor.row) * pane.layout.line_height,
+                    left: placement.cursor_left,
+                    top: placement.cursor_top,
                     scale: 1.0,
                     bounds,
                     default_color: glyph_color(self.style.cursor, 255),
@@ -1003,8 +1021,8 @@ impl GpuRenderer {
             if pane.active && self.has_preedit {
                 text_areas.push(TextArea {
                     buffer: &self.preedit,
-                    left: left + f32::from(pane.cursor.column) * pane.layout.cell_width,
-                    top: top + f32::from(pane.cursor.row) * pane.layout.line_height,
+                    left: placement.cursor_left,
+                    top: placement.cursor_top,
                     scale: 1.0,
                     bounds,
                     default_color: glyph_color(self.style.cursor, 255),
@@ -1088,6 +1106,33 @@ impl GpuRenderer {
             .map_err(|error| RenderError::new("recreate GPU surface", error))?;
         self.surface.configure(&self.device, &self.configuration);
         Ok(())
+    }
+}
+
+fn pane_text_placement(
+    rect: PaneRect,
+    layout: TextLayout,
+    cursor: CursorState,
+) -> PaneTextPlacement {
+    let text_left = rect.x as f32 + layout.horizontal_padding;
+    let text_top = rect.y as f32 + layout.vertical_padding;
+    PaneTextPlacement {
+        bounds: rect,
+        text_left,
+        text_top,
+        cursor_left: text_left + f32::from(cursor.column) * layout.cell_width,
+        cursor_top: text_top + f32::from(cursor.row) * layout.line_height,
+    }
+}
+
+fn surface_resize(size: PhysicalSize<u32>) -> SurfaceResize {
+    if size.width == 0 || size.height == 0 {
+        SurfaceResize::Suspend
+    } else {
+        SurfaceResize::Configure {
+            width: size.width,
+            height: size.height,
+        }
     }
 }
 
@@ -1304,6 +1349,78 @@ fn glyph_color(color: [u8; 3], alpha: u8) -> GlyphColor {
 mod tests {
     use super::*;
     use crate::SelectionSpan;
+
+    #[test]
+    fn render_plan_matches_snapshot() {
+        let placement = pane_text_placement(
+            PaneRect::new(10, 20, 320, 180),
+            TextLayout {
+                font_size: 14.0,
+                line_height: 18.0,
+                cell_width: 9.0,
+                horizontal_padding: 4.0,
+                vertical_padding: 6.0,
+            },
+            CursorState {
+                column: 3,
+                row: 2,
+                visible: true,
+                shape: CursorShape::Beam,
+            },
+        );
+        let style = RenderStyle {
+            background: [32, 64, 128],
+            opacity: 0.5,
+            ..RenderStyle::default()
+        };
+        let background = clear_color(&style, CompositeAlphaMode::PreMultiplied);
+        let terminal = TerminalSnapshot {
+            columns: 8,
+            rows: 3,
+            lines: vec!["alpha".into(), "beta".into(), "gamma".into()],
+            cells: Vec::new(),
+            selection: vec![
+                SelectionSpan {
+                    row: 0,
+                    start_column: 2,
+                    end_column: 4,
+                },
+                SelectionSpan {
+                    row: 1,
+                    start_column: 0,
+                    end_column: 1,
+                },
+            ],
+        };
+        let selection_mask = selection_text(&terminal).replace(' ', "·");
+        let snapshot = format!(
+            concat!(
+                "background_rgba=({:.6},{:.6},{:.6},{:.6})\n",
+                "glyph_origin=({:.1},{:.1})\n",
+                "cursor_origin=({:.1},{:.1})\n",
+                "clip=({},{},{},{})\n",
+                "selection_mask:\n{}",
+                "resize_minimized={:?}\n",
+                "resize_restored={:?}\n"
+            ),
+            background.r,
+            background.g,
+            background.b,
+            background.a,
+            placement.text_left,
+            placement.text_top,
+            placement.cursor_left,
+            placement.cursor_top,
+            placement.bounds.x,
+            placement.bounds.y,
+            placement.bounds.width,
+            placement.bounds.height,
+            selection_mask,
+            surface_resize(PhysicalSize::new(0, 180)),
+            surface_resize(PhysicalSize::new(640, 360)),
+        );
+        assert_eq!(snapshot, include_str!("snapshots/render_plan.snap"));
+    }
 
     #[test]
     fn builds_a_cell_aligned_selection_mask() {
