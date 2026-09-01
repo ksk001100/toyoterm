@@ -7,7 +7,9 @@ use std::ptr::NonNull;
 use std::rc::Rc;
 use std::time::{Duration, Instant};
 
-use crate::{Command, HandleKind, NativeAction, NativeHandle, PaneId, SplitDirection};
+use crate::{
+    Command, HandleKind, NativeAction, NativeCommand, NativeHandle, PaneId, SplitDirection,
+};
 
 const SLOW_CALLBACK_THRESHOLD: Duration = Duration::from_millis(100);
 
@@ -24,12 +26,6 @@ impl CallbackKind {
             Self::Event => "event",
         }
     }
-}
-
-#[derive(Clone, Debug, PartialEq)]
-pub(crate) enum ScriptCommand {
-    Native(Command),
-    ClipboardWrite(String),
 }
 
 const CONFIG_DSL: &str = r##"
@@ -380,7 +376,6 @@ module Toyoterm
   @clipboard = Clipboard.new
   @commands = []
   @current_command = nil
-  @reload_requested = false
   @event_handlers = {}
   @live_handles = {
     workspace: [],
@@ -414,7 +409,7 @@ module Toyoterm
   end
 
   def self.reload_config
-    @reload_requested = true
+    __queue_command(:reload_config, 0, nil)
     nil
   end
 
@@ -446,12 +441,6 @@ module Toyoterm
       raise error
     end
     true
-  end
-
-  def self.__take_reload_request
-    requested = @reload_requested
-    @reload_requested = false
-    requested
   end
 
   def self.__set_current_pane(id)
@@ -936,21 +925,6 @@ impl ConfigManager {
         }
     }
 
-    pub fn take_reload_request(&mut self) -> Result<bool, ScriptError> {
-        match self
-            .runtime
-            .eval("Toyoterm.__take_reload_request")?
-            .as_str()
-        {
-            "true" => Ok(true),
-            "false" => Ok(false),
-            _ => Err(ScriptError::new(
-                "decode mruby command",
-                "reload request state is invalid",
-            )),
-        }
-    }
-
     /// Emits an event only when Ruby registered at least one handler for it.
     pub fn emit_event(&mut self, name: &str, current_pane: PaneId) -> Result<bool, ScriptError> {
         if !self.event_names.contains(name) {
@@ -988,7 +962,7 @@ impl ConfigManager {
     pub(crate) fn drain_commands(
         &mut self,
         current_pane: PaneId,
-    ) -> Result<Vec<ScriptCommand>, ScriptError> {
+    ) -> Result<Vec<NativeCommand>, ScriptError> {
         let mut commands = Vec::new();
         loop {
             let command_type = self.runtime.eval("Toyoterm.__next_command")?;
@@ -1005,11 +979,12 @@ impl ConfigManager {
             let pane = if pane.0 == 0 { current_pane } else { pane };
             let payload = self.runtime.eval("Toyoterm.__current_command_payload")?;
             match command_type.as_str() {
-                "send_text" => commands.push(ScriptCommand::Native(Command::SendText {
+                "send_text" => commands.push(NativeCommand::Mux(Command::SendText {
                     pane,
                     text: payload,
                 })),
-                "clipboard_write" => commands.push(ScriptCommand::ClipboardWrite(payload)),
+                "clipboard_write" => commands.push(NativeCommand::ClipboardWrite(payload)),
+                "reload_config" => commands.push(NativeCommand::ReloadConfig),
                 other => {
                     return Err(ScriptError::new(
                         "decode mruby command",
@@ -1553,7 +1528,7 @@ fail_config
 
         assert_eq!(
             manager.drain_commands(PaneId(42)).unwrap(),
-            vec![ScriptCommand::Native(Command::SendText {
+            vec![NativeCommand::Mux(Command::SendText {
                 pane: PaneId(42),
                 text: "echo hello\n".into(),
             })]
@@ -1633,7 +1608,7 @@ fail_config
             .unwrap();
         assert_eq!(
             manager.drain_commands(PaneId(42)).unwrap(),
-            vec![ScriptCommand::ClipboardWrite("copied from Ruby".into())]
+            vec![NativeCommand::ClipboardWrite("copied from Ruby".into())]
         );
     }
 
@@ -1711,7 +1686,7 @@ fail_config
 
         assert_eq!(
             manager.drain_commands(PaneId(7)).unwrap(),
-            vec![ScriptCommand::Native(Command::SendText {
+            vec![NativeCommand::Mux(Command::SendText {
                 pane: PaneId(7),
                 text: "pwd\n".into(),
             })]
@@ -1745,7 +1720,7 @@ fail_config
         assert_eq!(manager.eval("$callback_count").unwrap(), "1");
         assert_eq!(
             manager.drain_commands(PaneId(9)).unwrap(),
-            vec![ScriptCommand::Native(Command::SendText {
+            vec![NativeCommand::Mux(Command::SendText {
                 pane: PaneId(9),
                 text: "echo from ruby\n".into(),
             })]
@@ -1909,8 +1884,11 @@ fail_config
                 .trigger_keybinding("CTRL+SHIFT+R", PaneId(4))
                 .unwrap()
         );
-        assert!(manager.take_reload_request().unwrap());
-        assert!(!manager.take_reload_request().unwrap());
+        assert_eq!(
+            manager.drain_commands(PaneId(4)).unwrap(),
+            vec![NativeCommand::ReloadConfig]
+        );
+        assert!(manager.drain_commands(PaneId(4)).unwrap().is_empty());
     }
 
     #[test]
@@ -1938,7 +1916,7 @@ fail_config
         assert_eq!(manager.eval("$event_pane").unwrap(), "12");
         assert_eq!(
             manager.drain_commands(PaneId(12)).unwrap(),
-            vec![ScriptCommand::Native(Command::SendText {
+            vec![NativeCommand::Mux(Command::SendText {
                 pane: PaneId(12),
                 text: "echo app started\n".into(),
             })]

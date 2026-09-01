@@ -100,6 +100,13 @@ pub enum NativeAction {
 }
 
 #[derive(Clone, Debug, PartialEq)]
+pub enum NativeCommand {
+    Mux(Command),
+    ClipboardWrite(String),
+    ReloadConfig,
+}
+
+#[derive(Clone, Debug, PartialEq)]
 pub enum Command {
     NewTab,
     ActivateTab(TabId),

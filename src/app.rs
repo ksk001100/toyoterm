@@ -14,15 +14,14 @@ use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop, EventLoopProxy}
 use winit::keyboard::{Key, KeyCode, ModifiersState, NamedKey, PhysicalKey};
 use winit::window::{Window, WindowId};
 
-use crate::script::ScriptCommand;
 use crate::{
     AlacrittyTerminalBackend, BindingKey, Command, CommandMenuLayout, CommandMenuRenderData,
     ConfigErrorLayout, ConfigErrorRenderData, ConfigManager, GpuRenderer, KeyChord, KeyModifiers,
-    KeyPress, KeypadKey, MouseWheelDirection, Mux, NativeAction, NativePty, PaneId, PaneLayout,
-    PaneRect, PaneRenderData, Pty, PtyCommand, PtySession, PtySize, RenderOutcome, RenderStyle,
-    SelectionKind, SplitDirection, TabRenderData, TabStripLayout, TerminalBackend, TerminalKey,
-    TextLayout, WorkspaceRenderData, WorkspaceStripLayout, encode_key, encode_mouse_wheel,
-    encode_paste,
+    KeyPress, KeypadKey, MouseWheelDirection, Mux, NativeAction, NativeCommand, NativePty, PaneId,
+    PaneLayout, PaneRect, PaneRenderData, Pty, PtyCommand, PtySession, PtySize, RenderOutcome,
+    RenderStyle, SelectionKind, SplitDirection, TabRenderData, TabStripLayout, TerminalBackend,
+    TerminalKey, TextLayout, WorkspaceRenderData, WorkspaceStripLayout, encode_key,
+    encode_mouse_wheel, encode_paste,
 };
 
 const MULTI_CLICK_INTERVAL: Duration = Duration::from_millis(500);
@@ -587,7 +586,7 @@ impl ToyotermApplication {
     ) -> Result<Self, String> {
         let mut config_manager = config_manager;
         let mut mux = Mux::new();
-        let pending_clipboard_writes = dispatch_script_commands(&mut config_manager, &mut mux)?;
+        let startup_effects = dispatch_script_commands(&mut config_manager, &mut mux)?;
         let config = config_manager.config();
         let font_scale = f64::from(config.font.size) / 14.0;
         Ok(Self {
@@ -615,7 +614,7 @@ impl ToyotermApplication {
             selecting: false,
             click_tracker: ClickTracker::default(),
             clipboard: None,
-            pending_clipboard_writes,
+            pending_clipboard_writes: startup_effects.clipboard_writes,
             cell_metrics: CellMetrics {
                 width: 9.0 * font_scale,
                 height: 18.0 * font_scale,
@@ -728,18 +727,12 @@ impl ToyotermApplication {
                 }
             }
 
-            if self
-                .config_manager
-                .take_reload_request()
-                .map_err(|error| error.to_string())?
-            {
-                self.reload_config_with_notification()?;
-                return Ok(true);
-            }
-
-            self.dispatch_pending_script_commands()?;
+            let reload_requested = self.dispatch_pending_script_commands()?;
             self.reconcile_pane_runtimes()?;
             self.flush_mux_input()?;
+            if reload_requested {
+                self.reload_config_with_notification()?;
+            }
             return Ok(true);
         }
         Ok(false)
@@ -1005,11 +998,8 @@ impl ToyotermApplication {
             config.window_opacity,
         )
         .map_err(|error| error.to_string())?;
-        // A reload request in the newly loaded file is not carried into later callbacks.
-        self.config_manager
-            .take_reload_request()
-            .map_err(|error| error.to_string())?;
-        self.dispatch_pending_script_commands()?;
+        // A reload command in the newly loaded file is not recursively executed.
+        let _reload_requested = self.dispatch_pending_script_commands()?;
         self.reconcile_pane_runtimes()?;
 
         let font_scale = f64::from(config.font.size) / 14.0;
@@ -1047,9 +1037,13 @@ impl ToyotermApplication {
             .map_err(|error| error.to_string())?;
         match self.config_manager.emit_event(name, pane) {
             Ok(true) => {
-                self.dispatch_pending_script_commands()?;
+                let reload_requested = self.dispatch_pending_script_commands()?;
                 self.reconcile_pane_runtimes()?;
-                self.flush_mux_input()
+                self.flush_mux_input()?;
+                if reload_requested && name != "config_reloaded" {
+                    self.reload_config_with_notification()?;
+                }
+                Ok(())
             }
             Ok(false) => Ok(()),
             Err(error) => {
@@ -1639,10 +1633,12 @@ impl ToyotermApplication {
         }
     }
 
-    fn dispatch_pending_script_commands(&mut self) -> Result<(), String> {
-        let writes = dispatch_script_commands(&mut self.config_manager, &mut self.mux)?;
-        self.pending_clipboard_writes.extend(writes);
-        self.flush_script_clipboard_writes()
+    fn dispatch_pending_script_commands(&mut self) -> Result<bool, String> {
+        let effects = dispatch_script_commands(&mut self.config_manager, &mut self.mux)?;
+        self.pending_clipboard_writes
+            .extend(effects.clipboard_writes);
+        self.flush_script_clipboard_writes()?;
+        Ok(effects.reload_requested)
     }
 
     fn flush_script_clipboard_writes(&mut self) -> Result<(), String> {
@@ -1868,10 +1864,16 @@ impl ToyotermApplication {
     }
 }
 
+#[derive(Debug, Default, Eq, PartialEq)]
+struct NativeCommandEffects {
+    clipboard_writes: Vec<String>,
+    reload_requested: bool,
+}
+
 fn dispatch_script_commands(
     config_manager: &mut ConfigManager,
     mux: &mut Mux,
-) -> Result<Vec<String>, String> {
+) -> Result<NativeCommandEffects, String> {
     let current_pane = mux
         .current_pane()
         .ok_or_else(|| "mux has no current pane".to_owned())?;
@@ -1881,19 +1883,20 @@ fn dispatch_script_commands(
     config_manager
         .set_current_pane(current_pane)
         .map_err(|error| error.to_string())?;
-    let mut clipboard_writes = Vec::new();
+    let mut effects = NativeCommandEffects::default();
     for command in config_manager
         .drain_commands(current_pane)
         .map_err(|error| error.to_string())?
     {
         match command {
-            ScriptCommand::Native(command) => {
+            NativeCommand::Mux(command) => {
                 mux.dispatch(command).map_err(|error| error.to_string())?;
             }
-            ScriptCommand::ClipboardWrite(text) => clipboard_writes.push(text),
+            NativeCommand::ClipboardWrite(text) => effects.clipboard_writes.push(text),
+            NativeCommand::ReloadConfig => effects.reload_requested = true,
         }
     }
-    Ok(clipboard_writes)
+    Ok(effects)
 }
 
 fn tab_bar_height(scale_factor: f64) -> u32 {
@@ -2291,10 +2294,10 @@ mod tests {
         let mut mux = Mux::new();
         let pane = mux.current_pane().unwrap();
 
-        let clipboard_writes = dispatch_script_commands(&mut config_manager, &mut mux).unwrap();
+        let effects = dispatch_script_commands(&mut config_manager, &mut mux).unwrap();
 
         assert_eq!(mux.take_pending_input(pane).unwrap(), b"echo hello\n");
-        assert!(clipboard_writes.is_empty());
+        assert_eq!(effects, NativeCommandEffects::default());
     }
 
     #[test]
@@ -2307,7 +2310,25 @@ mod tests {
 
         assert_eq!(
             dispatch_script_commands(&mut config_manager, &mut mux).unwrap(),
-            vec!["from Ruby".to_owned()]
+            NativeCommandEffects {
+                clipboard_writes: vec!["from Ruby".to_owned()],
+                reload_requested: false,
+            }
+        );
+    }
+
+    #[test]
+    fn normalizes_ruby_reload_requests_as_native_commands() {
+        let mut config_manager = ConfigManager::new().unwrap();
+        config_manager.eval("Toyoterm.reload_config").unwrap();
+        let mut mux = Mux::new();
+
+        assert_eq!(
+            dispatch_script_commands(&mut config_manager, &mut mux).unwrap(),
+            NativeCommandEffects {
+                clipboard_writes: Vec::new(),
+                reload_requested: true,
+            }
         );
     }
 
