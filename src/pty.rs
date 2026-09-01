@@ -308,6 +308,9 @@ impl Drop for NativePtySession {
 mod tests {
     use super::*;
 
+    #[cfg(unix)]
+    use crate::{KeyModifiers, KeyPress, TerminalKey, TerminalMode, encode_key};
+
     #[test]
     fn rejects_zero_sized_terminals() {
         let result = NativePty.spawn(PtyCommand::default_shell(), PtySize::new(0, 24));
@@ -337,6 +340,64 @@ mod tests {
 
         assert!(status.code == 0, "unexpected status: {status:?}");
         assert!(output.contains("toyoterm-pty-ok"), "output was {output:?}");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn delivers_special_and_modified_keys_to_a_real_pty() {
+        let presses = [
+            KeyPress::new(TerminalKey::Text(" ".into()), KeyModifiers::default()),
+            KeyPress::new(TerminalKey::Tab, KeyModifiers::default()),
+            KeyPress::new(TerminalKey::Backspace, KeyModifiers::default()),
+            KeyPress::new(TerminalKey::Enter, KeyModifiers::default()),
+            KeyPress::new(TerminalKey::Function(5), KeyModifiers::default()),
+            KeyPress::new(
+                TerminalKey::Text("a".into()),
+                KeyModifiers {
+                    control: true,
+                    ..KeyModifiers::default()
+                },
+            ),
+            KeyPress::new(
+                TerminalKey::Text("x".into()),
+                KeyModifiers {
+                    alt: true,
+                    ..KeyModifiers::default()
+                },
+            ),
+        ];
+        let payload = presses
+            .iter()
+            .flat_map(|press| encode_key(press, TerminalMode::default()).unwrap())
+            .collect::<Vec<_>>();
+        assert_eq!(payload.len(), 12);
+
+        let mut command = test_command(
+            "stty raw -echo; printf READY; dd bs=1 count=12 2>/dev/null | od -An -tu1",
+        );
+        command.env("LC_ALL", "C");
+        let mut session = NativePty
+            .spawn(command, PtySize::new(80, 24))
+            .expect("spawn raw PTY reader");
+        let mut reader = session.take_reader().expect("take PTY reader");
+        let mut ready = [0_u8; 5];
+        reader
+            .read_exact(&mut ready)
+            .expect("wait for PTY readiness");
+        assert_eq!(&ready, b"READY");
+
+        session.write(&payload).expect("write encoded keys");
+        let mut output = String::new();
+        reader
+            .read_to_string(&mut output)
+            .expect("read captured key bytes");
+        let status = session.wait().expect("wait for PTY key reader");
+        assert_eq!(status.code, 0, "unexpected status: {status:?}");
+        let captured = output
+            .split_ascii_whitespace()
+            .map(|byte| byte.parse::<u8>().expect("od emitted a byte"))
+            .collect::<Vec<_>>();
+        assert_eq!(captured, payload);
     }
 
     #[cfg(unix)]

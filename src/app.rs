@@ -11,15 +11,16 @@ use winit::application::ApplicationHandler;
 use winit::dpi::{LogicalSize, PhysicalPosition, PhysicalSize};
 use winit::event::{ElementState, Ime, KeyEvent, MouseButton, MouseScrollDelta, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop, EventLoopProxy};
-use winit::keyboard::{Key, ModifiersState, NamedKey, PhysicalKey};
+use winit::keyboard::{Key, KeyCode, ModifiersState, NamedKey, PhysicalKey};
 use winit::window::{Window, WindowId};
 
 use crate::{
     AlacrittyTerminalBackend, BindingKey, Command, ConfigManager, GpuRenderer, KeyChord,
-    KeyModifiers, KeyPress, MouseWheelDirection, Mux, NativeAction, NativePty, PaneId, PaneLayout,
-    PaneRect, PaneRenderData, Pty, PtyCommand, PtySession, PtySize, RenderStyle, SelectionKind,
-    SplitDirection, TabRenderData, TabStripLayout, TerminalBackend, TerminalKey, TextLayout,
-    WorkspaceRenderData, WorkspaceStripLayout, encode_key, encode_mouse_wheel, encode_paste,
+    KeyModifiers, KeyPress, KeypadKey, MouseWheelDirection, Mux, NativeAction, NativePty, PaneId,
+    PaneLayout, PaneRect, PaneRenderData, Pty, PtyCommand, PtySession, PtySize, RenderStyle,
+    SelectionKind, SplitDirection, TabRenderData, TabStripLayout, TerminalBackend, TerminalKey,
+    TextLayout, WorkspaceRenderData, WorkspaceStripLayout, encode_key, encode_mouse_wheel,
+    encode_paste,
 };
 
 const MULTI_CLICK_INTERVAL: Duration = Duration::from_millis(500);
@@ -302,12 +303,20 @@ impl ApplicationHandler<AppEvent> for ToyotermApplication {
                 window.request_redraw();
             }
             WindowEvent::ModifiersChanged(modifiers) => self.modifiers = modifiers.state(),
-            WindowEvent::Focused(false) => {
+            WindowEvent::Focused(focused) => {
                 // A platform is not required to send key-release events after
                 // the window loses focus. Do not leave modifiers (especially
                 // AltGraph) stuck when focus returns.
-                self.modifiers = ModifiersState::empty();
-                self.alt_graph_active = false;
+                if !focused {
+                    clear_modifier_state(&mut self.modifiers, &mut self.alt_graph_active);
+                }
+                if self
+                    .active_terminal()
+                    .is_some_and(|terminal| terminal.mode().focus_reporting)
+                    && let Err(error) = self.write_pty(if focused { b"\x1b[I" } else { b"\x1b[O" })
+                {
+                    self.fail(event_loop, error);
+                }
             }
             WindowEvent::CursorMoved { position, .. } => {
                 self.mouse_position = position;
@@ -335,7 +344,7 @@ impl ApplicationHandler<AppEvent> for ToyotermApplication {
                     self.alt_graph_active = event.state == ElementState::Pressed;
                     return;
                 }
-                if event.state != ElementState::Pressed {
+                if !should_handle_key_event(event.state, event.repeat) {
                     return;
                 }
                 let modifiers = effective_modifiers(self.modifiers, self.alt_graph_active);
@@ -369,13 +378,12 @@ impl ApplicationHandler<AppEvent> for ToyotermApplication {
                         return;
                     }
                 }
-                if let Some(press) = key_press(&event, modifiers)
-                    && let Some(bytes) = encode_key(
-                        &press,
-                        self.active_terminal()
-                            .map(TerminalBackend::mode)
-                            .unwrap_or_default(),
-                    )
+                let mode = self
+                    .active_terminal()
+                    .map(TerminalBackend::mode)
+                    .unwrap_or_default();
+                if let Some(press) = key_press(&event, modifiers, mode)
+                    && let Some(bytes) = encode_key(&press, mode)
                     && let Err(error) = self.write_pty(&bytes)
                 {
                     self.fail(event_loop, error);
@@ -1037,6 +1045,21 @@ impl ToyotermApplication {
             if let Err(error) = self.write_pty(&bytes) {
                 self.fail(event_loop, error);
             }
+        } else if mode.alternate_screen && mode.alternate_scroll && !self.modifiers.shift_key() {
+            let key = if steps > 0 {
+                TerminalKey::ArrowUp
+            } else {
+                TerminalKey::ArrowDown
+            };
+            let sequence = encode_key(&KeyPress::new(key, KeyModifiers::default()), mode)
+                .expect("arrow keys always encode");
+            let mut bytes = Vec::with_capacity(sequence.len() * steps.unsigned_abs() as usize);
+            for _ in 0..steps.unsigned_abs() {
+                bytes.extend_from_slice(&sequence);
+            }
+            if let Err(error) = self.write_pty(&bytes) {
+                self.fail(event_loop, error);
+            }
         } else {
             if let Some(terminal) = self.active_terminal_mut() {
                 terminal.scroll_display(steps);
@@ -1413,15 +1436,58 @@ fn spawn_pty_reader(
         .map_err(|error| format!("start PTY reader: {error}"))
 }
 
-fn key_press(event: &KeyEvent, modifiers: ModifiersState) -> Option<KeyPress> {
-    let key = match &event.logical_key {
-        Key::Named(named) => named_key(named)?,
-        Key::Character(text) => {
-            TerminalKey::Text(event.text.as_deref().unwrap_or(text.as_str()).to_owned())
+fn key_press(
+    event: &KeyEvent,
+    modifiers: ModifiersState,
+    mode: crate::TerminalMode,
+) -> Option<KeyPress> {
+    let key = if mode.application_keypad
+        && let Some(key) = keypad_key(event.physical_key)
+    {
+        TerminalKey::Keypad(key)
+    } else {
+        match &event.logical_key {
+            Key::Named(named) => named_key(named)?,
+            Key::Character(text) => {
+                TerminalKey::Text(event.text.as_deref().unwrap_or(text.as_str()).to_owned())
+            }
+            _ => return None,
         }
-        _ => return None,
     };
     Some(KeyPress::new(key, key_modifiers(modifiers)))
+}
+
+fn keypad_key(physical_key: PhysicalKey) -> Option<KeypadKey> {
+    Some(match physical_key {
+        PhysicalKey::Code(KeyCode::Numpad0) => KeypadKey::Digit(0),
+        PhysicalKey::Code(KeyCode::Numpad1) => KeypadKey::Digit(1),
+        PhysicalKey::Code(KeyCode::Numpad2) => KeypadKey::Digit(2),
+        PhysicalKey::Code(KeyCode::Numpad3) => KeypadKey::Digit(3),
+        PhysicalKey::Code(KeyCode::Numpad4) => KeypadKey::Digit(4),
+        PhysicalKey::Code(KeyCode::Numpad5) => KeypadKey::Digit(5),
+        PhysicalKey::Code(KeyCode::Numpad6) => KeypadKey::Digit(6),
+        PhysicalKey::Code(KeyCode::Numpad7) => KeypadKey::Digit(7),
+        PhysicalKey::Code(KeyCode::Numpad8) => KeypadKey::Digit(8),
+        PhysicalKey::Code(KeyCode::Numpad9) => KeypadKey::Digit(9),
+        PhysicalKey::Code(KeyCode::NumpadAdd) => KeypadKey::Add,
+        PhysicalKey::Code(KeyCode::NumpadSubtract) => KeypadKey::Subtract,
+        PhysicalKey::Code(KeyCode::NumpadMultiply) => KeypadKey::Multiply,
+        PhysicalKey::Code(KeyCode::NumpadDivide) => KeypadKey::Divide,
+        PhysicalKey::Code(KeyCode::NumpadDecimal) => KeypadKey::Decimal,
+        PhysicalKey::Code(KeyCode::NumpadComma) => KeypadKey::Comma,
+        PhysicalKey::Code(KeyCode::NumpadEqual) => KeypadKey::Equal,
+        PhysicalKey::Code(KeyCode::NumpadEnter) => KeypadKey::Enter,
+        _ => return None,
+    })
+}
+
+fn should_handle_key_event(state: ElementState, _repeat: bool) -> bool {
+    state == ElementState::Pressed
+}
+
+fn clear_modifier_state(modifiers: &mut ModifiersState, alt_graph_active: &mut bool) {
+    *modifiers = ModifiersState::empty();
+    *alt_graph_active = false;
 }
 
 fn effective_modifiers(mut modifiers: ModifiersState, alt_graph_active: bool) -> ModifiersState {
@@ -1650,6 +1716,41 @@ mod tests {
             keybinding_name(&Key::Character("x".into()), modifiers).as_deref(),
             Some("CTRL+ALT+X")
         );
+    }
+
+    #[test]
+    fn key_repeat_is_delivered_and_releases_are_ignored() {
+        assert!(should_handle_key_event(ElementState::Pressed, false));
+        assert!(should_handle_key_event(ElementState::Pressed, true));
+        assert!(!should_handle_key_event(ElementState::Released, false));
+        assert!(!should_handle_key_event(ElementState::Released, true));
+    }
+
+    #[test]
+    fn focus_loss_clears_all_modifier_state() {
+        let mut modifiers = ModifiersState::SHIFT
+            | ModifiersState::CONTROL
+            | ModifiersState::ALT
+            | ModifiersState::SUPER;
+        let mut alt_graph_active = true;
+
+        clear_modifier_state(&mut modifiers, &mut alt_graph_active);
+
+        assert!(modifiers.is_empty());
+        assert!(!alt_graph_active);
+    }
+
+    #[test]
+    fn maps_physical_numpad_keys_independently_of_layout() {
+        assert_eq!(
+            keypad_key(PhysicalKey::Code(KeyCode::Numpad7)),
+            Some(KeypadKey::Digit(7))
+        );
+        assert_eq!(
+            keypad_key(PhysicalKey::Code(KeyCode::NumpadEnter)),
+            Some(KeypadKey::Enter)
+        );
+        assert_eq!(keypad_key(PhysicalKey::Code(KeyCode::Digit7)), None);
     }
 
     #[test]

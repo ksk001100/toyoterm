@@ -65,6 +65,20 @@ pub enum TerminalKey {
     Insert,
     Delete,
     Function(u8),
+    Keypad(KeypadKey),
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum KeypadKey {
+    Digit(u8),
+    Add,
+    Subtract,
+    Multiply,
+    Divide,
+    Decimal,
+    Comma,
+    Equal,
+    Enter,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -104,6 +118,7 @@ pub fn encode_key(press: &KeyPress, mode: TerminalMode) -> Option<Vec<u8>> {
         TerminalKey::Insert => b"\x1b[2~".to_vec(),
         TerminalKey::Delete => b"\x1b[3~".to_vec(),
         TerminalKey::Function(number) => function_sequence(*number)?.to_vec(),
+        TerminalKey::Keypad(key) => keypad_sequence(*key, mode.application_keypad)?.to_vec(),
     };
 
     if press.modifiers.alt {
@@ -217,6 +232,54 @@ fn function_sequence(number: u8) -> Option<&'static [u8]> {
     })
 }
 
+fn keypad_sequence(key: KeypadKey, application_keypad: bool) -> Option<&'static [u8]> {
+    if !application_keypad {
+        return Some(match key {
+            KeypadKey::Digit(0) => b"0",
+            KeypadKey::Digit(1) => b"1",
+            KeypadKey::Digit(2) => b"2",
+            KeypadKey::Digit(3) => b"3",
+            KeypadKey::Digit(4) => b"4",
+            KeypadKey::Digit(5) => b"5",
+            KeypadKey::Digit(6) => b"6",
+            KeypadKey::Digit(7) => b"7",
+            KeypadKey::Digit(8) => b"8",
+            KeypadKey::Digit(9) => b"9",
+            KeypadKey::Digit(_) => return None,
+            KeypadKey::Add => b"+",
+            KeypadKey::Subtract => b"-",
+            KeypadKey::Multiply => b"*",
+            KeypadKey::Divide => b"/",
+            KeypadKey::Decimal => b".",
+            KeypadKey::Comma => b",",
+            KeypadKey::Equal => b"=",
+            KeypadKey::Enter => b"\r",
+        });
+    }
+
+    Some(match key {
+        KeypadKey::Digit(0) => b"\x1bOp",
+        KeypadKey::Digit(1) => b"\x1bOq",
+        KeypadKey::Digit(2) => b"\x1bOr",
+        KeypadKey::Digit(3) => b"\x1bOs",
+        KeypadKey::Digit(4) => b"\x1bOt",
+        KeypadKey::Digit(5) => b"\x1bOu",
+        KeypadKey::Digit(6) => b"\x1bOv",
+        KeypadKey::Digit(7) => b"\x1bOw",
+        KeypadKey::Digit(8) => b"\x1bOx",
+        KeypadKey::Digit(9) => b"\x1bOy",
+        KeypadKey::Digit(_) => return None,
+        KeypadKey::Add => b"\x1bOk",
+        KeypadKey::Subtract => b"\x1bOm",
+        KeypadKey::Multiply => b"\x1bOj",
+        KeypadKey::Divide => b"\x1bOo",
+        KeypadKey::Decimal => b"\x1bOn",
+        KeypadKey::Comma => b"\x1bOl",
+        KeypadKey::Equal => b"\x1bOX",
+        KeypadKey::Enter => b"\x1bOM",
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -317,6 +380,37 @@ mod tests {
         assert_eq!(
             encode_key(&press(TerminalKey::Function(13)), TerminalMode::default()),
             None
+        );
+    }
+
+    #[test]
+    fn encodes_numeric_keypad_in_normal_and_application_modes() {
+        let key = press(TerminalKey::Keypad(KeypadKey::Digit(7)));
+        assert_eq!(
+            encode_key(&key, TerminalMode::default()),
+            Some(b"7".to_vec())
+        );
+        assert_eq!(
+            encode_key(
+                &key,
+                TerminalMode {
+                    application_keypad: true,
+                    ..TerminalMode::default()
+                },
+            ),
+            Some(b"\x1bOw".to_vec())
+        );
+
+        let enter = press(TerminalKey::Keypad(KeypadKey::Enter));
+        assert_eq!(
+            encode_key(
+                &enter,
+                TerminalMode {
+                    application_keypad: true,
+                    ..TerminalMode::default()
+                },
+            ),
+            Some(b"\x1bOM".to_vec())
         );
     }
 

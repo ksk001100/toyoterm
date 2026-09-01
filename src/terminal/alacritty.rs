@@ -166,9 +166,13 @@ impl TerminalBackend for AlacrittyTerminalBackend {
         let mode = *self.terminal.mode();
         TerminalMode {
             application_cursor: mode.contains(TermMode::APP_CURSOR),
+            application_keypad: mode.contains(TermMode::APP_KEYPAD),
             bracketed_paste: mode.contains(TermMode::BRACKETED_PASTE),
             mouse_reporting: mode.intersects(TermMode::MOUSE_MODE),
             sgr_mouse: mode.contains(TermMode::SGR_MOUSE),
+            focus_reporting: mode.contains(TermMode::FOCUS_IN_OUT),
+            alternate_screen: mode.contains(TermMode::ALT_SCREEN),
+            alternate_scroll: mode.contains(TermMode::ALTERNATE_SCROLL),
         }
     }
 
@@ -373,10 +377,28 @@ mod tests {
                 application_cursor: true,
                 bracketed_paste: true,
                 mouse_reporting: true,
-                sgr_mouse: false,
+                alternate_scroll: true,
+                ..TerminalMode::default()
             }
         );
         assert!(!backend.cursor().visible);
+    }
+
+    #[test]
+    fn tracks_keypad_focus_and_alternate_screen_modes() {
+        let mut backend = AlacrittyTerminalBackend::new(10, 2);
+        backend.advance(b"\x1b=\x1b[?1004h\x1b[?1049h");
+        let mode = backend.mode();
+        assert!(mode.application_keypad);
+        assert!(mode.focus_reporting);
+        assert!(mode.alternate_screen);
+        assert!(mode.alternate_scroll);
+
+        backend.advance(b"\x1b>\x1b[?1004l\x1b[?1049l");
+        let mode = backend.mode();
+        assert!(!mode.application_keypad);
+        assert!(!mode.focus_reporting);
+        assert!(!mode.alternate_screen);
     }
 
     #[test]

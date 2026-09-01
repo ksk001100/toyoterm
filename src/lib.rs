@@ -19,8 +19,8 @@ pub use api::{
 };
 pub use app::{CellMetrics, run_gui, run_gui_with_config_path};
 pub use input::{
-    BindingKey, KeyChord, KeyModifiers, KeyPress, MouseWheelDirection, TerminalKey, encode_key,
-    encode_mouse_wheel, encode_paste,
+    BindingKey, KeyChord, KeyModifiers, KeyPress, KeypadKey, MouseWheelDirection, TerminalKey,
+    encode_key, encode_mouse_wheel, encode_paste,
 };
 pub use layout::{
     PaneLayout, PanePlacement, PaneRect, SplitAxis, SplitBoundary, TabPlacement, TabStripLayout,

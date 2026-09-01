@@ -16,9 +16,13 @@ pub struct CursorState {
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct TerminalMode {
     pub application_cursor: bool,
+    pub application_keypad: bool,
     pub bracketed_paste: bool,
     pub mouse_reporting: bool,
     pub sgr_mouse: bool,
+    pub focus_reporting: bool,
+    pub alternate_screen: bool,
+    pub alternate_scroll: bool,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
