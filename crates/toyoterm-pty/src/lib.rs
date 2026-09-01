@@ -334,7 +334,7 @@ mod tests {
     use super::*;
 
     #[cfg(unix)]
-    use crate::{KeyModifiers, KeyPress, TerminalKey, TerminalMode, encode_key};
+    use toyoterm_terminal::{KeyModifiers, KeyPress, TerminalKey, TerminalMode, encode_key};
 
     #[test]
     fn rejects_zero_sized_terminals() {

@@ -1,4 +1,5 @@
-use crate::{PaneId, PaneNode, SplitDirection, TabId, WorkspaceId};
+use toyoterm_api::{PaneId, SplitDirection, TabId, WorkspaceId};
+use toyoterm_mux::PaneNode;
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct PaneRect {

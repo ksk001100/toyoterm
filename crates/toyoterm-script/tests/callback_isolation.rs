@@ -1,6 +1,9 @@
 use std::io::Read;
 
-use toyoterm::{Command, ConfigManager, Mux, NativePty, Pty, PtyCommand, PtySize};
+use toyoterm_api::Command;
+use toyoterm_mux::Mux;
+use toyoterm_pty::{NativePty, Pty, PtyCommand, PtySize};
+use toyoterm_script::ConfigManager;
 
 #[test]
 fn ruby_callback_exception_does_not_terminate_the_pty_child() {

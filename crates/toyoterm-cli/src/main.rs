@@ -3,18 +3,23 @@ use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::path::PathBuf;
 use std::process::ExitCode;
 
-use toyoterm::{
-    AlacrittyTerminalBackend, Command, IpcRequest, Mux, NativePty, PaneId, Pty, PtyCommand,
-    PtySize, SplitDirection, TerminalBackend, init_logging, request_remote, run_console, run_gui,
-    run_gui_smoke_test, run_gui_with_config_path,
+use toyoterm_api::{Command, PaneId, SplitDirection};
+use toyoterm_app::{
+    init_logging, install_panic_hook, run_gui, run_gui_smoke_test, run_gui_with_config_path,
 };
+use toyoterm_ipc::{IpcRequest, request_remote, run_console};
+use toyoterm_mux::Mux;
+use toyoterm_pty::{NativePty, Pty, PtyCommand, PtySize};
+use toyoterm_terminal::{AlacrittyTerminalBackend, TerminalBackend};
+
+mod shell_integration;
 
 fn main() -> ExitCode {
     if let Err(error) = init_logging() {
         eprintln!("toyoterm: {error}");
         return ExitCode::FAILURE;
     }
-    toyoterm::install_panic_hook();
+    install_panic_hook();
     match catch_unwind(AssertUnwindSafe(|| run(std::env::args().skip(1)))) {
         Ok(Ok(())) => ExitCode::SUCCESS,
         Err(payload) => {
@@ -80,7 +85,7 @@ fn run(mut args: impl Iterator<Item = String>) -> Result<(), String> {
             ensure_no_arguments(&mut args)?;
             print!(
                 "{}",
-                toyoterm::shell_integration::script(&shell).ok_or_else(|| format!(
+                shell_integration::script(&shell).ok_or_else(|| format!(
                     "unsupported shell `{shell}`; expected bash, zsh, fish, or powershell"
                 ))?
             );

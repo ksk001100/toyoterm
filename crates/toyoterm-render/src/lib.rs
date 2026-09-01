@@ -19,9 +19,13 @@ use wgpu::{
 use winit::dpi::PhysicalSize;
 use winit::window::Window;
 
-use crate::{
-    CellAttributes, CellColor, CursorShape, CursorState, PaneId, PaneRect, TabId, TerminalSnapshot,
-    WorkspaceId,
+use toyoterm_api::{PaneId, TabId, WorkspaceId};
+use toyoterm_terminal::{CellAttributes, CellColor, CursorShape, CursorState, TerminalSnapshot};
+
+mod layout;
+pub use layout::{
+    ConfigErrorLayout, PaneLayout, PanePlacement, PaneRect, SplitAxis, SplitBoundary, TabPlacement,
+    TabStripLayout, WorkspacePlacement, WorkspaceStripLayout,
 };
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -1430,7 +1434,7 @@ fn glyph_color(color: [u8; 3], alpha: u8) -> GlyphColor {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::SelectionSpan;
+    use toyoterm_terminal::SelectionSpan;
 
     #[test]
     fn render_plan_matches_snapshot() {

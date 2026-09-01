@@ -7,7 +7,7 @@ cd "$repository_root"
 ./scripts/check-licenses.sh
 cargo build --release --locked
 
-version=$(sed -n 's/^version = "\([^"]*\)"/\1/p' Cargo.toml | head -n 1)
+version=$(cargo pkgid --locked -p toyoterm-cli | sed 's/.*[#@]//')
 host_target=$(rustc -vV | sed -n 's/^host: //p')
 target=${CARGO_BUILD_TARGET:-$host_target}
 archive_name="toyoterm-$version-$target"

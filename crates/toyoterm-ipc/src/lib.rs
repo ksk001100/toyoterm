@@ -5,7 +5,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, mpsc};
 use std::thread;
 
-use crate::{Command, NativeCommand, PaneId, SplitDirection};
+use toyoterm_api::{Command, NativeCommand, PaneId, SplitDirection};
 
 const MAGIC: &[u8; 4] = b"TYIP";
 const VERSION: u16 = 1;
@@ -613,7 +613,7 @@ fn input_incomplete(source: &str) -> bool {
             .last()
             .is_some_and(|line| line.trim_end().ends_with('\\'))
 }
-pub(crate) fn is_incomplete_ruby_error(error: &str) -> bool {
+pub fn is_incomplete_ruby_error(error: &str) -> bool {
     error.contains("syntax error") && error.contains("unexpected end of file")
 }
 

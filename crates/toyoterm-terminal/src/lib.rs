@@ -93,5 +93,10 @@ pub trait TerminalBackend: Send {
 }
 
 mod alacritty;
+mod input;
 
 pub use alacritty::{AlacrittyTerminalBackend, DEFAULT_SCROLLBACK_LINES, TerminalEvent};
+pub use input::{
+    BindingKey, KeyChord, KeyModifiers, KeyPress, KeypadKey, MouseWheelDirection, TerminalKey,
+    encode_key, encode_mouse_wheel, encode_paste,
+};

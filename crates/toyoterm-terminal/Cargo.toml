@@ -1,0 +1,9 @@
+[package]
+name = "toyoterm-terminal"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+alacritty_terminal.workspace = true

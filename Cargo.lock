@@ -2300,21 +2300,102 @@ dependencies = [
 ]
 
 [[package]]
-name = "toyoterm"
+name = "toyoterm-api"
+version = "0.0.1"
+
+[[package]]
+name = "toyoterm-app"
 version = "0.0.1"
 dependencies = [
- "alacritty_terminal",
  "arboard",
- "cc",
- "conpty-oxide",
- "glyphon",
  "pollster",
- "portable-pty",
  "sys-locale",
+ "toyoterm-api",
+ "toyoterm-config",
+ "toyoterm-ipc",
+ "toyoterm-mux",
+ "toyoterm-pty",
+ "toyoterm-render",
+ "toyoterm-script",
+ "toyoterm-terminal",
+ "tracing",
+ "winit",
+]
+
+[[package]]
+name = "toyoterm-cli"
+version = "0.0.1"
+dependencies = [
+ "toyoterm-api",
+ "toyoterm-app",
+ "toyoterm-ipc",
+ "toyoterm-mux",
+ "toyoterm-pty",
+ "toyoterm-terminal",
+]
+
+[[package]]
+name = "toyoterm-config"
+version = "0.0.1"
+
+[[package]]
+name = "toyoterm-ipc"
+version = "0.0.1"
+dependencies = [
+ "toyoterm-api",
+ "tracing",
+]
+
+[[package]]
+name = "toyoterm-mux"
+version = "0.0.1"
+dependencies = [
+ "toyoterm-api",
+ "tracing",
+]
+
+[[package]]
+name = "toyoterm-pty"
+version = "0.0.1"
+dependencies = [
+ "conpty-oxide",
+ "portable-pty",
+ "toyoterm-terminal",
+ "tracing",
+]
+
+[[package]]
+name = "toyoterm-render"
+version = "0.0.1"
+dependencies = [
+ "glyphon",
+ "sys-locale",
+ "toyoterm-api",
+ "toyoterm-mux",
+ "toyoterm-terminal",
  "tracing",
  "unicode-script",
  "wgpu",
  "winit",
+]
+
+[[package]]
+name = "toyoterm-script"
+version = "0.0.1"
+dependencies = [
+ "cc",
+ "toyoterm-api",
+ "toyoterm-config",
+ "toyoterm-mux",
+ "toyoterm-pty",
+ "tracing",
+]
+
+[[package]]
+name = "toyoterm-terminal"
+version = "0.0.1"
+dependencies = [
+ "alacritty_terminal",
 ]
 
 [[package]]

@@ -1,0 +1,19 @@
+[package]
+name = "toyoterm-script"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+build = "build.rs"
+
+[dependencies]
+toyoterm-api.workspace = true
+toyoterm-config.workspace = true
+tracing.workspace = true
+
+[build-dependencies]
+cc.workspace = true
+
+[dev-dependencies]
+toyoterm-mux.workspace = true
+toyoterm-pty.workspace = true

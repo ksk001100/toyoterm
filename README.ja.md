@@ -272,8 +272,8 @@ IPCの状態directoryとUnix socketは所有者専用です。各requestはinsta
 テストと静的検査：
 
 ```sh
-cargo test --all-targets
-cargo clippy --all-targets -- -D warnings
+cargo test --workspace --all-targets
+cargo clippy --workspace --all-targets -- -D warnings
 cargo fmt --check
 sh scripts/check-licenses.sh
 ```

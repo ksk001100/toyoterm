@@ -15,21 +15,35 @@ use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop, EventLoopProxy}
 use winit::keyboard::{Key, KeyCode, ModifiersState, NamedKey, PhysicalKey};
 use winit::window::{Window, WindowId};
 
-#[cfg(test)]
-use crate::ConfigManager;
-use crate::script::{
+use toyoterm_script::{
     RubyEvent, RubyObjectModel, RubyPane, RubyTab, RubyWindow, RubyWorkspace, ScriptCompletion,
     ScriptContext, ScriptInvocation, ScriptRequest, ScriptSnapshot, ScriptThread,
 };
-use crate::{
-    AlacrittyTerminalBackend, BindingKey, Command, CommandPalette, ConfigErrorLayout,
-    ConfigErrorRenderData, Event as MuxEvent, GpuRenderer, IpcRequest, IpcResponse, IpcServer,
-    KeyChord, KeyModifiers, KeyPress, KeypadKey, MouseWheelDirection, Mux, NativeAction,
-    NativeCommand, NativePty, PaletteAction, PaletteItem, PaletteRenderData, PaneId, PaneLayout,
-    PaneRect, PaneRenderData, Pty, PtyCommand, PtySession, PtySize, RenderOutcome, RenderStyle,
-    SelectionKind, SplitDirection, StatusBarRenderData, TabRenderData, TabStripLayout,
-    TerminalBackend, TerminalEvent, TerminalKey, TextLayout, WorkspaceRenderData,
-    WorkspaceStripLayout, encode_key, encode_mouse_wheel, encode_paste, filter_items,
+
+mod lifecycle;
+mod logging;
+mod palette;
+
+pub use lifecycle::install_panic_hook;
+pub use logging::init_logging;
+pub use palette::{CommandPalette, PaletteAction, PaletteItem, filter_items};
+pub use toyoterm_api::{
+    Command, Event as MuxEvent, NativeAction, NativeCommand, PaneId, SplitDirection,
+};
+pub use toyoterm_config::ToyotermConfig;
+pub use toyoterm_ipc::{IpcRequest, IpcResponse, IpcServer};
+pub use toyoterm_mux::Mux;
+pub use toyoterm_pty::{NativePty, Pty, PtyCommand, PtyError, PtyExitStatus, PtySession, PtySize};
+pub use toyoterm_render::{
+    ConfigErrorLayout, ConfigErrorRenderData, GpuRenderer, PaletteRenderData, PaneLayout, PaneRect,
+    PaneRenderData, RenderOutcome, RenderStyle, StatusBarRenderData, TabRenderData, TabStripLayout,
+    TextLayout, WorkspaceRenderData, WorkspaceStripLayout,
+};
+pub use toyoterm_script::ConfigManager;
+pub use toyoterm_terminal::{
+    AlacrittyTerminalBackend, BindingKey, KeyChord, KeyModifiers, KeyPress, KeypadKey,
+    MouseWheelDirection, SelectionKind, TerminalBackend, TerminalEvent, TerminalKey, TerminalMode,
+    encode_key, encode_mouse_wheel, encode_paste,
 };
 
 const MULTI_CLICK_INTERVAL: Duration = Duration::from_millis(500);
@@ -2136,7 +2150,7 @@ impl ToyotermApplication {
             }
             Some(EvalWaiter::Palette(source)) => match result {
                 Ok(value) => self.palette.push_console_result(&source, Ok(&value)),
-                Err(error) if crate::ipc::is_incomplete_ruby_error(&error) => {
+                Err(error) if toyoterm_ipc::is_incomplete_ruby_error(&error) => {
                     self.palette.insert(&source);
                     self.palette.insert("\n");
                 }

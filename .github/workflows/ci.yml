@@ -26,9 +26,9 @@ jobs:
       - name: Format
         run: cargo fmt --check
       - name: Lint
-        run: cargo clippy --all-targets --locked -- -D warnings
+        run: cargo clippy --workspace --all-targets --locked -- -D warnings
       - name: Test
-        run: cargo test --all-targets --locked
+        run: cargo test --workspace --all-targets --locked
       - name: PTY smoke test
         run: cargo run --locked -- pty-demo
       - name: Terminal backend smoke test

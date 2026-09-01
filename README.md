@@ -275,8 +275,8 @@ Configuration is trusted Ruby code evaluated inside the embedded mruby runtime. 
 Run the test suite and static checks:
 
 ```sh
-cargo test --all-targets
-cargo clippy --all-targets -- -D warnings
+cargo test --workspace --all-targets
+cargo clippy --workspace --all-targets -- -D warnings
 cargo fmt --check
 sh scripts/check-licenses.sh
 ```

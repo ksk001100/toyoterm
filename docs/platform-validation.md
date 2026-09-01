@@ -35,7 +35,7 @@ an X11 session. CI covers startup for both display protocols on every push.
 - Copy and paste to Notepad; check 100%, 150%, and 200% DPI.
 - Repeat pane split, reload, and shutdown checks.
 
-Windows PTY code is confined to `src/pty/windows.rs`; the Unix backend remains
-behind `cfg(unix)` in `src/pty.rs`. The rest of the application uses `Pty`,
+Windows PTY code is confined to `crates/toyoterm-pty/src/windows.rs`; the Unix backend remains
+behind `cfg(unix)` in `crates/toyoterm-pty/src/lib.rs`. The rest of the application uses `Pty`,
 `PtySession`, `PtyCommand`, and `PtySize`, preventing ConPTY details from leaking
 into mux, terminal, renderer, or scripting code.

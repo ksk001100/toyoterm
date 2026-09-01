@@ -1,4 +1,4 @@
-use crate::SplitDirection;
+use toyoterm_api::SplitDirection;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum PaletteAction {

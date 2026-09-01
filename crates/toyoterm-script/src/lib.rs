@@ -9,9 +9,13 @@ use std::sync::mpsc;
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
-use crate::{
+use toyoterm_api::{
     Command, HandleKind, NativeAction, NativeCommand, NativeHandle, PaneId, SplitDirection, TabId,
     WindowId, WorkspaceId,
+};
+use toyoterm_config::home_directory;
+pub use toyoterm_config::{
+    ColorConfig, FontConfig, LeaderConfig, ToyotermConfig, default_config_path,
 };
 
 const SLOW_CALLBACK_THRESHOLD: Duration = Duration::from_millis(100);
@@ -893,41 +897,8 @@ unsafe extern "C" {
     fn toyoterm_mruby_string_free(string: *mut c_char);
 }
 
-#[derive(Clone, Debug, PartialEq)]
-pub struct FontConfig {
-    pub family: String,
-    pub fallback: Vec<String>,
-    pub size: f32,
-    pub weight: u16,
-}
-
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct LeaderConfig {
-    pub key: String,
-    pub timeout_ms: u64,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct ColorConfig {
-    pub background: String,
-    pub foreground: String,
-    pub cursor: String,
-    pub selection: String,
-}
-
-#[derive(Clone, Debug, PartialEq)]
-pub struct ToyotermConfig {
-    pub font: FontConfig,
-    pub colors: ColorConfig,
-    pub window_opacity: f32,
-    pub default_shell: Option<String>,
-    pub scrollback_lines: usize,
-    pub leader: Option<LeaderConfig>,
-    pub status_interval: Option<Duration>,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) struct RubyObjectModel {
+pub struct RubyObjectModel {
     pub current_workspace: WorkspaceId,
     pub current_window: WindowId,
     pub current_tab: TabId,
@@ -939,27 +910,27 @@ pub(crate) struct RubyObjectModel {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) struct RubyWorkspace {
+pub struct RubyWorkspace {
     pub id: WorkspaceId,
     pub name: String,
     pub windows: Vec<WindowId>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) struct RubyWindow {
+pub struct RubyWindow {
     pub id: WindowId,
     pub tabs: Vec<TabId>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) struct RubyTab {
+pub struct RubyTab {
     pub id: TabId,
     pub title: String,
     pub panes: Vec<PaneId>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) struct RubyPane {
+pub struct RubyPane {
     pub id: PaneId,
     pub title: String,
     pub cwd: Option<String>,
@@ -969,7 +940,7 @@ pub(crate) struct RubyPane {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) struct RubyEvent {
+pub struct RubyEvent {
     pub name: &'static str,
     pub workspace: Option<WorkspaceId>,
     pub window: Option<WindowId>,
@@ -982,7 +953,7 @@ pub(crate) struct RubyEvent {
 /// Immutable script registry mirrored on the main thread.  It contains no VM
 /// state and is safe to use for native key resolution and palette rendering.
 #[derive(Clone, Debug)]
-pub(crate) struct ScriptSnapshot {
+pub struct ScriptSnapshot {
     pub config: ToyotermConfig,
     pub native_actions: HashMap<String, NativeAction>,
     pub keybindings: HashSet<String>,
@@ -991,14 +962,14 @@ pub(crate) struct ScriptSnapshot {
 }
 
 #[derive(Clone, Debug)]
-pub(crate) struct ScriptContext {
+pub struct ScriptContext {
     pub model: RubyObjectModel,
     pub handles: Vec<NativeHandle>,
     pub clipboard: Option<String>,
 }
 
 #[derive(Debug)]
-pub(crate) enum ScriptInvocation {
+pub enum ScriptInvocation {
     DrainStartup,
     KeyBinding { key: String, pane: PaneId },
     UserCommand { name: String, pane: PaneId },
@@ -1009,28 +980,28 @@ pub(crate) enum ScriptInvocation {
 }
 
 #[derive(Debug)]
-pub(crate) struct ScriptRequest {
+pub struct ScriptRequest {
     pub id: u64,
     pub context: ScriptContext,
     pub invocation: ScriptInvocation,
 }
 
 #[derive(Debug)]
-pub(crate) struct ScriptCompletion {
+pub struct ScriptCompletion {
     pub id: u64,
     pub invocation: ScriptInvocation,
     pub result: Result<ScriptResult, ScriptError>,
 }
 
 #[derive(Debug)]
-pub(crate) struct ScriptResult {
+pub struct ScriptResult {
     pub value: Option<String>,
     pub commands: Vec<NativeCommand>,
     pub snapshot: Option<ScriptSnapshot>,
 }
 
 #[derive(Debug)]
-pub(crate) struct ScriptStartup {
+pub struct ScriptStartup {
     pub snapshot: ScriptSnapshot,
     pub config_error: Option<ScriptError>,
 }
@@ -1040,13 +1011,13 @@ pub(crate) struct ScriptStartup {
 /// `MrubyRuntime` is deliberately `!Send + !Sync`; it is constructed, used,
 /// reloaded, and dropped inside the named worker.  Main/PTY/render code can
 /// only exchange owned snapshots, invocations, and native commands with it.
-pub(crate) struct ScriptThread {
+pub struct ScriptThread {
     requests: mpsc::Sender<ScriptRequest>,
     worker: Option<JoinHandle<()>>,
 }
 
 impl ScriptThread {
-    pub(crate) fn start(
+    pub fn start(
         config_path: Option<PathBuf>,
         notify: impl Fn(ScriptCompletion) + Send + 'static,
     ) -> Result<(Self, ScriptStartup), ScriptError> {
@@ -1099,7 +1070,7 @@ impl ScriptThread {
         ))
     }
 
-    pub(crate) fn submit(&self, request: ScriptRequest) -> Result<(), ScriptError> {
+    pub fn submit(&self, request: ScriptRequest) -> Result<(), ScriptError> {
         self.requests
             .send(request)
             .map_err(|_| ScriptError::new("submit script request", "script thread has stopped"))
@@ -1119,7 +1090,7 @@ impl Drop for ScriptThread {
 }
 
 impl RubyEvent {
-    pub(crate) const fn new(name: &'static str) -> Self {
+    pub const fn new(name: &'static str) -> Self {
         Self {
             name,
             workspace: None,
@@ -1128,30 +1099,6 @@ impl RubyEvent {
             pane: None,
             title: None,
             cwd: None,
-        }
-    }
-}
-
-impl Default for ToyotermConfig {
-    fn default() -> Self {
-        Self {
-            font: FontConfig {
-                family: "monospace".into(),
-                fallback: Vec::new(),
-                size: 14.0,
-                weight: 400,
-            },
-            colors: ColorConfig {
-                background: "#090b0e".into(),
-                foreground: "#dce1e8".into(),
-                cursor: "#f5f7fa".into(),
-                selection: "#375891".into(),
-            },
-            window_opacity: 1.0,
-            default_shell: None,
-            scrollback_lines: 10_000,
-            leader: None,
-            status_interval: None,
         }
     }
 }
@@ -1518,7 +1465,7 @@ impl ConfigManager {
         }
     }
 
-    pub(crate) fn load_startup_recovering(
+    pub fn load_startup_recovering(
         explicit_path: Option<&Path>,
     ) -> Result<(Self, Option<ScriptError>), ScriptError> {
         let env_path = std::env::var_os("TOYOTERM_CONFIG_FILE").filter(|path| !path.is_empty());
@@ -1630,7 +1577,7 @@ impl ConfigManager {
         }
     }
 
-    pub(crate) fn render_status(&mut self) -> Result<String, ScriptError> {
+    pub fn render_status(&mut self) -> Result<String, ScriptError> {
         self.eval_callback(CallbackKind::Status, "status", "Toyoterm.__invoke_status")
     }
 
@@ -1663,7 +1610,7 @@ impl ConfigManager {
             .set_live_handles(&workspaces, &windows, &tabs, &panes)
     }
 
-    pub(crate) fn set_object_model(&mut self, model: &RubyObjectModel) -> Result<(), ScriptError> {
+    pub fn set_object_model(&mut self, model: &RubyObjectModel) -> Result<(), ScriptError> {
         self.runtime.set_object_model(model)
     }
 
@@ -1715,7 +1662,7 @@ impl ConfigManager {
         }
     }
 
-    pub(crate) fn emit_native_event(&mut self, event: &RubyEvent) -> Result<bool, ScriptError> {
+    pub fn emit_native_event(&mut self, event: &RubyEvent) -> Result<bool, ScriptError> {
         if !self.event_names.contains(event.name) {
             return Ok(false);
         }
@@ -1745,15 +1692,14 @@ impl ConfigManager {
     /// Converts commands queued by Ruby into the native command API.
     ///
     /// Pane id zero is a bootstrap placeholder used while startup config is loading.
-    #[cfg(test)]
-    pub(crate) fn drain_commands(
+    pub fn drain_commands(
         &mut self,
         current_pane: PaneId,
     ) -> Result<Vec<NativeCommand>, ScriptError> {
         self.drain_commands_with_context(WorkspaceId(0), WindowId(0), TabId(0), current_pane)
     }
 
-    pub(crate) fn drain_commands_with_context(
+    pub fn drain_commands_with_context(
         &mut self,
         current_workspace: WorkspaceId,
         current_window: WindowId,
@@ -1900,18 +1846,6 @@ fn record_callback_duration(kind: CallbackKind, name: &str, elapsed: Duration, s
 
 fn is_slow_callback(elapsed: Duration) -> bool {
     elapsed >= SLOW_CALLBACK_THRESHOLD
-}
-
-pub fn default_config_path() -> Option<PathBuf> {
-    home_directory().map(|home| home.join(".config").join("toyoterm").join("config.rb"))
-}
-
-fn home_directory() -> Option<PathBuf> {
-    #[cfg(windows)]
-    let home = std::env::var_os("USERPROFILE");
-    #[cfg(not(windows))]
-    let home = std::env::var_os("HOME");
-    home.filter(|path| !path.is_empty()).map(PathBuf::from)
 }
 
 fn resolve_config_path(
@@ -2407,7 +2341,7 @@ mod tests {
     fn bundled_minimal_configuration_is_executable() {
         let mut manager = ConfigManager::new().unwrap();
         manager
-            .reload(include_str!("../examples/minimal_config.rb"))
+            .reload(include_str!("../../../examples/minimal_config.rb"))
             .unwrap();
         assert_eq!(manager.config().font.size, 14.0);
         assert_eq!(manager.config().scrollback_lines, 10_000);

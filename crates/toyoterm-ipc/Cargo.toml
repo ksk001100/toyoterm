@@ -1,0 +1,10 @@
+[package]
+name = "toyoterm-ipc"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+toyoterm-api.workspace = true
+tracing.workspace = true

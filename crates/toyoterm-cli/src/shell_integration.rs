@@ -1,7 +1,7 @@
-pub const BASH: &str = include_str!("../shell-integration/toyoterm.bash");
-pub const ZSH: &str = include_str!("../shell-integration/toyoterm.zsh");
-pub const FISH: &str = include_str!("../shell-integration/toyoterm.fish");
-pub const POWERSHELL: &str = include_str!("../shell-integration/toyoterm.ps1");
+pub const BASH: &str = include_str!("../../../shell-integration/toyoterm.bash");
+pub const ZSH: &str = include_str!("../../../shell-integration/toyoterm.zsh");
+pub const FISH: &str = include_str!("../../../shell-integration/toyoterm.fish");
+pub const POWERSHELL: &str = include_str!("../../../shell-integration/toyoterm.ps1");
 
 pub fn script(shell: &str) -> Option<&'static str> {
     match shell.to_ascii_lowercase().as_str() {

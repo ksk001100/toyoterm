@@ -2,7 +2,7 @@ use std::collections::{HashMap, VecDeque};
 use std::error::Error;
 use std::fmt;
 
-use crate::api::{
+use toyoterm_api::{
     Command, CommandResult, Event, NativeHandle, PaneId, SplitDirection, TabId, WindowId,
     WorkspaceId,
 };

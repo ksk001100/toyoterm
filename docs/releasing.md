@@ -12,8 +12,8 @@ metadata are derived from it.
 2. Update both READMEs and user-visible examples when behavior changed.
 3. Complete the manual checks in `docs/platform-validation.md` for the release
    candidate and link their results from the release issue.
-4. Run `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`,
-   `cargo test --all-targets`, and `sh scripts/check-licenses.sh`.
+4. Run `cargo fmt --check`, `cargo clippy --workspace --all-targets -- -D warnings`,
+   `cargo test --workspace --all-targets`, and `sh scripts/check-licenses.sh`.
 5. Confirm the Linux, macOS, and Windows CI jobs created archives. Inspect each
    archive for its binary, README files, example config, and license notices.
 6. Tag the reviewed commit as `vVERSION` and publish the three CI artifacts.

@@ -1,31 +1,35 @@
-[package]
-name = "toyoterm"
+[workspace]
+resolver = "3"
+members = ["crates/*"]
+default-members = ["crates/toyoterm-cli"]
+
+[workspace.package]
 version = "0.0.1"
 edition = "2024"
 license = "MIT"
 publish = false
 
-[dependencies]
+[workspace.dependencies]
+toyoterm-api = { path = "crates/toyoterm-api" }
+toyoterm-app = { path = "crates/toyoterm-app" }
+toyoterm-config = { path = "crates/toyoterm-config" }
+toyoterm-ipc = { path = "crates/toyoterm-ipc" }
+toyoterm-mux = { path = "crates/toyoterm-mux" }
+toyoterm-pty = { path = "crates/toyoterm-pty" }
+toyoterm-render = { path = "crates/toyoterm-render" }
+toyoterm-script = { path = "crates/toyoterm-script" }
+toyoterm-terminal = { path = "crates/toyoterm-terminal" }
 alacritty_terminal = "0.26.0"
-arboard = { version = "3.6.1", default-features = false, features = [
-  "wayland-data-control",
-] }
+arboard = { version = "3.6.1", default-features = false, features = ["wayland-data-control"] }
+cc = "1.2.56"
 glyphon = "0.12.0"
+portable-pty = "0.9.0"
 pollster = "1.0.1"
 sys-locale = "0.3.2"
 tracing = { version = "0.1.44", default-features = false, features = ["std"] }
 unicode-script = "0.5.8"
 wgpu = "30.0.1"
 winit = "0.30.13"
-
-[target.'cfg(unix)'.dependencies]
-portable-pty = "0.9.0"
-
-[target.'cfg(windows)'.dependencies]
-conpty-oxide = { version = "0.1.2", features = ["tracing"] }
-
-[build-dependencies]
-cc = "1.2.56"
 
 [profile.release]
 # PTY and window guards must run even when an unexpected panic reaches main.

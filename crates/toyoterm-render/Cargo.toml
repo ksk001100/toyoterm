@@ -1,0 +1,17 @@
+[package]
+name = "toyoterm-render"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+toyoterm-api.workspace = true
+toyoterm-mux.workspace = true
+toyoterm-terminal.workspace = true
+glyphon.workspace = true
+sys-locale.workspace = true
+unicode-script.workspace = true
+wgpu.workspace = true
+winit.workspace = true
+tracing.workspace = true
