@@ -11,11 +11,12 @@ use crate::{Command, NativeAction, PaneId, SplitDirection};
 const CONFIG_DSL: &str = r##"
 module Toyoterm
   class FontConfig
-    attr_accessor :family, :size
+    attr_accessor :family, :size, :weight
 
     def initialize
       @family = "monospace"
       @size = 14.0
+      @weight = 400
     end
   end
 
@@ -321,6 +322,7 @@ unsafe extern "C" {
 pub struct FontConfig {
     pub family: String,
     pub size: f32,
+    pub weight: u16,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -346,6 +348,7 @@ impl Default for ToyotermConfig {
             font: FontConfig {
                 family: "monospace".into(),
                 size: 14.0,
+                weight: 400,
             },
             colors: ColorConfig {
                 background: "#090b0e".into(),
@@ -667,6 +670,16 @@ fn load_config(source: &str) -> Result<LoadedConfig, ScriptError> {
     let defaults = ToyotermConfig::default();
     let family = runtime.eval("Toyoterm.__config.font.family")?;
     let font_size = parse_positive_f32("font size", &runtime.eval("Toyoterm.__config.font.size")?)?;
+    let font_weight = runtime
+        .eval("Toyoterm.__config.font.weight")?
+        .parse::<u16>()
+        .map_err(|_| ScriptError::new("validate config", "font weight must be an integer"))?;
+    if !(1..=1000).contains(&font_weight) {
+        return Err(ScriptError::new(
+            "validate config",
+            "font weight must be between 1 and 1000",
+        ));
+    }
     let opacity = parse_f32(
         "window opacity",
         &runtime.eval("Toyoterm.__config.window.opacity")?,
@@ -687,6 +700,7 @@ fn load_config(source: &str) -> Result<LoadedConfig, ScriptError> {
         font: FontConfig {
             family,
             size: font_size,
+            weight: font_weight,
         },
         colors: ColorConfig {
             background: runtime.eval("Toyoterm.__config.colors.background")?,
@@ -850,6 +864,7 @@ mod tests {
                   config.font do |font|
                     font.family = "JetBrains Mono"
                     font.size = 16
+                    font.weight = 500
                   end
                   config.colors.background = "#111111"
                   config.window.opacity = 0.92
@@ -862,10 +877,24 @@ mod tests {
 
         assert_eq!(config.font.family, "JetBrains Mono");
         assert_eq!(config.font.size, 16.0);
+        assert_eq!(config.font.weight, 500);
         assert_eq!(config.colors.background, "#111111");
         assert_eq!(config.window_opacity, 0.92);
         assert_eq!(config.default_shell.as_deref(), Some("/bin/zsh"));
         assert_eq!(config.scrollback_lines, 50_000);
+    }
+
+    #[test]
+    fn rejects_font_weight_outside_css_range() {
+        let mut manager = ConfigManager::new().unwrap();
+        let error = manager
+            .reload("Toyoterm.configure { |config| config.font.weight = 1001 }")
+            .unwrap_err();
+        assert!(
+            error
+                .message()
+                .contains("font weight must be between 1 and 1000")
+        );
     }
 
     #[test]

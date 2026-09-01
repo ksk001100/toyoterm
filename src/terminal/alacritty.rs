@@ -19,6 +19,7 @@ pub const DEFAULT_SCROLLBACK_LINES: usize = 10_000;
 pub struct AlacrittyTerminalBackend {
     processor: Processor,
     terminal: Term<VoidListener>,
+    selection_anchor: Option<Point>,
 }
 
 impl AlacrittyTerminalBackend {
@@ -35,6 +36,7 @@ impl AlacrittyTerminalBackend {
         Self {
             processor: Processor::new(),
             terminal: Term::new(config, &size, VoidListener),
+            selection_anchor: None,
         }
     }
 
@@ -182,6 +184,7 @@ impl TerminalBackend for AlacrittyTerminalBackend {
 
     fn start_selection(&mut self, column: u16, row: u16, kind: SelectionKind) {
         let point = self.viewport_point(column, row);
+        self.selection_anchor = Some(point);
         let selection_type = match kind {
             SelectionKind::Simple => SelectionType::Simple,
             SelectionKind::Word => SelectionType::Semantic,
@@ -192,13 +195,28 @@ impl TerminalBackend for AlacrittyTerminalBackend {
 
     fn update_selection(&mut self, column: u16, row: u16) {
         let point = self.viewport_point(column, row);
-        if let Some(selection) = self.terminal.selection.as_mut() {
+        let Some(selection) = self.terminal.selection.as_ref() else {
+            return;
+        };
+        if selection.ty == SelectionType::Simple
+            && let Some(anchor) = self.selection_anchor
+        {
+            let (anchor_side, point_side) = if point < anchor {
+                (Side::Right, Side::Left)
+            } else {
+                (Side::Left, Side::Right)
+            };
+            let mut selection = Selection::new(SelectionType::Simple, anchor, anchor_side);
+            selection.update(point, point_side);
+            self.terminal.selection = Some(selection);
+        } else if let Some(selection) = self.terminal.selection.as_mut() {
             selection.update(point, Side::Right);
         }
     }
 
     fn clear_selection(&mut self) {
         self.terminal.selection = None;
+        self.selection_anchor = None;
     }
 
     fn selected_text(&self) -> Option<String> {
@@ -402,6 +420,21 @@ mod tests {
     }
 
     #[test]
+    fn handles_dec_autowrap_origin_and_bracketed_paste_modes() {
+        let mut backend = AlacrittyTerminalBackend::new(5, 4);
+        backend.advance(b"\x1b[?7labcdeX");
+        assert_eq!(backend.snapshot().lines[0], "abcdX");
+
+        backend.advance(b"\x1b[2J\x1b[2;3r\x1b[?6h\x1b[H");
+        assert_eq!(backend.cursor().row, 1);
+
+        backend.advance(b"\x1b[?2004h");
+        assert!(backend.mode().bracketed_paste);
+        backend.advance(b"\x1b[?2004l");
+        assert!(!backend.mode().bracketed_paste);
+    }
+
+    #[test]
     fn resize_updates_snapshot_dimensions() {
         let mut backend = AlacrittyTerminalBackend::new(80, 24);
         backend.resize(120, 40);
@@ -494,6 +527,24 @@ mod tests {
         );
         backend.clear_selection();
         assert_eq!(backend.selected_text(), None);
+    }
+
+    #[test]
+    fn selection_drag_includes_both_endpoints_in_either_direction() {
+        let mut backend = AlacrittyTerminalBackend::new(10, 2);
+        backend.advance(b"abcdefghij");
+
+        backend.start_selection(2, 0, SelectionKind::Simple);
+        backend.update_selection(5, 0);
+        assert_eq!(backend.selected_text().as_deref(), Some("cdef"));
+
+        backend.start_selection(5, 0, SelectionKind::Simple);
+        backend.update_selection(2, 0);
+        assert_eq!(backend.selected_text().as_deref(), Some("cdef"));
+
+        backend.start_selection(4, 0, SelectionKind::Simple);
+        backend.update_selection(4, 0);
+        assert_eq!(backend.selected_text().as_deref(), Some("e"));
     }
 
     #[test]

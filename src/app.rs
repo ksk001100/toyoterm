@@ -136,6 +136,7 @@ pub fn run_gui_with_config_path(config_path: Option<&Path>) -> Result<(), AppErr
     let config = config_manager.config();
     let render_style = RenderStyle::from_hex(
         &config.font.family,
+        config.font.weight,
         &config.colors.background,
         &config.colors.foreground,
         &config.colors.cursor,
@@ -752,6 +753,7 @@ impl ToyotermApplication {
             .clone();
         let render_style = RenderStyle::from_hex(
             &config.font.family,
+            config.font.weight,
             &config.colors.background,
             &config.colors.foreground,
             &config.colors.cursor,

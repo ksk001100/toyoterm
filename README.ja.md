@@ -82,6 +82,7 @@ Toyoterm.configure do |config|
   config.font do |font|
     font.family = "monospace"
     font.size = 14
+    font.weight = 400
   end
 
   config.colors do |colors|

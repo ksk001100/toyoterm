@@ -57,6 +57,7 @@ pub struct WorkspaceRenderData<'a> {
 #[derive(Clone, Debug, PartialEq)]
 pub struct RenderStyle {
     pub font_family: String,
+    pub font_weight: u16,
     pub background: [u8; 3],
     pub foreground: [u8; 3],
     pub cursor: [u8; 3],
@@ -68,6 +69,7 @@ impl Default for RenderStyle {
     fn default() -> Self {
         Self {
             font_family: "monospace".into(),
+            font_weight: 400,
             background: [9, 11, 14],
             foreground: [220, 225, 232],
             cursor: [245, 247, 250],
@@ -80,6 +82,7 @@ impl Default for RenderStyle {
 impl RenderStyle {
     pub fn from_hex(
         font_family: impl Into<String>,
+        font_weight: u16,
         background: &str,
         foreground: &str,
         cursor: &str,
@@ -88,6 +91,7 @@ impl RenderStyle {
     ) -> Result<Self, RenderError> {
         Ok(Self {
             font_family: font_family.into(),
+            font_weight,
             background: parse_rgb(background)?,
             foreground: parse_rgb(foreground)?,
             cursor: parse_rgb(cursor)?,
@@ -278,10 +282,17 @@ impl GpuRenderer {
         self.panes.retain(|pane, _| active_panes.contains(pane));
         let metrics = Metrics::new(layout.font_size.max(1.0), layout.line_height.max(1.0));
         let font_family = self.style.font_family.clone();
+        let font_weight = self.style.font_weight;
         let foreground = self.style.foreground;
         let background = self.style.background;
         for pane in panes {
-            let rich_text = terminal_rich_text(pane.snapshot, &font_family, foreground, background);
+            let rich_text = terminal_rich_text(
+                pane.snapshot,
+                &font_family,
+                font_weight,
+                foreground,
+                background,
+            );
             if !self.panes.contains_key(&pane.pane) {
                 self.panes.insert(
                     pane.pane,
@@ -309,7 +320,9 @@ impl GpuRenderer {
             buffers
                 .text
                 .set_metrics_and_size(metrics, Some(content_width), Some(content_height));
-            let default_attrs = Attrs::new().family(Family::Name(&font_family));
+            let default_attrs = Attrs::new()
+                .family(Family::Name(&font_family))
+                .weight(Weight(font_weight));
             if rich_text.is_empty() {
                 buffers.text.set_text(
                     &pane.snapshot.lines.join("\n"),
@@ -338,7 +351,9 @@ impl GpuRenderer {
             );
             buffers.selection.set_text(
                 &selection_text(pane.snapshot),
-                &Attrs::new().family(Family::Name(&self.style.font_family)),
+                &Attrs::new()
+                    .family(Family::Name(&self.style.font_family))
+                    .weight(Weight(self.style.font_weight)),
                 Shaping::Basic,
                 None,
             );
@@ -355,7 +370,9 @@ impl GpuRenderer {
                     CursorShape::Beam => "▏",
                     CursorShape::Underline => "▁",
                 },
-                &Attrs::new().family(Family::Name(&self.style.font_family)),
+                &Attrs::new()
+                    .family(Family::Name(&self.style.font_family))
+                    .weight(Weight(self.style.font_weight)),
                 Shaping::Basic,
                 None,
             );
@@ -367,7 +384,9 @@ impl GpuRenderer {
             buffers.focus.set_metrics_and_size(metrics, None, None);
             buffers.focus.set_text(
                 &"━".repeat(focus_width),
-                &Attrs::new().family(Family::Name(&self.style.font_family)),
+                &Attrs::new()
+                    .family(Family::Name(&self.style.font_family))
+                    .weight(Weight(self.style.font_weight)),
                 Shaping::Basic,
                 None,
             );
@@ -407,7 +426,9 @@ impl GpuRenderer {
             );
             buffer.text.set_text(
                 tab.title,
-                &Attrs::new().family(Family::Name(&self.style.font_family)),
+                &Attrs::new()
+                    .family(Family::Name(&self.style.font_family))
+                    .weight(Weight(self.style.font_weight)),
                 Shaping::Basic,
                 None,
             );
@@ -456,7 +477,9 @@ impl GpuRenderer {
             );
             buffer.text.set_text(
                 workspace.name,
-                &Attrs::new().family(Family::Name(&self.style.font_family)),
+                &Attrs::new()
+                    .family(Family::Name(&self.style.font_family))
+                    .weight(Weight(self.style.font_weight)),
                 Shaping::Basic,
                 None,
             );
@@ -471,7 +494,9 @@ impl GpuRenderer {
         self.preedit.set_metrics_and_size(metrics, None, None);
         self.preedit.set_text(
             text,
-            &Attrs::new().family(Family::Name(&self.style.font_family)),
+            &Attrs::new()
+                .family(Family::Name(&self.style.font_family))
+                .weight(Weight(self.style.font_weight)),
             Shaping::Advanced,
             None,
         );
@@ -706,6 +731,7 @@ fn selection_text(snapshot: &TerminalSnapshot) -> String {
 fn terminal_rich_text<'a>(
     snapshot: &TerminalSnapshot,
     font_family: &'a str,
+    font_weight: u16,
     default_foreground: [u8; 3],
     default_background: [u8; 3],
 ) -> Vec<(String, Attrs<'a>)> {
@@ -713,7 +739,9 @@ fn terminal_rich_text<'a>(
         return Vec::new();
     }
 
-    let default_attrs = Attrs::new().family(Family::Name(font_family));
+    let default_attrs = Attrs::new()
+        .family(Family::Name(font_family))
+        .weight(Weight(font_weight));
     let mut spans = Vec::new();
     for row in 0..snapshot.rows {
         if row > 0 {
@@ -735,6 +763,7 @@ fn terminal_rich_text<'a>(
                 glyph_attrs(
                     cell.attributes,
                     font_family,
+                    font_weight,
                     default_foreground,
                     default_background,
                 ),
@@ -748,6 +777,7 @@ fn terminal_rich_text<'a>(
 fn glyph_attrs<'a>(
     attributes: CellAttributes,
     font_family: &'a str,
+    font_weight: u16,
     default_foreground: [u8; 3],
     default_background: [u8; 3],
 ) -> Attrs<'a> {
@@ -765,9 +795,10 @@ fn glyph_attrs<'a>(
     };
     let mut attrs = Attrs::new()
         .family(Family::Name(font_family))
+        .weight(Weight(font_weight))
         .color(glyph_color(foreground, alpha));
     if attributes.bold {
-        attrs = attrs.weight(Weight::BOLD);
+        attrs = attrs.weight(Weight(font_weight.saturating_add(300).min(1000)));
     }
     if attributes.italic {
         attrs = attrs.style(Style::Italic);
@@ -920,18 +951,34 @@ mod tests {
                 ..CellAttributes::default()
             },
             "monospace",
+            400,
             [200, 200, 200],
             [0, 0, 0],
         );
         assert_eq!(attrs.color_opt, Some(GlyphColor::rgba(1, 2, 3, 150)));
         assert_eq!(attrs.weight, Weight::BOLD);
         assert_eq!(attrs.style, Style::Italic);
+
+        let inverse = glyph_attrs(
+            CellAttributes {
+                foreground: CellColor::Indexed(1),
+                background: CellColor::Rgb(9, 8, 7),
+                inverse: true,
+                ..CellAttributes::default()
+            },
+            "monospace",
+            400,
+            [200, 200, 200],
+            [0, 0, 0],
+        );
+        assert_eq!(inverse.color_opt, Some(GlyphColor::rgba(9, 8, 7, 255)));
     }
 
     #[test]
     fn parses_configured_render_colors() {
         let style = RenderStyle::from_hex(
             "JetBrains Mono",
+            500,
             "#112233",
             "aabbcc",
             "#ffffff",
@@ -940,9 +987,10 @@ mod tests {
         )
         .unwrap();
         assert_eq!(style.background, [0x11, 0x22, 0x33]);
+        assert_eq!(style.font_weight, 500);
         assert_eq!(style.foreground, [0xaa, 0xbb, 0xcc]);
         assert_eq!(style.opacity, 0.9);
-        assert!(RenderStyle::from_hex("mono", "bad", "#fff", "#fff", "#fff", 1.0).is_err());
+        assert!(RenderStyle::from_hex("mono", 400, "bad", "#fff", "#fff", "#fff", 1.0).is_err());
     }
 
     #[test]
