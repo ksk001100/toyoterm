@@ -257,6 +257,16 @@ impl Mux {
             .map(|window| window.tabs.as_slice())
     }
 
+    /// Returns the tab's one-based position within its window.
+    pub fn tab_number(&self, tab: TabId) -> Option<usize> {
+        let window = self.tabs.get(&tab)?.window;
+        self.windows[&window]
+            .tabs
+            .iter()
+            .position(|candidate| *candidate == tab)
+            .map(|index| index + 1)
+    }
+
     pub fn tab_panes(&self, tab: TabId) -> Option<Vec<PaneId>> {
         self.tabs.get(&tab).map(|tab| tab.root.panes())
     }
@@ -773,6 +783,22 @@ mod tests {
         assert!(mux.current_tab().is_some());
         assert!(mux.current_pane().is_some());
         assert_eq!(mux.summary(), "workspace=default windows=1 tabs=1 panes=1");
+    }
+
+    #[test]
+    fn tab_numbers_follow_their_position_within_the_window() {
+        let mut mux = Mux::new();
+        let first = mux.current_tab().unwrap();
+        let CommandResult::Tab(second) = mux.dispatch(Command::NewTab).unwrap() else {
+            panic!("new tab did not return a tab");
+        };
+
+        assert_eq!(mux.tab_number(first), Some(1));
+        assert_eq!(mux.tab_number(second), Some(2));
+
+        mux.dispatch(Command::CloseTab(first)).unwrap();
+        assert_eq!(mux.tab_number(first), None);
+        assert_eq!(mux.tab_number(second), Some(1));
     }
 
     #[test]

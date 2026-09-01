@@ -2218,7 +2218,12 @@ impl ToyotermApplication {
             .map(|placement| {
                 (
                     placement.tab,
-                    format!("Tab {}", placement.tab.0),
+                    format!(
+                        "Tab {}",
+                        self.mux
+                            .tab_number(placement.tab)
+                            .expect("layout tab exists in mux")
+                    ),
                     placement.rect,
                     active_tab == Some(placement.tab),
                 )
@@ -2406,7 +2411,8 @@ impl ToyotermApplication {
         let tab = self
             .mux
             .current_tab()
-            .map(|tab| format!("Tab {} · ", tab.0))
+            .and_then(|tab| self.mux.tab_number(tab))
+            .map(|number| format!("Tab {number} · "))
             .unwrap_or_default();
         let workspace = self
             .mux
@@ -2515,9 +2521,12 @@ fn ruby_object_model(
                 let pane_ids = mux
                     .tab_panes(tab_id)
                     .ok_or_else(|| format!("tab {tab_id} is missing"))?;
+                let tab_number = mux
+                    .tab_number(tab_id)
+                    .ok_or_else(|| format!("tab {tab_id} is missing from its window"))?;
                 tabs.push(RubyTab {
                     id: tab_id,
-                    title: format!("Tab {}", tab_id.0),
+                    title: format!("Tab {tab_number}"),
                     panes: pane_ids.clone(),
                 });
                 for pane_id in pane_ids {
