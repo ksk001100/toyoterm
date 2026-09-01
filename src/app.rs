@@ -19,9 +19,10 @@ use crate::{
     AlacrittyTerminalBackend, BindingKey, Command, CommandMenuLayout, CommandMenuRenderData,
     ConfigErrorLayout, ConfigErrorRenderData, ConfigManager, GpuRenderer, KeyChord, KeyModifiers,
     KeyPress, KeypadKey, MouseWheelDirection, Mux, NativeAction, NativePty, PaneId, PaneLayout,
-    PaneRect, PaneRenderData, Pty, PtyCommand, PtySession, PtySize, RenderStyle, SelectionKind,
-    SplitDirection, TabRenderData, TabStripLayout, TerminalBackend, TerminalKey, TextLayout,
-    WorkspaceRenderData, WorkspaceStripLayout, encode_key, encode_mouse_wheel, encode_paste,
+    PaneRect, PaneRenderData, Pty, PtyCommand, PtySession, PtySize, RenderOutcome, RenderStyle,
+    SelectionKind, SplitDirection, TabRenderData, TabStripLayout, TerminalBackend, TerminalKey,
+    TextLayout, WorkspaceRenderData, WorkspaceStripLayout, encode_key, encode_mouse_wheel,
+    encode_paste,
 };
 
 const MULTI_CLICK_INTERVAL: Duration = Duration::from_millis(500);
@@ -522,16 +523,23 @@ impl ApplicationHandler<AppEvent> for ToyotermApplication {
                 window.request_redraw();
             }
             WindowEvent::RedrawRequested => {
-                if let Some(renderer) = self.renderer.as_mut()
-                    && let Err(error) = renderer.render()
-                {
-                    tracing::error!(
-                        target: "toyoterm::render",
-                        operation = error.operation(),
-                        %error,
-                        "render failed"
-                    );
-                    self.fail(event_loop, error.to_string());
+                let render_result = self.renderer.as_mut().map(GpuRenderer::render);
+                match render_result {
+                    Some(Ok(RenderOutcome::DeviceLost)) => {
+                        if let Err(error) = self.recover_renderer() {
+                            self.fail(event_loop, error);
+                        }
+                    }
+                    Some(Err(error)) => {
+                        tracing::error!(
+                            target: "toyoterm::render",
+                            operation = error.operation(),
+                            %error,
+                            "render failed"
+                        );
+                        self.fail(event_loop, error.to_string());
+                    }
+                    Some(Ok(RenderOutcome::Presented | RenderOutcome::Skipped)) | None => {}
                 }
             }
             _ => {}
@@ -1611,6 +1619,29 @@ impl ToyotermApplication {
                 .set_text(text)
                 .map_err(|error| format!("write clipboard from Ruby: {error}"))?;
         }
+        Ok(())
+    }
+
+    fn recover_renderer(&mut self) -> Result<(), String> {
+        let window = self
+            .window
+            .clone()
+            .ok_or_else(|| "recover GPU renderer: window is unavailable".to_owned())?;
+        tracing::warn!(
+            target: "toyoterm::render",
+            width = window.inner_size().width,
+            height = window.inner_size().height,
+            scale_factor = window.scale_factor(),
+            "recreating renderer after GPU device loss"
+        );
+        let mut renderer = pollster::block_on(GpuRenderer::new(window.clone()))
+            .map_err(|error| format!("recover GPU renderer: {error}"))?;
+        renderer.set_style(self.render_style.clone());
+        renderer.resize(window.inner_size());
+        self.renderer = Some(renderer);
+        self.sync_active_renderer(window.scale_factor());
+        window.request_redraw();
+        tracing::info!(target: "toyoterm::render", "GPU renderer recovery completed");
         Ok(())
     }
 

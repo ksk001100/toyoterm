@@ -1,6 +1,7 @@
 use std::collections::{HashMap, HashSet};
 use std::fmt;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Mutex, OnceLock};
 
 use glyphon::cosmic_text::{Fallback, PlatformFallback};
@@ -126,6 +127,20 @@ impl RenderStyle {
 pub enum RenderOutcome {
     Presented,
     Skipped,
+    DeviceLost,
+}
+
+#[derive(Clone, Debug, Default)]
+struct DeviceLossState(Arc<AtomicBool>);
+
+impl DeviceLossState {
+    fn mark_lost(&self) {
+        self.0.store(true, Ordering::Release);
+    }
+
+    fn take_lost(&self) -> bool {
+        self.0.swap(false, Ordering::AcqRel)
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -141,6 +156,14 @@ struct PaneTextPlacement {
 enum SurfaceResize {
     Suspend,
     Configure { width: u32, height: u32 },
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum SurfaceRecoveryAction {
+    Skip,
+    Reconfigure,
+    Recreate,
+    Fail,
 }
 
 #[derive(Debug)]
@@ -180,6 +203,7 @@ pub struct GpuRenderer {
     surface: Surface<'static>,
     device: Device,
     queue: Queue,
+    device_loss: DeviceLossState,
     configuration: SurfaceConfiguration,
     supported_alpha_modes: Vec<CompositeAlphaMode>,
     suspended: bool,
@@ -363,6 +387,19 @@ impl GpuRenderer {
             })
             .await
             .map_err(|error| RenderError::new("request GPU device", error))?;
+        let device_loss = DeviceLossState::default();
+        let callback_state = device_loss.clone();
+        let redraw_window = window.clone();
+        device.set_device_lost_callback(move |reason, message| {
+            tracing::error!(
+                target: "toyoterm::render",
+                ?reason,
+                %message,
+                "GPU device lost; renderer recovery requested"
+            );
+            callback_state.mark_lost();
+            redraw_window.request_redraw();
+        });
         let supported_alpha_modes = surface.get_capabilities(&adapter).alpha_modes;
         let mut configuration = surface
             .get_default_config(&adapter, width, height)
@@ -415,6 +452,7 @@ impl GpuRenderer {
             surface,
             device,
             queue,
+            device_loss,
             configuration,
             supported_alpha_modes,
             suspended: size.width == 0 || size.height == 0,
@@ -872,6 +910,9 @@ impl GpuRenderer {
     }
 
     pub fn render(&mut self) -> Result<RenderOutcome, RenderError> {
+        if self.device_loss.take_lost() {
+            return Ok(RenderOutcome::DeviceLost);
+        }
         if self.suspended {
             return Ok(RenderOutcome::Skipped);
         }
@@ -1045,23 +1086,25 @@ impl GpuRenderer {
         let (frame, suboptimal) = match self.surface.get_current_texture() {
             CurrentSurfaceTexture::Success(frame) => (frame, false),
             CurrentSurfaceTexture::Suboptimal(frame) => (frame, true),
-            CurrentSurfaceTexture::Timeout | CurrentSurfaceTexture::Occluded => {
-                return Ok(RenderOutcome::Skipped);
-            }
-            CurrentSurfaceTexture::Outdated => {
-                self.surface.configure(&self.device, &self.configuration);
-                return Ok(RenderOutcome::Skipped);
-            }
-            CurrentSurfaceTexture::Lost => {
-                self.recreate_surface()?;
-                return Ok(RenderOutcome::Skipped);
-            }
-            CurrentSurfaceTexture::Validation => {
-                return Err(RenderError::new(
-                    "acquire GPU frame",
-                    "surface validation failed",
-                ));
-            }
+            status => match surface_recovery_action(&status)
+                .expect("non-frame surface status has a recovery action")
+            {
+                SurfaceRecoveryAction::Skip => return Ok(RenderOutcome::Skipped),
+                SurfaceRecoveryAction::Reconfigure => {
+                    self.surface.configure(&self.device, &self.configuration);
+                    return Ok(RenderOutcome::Skipped);
+                }
+                SurfaceRecoveryAction::Recreate => {
+                    self.recreate_surface()?;
+                    return Ok(RenderOutcome::Skipped);
+                }
+                SurfaceRecoveryAction::Fail => {
+                    return Err(RenderError::new(
+                        "acquire GPU frame",
+                        "surface validation failed",
+                    ));
+                }
+            },
         };
 
         let view = frame.texture.create_view(&TextureViewDescriptor::default());
@@ -1133,6 +1176,18 @@ fn surface_resize(size: PhysicalSize<u32>) -> SurfaceResize {
             width: size.width,
             height: size.height,
         }
+    }
+}
+
+fn surface_recovery_action(status: &CurrentSurfaceTexture) -> Option<SurfaceRecoveryAction> {
+    match status {
+        CurrentSurfaceTexture::Success(_) | CurrentSurfaceTexture::Suboptimal(_) => None,
+        CurrentSurfaceTexture::Timeout | CurrentSurfaceTexture::Occluded => {
+            Some(SurfaceRecoveryAction::Skip)
+        }
+        CurrentSurfaceTexture::Outdated => Some(SurfaceRecoveryAction::Reconfigure),
+        CurrentSurfaceTexture::Lost => Some(SurfaceRecoveryAction::Recreate),
+        CurrentSurfaceTexture::Validation => Some(SurfaceRecoveryAction::Fail),
     }
 }
 
@@ -1521,6 +1576,41 @@ mod tests {
         assert_eq!(
             fallback.script_fallback(Script::Han, "ja-JP"),
             &["CJK First", "Emoji Second"]
+        );
+    }
+
+    #[test]
+    fn device_loss_is_reported_once_for_renderer_recovery() {
+        let state = DeviceLossState::default();
+        let callback_state = state.clone();
+        assert!(!state.take_lost());
+
+        callback_state.mark_lost();
+        assert!(state.take_lost());
+        assert!(!state.take_lost());
+    }
+
+    #[test]
+    fn classifies_recoverable_surface_failures() {
+        assert_eq!(
+            surface_recovery_action(&CurrentSurfaceTexture::Timeout),
+            Some(SurfaceRecoveryAction::Skip)
+        );
+        assert_eq!(
+            surface_recovery_action(&CurrentSurfaceTexture::Occluded),
+            Some(SurfaceRecoveryAction::Skip)
+        );
+        assert_eq!(
+            surface_recovery_action(&CurrentSurfaceTexture::Outdated),
+            Some(SurfaceRecoveryAction::Reconfigure)
+        );
+        assert_eq!(
+            surface_recovery_action(&CurrentSurfaceTexture::Lost),
+            Some(SurfaceRecoveryAction::Recreate)
+        );
+        assert_eq!(
+            surface_recovery_action(&CurrentSurfaceTexture::Validation),
+            Some(SurfaceRecoveryAction::Fail)
         );
     }
 
