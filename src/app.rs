@@ -15,12 +15,12 @@ use winit::keyboard::{Key, KeyCode, ModifiersState, NamedKey, PhysicalKey};
 use winit::window::{Window, WindowId};
 
 use crate::{
-    AlacrittyTerminalBackend, BindingKey, Command, ConfigManager, GpuRenderer, KeyChord,
-    KeyModifiers, KeyPress, KeypadKey, MouseWheelDirection, Mux, NativeAction, NativePty, PaneId,
-    PaneLayout, PaneRect, PaneRenderData, Pty, PtyCommand, PtySession, PtySize, RenderStyle,
-    SelectionKind, SplitDirection, TabRenderData, TabStripLayout, TerminalBackend, TerminalKey,
-    TextLayout, WorkspaceRenderData, WorkspaceStripLayout, encode_key, encode_mouse_wheel,
-    encode_paste,
+    AlacrittyTerminalBackend, BindingKey, Command, CommandMenuLayout, CommandMenuRenderData,
+    ConfigManager, GpuRenderer, KeyChord, KeyModifiers, KeyPress, KeypadKey, MouseWheelDirection,
+    Mux, NativeAction, NativePty, PaneId, PaneLayout, PaneRect, PaneRenderData, Pty, PtyCommand,
+    PtySession, PtySize, RenderStyle, SelectionKind, SplitDirection, TabRenderData, TabStripLayout,
+    TerminalBackend, TerminalKey, TextLayout, WorkspaceRenderData, WorkspaceStripLayout,
+    encode_key, encode_mouse_wheel, encode_paste,
 };
 
 const MULTI_CLICK_INTERVAL: Duration = Duration::from_millis(500);
@@ -198,6 +198,8 @@ struct ToyotermApplication {
     pane_layout: PaneLayout,
     tab_layout: TabStripLayout,
     workspace_layout: WorkspaceStripLayout,
+    command_menu_layout: CommandMenuLayout,
+    command_menu_open: bool,
     ime_preedit: Option<String>,
     modifiers: ModifiersState,
     alt_graph_active: bool,
@@ -312,6 +314,11 @@ impl ApplicationHandler<AppEvent> for ToyotermApplication {
                 if !focused {
                     clear_modifier_state(&mut self.modifiers, &mut self.alt_graph_active);
                     self.leader_deadline = None;
+                    if self.command_menu_open {
+                        self.command_menu_open = false;
+                        self.sync_active_renderer(window.scale_factor());
+                        window.request_redraw();
+                    }
                 }
                 if self
                     .active_terminal()
@@ -351,6 +358,14 @@ impl ApplicationHandler<AppEvent> for ToyotermApplication {
                     return;
                 }
                 let modifiers = effective_modifiers(self.modifiers, self.alt_graph_active);
+                if self.command_menu_open
+                    && matches!(event.logical_key, Key::Named(NamedKey::Escape))
+                {
+                    self.command_menu_open = false;
+                    self.sync_active_renderer(window.scale_factor());
+                    window.request_redraw();
+                    return;
+                }
                 match self.handle_leader_key(&event, modifiers) {
                     Ok(true) => return,
                     Ok(false) => {}
@@ -473,6 +488,8 @@ impl ToyotermApplication {
             pane_layout: PaneLayout::default(),
             tab_layout: TabStripLayout::default(),
             workspace_layout: WorkspaceStripLayout::default(),
+            command_menu_layout: CommandMenuLayout::default(),
+            command_menu_open: false,
             ime_preedit: None,
             modifiers: ModifiersState::empty(),
             alt_graph_active: false,
@@ -888,6 +905,7 @@ impl ToyotermApplication {
     ) -> Result<(), String> {
         self.tab_layout = self.calculate_tab_layout(window_size, scale_factor);
         self.workspace_layout = self.calculate_workspace_layout(window_size, scale_factor);
+        self.command_menu_layout = self.calculate_command_menu_layout(window_size, scale_factor);
         self.pane_layout = self.calculate_pane_layout(window_size, scale_factor);
         let sizes = self
             .pane_layout
@@ -953,6 +971,8 @@ impl ToyotermApplication {
         self.tab_layout = self.calculate_tab_layout(window.inner_size(), window.scale_factor());
         self.workspace_layout =
             self.calculate_workspace_layout(window.inner_size(), window.scale_factor());
+        self.command_menu_layout =
+            self.calculate_command_menu_layout(window.inner_size(), window.scale_factor());
         self.pane_layout = self.calculate_pane_layout(window.inner_size(), window.scale_factor());
     }
 
@@ -963,8 +983,28 @@ impl ToyotermApplication {
     ) -> WorkspaceStripLayout {
         WorkspaceStripLayout::calculate(
             &self.mux.workspaces(),
-            PaneRect::new(0, 0, window_size.width, workspace_bar_height(scale_factor)),
+            PaneRect::new(
+                0,
+                0,
+                window_size
+                    .width
+                    .saturating_sub(command_menu_width(scale_factor)),
+                workspace_bar_height(scale_factor),
+            ),
             (140.0 * scale_factor.max(0.1)).round() as u32,
+        )
+    }
+
+    fn calculate_command_menu_layout(
+        &self,
+        window_size: PhysicalSize<u32>,
+        scale_factor: f64,
+    ) -> CommandMenuLayout {
+        CommandMenuLayout::calculate(
+            window_size.width,
+            workspace_bar_height(scale_factor),
+            tab_bar_height(scale_factor),
+            command_menu_width(scale_factor),
         )
     }
 
@@ -984,7 +1024,9 @@ impl ToyotermApplication {
             PaneRect::new(
                 0,
                 workspace_bar_height(scale_factor),
-                window_size.width,
+                window_size
+                    .width
+                    .saturating_sub(command_menu_width(scale_factor)),
                 tab_bar_height(scale_factor),
             ),
             (160.0 * scale_factor.max(0.1)).round() as u32,
@@ -1166,6 +1208,31 @@ impl ToyotermApplication {
 
     fn handle_left_mouse(&mut self, window: &Window, state: ElementState) {
         if state == ElementState::Pressed {
+            if self
+                .command_menu_layout
+                .button_contains(self.mouse_position.x, self.mouse_position.y)
+            {
+                self.command_menu_open = !self.command_menu_open;
+                self.sync_active_renderer(window.scale_factor());
+                window.request_redraw();
+                return;
+            }
+            if self.command_menu_open {
+                let reload_config = self
+                    .command_menu_layout
+                    .reload_config_contains(self.mouse_position.x, self.mouse_position.y);
+                self.command_menu_open = false;
+                if reload_config {
+                    if let Err(error) = self.reload_config() {
+                        eprintln!("toyoterm: reload config: {error}");
+                    }
+                    self.sync_active_renderer(window.scale_factor());
+                    window.request_redraw();
+                    return;
+                }
+                self.sync_active_renderer(window.scale_factor());
+                window.request_redraw();
+            }
             if let Some(workspace) = self
                 .workspace_layout
                 .workspace_at(self.mouse_position.x, self.mouse_position.y)
@@ -1357,6 +1424,15 @@ impl ToyotermApplication {
             renderer.update_panes(&panes, layout);
             renderer.update_tabs(&tabs, layout);
             renderer.update_workspaces(&workspaces, layout);
+            renderer.update_command_menu(
+                CommandMenuRenderData {
+                    button_rect: self.command_menu_layout.button(),
+                    reload_config_rect: self
+                        .command_menu_open
+                        .then_some(self.command_menu_layout.reload_config()),
+                },
+                layout,
+            );
             renderer.update_preedit(self.ime_preedit.as_deref(), layout);
         }
         self.update_ime_cursor_area(scale_factor);
@@ -1462,6 +1538,10 @@ fn tab_bar_height(scale_factor: f64) -> u32 {
 
 fn workspace_bar_height(scale_factor: f64) -> u32 {
     (24.0 * scale_factor.max(0.1)).round() as u32
+}
+
+fn command_menu_width(scale_factor: f64) -> u32 {
+    (160.0 * scale_factor.max(0.1)).round() as u32
 }
 
 fn spawn_pty_reader(

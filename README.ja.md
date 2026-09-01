@@ -151,6 +151,7 @@ end
 - Linux・Windowsの`Ctrl+Shift+V`またはmacOSの`Cmd+V`：貼り付け
 - `Ctrl+Shift+T`：新しいタブを作成
 - `Ctrl+Shift+R`：有効な設定ファイルを再読込
+- `Commands` → `Reload Config`をクリック：GUIから有効な設定ファイルを再読込
 - `Ctrl+Shift+W`：active Tabを閉じる（最後のタブは維持）
 - `Ctrl+Tab` / `Ctrl+Shift+Tab`：次／前のタブをactivate
 - `Ctrl+Shift+\` / `Ctrl+Shift+-`：active Paneを右／下へ分割

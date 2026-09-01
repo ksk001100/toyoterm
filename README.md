@@ -151,6 +151,7 @@ The embedded runtime is mruby, not CRuby. CRuby gems, native extensions, and the
 - `Ctrl+Shift+V` on Linux/Windows or `Cmd+V` on macOS: paste
 - `Ctrl+Shift+T`: open a new tab
 - `Ctrl+Shift+R`: reload the active configuration file
+- Click `Commands` → `Reload Config`: reload the active configuration file from the GUI
 - `Ctrl+Shift+W`: close the active tab (the final tab is kept open)
 - `Ctrl+Tab` / `Ctrl+Shift+Tab`: activate the next / previous tab
 - `Ctrl+Shift+\` / `Ctrl+Shift+-`: split the active pane right / down

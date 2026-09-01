@@ -54,6 +54,12 @@ pub struct WorkspaceRenderData<'a> {
     pub active: bool,
 }
 
+#[derive(Clone, Copy, Debug)]
+pub struct CommandMenuRenderData {
+    pub button_rect: PaneRect,
+    pub reload_config_rect: Option<PaneRect>,
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct RenderStyle {
     pub font_family: String,
@@ -148,6 +154,7 @@ pub struct GpuRenderer {
     panes: HashMap<PaneId, PaneBuffers>,
     tabs: HashMap<TabId, TabBuffer>,
     workspaces: HashMap<WorkspaceId, TabBuffer>,
+    command_menu: CommandMenuBuffers,
     preedit: Buffer,
     has_preedit: bool,
     style: RenderStyle,
@@ -157,6 +164,13 @@ struct TabBuffer {
     text: Buffer,
     rect: PaneRect,
     active: bool,
+}
+
+struct CommandMenuBuffers {
+    button: Buffer,
+    reload_config: Buffer,
+    button_rect: PaneRect,
+    reload_config_rect: Option<PaneRect>,
 }
 
 struct PaneBuffers {
@@ -240,6 +254,10 @@ impl GpuRenderer {
         );
         let mut preedit = Buffer::new(&mut font_system, Metrics::new(14.0, 18.0));
         preedit.set_wrap(Wrap::None);
+        let mut command_button = Buffer::new(&mut font_system, Metrics::new(12.0, 15.0));
+        command_button.set_wrap(Wrap::None);
+        let mut reload_config = Buffer::new(&mut font_system, Metrics::new(14.0, 18.0));
+        reload_config.set_wrap(Wrap::None);
         let style = RenderStyle::default();
         let initial_alpha_mode = configuration.alpha_mode;
         Ok(Self {
@@ -260,6 +278,12 @@ impl GpuRenderer {
             panes: HashMap::new(),
             tabs: HashMap::new(),
             workspaces: HashMap::new(),
+            command_menu: CommandMenuBuffers {
+                button: command_button,
+                reload_config,
+                button_rect: PaneRect::default(),
+                reload_config_rect: None,
+            },
             preedit,
             has_preedit: false,
             style,
@@ -487,6 +511,55 @@ impl GpuRenderer {
         }
     }
 
+    pub fn update_command_menu(&mut self, menu: CommandMenuRenderData, layout: TextLayout) {
+        let button_metrics = Metrics::new(
+            (layout.font_size * 0.85).max(1.0),
+            (layout.line_height * 0.85).max(1.0),
+        );
+        self.command_menu.button_rect = menu.button_rect;
+        self.command_menu.reload_config_rect = menu.reload_config_rect;
+        self.command_menu.button.set_metrics_and_size(
+            button_metrics,
+            Some(menu.button_rect.width.saturating_sub(12) as f32),
+            Some(menu.button_rect.height as f32),
+        );
+        self.command_menu.button.set_text(
+            if menu.reload_config_rect.is_some() {
+                "Commands ▴"
+            } else {
+                "Commands ▾"
+            },
+            &Attrs::new()
+                .family(Family::Name(&self.style.font_family))
+                .weight(Weight(self.style.font_weight)),
+            Shaping::Basic,
+            None,
+        );
+        self.command_menu
+            .button
+            .shape_until_scroll(&mut self.font_system, false);
+
+        if let Some(rect) = menu.reload_config_rect {
+            let metrics = Metrics::new(layout.font_size.max(1.0), layout.line_height.max(1.0));
+            self.command_menu.reload_config.set_metrics_and_size(
+                metrics,
+                Some(rect.width.saturating_sub(16) as f32),
+                Some(rect.height as f32),
+            );
+            self.command_menu.reload_config.set_text(
+                "Reload Config",
+                &Attrs::new()
+                    .family(Family::Name(&self.style.font_family))
+                    .weight(Weight(self.style.font_weight)),
+                Shaping::Basic,
+                None,
+            );
+            self.command_menu
+                .reload_config
+                .shape_until_scroll(&mut self.font_system, false);
+        }
+    }
+
     pub fn update_preedit(&mut self, text: Option<&str>, layout: TextLayout) {
         let text = text.unwrap_or_default();
         self.has_preedit = !text.is_empty();
@@ -531,7 +604,7 @@ impl GpuRenderer {
             },
         );
         let mut text_areas =
-            Vec::with_capacity(self.panes.len() * 4 + self.tabs.len() + self.workspaces.len());
+            Vec::with_capacity(self.panes.len() * 4 + self.tabs.len() + self.workspaces.len() + 2);
         for workspace in self.workspaces.values() {
             text_areas.push(TextArea {
                 buffer: &workspace.text,
@@ -559,6 +632,26 @@ impl GpuRenderer {
                 } else {
                     glyph_color(self.style.foreground, 170)
                 },
+                custom_glyphs: &[],
+            });
+        }
+        text_areas.push(TextArea {
+            buffer: &self.command_menu.button,
+            left: self.command_menu.button_rect.x as f32 + 6.0,
+            top: self.command_menu.button_rect.y as f32 + 2.0,
+            scale: 1.0,
+            bounds: pane_bounds(self.command_menu.button_rect),
+            default_color: glyph_color(self.style.foreground, 190),
+            custom_glyphs: &[],
+        });
+        if let Some(rect) = self.command_menu.reload_config_rect {
+            text_areas.push(TextArea {
+                buffer: &self.command_menu.reload_config,
+                left: rect.x as f32 + 8.0,
+                top: rect.y as f32 + 4.0,
+                scale: 1.0,
+                bounds: pane_bounds(rect),
+                default_color: glyph_color(self.style.cursor, 255),
                 custom_glyphs: &[],
             });
         }
