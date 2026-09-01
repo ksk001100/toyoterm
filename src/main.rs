@@ -4,10 +4,14 @@ use std::process::ExitCode;
 
 use toyoterm::{
     AlacrittyTerminalBackend, Command, Mux, NativePty, Pty, PtyCommand, PtySize, SplitDirection,
-    TerminalBackend, run_gui, run_gui_with_config_path,
+    TerminalBackend, init_logging, run_gui, run_gui_with_config_path,
 };
 
 fn main() -> ExitCode {
+    if let Err(error) = init_logging() {
+        eprintln!("toyoterm: {error}");
+        return ExitCode::FAILURE;
+    }
     match run(std::env::args().skip(1)) {
         Ok(()) => ExitCode::SUCCESS,
         Err(message) => {

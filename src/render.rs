@@ -242,6 +242,7 @@ impl PaneBuffers {
 
 impl GpuRenderer {
     pub async fn new(window: Arc<Window>) -> Result<Self, RenderError> {
+        tracing::debug!(target: "toyoterm::render", "initialize GPU renderer");
         let size = window.inner_size();
         let width = size.width.max(1);
         let height = size.height.max(1);
@@ -269,6 +270,13 @@ impl GpuRenderer {
             .ok_or_else(|| RenderError::new("configure GPU surface", "unsupported surface"))?;
         configuration.desired_maximum_frame_latency = 1;
         surface.configure(&device, &configuration);
+        tracing::info!(
+            target: "toyoterm::render",
+            width,
+            height,
+            format = ?configuration.format,
+            "GPU renderer initialized"
+        );
 
         let mut font_system = FontSystem::new();
         let swash_cache = SwashCache::new();

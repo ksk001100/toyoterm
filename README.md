@@ -158,6 +158,15 @@ An executable starter configuration is available at `examples/minimal_config.rb`
 
 The embedded runtime is mruby, not CRuby. CRuby gems, native extensions, and the complete CRuby standard library are not available unless toyoterm explicitly bundles them. `mruby-time` is not bundled in v0.1 because the current configuration and event APIs do not require it.
 
+### Logging
+
+Diagnostics are written to stderr through `tracing`; the default level is `warn`. `TOYOTERM_LOG` sets the global level or comma-separated target filters. The available targets are `toyoterm::pty`, `toyoterm::render`, `toyoterm::mux`, `toyoterm::script`, `toyoterm::config`, and `toyoterm::app`. Short target names such as `pty` are accepted.
+
+```sh
+TOYOTERM_LOG=debug toyoterm
+TOYOTERM_LOG=warn,pty=trace,render=debug toyoterm
+```
+
 ## Controls
 
 - Type normally to send input to the PTY

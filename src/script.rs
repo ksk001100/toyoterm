@@ -618,6 +618,7 @@ impl ConfigManager {
         let path = self.source_path.clone().ok_or_else(|| {
             ScriptError::new("reload config", "no configuration path is available")
         })?;
+        tracing::debug!(target: "toyoterm::config", path = %path.display(), "load config");
         let source = std::fs::read_to_string(&path)
             .map_err(|error| ScriptError::config_file(&path, error))?;
         self.reload_named(&source, &path.display().to_string())
@@ -640,6 +641,7 @@ impl ConfigManager {
         self.keybindings = loaded.keybindings;
         self.native_actions = loaded.native_actions;
         self.event_names = loaded.event_names;
+        tracing::info!(target: "toyoterm::config", filename, "config loaded");
         Ok(&self.config)
     }
 

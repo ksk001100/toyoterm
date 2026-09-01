@@ -417,19 +417,19 @@ impl ApplicationHandler<AppEvent> for ToyotermApplication {
                     Ok(true) => return,
                     Ok(false) => {}
                     Err(error) => {
-                        eprintln!("toyoterm: {error}");
+                        tracing::warn!(target: "toyoterm::app", %error, "leader key handling failed");
                         return;
                     }
                 }
                 if is_clipboard_shortcut(&event, modifiers, 'c') {
                     if let Err(error) = self.copy_selection() {
-                        eprintln!("toyoterm: {error}");
+                        tracing::warn!(target: "toyoterm::app", %error, "copy failed");
                     }
                     return;
                 }
                 if is_clipboard_shortcut(&event, modifiers, 'v') {
                     if let Err(error) = self.paste_clipboard() {
-                        eprintln!("toyoterm: {error}");
+                        tracing::warn!(target: "toyoterm::app", %error, "paste failed");
                     }
                     return;
                 }
@@ -439,7 +439,7 @@ impl ApplicationHandler<AppEvent> for ToyotermApplication {
                     Ok(true) => return,
                     Ok(false) => {}
                     Err(error) => {
-                        eprintln!("toyoterm: {error}");
+                        tracing::warn!(target: "toyoterm::script", %error, "key binding failed");
                         return;
                     }
                 }
@@ -447,7 +447,7 @@ impl ApplicationHandler<AppEvent> for ToyotermApplication {
                     Ok(true) => return,
                     Ok(false) => {}
                     Err(error) => {
-                        eprintln!("toyoterm: {error}");
+                        tracing::warn!(target: "toyoterm::app", %error, "tab shortcut failed");
                         return;
                     }
                 }
@@ -487,6 +487,7 @@ impl ApplicationHandler<AppEvent> for ToyotermApplication {
                 if let Some(renderer) = self.renderer.as_mut()
                     && let Err(error) = renderer.render()
                 {
+                    tracing::error!(target: "toyoterm::render", %error, "render failed");
                     self.fail(event_loop, error.to_string());
                 }
             }
@@ -509,7 +510,7 @@ impl ApplicationHandler<AppEvent> for ToyotermApplication {
             }
             AppEvent::Eof { pane } => self.mark_pane_exited(pane, None),
             AppEvent::Error { pane, message } => {
-                eprintln!("toyoterm: pane {pane}: {message}");
+                tracing::error!(target: "toyoterm::pty", %pane, %message, "PTY reader failed");
                 self.mark_pane_exited(pane, Some(message));
             }
         }
@@ -633,7 +634,7 @@ impl ToyotermApplication {
                 Ok(true) => {}
                 Ok(false) => continue,
                 Err(error) => {
-                    eprintln!("toyoterm: Ruby key binding error: {error}");
+                    tracing::warn!(target: "toyoterm::script", %error, key, "Ruby key binding failed");
                     return Ok(true);
                 }
             }
@@ -870,7 +871,7 @@ impl ToyotermApplication {
         match self.reload_config() {
             Ok(()) => self.config_error_notice = None,
             Err(error) => {
-                eprintln!("toyoterm: config reload failed: {error}");
+                tracing::warn!(target: "toyoterm::config", %error, "config reload failed");
                 self.config_error_notice = Some(ConfigErrorNotice {
                     message: error,
                     log_expanded: false,
@@ -948,7 +949,7 @@ impl ToyotermApplication {
             }
             Ok(false) => Ok(()),
             Err(error) => {
-                eprintln!("toyoterm: Ruby `{name}` event error: {error}");
+                tracing::warn!(target: "toyoterm::script", %error, event = name, "Ruby event failed");
                 Ok(())
             }
         }
@@ -1306,7 +1307,7 @@ impl ToyotermApplication {
                 self.command_menu_open = false;
                 if reload_config {
                     if let Err(error) = self.reload_config_with_notification() {
-                        eprintln!("toyoterm: update config error notification: {error}");
+                        tracing::warn!(target: "toyoterm::config", %error, "update config error notification failed");
                     }
                     self.sync_active_renderer(window.scale_factor());
                     window.request_redraw();
@@ -1344,7 +1345,7 @@ impl ToyotermApplication {
                     if let Err(error) =
                         self.resize_panes(window.inner_size(), window.scale_factor())
                     {
-                        eprintln!("toyoterm: resize after config notification action: {error}");
+                        tracing::warn!(target: "toyoterm::render", %error, "resize after config notification failed");
                     }
                     self.sync_active_renderer(window.scale_factor());
                     window.request_redraw();
@@ -1359,7 +1360,7 @@ impl ToyotermApplication {
                     && let Err(error) =
                         self.dispatch_gui_command(Command::ActivateWorkspace(workspace))
                 {
-                    eprintln!("toyoterm: activate workspace {workspace}: {error}");
+                    tracing::warn!(target: "toyoterm::mux", %error, %workspace, "activate workspace failed");
                 }
                 return;
             }
@@ -1370,7 +1371,7 @@ impl ToyotermApplication {
                 if self.mux.current_tab() != Some(tab)
                     && let Err(error) = self.dispatch_gui_command(Command::ActivateTab(tab))
                 {
-                    eprintln!("toyoterm: activate tab {tab}: {error}");
+                    tracing::warn!(target: "toyoterm::mux", %error, %tab, "activate tab failed");
                 }
                 return;
             }
@@ -1383,7 +1384,7 @@ impl ToyotermApplication {
             if self.mux.current_pane() != Some(hovered)
                 && let Err(error) = self.dispatch_gui_command(Command::ActivatePane(hovered))
             {
-                eprintln!("toyoterm: focus pane {hovered}: {error}");
+                tracing::warn!(target: "toyoterm::mux", %error, pane = %hovered, "focus pane failed");
                 return;
             }
         }
@@ -1471,7 +1472,7 @@ impl ToyotermApplication {
             })
             .ok();
         if let Err(error) = self.config_manager.set_clipboard_text(text.as_deref()) {
-            eprintln!("toyoterm: {error}");
+            tracing::warn!(target: "toyoterm::script", %error, "update Ruby clipboard snapshot failed");
         }
     }
 

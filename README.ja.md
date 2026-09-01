@@ -158,6 +158,15 @@ GUIで設定の読込に失敗すると、アプリを終了せずエラーバ�
 
 組み込みランタイムはCRubyではなくmrubyです。toyotermが明示的にbundleしていないCRuby gem、native extension、完全なCRuby標準ライブラリは利用できません。現在の設定・イベントAPIでは不要なため、v0.1では`mruby-time`をbundleしません。
 
+### ログ
+
+診断情報は`tracing`を通して標準エラー出力へ書き込み、デフォルトlevelは`warn`です。`TOYOTERM_LOG`で全体のlevelまたはカンマ区切りのtarget filterを設定できます。targetは`toyoterm::pty`、`toyoterm::render`、`toyoterm::mux`、`toyoterm::script`、`toyoterm::config`、`toyoterm::app`です。`pty`のような短縮target名も使用できます。
+
+```sh
+TOYOTERM_LOG=debug toyoterm
+TOYOTERM_LOG=warn,pty=trace,render=debug toyoterm
+```
+
 ## 操作
 
 - 通常のキー入力：PTYへ入力を送信

@@ -7,6 +7,7 @@ pub mod api;
 pub mod app;
 pub mod input;
 pub mod layout;
+pub mod logging;
 pub mod mux;
 pub mod pty;
 pub mod render;
@@ -26,6 +27,7 @@ pub use layout::{
     CommandMenuLayout, ConfigErrorLayout, PaneLayout, PanePlacement, PaneRect, SplitAxis,
     SplitBoundary, TabPlacement, TabStripLayout, WorkspacePlacement, WorkspaceStripLayout,
 };
+pub use logging::init_logging;
 pub use mux::{Mux, MuxError, PaneNode};
 pub use pty::{NativePty, Pty, PtyCommand, PtyError, PtyExitStatus, PtySession, PtySize};
 pub use render::{

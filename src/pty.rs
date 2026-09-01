@@ -195,6 +195,12 @@ pub struct NativePty;
 
 impl Pty for NativePty {
     fn spawn(&self, command: PtyCommand, size: PtySize) -> Result<Box<dyn PtySession>, PtyError> {
+        tracing::debug!(
+            target: "toyoterm::pty",
+            columns = size.columns,
+            rows = size.rows,
+            "spawn PTY"
+        );
         if size.columns == 0 || size.rows == 0 {
             return Err(PtyError::new(
                 "open PTY",
@@ -215,6 +221,8 @@ impl Pty for NativePty {
             .take_writer()
             .map_err(|error| PtyError::new("open PTY writer", error))?;
 
+        let process_id = child.process_id();
+        tracing::info!(target: "toyoterm::pty", ?process_id, "PTY process started");
         Ok(Box::new(NativePtySession {
             master: pair.master,
             writer,

@@ -268,6 +268,7 @@ impl Mux {
     }
 
     pub fn dispatch(&mut self, command: Command) -> Result<CommandResult, MuxError> {
+        tracing::debug!(target: "toyoterm::mux", ?command, "dispatch command");
         match command {
             Command::NewTab => Ok(CommandResult::Tab(self.new_tab())),
             Command::ActivateTab(tab) => {
