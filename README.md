@@ -162,6 +162,8 @@ The embedded runtime is mruby, not CRuby. CRuby gems, native extensions, and the
 
 Diagnostics are written to stderr through `tracing`; the default level is `warn`. `TOYOTERM_LOG` sets the global level or comma-separated target filters. The available targets are `toyoterm::pty`, `toyoterm::render`, `toyoterm::mux`, `toyoterm::script`, `toyoterm::config`, and `toyoterm::app`. Short target names such as `pty` are accepted.
 
+Dynamic key-binding and event callback durations are emitted at `debug` under `toyoterm::script`. Callbacks taking 100 ms or longer are logged at `warn` as slow callbacks, including their kind, name, duration, and success state.
+
 ```sh
 TOYOTERM_LOG=debug toyoterm
 TOYOTERM_LOG=warn,pty=trace,render=debug toyoterm

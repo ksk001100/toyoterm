@@ -162,6 +162,8 @@ GUIで設定の読込に失敗すると、アプリを終了せずエラーバ�
 
 診断情報は`tracing`を通して標準エラー出力へ書き込み、デフォルトlevelは`warn`です。`TOYOTERM_LOG`で全体のlevelまたはカンマ区切りのtarget filterを設定できます。targetは`toyoterm::pty`、`toyoterm::render`、`toyoterm::mux`、`toyoterm::script`、`toyoterm::config`、`toyoterm::app`です。`pty`のような短縮target名も使用できます。
 
+動的キーバインドとイベントcallbackの実行時間は、`toyoterm::script`の`debug`として出力します。100ms以上かかったcallbackはslow callbackとして`warn`で出力し、種類、名前、実行時間、成功状態を記録します。
+
 ```sh
 TOYOTERM_LOG=debug toyoterm
 TOYOTERM_LOG=warn,pty=trace,render=debug toyoterm

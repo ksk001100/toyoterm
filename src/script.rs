@@ -5,8 +5,26 @@ use std::marker::PhantomData;
 use std::path::{Path, PathBuf};
 use std::ptr::NonNull;
 use std::rc::Rc;
+use std::time::{Duration, Instant};
 
 use crate::{Command, NativeAction, PaneId, SplitDirection};
+
+const SLOW_CALLBACK_THRESHOLD: Duration = Duration::from_millis(100);
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum CallbackKind {
+    KeyBinding,
+    Event,
+}
+
+impl CallbackKind {
+    const fn as_str(self) -> &'static str {
+        match self {
+            Self::KeyBinding => "key_binding",
+            Self::Event => "event",
+        }
+    }
+}
 
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) enum ScriptCommand {
@@ -685,10 +703,10 @@ impl ConfigManager {
             return Ok(false);
         }
         self.set_current_pane(current_pane)?;
-        let key = ruby_string_literal(&key);
-        match self.runtime.eval(&format!(
-            "Toyoterm.__config.__trigger_binding({key}, Toyoterm.current_pane)"
-        ))? {
+        let callback_name = key;
+        let key = ruby_string_literal(&callback_name);
+        let source = format!("Toyoterm.__config.__trigger_binding({key}, Toyoterm.current_pane)");
+        match self.eval_callback(CallbackKind::KeyBinding, &callback_name, &source)? {
             value if value == "true" => Ok(true),
             value if value == "false" => Ok(false),
             _ => Err(ScriptError::new(
@@ -719,10 +737,10 @@ impl ConfigManager {
             return Ok(false);
         }
         self.set_current_pane(current_pane)?;
-        let name = ruby_string_literal(name);
-        match self.runtime.eval(&format!(
-            "Toyoterm.__emit_event({name}, Toyoterm.current_pane)"
-        ))? {
+        let callback_name = name;
+        let name = ruby_string_literal(callback_name);
+        let source = format!("Toyoterm.__emit_event({name}, Toyoterm.current_pane)");
+        match self.eval_callback(CallbackKind::Event, callback_name, &source)? {
             value if value == "true" => Ok(true),
             value if value == "false" => Ok(false),
             _ => Err(ScriptError::new(
@@ -730,6 +748,18 @@ impl ConfigManager {
                 "event handler returned an invalid state",
             )),
         }
+    }
+
+    fn eval_callback(
+        &mut self,
+        kind: CallbackKind,
+        name: &str,
+        source: &str,
+    ) -> Result<String, ScriptError> {
+        let started = Instant::now();
+        let result = self.runtime.eval(source);
+        record_callback_duration(kind, name, started.elapsed(), result.is_ok());
+        result
     }
 
     /// Converts commands queued by Ruby into the native command API.
@@ -770,6 +800,34 @@ impl ConfigManager {
         }
         Ok(commands)
     }
+}
+
+fn record_callback_duration(kind: CallbackKind, name: &str, elapsed: Duration, succeeded: bool) {
+    let duration_ms = elapsed.as_secs_f64() * 1_000.0;
+    if is_slow_callback(elapsed) {
+        tracing::warn!(
+            target: "toyoterm::script",
+            callback_kind = kind.as_str(),
+            callback_name = name,
+            duration_ms,
+            threshold_ms = SLOW_CALLBACK_THRESHOLD.as_millis() as u64,
+            succeeded,
+            "slow Ruby callback"
+        );
+    } else {
+        tracing::debug!(
+            target: "toyoterm::script",
+            callback_kind = kind.as_str(),
+            callback_name = name,
+            duration_ms,
+            succeeded,
+            "Ruby callback completed"
+        );
+    }
+}
+
+fn is_slow_callback(elapsed: Duration) -> bool {
+    elapsed >= SLOW_CALLBACK_THRESHOLD
 }
 
 pub fn default_config_path() -> Option<PathBuf> {
@@ -1013,6 +1071,12 @@ fn parse_f32(name: &str, value: &str) -> Result<f32, ScriptError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn classifies_callbacks_at_the_slow_threshold() {
+        assert!(!is_slow_callback(Duration::from_millis(99)));
+        assert!(is_slow_callback(Duration::from_millis(100)));
+    }
 
     #[test]
     fn evaluates_ruby_in_a_persistent_vm() {
