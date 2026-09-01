@@ -15,8 +15,8 @@ pub mod script;
 pub mod terminal;
 
 pub use api::{
-    Command, CommandResult, Event, NativeAction, PaneId, SplitDirection, TabId, WindowId,
-    WorkspaceId,
+    Command, CommandResult, Event, HandleKind, NativeAction, NativeHandle, NativeId, PaneId,
+    SplitDirection, TabId, WindowId, WorkspaceId,
 };
 pub use app::{CellMetrics, run_gui, run_gui_with_config_path};
 pub use input::{

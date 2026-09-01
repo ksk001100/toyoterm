@@ -274,12 +274,41 @@ module Toyoterm
     end
   end
 
-  class Pane
+  class NativeHandle
     attr_reader :id
 
     def initialize(id)
+      unless id.is_a?(Integer) && id >= 0
+        raise ArgumentError, "native handle id must be a non-negative integer"
+      end
       @id = id
     end
+
+    def ==(other)
+      other.class == self.class && other.id == @id
+    end
+
+    alias eql? ==
+
+    def hash
+      self.class.hash ^ @id.hash
+    end
+
+    def inspect
+      "#<#{self.class}:#{@id}>"
+    end
+  end
+
+  class Workspace < NativeHandle
+  end
+
+  class Window < NativeHandle
+  end
+
+  class Tab < NativeHandle
+  end
+
+  class Pane < NativeHandle
 
     def send_text(text)
       text = text.to_s
@@ -1353,6 +1382,39 @@ fail_config
             })]
         );
         assert!(manager.drain_commands(PaneId(42)).unwrap().is_empty());
+    }
+
+    #[test]
+    fn ruby_native_handles_are_typed_id_values() {
+        let mut manager = ConfigManager::new().unwrap();
+        manager.set_current_pane(PaneId(42)).unwrap();
+
+        assert_eq!(
+            manager
+                .eval("Toyoterm.current_pane.class.superclass")
+                .unwrap(),
+            "Toyoterm::NativeHandle"
+        );
+        assert_eq!(manager.eval("Toyoterm.current_pane.id").unwrap(), "42");
+        assert_eq!(
+            manager.eval("Toyoterm.current_pane.inspect").unwrap(),
+            "#<Toyoterm::Pane:42>"
+        );
+        assert_eq!(
+            manager
+                .eval("Toyoterm::Pane.new(7) == Toyoterm::Pane.new(7)")
+                .unwrap(),
+            "true"
+        );
+        assert_eq!(
+            manager
+                .eval("Toyoterm::Pane.new(7) == Toyoterm::Tab.new(7)")
+                .unwrap(),
+            "false"
+        );
+
+        let error = manager.eval("Toyoterm::Pane.new(-1)").unwrap_err();
+        assert!(error.message().contains("non-negative integer"));
     }
 
     #[test]
