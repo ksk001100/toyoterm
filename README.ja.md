@@ -148,6 +148,8 @@ Toyoterm.configure do |config|
     ctrl_shift("o").activate_pane(:right)
     ctrl_shift("t").new_tab
     ctrl_shift("r").reload_config
+    alt("F10").toggle_maximize
+    ctrl_shift("F11").toggle_fullscreen
   end
 end
 
@@ -309,6 +311,10 @@ v0.1のログ出力先は標準エラー出力のみで、ログファイルの�
 - Linux・Windowsの`Ctrl+Shift+Q`またはmacOSの`Cmd+Shift+W`：active Paneを閉じる（最後のPaneは維持）
 - Linux・Windowsの`Ctrl+Shift+N`またはmacOSの`Cmd+N`：`Workspace 2`以降の連番名でWorkspaceを作成してactivate（初期Workspaceは`Workspace 1`）
 - Linux・Windowsの`Ctrl+Shift+F`またはmacOSの`Cmd+Shift+F`：viewportとscrollbackをliteral検索（Enter／Shift+Enterで次／前のmatchへ移動）
+- `F11`：フルスクリーンを切替
+- Linux・Windowsの`Alt+F10`：最大化／元のサイズを切替、`Alt+F9`：最小化
+- macOSの`Ctrl+Cmd+F`：フルスクリーンを切替
+- Command Palette（`Ctrl+Shift+P` / `Cmd+Shift+P`）からウィンドウの最大化、最小化、フルスクリーンを実行
 - `Ctrl+Alt+Left` / `Ctrl+Alt+Right`：前／次のWorkspaceをactivate
 - Workspaceまたはタブのラベルをクリック：対象をactivate
 - 左マウスボタンでドラッグ：テキストを選択

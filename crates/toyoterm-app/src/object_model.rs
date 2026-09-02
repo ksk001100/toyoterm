@@ -17,7 +17,12 @@ pub(super) fn palette_native_command(
         PaletteAction::SwitchWorkspace(name) => {
             Some(NativeCommand::Mux(Command::SwitchWorkspace(name.clone())))
         }
-        PaletteAction::RubyConsole | PaletteAction::UserCommand(_) => None,
+        PaletteAction::MaximizeWindow
+        | PaletteAction::ToggleMaximize
+        | PaletteAction::MinimizeWindow
+        | PaletteAction::ToggleFullscreen
+        | PaletteAction::RubyConsole
+        | PaletteAction::UserCommand(_) => None,
     })
 }
 

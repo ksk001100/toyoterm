@@ -9,6 +9,10 @@ pub(super) fn decode_native_action(
         "close_pane" => Ok(NativeAction::ClosePane),
         "reload_config" => Ok(NativeAction::ReloadConfig),
         "command_palette" => Ok(NativeAction::CommandPalette),
+        "maximize_window" => Ok(NativeAction::MaximizeWindow),
+        "toggle_maximize" => Ok(NativeAction::ToggleMaximize),
+        "minimize_window" => Ok(NativeAction::MinimizeWindow),
+        "toggle_fullscreen" => Ok(NativeAction::ToggleFullscreen),
         "user_command" if !argument.is_empty() => Ok(NativeAction::UserCommand(argument.into())),
         "user_command" => Err(ScriptError::new(
             "load key bindings",

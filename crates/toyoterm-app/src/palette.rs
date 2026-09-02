@@ -4,6 +4,10 @@ use toyoterm_api::SplitDirection;
 pub enum PaletteAction {
     ReloadConfig,
     NewTab,
+    MaximizeWindow,
+    ToggleMaximize,
+    MinimizeWindow,
+    ToggleFullscreen,
     Split(SplitDirection),
     ClosePane,
     SwitchWorkspace(String),

@@ -168,6 +168,9 @@ pub(super) enum ShortcutPlatform {
 pub(super) enum GuiManagementShortcut {
     ReloadConfig,
     CommandPalette,
+    ToggleMaximize,
+    MinimizeWindow,
+    ToggleFullscreen,
     Search,
     NewTab,
     NewWorkspace,
@@ -280,6 +283,10 @@ pub(super) fn gui_management_shortcut(
         _ => None,
     };
 
+    if modifiers.is_empty() && matches!(key, Key::Named(NamedKey::F11)) {
+        return Some(GuiManagementShortcut::ToggleFullscreen);
+    }
+
     match platform {
         ShortcutPlatform::LinuxOrWindows if modifiers.control_key() && modifiers.shift_key() => {
             match character {
@@ -302,6 +309,18 @@ pub(super) fn gui_management_shortcut(
                 }
                 _ => arrow.map(GuiManagementShortcut::Focus),
             }
+        }
+        ShortcutPlatform::LinuxOrWindows if modifiers.alt_key() => match key {
+            Key::Named(NamedKey::F10) => Some(GuiManagementShortcut::ToggleMaximize),
+            Key::Named(NamedKey::F9) => Some(GuiManagementShortcut::MinimizeWindow),
+            _ => None,
+        },
+        ShortcutPlatform::MacOs
+            if modifiers.control_key()
+                && modifiers.super_key()
+                && matches!(key, Key::Character(text) if text.eq_ignore_ascii_case("f")) =>
+        {
+            Some(GuiManagementShortcut::ToggleFullscreen)
         }
         ShortcutPlatform::MacOs if modifiers.super_key() => match character {
             Some(key) if key.eq_ignore_ascii_case("r") && modifiers.shift_key() => {

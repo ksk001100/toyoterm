@@ -177,10 +177,55 @@ impl ToyotermApplication {
                 self.open_command_palette();
                 Ok(())
             }
+            NativeAction::MaximizeWindow => self.maximize_window(),
+            NativeAction::ToggleMaximize => self.toggle_maximize_window(),
+            NativeAction::MinimizeWindow => self.minimize_window(),
+            NativeAction::ToggleFullscreen => self.toggle_fullscreen(),
             NativeAction::UserCommand(name) => self.execute_user_command(&name),
             NativeAction::Split(direction) => self.split_active_pane(direction),
             NativeAction::ActivatePane(direction) => self.focus_neighbor(direction),
         }
+    }
+
+    pub(super) fn maximize_window(&mut self) -> Result<(), String> {
+        let window = self
+            .window
+            .as_ref()
+            .ok_or_else(|| "native window is not available".to_owned())?;
+        window.set_maximized(true);
+        Ok(())
+    }
+
+    pub(super) fn toggle_maximize_window(&mut self) -> Result<(), String> {
+        let window = self
+            .window
+            .as_ref()
+            .ok_or_else(|| "native window is not available".to_owned())?;
+        window.set_maximized(!window.is_maximized());
+        Ok(())
+    }
+
+    pub(super) fn minimize_window(&mut self) -> Result<(), String> {
+        let window = self
+            .window
+            .as_ref()
+            .ok_or_else(|| "native window is not available".to_owned())?;
+        window.set_minimized(true);
+        Ok(())
+    }
+
+    pub(super) fn toggle_fullscreen(&mut self) -> Result<(), String> {
+        let window = self
+            .window
+            .as_ref()
+            .ok_or_else(|| "native window is not available".to_owned())?;
+        let fullscreen = if window.fullscreen().is_some() {
+            None
+        } else {
+            Some(Fullscreen::Borderless(window.current_monitor()))
+        };
+        window.set_fullscreen(fullscreen);
+        Ok(())
     }
 
     pub(super) fn open_command_palette(&mut self) {
@@ -204,6 +249,22 @@ impl ToyotermApplication {
             PaletteItem {
                 label: "New Tab".into(),
                 action: PaletteAction::NewTab,
+            },
+            PaletteItem {
+                label: "Maximize Window".into(),
+                action: PaletteAction::MaximizeWindow,
+            },
+            PaletteItem {
+                label: "Toggle Maximize".into(),
+                action: PaletteAction::ToggleMaximize,
+            },
+            PaletteItem {
+                label: "Minimize Window".into(),
+                action: PaletteAction::MinimizeWindow,
+            },
+            PaletteItem {
+                label: "Toggle Fullscreen".into(),
+                action: PaletteAction::ToggleFullscreen,
             },
             PaletteItem {
                 label: "Split Right".into(),
@@ -345,6 +406,10 @@ impl ToyotermApplication {
             | PaletteAction::SwitchWorkspace(_) => {
                 unreachable!("native palette action was normalized")
             }
+            PaletteAction::MaximizeWindow => self.maximize_window(),
+            PaletteAction::ToggleMaximize => self.toggle_maximize_window(),
+            PaletteAction::MinimizeWindow => self.minimize_window(),
+            PaletteAction::ToggleFullscreen => self.toggle_fullscreen(),
             PaletteAction::RubyConsole => {
                 self.open_ruby_console();
                 Ok(())
@@ -378,6 +443,9 @@ impl ToyotermApplication {
                     self.reload_config_with_notification()?;
                 }
                 GuiManagementShortcut::CommandPalette => self.open_command_palette(),
+                GuiManagementShortcut::ToggleMaximize => self.toggle_maximize_window()?,
+                GuiManagementShortcut::MinimizeWindow => self.minimize_window()?,
+                GuiManagementShortcut::ToggleFullscreen => self.toggle_fullscreen()?,
                 GuiManagementShortcut::Search => self.open_search(),
                 GuiManagementShortcut::NewTab => {
                     self.dispatch_gui_command(Command::NewTab)?;

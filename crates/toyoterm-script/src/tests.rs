@@ -951,6 +951,9 @@ fn compiles_static_key_dsl_to_native_actions() {
                     ctrl_shift("j").activate_pane(:down)
                     ctrl("t").new_tab
                     alt("q").close_pane
+                    alt("F10").toggle_maximize
+                    alt("F9").minimize_window
+                    ctrl("F11").toggle_fullscreen
                     primary("p").close_pane
                     primary_shift("o").reload_config
                     ctrl_shift("r").reload_config
@@ -974,6 +977,18 @@ fn compiles_static_key_dsl_to_native_actions() {
         Some(NativeAction::ActivatePane(SplitDirection::Left))
     );
     assert_eq!(manager.native_action("CTRL+T"), Some(NativeAction::NewTab));
+    assert_eq!(
+        manager.native_action("ALT+F10"),
+        Some(NativeAction::ToggleMaximize)
+    );
+    assert_eq!(
+        manager.native_action("ALT+F9"),
+        Some(NativeAction::MinimizeWindow)
+    );
+    assert_eq!(
+        manager.native_action("CTRL+F11"),
+        Some(NativeAction::ToggleFullscreen)
+    );
     assert_eq!(
         manager.native_action("ALT+Q"),
         Some(NativeAction::ClosePane)

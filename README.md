@@ -149,6 +149,8 @@ Toyoterm.configure do |config|
     ctrl_shift("o").activate_pane(:right)
     ctrl_shift("t").new_tab
     ctrl_shift("r").reload_config
+    alt("F10").toggle_maximize
+    ctrl_shift("F11").toggle_fullscreen
   end
 end
 
@@ -311,6 +313,10 @@ v0.1 writes logs only to stderr and does not create or rotate log files. Redirec
 - `Ctrl+Shift+Q` on Linux/Windows or `Cmd+Shift+W` on macOS: close the active pane (the final pane is kept open)
 - `Ctrl+Shift+N` on Linux/Windows or `Cmd+N` on macOS: create and activate the next numbered workspace (`Workspace 1` is the initial workspace)
 - `Ctrl+Shift+F` on Linux/Windows or `Cmd+Shift+F` on macOS: search literal text across the viewport and scrollback; Enter/Shift+Enter selects the next/previous match
+- `F11`: toggle fullscreen
+- `Alt+F10` on Linux/Windows: toggle maximize/restore, `Alt+F9`: minimize
+- `Ctrl+Cmd+F` on macOS: toggle fullscreen
+- The Command Palette (`Ctrl+Shift+P` / `Cmd+Shift+P`) also provides maximize, minimize, and fullscreen actions
 - `Ctrl+Alt+Left` / `Ctrl+Alt+Right`: activate the previous / next workspace
 - Click a workspace or tab label to activate it
 - Drag with the left mouse button: select text

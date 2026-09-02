@@ -129,6 +129,26 @@ module Toyoterm
       self
     end
 
+    def maximize_window
+      @config.__register_static(@key, :maximize_window, nil)
+      self
+    end
+
+    def toggle_maximize
+      @config.__register_static(@key, :toggle_maximize, nil)
+      self
+    end
+
+    def minimize_window
+      @config.__register_static(@key, :minimize_window, nil)
+      self
+    end
+
+    def toggle_fullscreen
+      @config.__register_static(@key, :toggle_fullscreen, nil)
+      self
+    end
+
     def command(name)
       @config.__register_static(@key, :user_command, name)
       self
