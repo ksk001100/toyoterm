@@ -344,6 +344,58 @@ impl PaneLayout {
 mod tests {
     use super::*;
 
+    struct Cases(u64);
+
+    impl Cases {
+        fn next(&mut self) -> u32 {
+            self.0 = self
+                .0
+                .wrapping_mul(6_364_136_223_846_793_005)
+                .wrapping_add(1);
+            (self.0 >> 32) as u32
+        }
+
+        fn below(&mut self, upper: u32) -> u32 {
+            self.next() % upper
+        }
+    }
+
+    fn generated_tree(cases: &mut Cases, next_pane: &mut u64, depth: u8) -> PaneNode {
+        if depth == 0 || cases.below(4) == 0 {
+            let pane = PaneId(*next_pane);
+            *next_pane += 1;
+            return PaneNode::Leaf(pane);
+        }
+
+        let direction = match cases.below(4) {
+            0 => SplitDirection::Left,
+            1 => SplitDirection::Right,
+            2 => SplitDirection::Up,
+            _ => SplitDirection::Down,
+        };
+        PaneNode::Split {
+            direction,
+            // Include values outside the accepted range to exercise clamping.
+            ratio: cases.below(141) as f32 / 100.0 - 0.2,
+            first: Box::new(generated_tree(cases, next_pane, depth - 1)),
+            second: Box::new(generated_tree(cases, next_pane, depth - 1)),
+        }
+    }
+
+    fn rect_is_inside(inner: PaneRect, outer: PaneRect) -> bool {
+        inner.x >= outer.x
+            && inner.y >= outer.y
+            && inner.x.saturating_add(inner.width) <= outer.x.saturating_add(outer.width)
+            && inner.y.saturating_add(inner.height) <= outer.y.saturating_add(outer.height)
+    }
+
+    fn rects_overlap(left: PaneRect, right: PaneRect) -> bool {
+        left.x < right.x.saturating_add(right.width)
+            && right.x < left.x.saturating_add(left.width)
+            && left.y < right.y.saturating_add(right.height)
+            && right.y < left.y.saturating_add(left.height)
+    }
+
     fn split(direction: SplitDirection, ratio: f32) -> PaneNode {
         PaneNode::Split {
             direction,
@@ -417,6 +469,75 @@ mod tests {
             layout.neighbor(PaneId(2), SplitDirection::Down),
             Some(PaneId(3))
         );
+    }
+
+    #[test]
+    fn generated_split_layouts_preserve_geometry_and_directional_focus() {
+        let mut cases = Cases(0x5eed_f00d_cafe_beef);
+
+        for case in 0..256 {
+            let mut next_pane = 1;
+            let tree = generated_tree(&mut cases, &mut next_pane, 4);
+            let bounds = PaneRect::new(
+                cases.below(40),
+                cases.below(40),
+                80 + cases.below(720),
+                60 + cases.below(540),
+            );
+            let layout = PaneLayout::calculate(&tree, bounds, cases.below(7));
+            let expected_panes = tree.panes();
+
+            assert_eq!(layout.panes().len(), expected_panes.len(), "case {case}");
+            assert_eq!(
+                layout.boundaries().len(),
+                expected_panes.len().saturating_sub(1),
+                "case {case}"
+            );
+            for placement in layout.panes() {
+                assert!(expected_panes.contains(&placement.pane), "case {case}");
+                assert!(rect_is_inside(placement.rect, bounds), "case {case}");
+                if placement.rect.width > 0 && placement.rect.height > 0 {
+                    let (x, y) = placement.rect.center();
+                    assert_eq!(layout.pane_at(x, y), Some(placement.pane), "case {case}");
+                }
+            }
+            for (index, left) in layout.panes().iter().enumerate() {
+                for right in &layout.panes()[index + 1..] {
+                    assert!(
+                        !rects_overlap(left.rect, right.rect),
+                        "panes overlap in case {case}: {left:?} and {right:?}"
+                    );
+                }
+            }
+            for boundary in layout.boundaries() {
+                assert!(rect_is_inside(boundary.rect, bounds), "case {case}");
+            }
+
+            for placement in layout.panes() {
+                let (source_x, source_y) = placement.rect.center();
+                for direction in [
+                    SplitDirection::Left,
+                    SplitDirection::Right,
+                    SplitDirection::Up,
+                    SplitDirection::Down,
+                ] {
+                    let Some(neighbor) = layout.neighbor(placement.pane, direction) else {
+                        continue;
+                    };
+                    let (neighbor_x, neighbor_y) = layout
+                        .rect(neighbor)
+                        .expect("a neighbor is part of the layout")
+                        .center();
+                    let points_in_direction = match direction {
+                        SplitDirection::Left => neighbor_x < source_x,
+                        SplitDirection::Right => neighbor_x > source_x,
+                        SplitDirection::Up => neighbor_y < source_y,
+                        SplitDirection::Down => neighbor_y > source_y,
+                    };
+                    assert!(points_in_direction, "case {case}, direction {direction:?}");
+                }
+            }
+        }
     }
 
     #[test]

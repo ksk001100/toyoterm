@@ -776,6 +776,22 @@ impl Mux {
 mod tests {
     use super::*;
 
+    struct Cases(u64);
+
+    impl Cases {
+        fn next(&mut self) -> u32 {
+            self.0 = self
+                .0
+                .wrapping_mul(6_364_136_223_846_793_005)
+                .wrapping_add(1);
+            (self.0 >> 32) as u32
+        }
+
+        fn index(&mut self, len: usize) -> usize {
+            self.next() as usize % len
+        }
+    }
+
     #[test]
     fn starts_with_a_usable_hierarchy() {
         let mux = Mux::new();
@@ -841,6 +857,53 @@ mod tests {
             vec![original]
         );
         assert_eq!(mux.current_pane(), Some(original));
+    }
+
+    #[test]
+    fn generated_split_and_close_sequences_preserve_mux_invariants() {
+        let mut cases = Cases(0xdec0_de01_1234_5678);
+
+        for case in 0..128 {
+            let mut mux = Mux::new();
+            let tab = mux.current_tab().unwrap();
+            let mut panes = vec![mux.current_pane().unwrap()];
+
+            for _ in 0..16 {
+                let target = panes[cases.index(panes.len())];
+                let direction = match cases.index(4) {
+                    0 => SplitDirection::Left,
+                    1 => SplitDirection::Right,
+                    2 => SplitDirection::Up,
+                    _ => SplitDirection::Down,
+                };
+                let CommandResult::Pane(created) = mux
+                    .dispatch(Command::Split {
+                        pane: target,
+                        direction,
+                    })
+                    .unwrap()
+                else {
+                    panic!("split did not return a pane");
+                };
+                panes.push(created);
+            }
+
+            while panes.len() > 1 {
+                let removed = panes.swap_remove(cases.index(panes.len()));
+                mux.dispatch(Command::ClosePane(removed)).unwrap();
+
+                let tree_panes = mux.pane_tree(tab).unwrap().panes();
+                assert_eq!(tree_panes.len(), panes.len(), "case {case}");
+                assert!(
+                    panes.iter().all(|pane| tree_panes.contains(pane)),
+                    "case {case}"
+                );
+                assert!(!mux.pane_ids().any(|pane| pane == removed), "case {case}");
+                assert!(panes.contains(&mux.current_pane().unwrap()), "case {case}");
+            }
+
+            assert_eq!(mux.pane_tree(tab).unwrap(), &PaneNode::Leaf(panes[0]));
+        }
     }
 
     #[test]
@@ -993,6 +1056,51 @@ mod tests {
             .unwrap();
         assert_eq!(mux.current_tab(), Some(second_tab));
         assert_ne!(mux.current_pane(), Some(first_split));
+    }
+
+    #[test]
+    fn generated_workspace_transitions_restore_each_active_hierarchy() {
+        let mut mux = Mux::new();
+        let mut cases = Cases(0xa11c_e55e_cafe_babe);
+        let mut expected = vec![(
+            mux.current_workspace(),
+            mux.current_tab().unwrap(),
+            mux.current_pane().unwrap(),
+        )];
+
+        for index in 0..24 {
+            let CommandResult::Workspace(workspace) = mux
+                .dispatch(Command::SwitchWorkspace(format!("generated-{index}")))
+                .unwrap()
+            else {
+                panic!("switch did not return a workspace");
+            };
+            let original = mux.current_pane().unwrap();
+            let direction = match cases.index(4) {
+                0 => SplitDirection::Left,
+                1 => SplitDirection::Right,
+                2 => SplitDirection::Up,
+                _ => SplitDirection::Down,
+            };
+            let CommandResult::Pane(active) = mux
+                .dispatch(Command::Split {
+                    pane: original,
+                    direction,
+                })
+                .unwrap()
+            else {
+                panic!("split did not return a pane");
+            };
+            expected.push((workspace, mux.current_tab().unwrap(), active));
+        }
+
+        for case in 0..512 {
+            let (workspace, tab, pane) = expected[cases.index(expected.len())];
+            mux.dispatch(Command::ActivateWorkspace(workspace)).unwrap();
+            assert_eq!(mux.current_workspace(), workspace, "case {case}");
+            assert_eq!(mux.current_tab(), Some(tab), "case {case}");
+            assert_eq!(mux.current_pane(), Some(pane), "case {case}");
+        }
     }
 
     #[test]
