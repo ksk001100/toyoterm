@@ -117,6 +117,8 @@ Toyoterm.configure do |config|
     colors.foreground = "#dce1e8"
     colors.cursor = "#f5f7fa"
     colors.selection = "#375891"
+    # ANSI indexes 0..15 can be themed individually.
+    colors.ansi[1] = "#ff5f56"
   end
 
   config.window.opacity = 0.96
@@ -148,6 +150,12 @@ Toyoterm.on :config_reloaded do |event|
   event.pane.send_text("echo config reloaded\n")
 end
 ```
+
+Toyoterm renders ANSI 256-color foregrounds and backgrounds. `colors.ansi`
+contains the themeable base colors at indexes 0 through 15; indexes 16 through
+231 use the standard 6×6×6 xterm color cube and indexes 232 through 255 use its
+grayscale ramp. Assigning the entire `colors.ansi` array requires exactly 16
+`#RRGGBB` strings.
 
 `font.fallback` is optional. Installed families are tried in the listed order for missing CJK, emoji, symbol, and other glyphs, followed by the platform defaults. Unknown families are skipped by the font system.
 
@@ -252,7 +260,9 @@ GUI configuration failures open a non-fatal error banner. `Open Log` expands the
 
 Changing `default_shell` does not replace the shell that is already running; it applies when a new terminal session is created.
 
-An executable starter configuration is available at `examples/minimal_config.rb` and can be tested with `toyoterm --config examples/minimal_config.rb`.
+Executable configurations are available at `examples/minimal_config.rb` and
+`examples/tokyo_night_config.rb`. Try the Tokyo Night theme with
+`toyoterm --config examples/tokyo_night_config.rb`.
 
 The embedded runtime is mruby, not CRuby. CRuby gems, native extensions, and the complete CRuby standard library are not available unless toyoterm explicitly bundles them. `mruby-time` is not bundled in v0.1 because the current configuration and event APIs do not require it.
 

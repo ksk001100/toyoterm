@@ -213,7 +213,7 @@ fn run_gui_inner(config_path: Option<&Path>, exit_after_startup: bool) -> Result
         error.to_string()
     });
     let config = &startup.snapshot.config;
-    let render_style = RenderStyle::from_hex(
+    let render_style = RenderStyle::from_hex_with_ansi(
         &config.font.family,
         config.font.fallback.clone(),
         config.font.weight,
@@ -223,6 +223,7 @@ fn run_gui_inner(config_path: Option<&Path>, exit_after_startup: bool) -> Result
             &config.colors.cursor,
             &config.colors.selection,
         ],
+        &config.colors.ansi,
         config.window_opacity,
     )
     .map_err(|error| {
@@ -1399,7 +1400,7 @@ impl ToyotermApplication {
     fn apply_script_snapshot(&mut self, snapshot: ScriptSnapshot) -> Result<(), String> {
         let config = snapshot.config.clone();
         self.leader_deadline = None;
-        let render_style = RenderStyle::from_hex(
+        let render_style = RenderStyle::from_hex_with_ansi(
             &config.font.family,
             config.font.fallback.clone(),
             config.font.weight,
@@ -1409,6 +1410,7 @@ impl ToyotermApplication {
                 &config.colors.cursor,
                 &config.colors.selection,
             ],
+            &config.colors.ansi,
             config.window_opacity,
         )
         .map_err(|error| error.to_string())?;

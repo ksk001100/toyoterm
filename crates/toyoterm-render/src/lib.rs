@@ -97,6 +97,7 @@ pub struct RenderStyle {
     pub foreground: [u8; 3],
     pub cursor: [u8; 3],
     pub selection: [u8; 3],
+    pub ansi: [[u8; 3]; 16],
     pub opacity: f32,
 }
 
@@ -110,6 +111,7 @@ impl Default for RenderStyle {
             foreground: [220, 225, 232],
             cursor: [245, 247, 250],
             selection: [55, 88, 145],
+            ansi: default_ansi_palette(),
             opacity: 1.0,
         }
     }
@@ -123,7 +125,37 @@ impl RenderStyle {
         colors: [&str; 4],
         opacity: f32,
     ) -> Result<Self, RenderError> {
+        Self::from_hex_with_ansi(
+            font_family,
+            font_fallback,
+            font_weight,
+            colors,
+            &[],
+            opacity,
+        )
+    }
+
+    pub fn from_hex_with_ansi(
+        font_family: impl Into<String>,
+        font_fallback: Vec<String>,
+        font_weight: u16,
+        colors: [&str; 4],
+        ansi: &[String],
+        opacity: f32,
+    ) -> Result<Self, RenderError> {
         let [background, foreground, cursor, selection] = colors;
+        let mut parsed_ansi = default_ansi_palette();
+        if !ansi.is_empty() {
+            if ansi.len() != 16 {
+                return Err(RenderError::new(
+                    "parse color",
+                    format!("expected 16 ANSI colors, got {}", ansi.len()),
+                ));
+            }
+            for (target, value) in parsed_ansi.iter_mut().zip(ansi) {
+                *target = parse_rgb(value)?;
+            }
+        }
         Ok(Self {
             font_family: font_family.into(),
             font_fallback,
@@ -132,6 +164,7 @@ impl RenderStyle {
             foreground: parse_rgb(foreground)?,
             cursor: parse_rgb(cursor)?,
             selection: parse_rgb(selection)?,
+            ansi: parsed_ansi,
             opacity,
         })
     }
@@ -278,6 +311,7 @@ struct PaneBuffers {
     rect: PaneRect,
     active: bool,
     has_selection: bool,
+    backgrounds: Vec<(PaneRect, [u8; 3])>,
 }
 
 #[repr(C)]
@@ -388,6 +422,7 @@ impl PaneBuffers {
             rect: PaneRect::default(),
             active: false,
             has_selection: false,
+            backgrounds: Vec::new(),
         }
     }
 }
@@ -429,10 +464,19 @@ impl GpuRenderer {
             callback_state.mark_lost();
             redraw_window.request_redraw();
         });
-        let supported_alpha_modes = surface.get_capabilities(&adapter).alpha_modes;
+        let capabilities = surface.get_capabilities(&adapter);
+        let supported_alpha_modes = capabilities.alpha_modes.clone();
         let mut configuration = surface
             .get_default_config(&adapter, width, height)
             .ok_or_else(|| RenderError::new("configure GPU surface", "unsupported surface"))?;
+        if let Some(format) = capabilities
+            .formats
+            .iter()
+            .copied()
+            .find(|format| format.is_srgb())
+        {
+            configuration.format = format;
+        }
         configuration.desired_maximum_frame_latency = 1;
         surface.configure(&device, &configuration);
         tracing::info!(
@@ -572,6 +616,7 @@ impl GpuRenderer {
         let font_weight = self.style.font_weight;
         let foreground = self.style.foreground;
         let background = self.style.background;
+        let ansi = self.style.ansi;
         for pane in panes {
             let rich_text = terminal_rich_text(
                 pane.snapshot,
@@ -580,6 +625,7 @@ impl GpuRenderer {
                 font_weight,
                 foreground,
                 background,
+                &ansi,
             );
             if !self.panes.contains_key(&pane.pane) {
                 self.panes.insert(
@@ -596,6 +642,14 @@ impl GpuRenderer {
             buffers.rect = pane.rect;
             buffers.active = pane.active;
             buffers.has_selection = !pane.snapshot.selection.is_empty();
+            buffers.backgrounds = terminal_backgrounds(
+                pane.snapshot,
+                pane.rect,
+                layout,
+                background,
+                foreground,
+                &ansi,
+            );
             let content_width = pane
                 .rect
                 .width
@@ -1260,6 +1314,18 @@ impl GpuRenderer {
             }
         }
 
+        for pane in self.panes.values() {
+            for (rect, color) in &pane.backgrounds {
+                push_ui_rect(
+                    &mut vertices,
+                    *rect,
+                    rgba(*color, 1.0),
+                    self.configuration.width,
+                    self.configuration.height,
+                );
+            }
+        }
+
         for pane in self.panes.values().filter(|pane| pane.active) {
             push_ui_rect(
                 &mut vertices,
@@ -1398,21 +1464,35 @@ fn inset_rect(rect: PaneRect, left: u32, top: u32, right: u32, bottom: u32) -> P
 
 fn rgba(rgb: [u8; 3], alpha: f32) -> [f32; 4] {
     [
-        f32::from(rgb[0]) / 255.0,
-        f32::from(rgb[1]) / 255.0,
-        f32::from(rgb[2]) / 255.0,
+        srgb_channel_to_linear(rgb[0]),
+        srgb_channel_to_linear(rgb[1]),
+        srgb_channel_to_linear(rgb[2]),
         alpha,
     ]
 }
 
 fn mix_rgb(base: [u8; 3], tint: [u8; 3], amount: f32, alpha: f32) -> [f32; 4] {
     let amount = amount.clamp(0.0, 1.0);
-    [
-        (f32::from(base[0]) * (1.0 - amount) + f32::from(tint[0]) * amount) / 255.0,
-        (f32::from(base[1]) * (1.0 - amount) + f32::from(tint[1]) * amount) / 255.0,
-        (f32::from(base[2]) * (1.0 - amount) + f32::from(tint[2]) * amount) / 255.0,
+    let mix = |base: u8, tint: u8| {
+        (f32::from(base) * (1.0 - amount) + f32::from(tint) * amount).round() as u8
+    };
+    rgba(
+        [
+            mix(base[0], tint[0]),
+            mix(base[1], tint[1]),
+            mix(base[2], tint[2]),
+        ],
         alpha,
-    ]
+    )
+}
+
+fn srgb_channel_to_linear(channel: u8) -> f32 {
+    let value = f32::from(channel) / 255.0;
+    if value <= 0.04045 {
+        value / 12.92
+    } else {
+        ((value + 0.055) / 1.055).powf(2.4)
+    }
 }
 
 fn pane_text_placement(
@@ -1520,6 +1600,59 @@ fn terminal_cursor_byte_index(snapshot: &TerminalSnapshot, cursor: CursorState) 
     byte_index + usize::from(cursor.column.saturating_sub(column))
 }
 
+fn terminal_backgrounds(
+    snapshot: &TerminalSnapshot,
+    pane: PaneRect,
+    layout: TextLayout,
+    default_background: [u8; 3],
+    default_foreground: [u8; 3],
+    ansi: &[[u8; 3]; 16],
+) -> Vec<(PaneRect, [u8; 3])> {
+    let pane_right = pane.x.saturating_add(pane.width);
+    let pane_bottom = pane.y.saturating_add(pane.height);
+    let origin_x = pane.x as f32 + layout.horizontal_padding;
+    let origin_y = pane.y as f32 + layout.vertical_padding;
+    let mut backgrounds = Vec::new();
+
+    for (row, cells) in snapshot.cells.iter().enumerate() {
+        let top = (origin_y + row as f32 * layout.line_height)
+            .floor()
+            .max(0.0) as u32;
+        let bottom = (origin_y + (row + 1) as f32 * layout.line_height)
+            .ceil()
+            .max(0.0) as u32;
+        if top >= pane_bottom {
+            break;
+        }
+        for cell in cells {
+            let color = if cell.attributes.inverse {
+                resolve_cell_color(cell.attributes.foreground, default_foreground, ansi)
+            } else {
+                resolve_cell_color(cell.attributes.background, default_background, ansi)
+            };
+            if color == default_background {
+                continue;
+            }
+            let left = (origin_x + f32::from(cell.column) * layout.cell_width)
+                .floor()
+                .max(0.0) as u32;
+            let right = (origin_x
+                + f32::from(cell.column.saturating_add(u16::from(cell.width.max(1))))
+                    * layout.cell_width)
+                .ceil()
+                .max(0.0) as u32;
+            let left = left.max(pane.x);
+            let top = top.max(pane.y);
+            let right = right.min(pane_right);
+            let bottom = bottom.min(pane_bottom);
+            if right > left && bottom > top {
+                backgrounds.push((PaneRect::new(left, top, right - left, bottom - top), color));
+            }
+        }
+    }
+    backgrounds
+}
+
 fn terminal_rich_text<'a>(
     snapshot: &TerminalSnapshot,
     cursor: Option<CursorState>,
@@ -1527,6 +1660,7 @@ fn terminal_rich_text<'a>(
     font_weight: u16,
     default_foreground: [u8; 3],
     default_background: [u8; 3],
+    ansi: &[[u8; 3]; 16],
 ) -> Vec<(String, Attrs<'a>)> {
     if snapshot.cells.is_empty() {
         return Vec::new();
@@ -1559,6 +1693,7 @@ fn terminal_rich_text<'a>(
                     font_weight,
                     default_foreground,
                     default_background,
+                    ansi,
                 ),
             ));
             column = cell.column.saturating_add(u16::from(cell.width.max(1)));
@@ -1581,11 +1716,12 @@ fn glyph_attrs<'a>(
     font_weight: u16,
     default_foreground: [u8; 3],
     default_background: [u8; 3],
+    ansi: &[[u8; 3]; 16],
 ) -> Attrs<'a> {
     let foreground = if attributes.inverse {
-        resolve_cell_color(attributes.background, default_background)
+        resolve_cell_color(attributes.background, default_background, ansi)
     } else {
-        resolve_cell_color(attributes.foreground, default_foreground)
+        resolve_cell_color(attributes.foreground, default_foreground, ansi)
     };
     let alpha = if attributes.hidden {
         0
@@ -1613,16 +1749,16 @@ fn glyph_attrs<'a>(
     attrs
 }
 
-fn resolve_cell_color(color: CellColor, default: [u8; 3]) -> [u8; 3] {
+fn resolve_cell_color(color: CellColor, default: [u8; 3], ansi: &[[u8; 3]; 16]) -> [u8; 3] {
     match color {
         CellColor::Default => default,
         CellColor::Rgb(red, green, blue) => [red, green, blue],
-        CellColor::Indexed(index) => xterm_color(index),
+        CellColor::Indexed(index) => xterm_color(index, ansi),
     }
 }
 
-fn xterm_color(index: u8) -> [u8; 3] {
-    const ANSI: [[u8; 3]; 16] = [
+const fn default_ansi_palette() -> [[u8; 3]; 16] {
+    [
         [0, 0, 0],
         [205, 0, 0],
         [0, 205, 0],
@@ -1639,9 +1775,12 @@ fn xterm_color(index: u8) -> [u8; 3] {
         [255, 0, 255],
         [0, 255, 255],
         [255, 255, 255],
-    ];
+    ]
+}
+
+fn xterm_color(index: u8, ansi: &[[u8; 3]; 16]) -> [u8; 3] {
     match index {
-        0..=15 => ANSI[usize::from(index)],
+        0..=15 => ansi[usize::from(index)],
         16..=231 => {
             let index = index - 16;
             let component = |value: u8| if value == 0 { 0 } else { value * 40 + 55 };
@@ -1681,9 +1820,9 @@ fn clear_color(style: &RenderStyle, alpha_mode: CompositeAlphaMode) -> Color {
         1.0
     };
     Color {
-        r: f64::from(style.background[0]) / 255.0 * multiplier,
-        g: f64::from(style.background[1]) / 255.0 * multiplier,
-        b: f64::from(style.background[2]) / 255.0 * multiplier,
+        r: f64::from(srgb_channel_to_linear(style.background[0])) * multiplier,
+        g: f64::from(srgb_channel_to_linear(style.background[1])) * multiplier,
+        b: f64::from(srgb_channel_to_linear(style.background[2])) * multiplier,
         a: alpha,
     }
 }
@@ -1808,6 +1947,7 @@ mod tests {
             400,
             [220, 225, 232],
             [9, 11, 14],
+            &default_ansi_palette(),
         );
         let default_attrs = Attrs::new().family(Family::Name("JetBrainsMono Nerd Font"));
         buffer.set_rich_text(
@@ -1856,9 +1996,10 @@ mod tests {
 
     #[test]
     fn maps_xterm_palette_and_rich_cell_attributes() {
-        assert_eq!(xterm_color(1), [205, 0, 0]);
-        assert_eq!(xterm_color(21), [0, 0, 255]);
-        assert_eq!(xterm_color(232), [8, 8, 8]);
+        let ansi = default_ansi_palette();
+        assert_eq!(xterm_color(1, &ansi), [205, 0, 0]);
+        assert_eq!(xterm_color(21, &ansi), [0, 0, 255]);
+        assert_eq!(xterm_color(232, &ansi), [8, 8, 8]);
 
         let attrs = glyph_attrs(
             CellAttributes {
@@ -1872,6 +2013,7 @@ mod tests {
             400,
             [200, 200, 200],
             [0, 0, 0],
+            &ansi,
         );
         assert_eq!(attrs.color_opt, Some(GlyphColor::rgba(1, 2, 3, 150)));
         assert_eq!(attrs.weight, Weight::BOLD);
@@ -1888,8 +2030,62 @@ mod tests {
             400,
             [200, 200, 200],
             [0, 0, 0],
+            &ansi,
         );
         assert_eq!(inverse.color_opt, Some(GlyphColor::rgba(9, 8, 7, 255)));
+    }
+
+    #[test]
+    fn builds_background_rectangles_for_indexed_and_inverse_cells() {
+        let ansi = default_ansi_palette();
+        let snapshot = TerminalSnapshot {
+            columns: 4,
+            rows: 1,
+            lines: vec!["ab".into()],
+            cells: vec![vec![
+                toyoterm_terminal::TerminalCell {
+                    column: 0,
+                    text: "a".into(),
+                    width: 1,
+                    attributes: CellAttributes {
+                        background: CellColor::Indexed(196),
+                        ..CellAttributes::default()
+                    },
+                },
+                toyoterm_terminal::TerminalCell {
+                    column: 1,
+                    text: "b".into(),
+                    width: 1,
+                    attributes: CellAttributes {
+                        foreground: CellColor::Indexed(21),
+                        inverse: true,
+                        ..CellAttributes::default()
+                    },
+                },
+            ]],
+            selection: Vec::new(),
+        };
+        let backgrounds = terminal_backgrounds(
+            &snapshot,
+            PaneRect::new(10, 20, 100, 40),
+            TextLayout {
+                font_size: 14.0,
+                line_height: 18.0,
+                cell_width: 9.0,
+                horizontal_padding: 4.0,
+                vertical_padding: 3.0,
+            },
+            [9, 11, 14],
+            [220, 225, 232],
+            &ansi,
+        );
+        assert_eq!(
+            backgrounds,
+            [
+                (PaneRect::new(14, 23, 9, 18), [255, 0, 0]),
+                (PaneRect::new(23, 23, 9, 18), [0, 0, 255]),
+            ]
+        );
     }
 
     #[test]
@@ -1907,6 +2103,18 @@ mod tests {
         assert_eq!(style.font_fallback.len(), 2);
         assert_eq!(style.foreground, [0xaa, 0xbb, 0xcc]);
         assert_eq!(style.opacity, 0.9);
+        let mut custom_ansi = vec!["#000000".to_owned(); 16];
+        custom_ansi[1] = "#123456".to_owned();
+        let style = RenderStyle::from_hex_with_ansi(
+            "mono",
+            Vec::new(),
+            400,
+            ["#000000", "#ffffff", "#ffffff", "#333333"],
+            &custom_ansi,
+            1.0,
+        )
+        .unwrap();
+        assert_eq!(style.ansi[1], [0x12, 0x34, 0x56]);
         let error = RenderStyle::from_hex(
             "mono",
             Vec::new(),
@@ -1982,5 +2190,17 @@ mod tests {
             preferred_alpha_mode(&supported, 1.0),
             CompositeAlphaMode::Opaque
         );
+    }
+
+    #[test]
+    fn converts_configured_srgb_colors_to_linear_gpu_values() {
+        let converted = rgba([0x1a, 0x1b, 0x26], 1.0);
+        assert!((converted[0] - 0.0103298).abs() < 0.000001);
+        assert!((converted[1] - 0.0109601).abs() < 0.000001);
+        assert!((converted[2] - 0.0193824).abs() < 0.000001);
+        assert_eq!(converted[3], 1.0);
+
+        assert_eq!(rgba([0, 0, 0], 0.5), [0.0, 0.0, 0.0, 0.5]);
+        assert_eq!(rgba([255, 255, 255], 1.0), [1.0, 1.0, 1.0, 1.0]);
     }
 }

@@ -214,13 +214,30 @@ module Toyoterm
   end
 
   class ColorConfig
-    attr_accessor :background, :foreground, :cursor, :selection
+    attr_accessor :background, :foreground, :cursor, :selection, :ansi
 
     def initialize
       @background = "#090b0e"
       @foreground = "#dce1e8"
       @cursor = "#f5f7fa"
       @selection = "#375891"
+      @ansi = [
+        "#000000", "#cd0000", "#00cd00", "#cdcd00",
+        "#0000ee", "#cd00cd", "#00cdcd", "#e5e5e5",
+        "#7f7f7f", "#ff0000", "#00ff00", "#ffff00",
+        "#5c5cff", "#ff00ff", "#00ffff", "#ffffff"
+      ]
+    end
+
+    def __ansi_count
+      raise TypeError, "colors.ansi must be an array" unless @ansi.is_a?(Array)
+      @ansi.length
+    end
+
+    def __ansi_at(index)
+      color = @ansi[index]
+      raise TypeError, "colors.ansi entries must be strings" unless color.is_a?(String)
+      color
     end
   end
 
@@ -2384,6 +2401,21 @@ fn load_config(
         }
     };
 
+    let ansi_count = runtime
+        .eval("Toyoterm.__config.colors.__ansi_count")?
+        .parse::<usize>()
+        .map_err(|_| ScriptError::new("validate config", "colors.ansi length is invalid"))?;
+    if ansi_count != 16 {
+        return Err(ScriptError::new(
+            "validate config",
+            format!("colors.ansi must contain exactly 16 colors, got {ansi_count}"),
+        ));
+    }
+    let mut ansi = Vec::with_capacity(ansi_count);
+    for index in 0..ansi_count {
+        ansi.push(runtime.eval(&format!("Toyoterm.__config.colors.__ansi_at({index})"))?);
+    }
+
     let config = ToyotermConfig {
         font: FontConfig {
             family,
@@ -2396,6 +2428,7 @@ fn load_config(
             foreground: runtime.eval("Toyoterm.__config.colors.foreground")?,
             cursor: runtime.eval("Toyoterm.__config.colors.cursor")?,
             selection: runtime.eval("Toyoterm.__config.colors.selection")?,
+            ansi,
         },
         window_opacity: opacity,
         default_shell: if default_shell.is_empty() {
@@ -2411,6 +2444,9 @@ fn load_config(
     validate_color("foreground", &config.colors.foreground)?;
     validate_color("cursor", &config.colors.cursor)?;
     validate_color("selection", &config.colors.selection)?;
+    for (index, color) in config.colors.ansi.iter().enumerate() {
+        validate_color(&format!("ansi[{index}]"), color)?;
+    }
     let binding_count = runtime
         .eval("Toyoterm.__config.__binding_count")?
         .parse::<usize>()
@@ -3176,6 +3212,18 @@ mod tests {
     }
 
     #[test]
+    fn bundled_tokyo_night_configuration_is_executable() {
+        let mut manager = ConfigManager::new().unwrap();
+        manager
+            .reload(include_str!("../../../examples/tokyo_night_config.rb"))
+            .unwrap();
+        assert_eq!(manager.config().colors.background, "#1a1b26");
+        assert_eq!(manager.config().colors.foreground, "#c0caf5");
+        assert_eq!(manager.config().colors.ansi[1], "#f7768e");
+        assert_eq!(manager.config().colors.ansi[13], "#9d7cd8");
+    }
+
+    #[test]
     fn failed_reload_preserves_the_previous_runtime_and_config() {
         let mut manager = ConfigManager::new().unwrap();
         manager
@@ -3201,6 +3249,22 @@ mod tests {
 
         assert_eq!(error.operation(), "validate config");
         assert_eq!(manager.config().colors.cursor, "#123456");
+    }
+
+    #[test]
+    fn loads_and_validates_the_ansi_palette() {
+        let mut manager = ConfigManager::new().unwrap();
+        let config = manager
+            .reload(r##"Toyoterm.configure { |config| config.colors.ansi[1] = "#123456" }"##)
+            .unwrap();
+        assert_eq!(config.colors.ansi.len(), 16);
+        assert_eq!(config.colors.ansi[1], "#123456");
+
+        let error = manager
+            .reload("Toyoterm.configure { |config| config.colors.ansi = [] }")
+            .unwrap_err();
+        assert!(error.message().contains("exactly 16 colors"));
+        assert_eq!(manager.config().colors.ansi[1], "#123456");
     }
 
     #[test]

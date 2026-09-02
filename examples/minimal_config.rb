@@ -12,6 +12,7 @@ Toyoterm.configure do |config|
     colors.foreground = "#dce1e8"
     colors.cursor = "#f5f7fa"
     colors.selection = "#375891"
+    colors.ansi[1] = "#ff5f56"
   end
 
   config.window.opacity = 1.0

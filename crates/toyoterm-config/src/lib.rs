@@ -21,6 +21,9 @@ pub struct ColorConfig {
     pub foreground: String,
     pub cursor: String,
     pub selection: String,
+    /// The configurable ANSI colors (indexes 0 through 15). Indexes 16 through
+    /// 255 use the standard xterm color cube and grayscale ramp.
+    pub ansi: Vec<String>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -48,6 +51,7 @@ impl Default for ToyotermConfig {
                 foreground: "#dce1e8".into(),
                 cursor: "#f5f7fa".into(),
                 selection: "#375891".into(),
+                ansi: default_ansi_colors(),
             },
             window_opacity: 1.0,
             default_shell: None,
@@ -56,6 +60,16 @@ impl Default for ToyotermConfig {
             status_interval: None,
         }
     }
+}
+
+pub fn default_ansi_colors() -> Vec<String> {
+    [
+        "#000000", "#cd0000", "#00cd00", "#cdcd00", "#0000ee", "#cd00cd", "#00cdcd", "#e5e5e5",
+        "#7f7f7f", "#ff0000", "#00ff00", "#ffff00", "#5c5cff", "#ff00ff", "#00ffff", "#ffffff",
+    ]
+    .into_iter()
+    .map(str::to_owned)
+    .collect()
 }
 
 pub fn default_config_path() -> Option<PathBuf> {

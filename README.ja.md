@@ -114,6 +114,8 @@ Toyoterm.configure do |config|
     colors.foreground = "#dce1e8"
     colors.cursor = "#f5f7fa"
     colors.selection = "#375891"
+    # ANSIインデックス0〜15はテーマに合わせて個別に変更できます。
+    colors.ansi[1] = "#ff5f56"
   end
 
   config.window.opacity = 0.96
@@ -145,6 +147,11 @@ Toyoterm.on :config_reloaded do |event|
   event.pane.send_text("echo config reloaded\n")
 end
 ```
+
+ToyotermはANSI 256色の前景色と背景色を描画します。`colors.ansi`ではテーマの
+基本色であるインデックス0〜15を変更できます。インデックス16〜231は標準の
+xterm 6×6×6カラ―キューブ、232〜255はグレースケールです。`colors.ansi`配列
+全体を代入する場合は、`#RRGGBB`形式の文字列をちょうど16個指定してください。
 
 `font.fallback`は省略できます。CJK、emoji、記号などの不足グリフに対し、インストール済みのフォントを指定順で試した後、OS標準のfallbackを使います。存在しないフォント名はフォントシステムが読み飛ばします。
 
@@ -249,7 +256,7 @@ GUIで設定の読込に失敗すると、アプリを終了せずエラーバ�
 
 `default_shell`を変更しても実行中のシェルは置き換えません。新しいターミナルセッションを作成するときに適用されます。
 
-実行可能な最小設定例は`examples/minimal_config.rb`にあります。`toyoterm --config examples/minimal_config.rb`で試せます。
+実行可能な設定例は`examples/minimal_config.rb`と`examples/tokyo_night_config.rb`にあります。Tokyo Nightテーマは`toyoterm --config examples/tokyo_night_config.rb`で試せます。
 
 組み込みランタイムはCRubyではなくmrubyです。toyotermが明示的にbundleしていないCRuby gem、native extension、完全なCRuby標準ライブラリは利用できません。現在の設定・イベントAPIでは不要なため、v0.1では`mruby-time`をbundleしません。
 
