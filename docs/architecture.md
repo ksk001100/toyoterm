@@ -1,5 +1,8 @@
 # Crate architecture
 
+The cross-cutting choices behind this structure are recorded in the
+[architecture decision record index](adr/README.md).
+
 toyoterm is a Cargo workspace. Each crate owns one runtime responsibility:
 
 - `toyoterm-api`: stable IDs, native commands, events, and handles
