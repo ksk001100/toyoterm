@@ -172,6 +172,19 @@ config.bind "CTRL+SHIFT+P" do |context|
 end
 ```
 
+Trusted configuration can also use the host environment, filesystem, and child processes:
+
+```ruby
+home = Toyoterm.env["HOME"]
+contents = Toyoterm.read_file("/path/to/file")
+result = Toyoterm.spawn("git", "status", "--short")
+warn result.stderr unless result.success?
+```
+
+`Toyoterm.env` returns a copy of the environment snapshot taken when the Ruby VM is created; changing the Hash does not change the process environment. Entries that cannot be represented as UTF-8 are omitted. Paths, program names, and arguments must be UTF-8 and cannot contain NUL bytes. `read_file` returns a byte-preserving Ruby String. `spawn` runs synchronously on the script thread, captures byte-preserving `stdout` and `stderr`, and returns a `Toyoterm::ProcessResult` with `stdout`, `stderr`, `exit_status`, and `success?`; a process terminated without a portable exit code uses `-1`. Filesystem and process-launch failures raise `RuntimeError`, while a nonzero child exit is a normal result. These calls do not block PTY reading or rendering, but a long-running child delays other Ruby callbacks.
+
+Configuration is trusted code and these APIs are intentionally unrestricted in the MVP. Local plugins are not implemented yet; when introduced, they will initially have the same authority and will be documented as arbitrary code execution. A separate filesystem/process/network/clipboard capability model is deferred rather than claiming a sandbox that does not exist.
+
 ### Ruby object model
 
 Each callback receives a current snapshot through `Toyoterm.current_workspace`, `current_window`, `current_tab`, and `current_pane`. `Toyoterm.workspaces`, `windows`, and `workspace(name)` provide lookup; workspace, window, and tab objects expose their children. Pane metadata includes `title`, `cwd`, `pid`, `command_running?`, and `last_exit_status`. The command fields are populated when [shell integration](docs/shell-integration.md) is enabled. Mutating methods such as `split`, `close`, `focus`/`activate`, `new_tab`, and `create_window` enqueue native commands and take effect after the callback returns successfully. A saved object raises `Toyoterm::InvalidHandleError` after its native object is deleted.

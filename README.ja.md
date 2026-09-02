@@ -169,6 +169,19 @@ config.bind "CTRL+SHIFT+P" do |context|
 end
 ```
 
+trusted configからは、ホストの環境変数、filesystem、子processも利用できます。
+
+```ruby
+home = Toyoterm.env["HOME"]
+contents = Toyoterm.read_file("/path/to/file")
+result = Toyoterm.spawn("git", "status", "--short")
+warn result.stderr unless result.success?
+```
+
+`Toyoterm.env`はRuby VM作成時の環境変数snapshotのコピーを返し、Hashを変更してもprocess環境は変わりません。UTF-8で表せないentryは含まれません。path、program名、引数はUTF-8かつNUL byteを含まない文字列に限ります。`read_file`は内容のbyteを保持したRuby Stringを返します。`spawn`はScript Thread上で同期実行し、byteを保持した`stdout`と`stderr`をcaptureします。戻り値の`Toyoterm::ProcessResult`は`stdout`、`stderr`、`exit_status`、`success?`を持ち、portableな終了codeがない場合は`-1`です。filesystem操作とprocess起動の失敗は`RuntimeError`になり、子processの非zero終了は通常の結果として返ります。PTY読取りと描画は止まりませんが、長時間動く子processは後続のRuby callbackを待たせます。
+
+configはtrusted codeであり、MVPではこれらのAPIに制限を設けません。local pluginはまだ未実装です。導入当初はconfigと同じ権限を持つ任意code実行として明記し、filesystem・process・network・clipboardを分離するcapability modelは、存在しないsandboxを保証せず後続設計へ延期します。
+
 ### Rubyオブジェクトモデル
 
 各callbackでは、`Toyoterm.current_workspace`、`current_window`、`current_tab`、`current_pane`から最新のsnapshotを参照できます。`Toyoterm.workspaces`、`windows`、`workspace(name)`で検索でき、Workspace・Window・Tabから子要素を取得できます。Paneのメタデータは`title`、`cwd`、`pid`、`command_running?`、`last_exit_status`です。command関連フィールドは[Shell integration](docs/shell-integration.md)を有効にすると更新されます。`split`、`close`、`focus`／`activate`、`new_tab`、`create_window`などの変更操作はNative Commandをqueueし、callbackが正常終了した後に反映します。保存したオブジェクトのnative実体が削除済みの場合は`Toyoterm::InvalidHandleError`を発生させます。

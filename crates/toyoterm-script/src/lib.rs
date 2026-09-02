@@ -3,8 +3,10 @@ use std::ffi::{CStr, CString, c_char, c_void};
 use std::fmt;
 use std::marker::PhantomData;
 use std::path::{Path, PathBuf};
+use std::process::Command as ProcessCommand;
 use std::ptr::NonNull;
 use std::rc::Rc;
+use std::slice;
 use std::sync::mpsc;
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
@@ -19,6 +21,153 @@ pub use toyoterm_config::{
 };
 
 const SLOW_CALLBACK_THRESHOLD: Duration = Duration::from_millis(100);
+
+fn return_host_bytes(bytes: Vec<u8>, output: *mut *mut u8, length: *mut usize) {
+    let mut bytes = bytes.into_boxed_slice();
+    // SAFETY: The caller supplies valid out-pointers and releases non-empty buffers through
+    // `toyoterm_host_bytes_free` after copying them into mruby-owned strings.
+    unsafe {
+        *length = bytes.len();
+        *output = if bytes.is_empty() {
+            std::ptr::null_mut()
+        } else {
+            let pointer = bytes.as_mut_ptr();
+            std::mem::forget(bytes);
+            pointer
+        };
+    }
+}
+
+fn return_host_error(message: String, error: *mut *mut c_char) -> i32 {
+    let message = message.replace('\0', "\\0");
+    // SAFETY: The caller releases this CString with `toyoterm_host_string_free`.
+    unsafe {
+        *error = CString::new(message)
+            .expect("NUL bytes were replaced")
+            .into_raw();
+    }
+    1
+}
+
+/// Reads a file for the mruby host API. Paths are UTF-8 on every supported platform while file
+/// contents remain arbitrary bytes.
+///
+/// # Safety
+///
+/// `path` must address `path_length` readable bytes. All three out-pointers must be valid for
+/// writes; the caller owns any returned buffer and must release it with the matching free function.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn toyoterm_host_read_file(
+    path: *const u8,
+    path_length: usize,
+    output: *mut *mut u8,
+    output_length: *mut usize,
+    error: *mut *mut c_char,
+) -> i32 {
+    // SAFETY: The C shim supplies a live Ruby string buffer bounded by `path_length`.
+    let path = unsafe { slice::from_raw_parts(path, path_length) };
+    let path = match std::str::from_utf8(path) {
+        Ok(path) => path,
+        Err(_) => return return_host_error("path must be valid UTF-8".to_owned(), error),
+    };
+    match std::fs::read(path) {
+        Ok(bytes) => {
+            return_host_bytes(bytes, output, output_length);
+            0
+        }
+        Err(cause) => return_host_error(
+            format!("read {}: {cause}", Path::new(path).display()),
+            error,
+        ),
+    }
+}
+
+/// Executes a child process synchronously and captures its byte-exact standard output and error.
+///
+/// # Safety
+///
+/// `arguments` and `lengths` must each contain `count` readable entries, and every argument pointer
+/// must address the corresponding number of bytes. All out-pointers must be valid for writes; the
+/// caller owns returned buffers and must release them with the matching free functions.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn toyoterm_host_spawn(
+    arguments: *const *const u8,
+    lengths: *const usize,
+    count: usize,
+    stdout_output: *mut *mut u8,
+    stdout_length: *mut usize,
+    stderr_output: *mut *mut u8,
+    stderr_length: *mut usize,
+    exit_status: *mut i32,
+    error: *mut *mut c_char,
+) -> i32 {
+    // SAFETY: The C shim supplies two arrays of `count` entries backed by live Ruby strings.
+    let pointers = unsafe { slice::from_raw_parts(arguments, count) };
+    let lengths = unsafe { slice::from_raw_parts(lengths, count) };
+    let decoded = pointers
+        .iter()
+        .zip(lengths)
+        .map(|(&pointer, &length)| {
+            // SAFETY: Each pointer refers to its corresponding Ruby string for this call.
+            let bytes = unsafe { slice::from_raw_parts(pointer, length) };
+            std::str::from_utf8(bytes).map(str::to_owned)
+        })
+        .collect::<Result<Vec<_>, _>>();
+    let decoded = match decoded {
+        Ok(decoded) => decoded,
+        Err(_) => {
+            return return_host_error(
+                "program and arguments must be valid UTF-8".to_owned(),
+                error,
+            );
+        }
+    };
+    let Some((program, arguments)) = decoded.split_first() else {
+        return return_host_error("program cannot be empty".to_owned(), error);
+    };
+    match ProcessCommand::new(program).args(arguments).output() {
+        Ok(output) => {
+            return_host_bytes(output.stdout, stdout_output, stdout_length);
+            return_host_bytes(output.stderr, stderr_output, stderr_length);
+            // A signal has no portable numeric exit code; use -1 as the documented sentinel.
+            unsafe { *exit_status = output.status.code().unwrap_or(-1) };
+            0
+        }
+        Err(cause) => return_host_error(format!("spawn {program}: {cause}"), error),
+    }
+}
+
+#[unsafe(no_mangle)]
+/// Releases a non-empty buffer returned by a toyoterm host callback.
+///
+/// # Safety
+///
+/// `bytes` and `length` must be the exact pair returned by `return_host_bytes`, and must be freed
+/// exactly once.
+pub unsafe extern "C" fn toyoterm_host_bytes_free(bytes: *mut u8, length: usize) {
+    if !bytes.is_null() {
+        // SAFETY: This is the exact pointer and length leaked by `return_host_bytes`.
+        unsafe {
+            drop(Box::from_raw(std::ptr::slice_from_raw_parts_mut(
+                bytes, length,
+            )))
+        };
+    }
+}
+
+#[unsafe(no_mangle)]
+/// Releases an error string returned by a toyoterm host callback.
+///
+/// # Safety
+///
+/// `string` must be null or a pointer returned by `return_host_error`, and must be freed exactly
+/// once.
+pub unsafe extern "C" fn toyoterm_host_string_free(string: *mut c_char) {
+    if !string.is_null() {
+        // SAFETY: Error strings originate from `CString::into_raw` in `return_host_error`.
+        unsafe { drop(CString::from_raw(string)) };
+    }
+}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum CallbackKind {
@@ -536,12 +685,27 @@ module Toyoterm
     end
   end
 
+  class ProcessResult
+    attr_reader :stdout, :stderr, :exit_status
+
+    def initialize(stdout, stderr, exit_status)
+      @stdout = stdout
+      @stderr = stderr
+      @exit_status = exit_status
+    end
+
+    def success?
+      @exit_status == 0
+    end
+  end
+
   @config = Config.new
   @current_pane = Pane.new(0)
   @current_tab = Tab.new(0)
   @current_window = Window.new(0)
   @current_workspace = Workspace.new(0)
   @clipboard = Clipboard.new
+  @env = {}
   @commands = []
   @current_command = nil
   @event_handlers = {}
@@ -596,6 +760,36 @@ module Toyoterm
 
   def self.clipboard
     @clipboard
+  end
+
+  # Returns a snapshot. Mutating it never changes the host process environment.
+  def self.env
+    @env.dup
+  end
+
+  def self.read_file(path)
+    path = path.to_s
+    raise ArgumentError, "path contains a NUL byte" if path.index("\0")
+    __host_read_file(path)
+  end
+
+  def self.spawn(program, *args)
+    program = program.to_s
+    raise ArgumentError, "program cannot be empty" if program.empty?
+    values = [program] + args.map { |arg| arg.to_s }
+    if values.any? { |value| value.index("\0") }
+      raise ArgumentError, "program and arguments cannot contain NUL bytes"
+    end
+    ProcessResult.new(*__host_spawn(values))
+  end
+
+  def self.__replace_env(entries)
+    @env = {}
+    index = 0
+    while index < entries.length
+      @env[entries[index]] = entries[index + 1]
+      index += 2
+    end
   end
 
   def self.__set_clipboard_text(text)
@@ -894,6 +1088,15 @@ unsafe extern "C" {
         available: i32,
         error_output: *mut *mut c_char,
     ) -> i32;
+    fn toyoterm_mruby_set_environment(
+        state: *mut c_void,
+        keys: *const *const c_char,
+        values: *const *const c_char,
+        lengths: *const usize,
+        count: usize,
+        error_output: *mut *mut c_char,
+    ) -> i32;
+    fn toyoterm_mruby_install_host_api(state: *mut c_void);
     fn toyoterm_mruby_string_free(string: *mut c_char);
 }
 
@@ -1153,6 +1356,39 @@ impl MrubyRuntime {
             state,
             not_send_or_sync: PhantomData,
         })
+    }
+
+    fn set_environment(&mut self) -> Result<(), ScriptError> {
+        // Ruby strings and this API are byte-safe, but paths and environment names cross
+        // platform boundaries. Expose only entries representable as UTF-8 on every target.
+        let entries = std::env::vars_os()
+            .filter_map(|(key, value)| Some((key.into_string().ok()?, value.into_string().ok()?)))
+            .collect::<Vec<_>>();
+        let keys = entries
+            .iter()
+            .map(|(key, _)| key.as_ptr().cast::<c_char>())
+            .collect::<Vec<_>>();
+        let values = entries
+            .iter()
+            .map(|(_, value)| value.as_ptr().cast::<c_char>())
+            .collect::<Vec<_>>();
+        let lengths = entries
+            .iter()
+            .flat_map(|(key, value)| [key.len(), value.len()])
+            .collect::<Vec<_>>();
+        let mut error = std::ptr::null_mut();
+        // SAFETY: All strings and pointer arrays remain live for the duration of the call.
+        let status = unsafe {
+            toyoterm_mruby_set_environment(
+                self.state.as_ptr(),
+                keys.as_ptr(),
+                values.as_ptr(),
+                lengths.as_ptr(),
+                entries.len(),
+                &mut error,
+            )
+        };
+        typed_call_result("set environment snapshot", status, error)
     }
 
     pub fn eval(&mut self, source: &str) -> Result<String, ScriptError> {
@@ -1864,6 +2100,9 @@ fn load_config(source: &str, filename: &str) -> Result<LoadedConfig, ScriptError
     let config_dsl =
         CONFIG_DSL.replace("__TOYOTERM_PRIMARY_MODIFIER__", platform_primary_modifier());
     runtime.eval_with_filename(&config_dsl, "(toyoterm DSL)")?;
+    // SAFETY: The DSL has created the Toyoterm module in this exclusively owned VM.
+    unsafe { toyoterm_mruby_install_host_api(runtime.state.as_ptr()) };
+    runtime.set_environment()?;
     runtime.eval_with_filename(source, filename)?;
 
     let defaults = ToyotermConfig::default();
@@ -2683,6 +2922,83 @@ fail_config
         assert_eq!(
             manager.drain_commands(PaneId(42)).unwrap(),
             vec![NativeCommand::ClipboardWrite("copied from Ruby".into())]
+        );
+    }
+
+    #[test]
+    fn exposes_environment_as_an_isolated_string_hash() {
+        let mut manager = ConfigManager::new().unwrap();
+        assert_eq!(
+            manager
+                .eval(
+                    "Toyoterm.env.is_a?(Hash) && Toyoterm.env.keys.all? { |key| key.is_a?(String) }"
+                )
+                .unwrap(),
+            "true"
+        );
+        assert_eq!(
+            manager
+                .eval("copy = Toyoterm.env; copy['TOYOTERM_TEST_ONLY'] = 'changed'; Toyoterm.env['TOYOTERM_TEST_ONLY'].nil?")
+                .unwrap(),
+            "true"
+        );
+    }
+
+    #[test]
+    fn read_file_preserves_arbitrary_bytes_and_maps_io_errors() {
+        let unique = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!(
+            "toyoterm-ruby-read-{}-{unique}.bin",
+            std::process::id()
+        ));
+        std::fs::write(&path, b"left\0\xffright").unwrap();
+        let literal = ruby_string_literal(path.to_str().unwrap());
+        let mut manager = ConfigManager::new().unwrap();
+        assert_eq!(
+            manager
+                .eval(&format!("Toyoterm.read_file({literal}).bytes.join(',')"))
+                .unwrap(),
+            "108,101,102,116,0,255,114,105,103,104,116"
+        );
+        std::fs::remove_file(&path).unwrap();
+        let error = manager
+            .eval(&format!("Toyoterm.read_file({literal})"))
+            .unwrap_err();
+        assert!(error.message().contains("read"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn spawn_captures_stdout_stderr_and_nonzero_status() {
+        let mut manager = ConfigManager::new().unwrap();
+        assert_eq!(
+            manager
+                .eval(
+                    r#"result = Toyoterm.spawn("/bin/sh", "-c", "printf out; printf err >&2; exit 7"); [result.stdout, result.stderr, result.exit_status, result.success?].join('|')"#,
+                )
+                .unwrap(),
+            "out|err|7|false"
+        );
+        let error = manager
+            .eval(r#"Toyoterm.spawn("/definitely/missing/toyoterm-program")"#)
+            .unwrap_err();
+        assert!(error.message().contains("spawn"));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn spawn_captures_stdout_stderr_and_nonzero_status() {
+        let mut manager = ConfigManager::new().unwrap();
+        assert_eq!(
+            manager
+                .eval(
+                    r#"result = Toyoterm.spawn("cmd", "/C", "<nul set /p=out & <nul set /p=err 1>&2 & exit /b 7"); [result.stdout, result.stderr, result.exit_status, result.success?].join('|')"#,
+                )
+                .unwrap(),
+            "out|err|7|false"
         );
     }
 
