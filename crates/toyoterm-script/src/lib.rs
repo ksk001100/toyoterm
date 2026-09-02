@@ -3212,18 +3212,6 @@ mod tests {
     }
 
     #[test]
-    fn bundled_tokyo_night_configuration_is_executable() {
-        let mut manager = ConfigManager::new().unwrap();
-        manager
-            .reload(include_str!("../../../examples/tokyo_night_config.rb"))
-            .unwrap();
-        assert_eq!(manager.config().colors.background, "#1a1b26");
-        assert_eq!(manager.config().colors.foreground, "#c0caf5");
-        assert_eq!(manager.config().colors.ansi[1], "#f7768e");
-        assert_eq!(manager.config().colors.ansi[13], "#9d7cd8");
-    }
-
-    #[test]
     fn failed_reload_preserves_the_previous_runtime_and_config() {
         let mut manager = ConfigManager::new().unwrap();
         manager

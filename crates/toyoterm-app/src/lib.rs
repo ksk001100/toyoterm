@@ -993,9 +993,17 @@ impl ToyotermApplication {
     ) -> Result<bool, String> {
         let now = Instant::now();
         if let Some(deadline) = self.leader_deadline.take() {
-            // Repeated events must never extend or accidentally complete a
-            // leader sequence.
+            // A key repeat of the prefix must neither complete nor cancel the
+            // leader sequence.  In particular, a user may keep a modifier
+            // held while releasing and pressing the prefix key again (for
+            // example Ctrl+J, Ctrl+J).  Wayland can emit a repeat after a
+            // short delay before that release arrives.  Preserve the original
+            // deadline so the subsequent physical press can still match, but
+            // never extend the timeout or dispatch an action from the repeat.
             if event.repeat {
+                if now <= deadline {
+                    self.leader_deadline = Some(deadline);
+                }
                 return Ok(true);
             }
             if now <= deadline {
