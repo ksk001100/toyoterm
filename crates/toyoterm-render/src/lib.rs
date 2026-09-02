@@ -596,3 +596,6 @@ mod tests {
         assert_eq!(rgba([255, 255, 255], 1.0), [1.0, 1.0, 1.0, 1.0]);
     }
 }
+
+#[cfg(test)]
+mod offscreen_tests;
