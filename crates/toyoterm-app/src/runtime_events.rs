@@ -101,9 +101,11 @@ impl ToyotermApplication {
             for command in result.commands {
                 match command {
                     NativeCommand::Mux(command) => {
-                        self.mux
-                            .dispatch(command)
-                            .map_err(|error| error.to_string())?;
+                        command_dispatch::dispatch_coordinator_command(
+                            &mut self.mux,
+                            &mut self.runtime_events,
+                            command,
+                        )?;
                     }
                     NativeCommand::ClipboardWrite(text) => self.pending_clipboard_writes.push(text),
                     NativeCommand::ReloadConfig => reload_requested = true,

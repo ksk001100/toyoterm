@@ -1,5 +1,83 @@
 use super::*;
 
+#[derive(Debug, PartialEq)]
+enum KeybindingDispatch {
+    Native(NativeAction),
+    Ruby(String),
+    Unassigned,
+}
+
+fn resolve_keybinding(
+    snapshot: &ScriptSnapshot,
+    keys: impl IntoIterator<Item = String>,
+) -> KeybindingDispatch {
+    for key in keys {
+        if let Some(action) = snapshot.native_actions.get(&key).cloned() {
+            return KeybindingDispatch::Native(action);
+        }
+        if snapshot.keybindings.contains(&key) {
+            return KeybindingDispatch::Ruby(key);
+        }
+    }
+    KeybindingDispatch::Unassigned
+}
+
+fn ruby_event_from_mux_event(event: MuxEvent) -> Option<RubyEvent> {
+    match event {
+        MuxEvent::WorkspaceChanged { workspace } => {
+            let mut event = RubyEvent::new("workspace_changed");
+            event.workspace = Some(workspace);
+            Some(event)
+        }
+        MuxEvent::WindowCreated { window } => {
+            let mut event = RubyEvent::new("window_created");
+            event.window = Some(window);
+            Some(event)
+        }
+        MuxEvent::WindowClosed { window } => {
+            let mut event = RubyEvent::new("window_closed");
+            event.window = Some(window);
+            Some(event)
+        }
+        MuxEvent::TabCreated { tab } => {
+            let mut event = RubyEvent::new("tab_created");
+            event.tab = Some(tab);
+            Some(event)
+        }
+        MuxEvent::TabClosed { tab } => {
+            let mut event = RubyEvent::new("tab_closed");
+            event.tab = Some(tab);
+            Some(event)
+        }
+        MuxEvent::PaneCreated { pane } => {
+            let mut event = RubyEvent::new("pane_created");
+            event.pane = Some(pane);
+            Some(event)
+        }
+        MuxEvent::PaneClosed { pane } => {
+            let mut event = RubyEvent::new("pane_closed");
+            event.pane = Some(pane);
+            Some(event)
+        }
+        MuxEvent::PaneFocused { pane } => {
+            let mut event = RubyEvent::new("pane_focused");
+            event.pane = Some(pane);
+            Some(event)
+        }
+        MuxEvent::TextQueued { .. } => None,
+    }
+}
+
+pub(super) fn dispatch_coordinator_command(
+    mux: &mut Mux,
+    runtime_events: &mut VecDeque<RubyEvent>,
+    command: Command,
+) -> Result<(), String> {
+    mux.dispatch(command).map_err(|error| error.to_string())?;
+    runtime_events.extend(mux.drain_events().filter_map(ruby_event_from_mux_event));
+    Ok(())
+}
+
 impl ToyotermApplication {
     pub(super) fn handle_keybinding(
         &mut self,
@@ -17,18 +95,17 @@ impl ToyotermApplication {
             .mux
             .current_pane()
             .ok_or_else(|| "mux has no current pane".to_owned())?;
-        for key in keys {
-            if let Some(action) = self.script_snapshot.native_actions.get(&key).cloned() {
+        match resolve_keybinding(&self.script_snapshot, keys) {
+            KeybindingDispatch::Native(action) => {
                 self.execute_native_action(action)?;
-                return Ok(true);
+                Ok(true)
             }
-            if !self.script_snapshot.keybindings.contains(&key) {
-                continue;
+            KeybindingDispatch::Ruby(key) => {
+                self.submit_script(ScriptInvocation::KeyBinding { key, pane })?;
+                Ok(true)
             }
-            self.submit_script(ScriptInvocation::KeyBinding { key, pane })?;
-            return Ok(true);
+            KeybindingDispatch::Unassigned => Ok(false),
         }
-        Ok(false)
     }
 
     pub(super) fn handle_leader_key(
@@ -406,9 +483,7 @@ impl ToyotermApplication {
 
     pub(super) fn dispatch_gui_command(&mut self, command: Command) -> Result<(), String> {
         let previous_pane = self.mux.current_pane();
-        self.mux
-            .dispatch(command)
-            .map_err(|error| error.to_string())?;
+        dispatch_coordinator_command(&mut self.mux, &mut self.runtime_events, command)?;
         if self.mux.current_pane() != previous_pane {
             self.ime_preedit = None;
         }
@@ -566,53 +641,11 @@ impl ToyotermApplication {
     }
 
     pub(super) fn collect_mux_events(&mut self) {
-        let events = self.mux.drain_events().collect::<Vec<_>>();
-        for event in events {
-            let event = match event {
-                MuxEvent::WorkspaceChanged { workspace } => {
-                    let mut event = RubyEvent::new("workspace_changed");
-                    event.workspace = Some(workspace);
-                    Some(event)
-                }
-                MuxEvent::WindowCreated { window } => {
-                    let mut event = RubyEvent::new("window_created");
-                    event.window = Some(window);
-                    Some(event)
-                }
-                MuxEvent::WindowClosed { window } => {
-                    let mut event = RubyEvent::new("window_closed");
-                    event.window = Some(window);
-                    Some(event)
-                }
-                MuxEvent::TabCreated { tab } => {
-                    let mut event = RubyEvent::new("tab_created");
-                    event.tab = Some(tab);
-                    Some(event)
-                }
-                MuxEvent::TabClosed { tab } => {
-                    let mut event = RubyEvent::new("tab_closed");
-                    event.tab = Some(tab);
-                    Some(event)
-                }
-                MuxEvent::PaneCreated { pane } => {
-                    let mut event = RubyEvent::new("pane_created");
-                    event.pane = Some(pane);
-                    Some(event)
-                }
-                MuxEvent::PaneClosed { pane } => {
-                    let mut event = RubyEvent::new("pane_closed");
-                    event.pane = Some(pane);
-                    Some(event)
-                }
-                MuxEvent::PaneFocused { pane } => {
-                    let mut event = RubyEvent::new("pane_focused");
-                    event.pane = Some(pane);
-                    Some(event)
-                }
-                MuxEvent::TextQueued { .. } => None,
-            };
-            self.runtime_events.extend(event);
-        }
+        self.runtime_events.extend(
+            self.mux
+                .drain_events()
+                .filter_map(ruby_event_from_mux_event),
+        );
     }
 
     pub(super) fn deliver_runtime_events(&mut self) -> Result<(), String> {
@@ -630,5 +663,144 @@ impl ToyotermApplication {
             self.submit_script(ScriptInvocation::Event(event))?;
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn event_names(events: &VecDeque<RubyEvent>) -> Vec<&'static str> {
+        events.iter().map(|event| event.name).collect()
+    }
+
+    #[test]
+    fn coordinator_covers_tab_pane_and_workspace_lifecycles() {
+        let mut mux = Mux::new();
+        let mut events = VecDeque::new();
+        let original_workspace = mux.current_workspace();
+        let window = mux.current_window().unwrap();
+        let original_tab = mux.current_tab().unwrap();
+        let original_pane = mux.current_pane().unwrap();
+
+        dispatch_coordinator_command(&mut mux, &mut events, Command::NewTab).unwrap();
+        let new_tab = mux.current_tab().unwrap();
+        let new_tab_pane = mux.current_pane().unwrap();
+        assert_ne!(new_tab, original_tab);
+        assert_eq!(mux.tabs(window).unwrap(), &[original_tab, new_tab]);
+        assert_eq!(
+            event_names(&events),
+            ["tab_created", "pane_created", "pane_focused"]
+        );
+        events.clear();
+
+        dispatch_coordinator_command(&mut mux, &mut events, Command::ActivateTab(original_tab))
+            .unwrap();
+        assert_eq!(mux.current_pane(), Some(original_pane));
+        dispatch_coordinator_command(&mut mux, &mut events, Command::ActivateTab(new_tab)).unwrap();
+        dispatch_coordinator_command(&mut mux, &mut events, Command::CloseTab(new_tab)).unwrap();
+        assert_eq!(mux.current_tab(), Some(original_tab));
+        assert_eq!(mux.tabs(window).unwrap(), &[original_tab]);
+        assert!(!mux.pane_ids().any(|pane| pane == new_tab_pane));
+        assert!(event_names(&events).contains(&"tab_closed"));
+        events.clear();
+
+        dispatch_coordinator_command(
+            &mut mux,
+            &mut events,
+            Command::Split {
+                pane: original_pane,
+                direction: SplitDirection::Right,
+            },
+        )
+        .unwrap();
+        let split_pane = mux.current_pane().unwrap();
+        assert_ne!(split_pane, original_pane);
+        dispatch_coordinator_command(&mut mux, &mut events, Command::ActivatePane(original_pane))
+            .unwrap();
+        assert_eq!(mux.current_pane(), Some(original_pane));
+        dispatch_coordinator_command(&mut mux, &mut events, Command::ClosePane(split_pane))
+            .unwrap();
+        assert_eq!(mux.tab_panes(original_tab).unwrap(), vec![original_pane]);
+        assert!(event_names(&events).contains(&"pane_closed"));
+        events.clear();
+
+        dispatch_coordinator_command(
+            &mut mux,
+            &mut events,
+            Command::SwitchWorkspace("tests".into()),
+        )
+        .unwrap();
+        let new_workspace = mux.current_workspace();
+        assert_ne!(new_workspace, original_workspace);
+        dispatch_coordinator_command(
+            &mut mux,
+            &mut events,
+            Command::ActivateWorkspace(original_workspace),
+        )
+        .unwrap();
+        assert_eq!(mux.current_workspace(), original_workspace);
+        assert_eq!(
+            event_names(&events),
+            [
+                "workspace_changed",
+                "pane_focused",
+                "workspace_changed",
+                "pane_focused"
+            ]
+        );
+    }
+
+    #[test]
+    fn runtime_events_stay_fifo_across_reload_and_callback_commands() {
+        let mut mux = Mux::new();
+        let mut events = VecDeque::from([RubyEvent::new("title_changed")]);
+
+        dispatch_coordinator_command(&mut mux, &mut events, Command::NewTab).unwrap();
+        events.push_back(RubyEvent::new("config_reloaded"));
+        let pane = mux.current_pane().unwrap();
+        dispatch_coordinator_command(
+            &mut mux,
+            &mut events,
+            Command::Split {
+                pane,
+                direction: SplitDirection::Down,
+            },
+        )
+        .unwrap();
+
+        assert_eq!(
+            event_names(&events),
+            [
+                "title_changed",
+                "tab_created",
+                "pane_created",
+                "pane_focused",
+                "config_reloaded",
+                "pane_created",
+                "pane_focused"
+            ]
+        );
+    }
+
+    #[test]
+    fn unassigned_keys_do_not_schedule_ruby_invocations() {
+        let snapshot = ScriptSnapshot {
+            config: ToyotermConfig::default(),
+            native_actions: HashMap::new(),
+            keybindings: HashSet::new(),
+            event_names: HashSet::new(),
+            user_command_names: HashSet::new(),
+            plugins: Vec::new(),
+        };
+        let mut ruby_invocations = 0;
+
+        let dispatch = resolve_keybinding(&snapshot, ["CTRL+UNASSIGNED".to_owned()]);
+        if matches!(dispatch, KeybindingDispatch::Ruby(_)) {
+            ruby_invocations += 1;
+        }
+
+        assert_eq!(dispatch, KeybindingDispatch::Unassigned);
+        assert_eq!(ruby_invocations, 0);
     }
 }
