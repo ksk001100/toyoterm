@@ -1,11 +1,15 @@
 [CmdletBinding()]
 param(
-    [string]$InstallDirectory = $PSScriptRoot,
+    [string]$InstallDirectory = "",
     [switch]$KeepPath,
     [switch]$KeepStartMenu
 )
 
 $ErrorActionPreference = "Stop"
+$scriptPath = $MyInvocation.MyCommand.Path
+if ([string]::IsNullOrWhiteSpace($InstallDirectory)) {
+    $InstallDirectory = [System.IO.Path]::GetDirectoryName($scriptPath)
+}
 $resolvedInstallDirectory = [System.IO.Path]::GetFullPath($InstallDirectory)
 
 if (-not $KeepPath) {
