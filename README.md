@@ -42,7 +42,7 @@ Outside the initial release scope:
 - Multiple OS windows
 - Image protocols and session persistence
 
-The main features are implemented, but the initial release still requires interactive validation on Linux Wayland/X11, macOS, and Windows, together with performance and image-regression coverage. See [`TODO.md`](TODO.md) for the remaining work and priorities.
+The main features are implemented, but the initial release still requires interactive validation on Linux Wayland/X11, macOS, and Windows, together with performance and image-regression coverage.
 
 ## Build and run
 
