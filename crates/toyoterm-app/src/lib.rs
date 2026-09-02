@@ -690,6 +690,20 @@ impl ApplicationHandler<AppEvent> for ToyotermApplication {
                                 runtime.command_running = false;
                                 runtime.last_exit_status = *status;
                             }
+                            TerminalEvent::PtyWrite(response) => {
+                                if let Some(session) = runtime.pty_session.as_mut()
+                                    && let Err(error) = session.write(response.as_bytes())
+                                {
+                                    tracing::error!(
+                                        target: "toyoterm::pty",
+                                        operation = error.operation(),
+                                        %pane,
+                                        bytes = response.len(),
+                                        %error,
+                                        "write terminal response to pane PTY failed"
+                                    );
+                                }
+                            }
                             TerminalEvent::Bell => {}
                         }
                     }
@@ -714,6 +728,7 @@ impl ApplicationHandler<AppEvent> for ToyotermApplication {
                         TerminalEvent::CommandStarted | TerminalEvent::CommandFinished(_) => {
                             continue;
                         }
+                        TerminalEvent::PtyWrite(_) => continue,
                         TerminalEvent::Bell => RubyEvent::new("bell"),
                     };
                     runtime_event.pane = Some(pane);

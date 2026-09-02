@@ -25,6 +25,7 @@ pub enum TerminalEvent {
     CwdChanged(String),
     CommandStarted,
     CommandFinished(Option<i32>),
+    PtyWrite(String),
     Bell,
 }
 
@@ -165,6 +166,7 @@ impl EventListener for TerminalEventSender {
         let event = match event {
             AlacrittyEvent::Title(title) => Some(TerminalEvent::TitleChanged(title)),
             AlacrittyEvent::ResetTitle => Some(TerminalEvent::TitleReset),
+            AlacrittyEvent::PtyWrite(text) => Some(TerminalEvent::PtyWrite(text)),
             AlacrittyEvent::Bell => Some(TerminalEvent::Bell),
             _ => None,
         };
@@ -767,6 +769,17 @@ mod tests {
         assert!(events.contains(&TerminalEvent::CommandFinished(Some(17))));
         assert!(events.contains(&TerminalEvent::Bell));
         assert!(backend.drain_events().is_empty());
+    }
+
+    #[test]
+    fn reports_cursor_position_to_the_pty() {
+        let mut backend = AlacrittyTerminalBackend::new(20, 2);
+        backend.advance(b"hello\x1b[6n");
+
+        assert_eq!(
+            backend.drain_events(),
+            vec![TerminalEvent::PtyWrite("\x1b[1;6R".into())]
+        );
     }
 
     #[test]
