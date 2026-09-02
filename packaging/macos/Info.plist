@@ -5,6 +5,7 @@
   <key>CFBundleDevelopmentRegion</key><string>en</string>
   <key>CFBundleExecutable</key><string>toyoterm</string>
   <key>CFBundleIdentifier</key><string>dev.toyoterm.toyoterm</string>
+  <key>CFBundleIconFile</key><string>toyoterm.icns</string>
   <key>CFBundleInfoDictionaryVersion</key><string>6.0</string>
   <key>CFBundleName</key><string>toyoterm</string>
   <key>CFBundlePackageType</key><string>APPL</string>

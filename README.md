@@ -70,17 +70,18 @@ cargo build --release --locked
 
 ### Install, upgrade, and uninstall
 
-Download the archive for your OS and CPU from a release. On Linux, extract it
-and copy `toyoterm` to a directory on `PATH`, such as `~/.local/bin`. On macOS,
-extract and move `toyoterm.app` to `/Applications` (the executable is inside
-`Contents/MacOS`). On Windows, extract the portable zip and add its directory to
-`PATH` if command-line access is desired.
+Download the artifact for your OS and CPU from a release. On Linux, extract the
+archive and run `./install.sh`; this installs to `~/.local` and adds a desktop
+menu entry. On macOS, open the DMG and drag `toyoterm.app` to Applications (the
+`.tar.gz` is also available). On Windows, either run `Install-Toyoterm.ps1` from
+the extracted portable zip or keep using it in place without installation.
 
-To upgrade, replace the previous binary or `.app` with the newer release while
-toyoterm is not running. To uninstall, remove that binary, application bundle,
-or extracted Windows directory. User configuration under
-`~/.config/toyoterm/` is deliberately retained; remove it separately only if
-you no longer need it.
+Installing a newer artifact upgrades the existing installation. Linux installs
+an uninstaller at `~/.local/lib/toyoterm/uninstall.sh`; Windows installs
+`Uninstall-Toyoterm.ps1` next to the executable. User configuration under
+`~/.config/toyoterm/` is deliberately retained. Every release includes SHA-256
+checksums. See the [packaging and installation guide](docs/packaging.md) for
+custom locations, portable use, verification, and uninstall details.
 
 Use an explicit configuration file:
 
@@ -352,8 +353,11 @@ Create a release archive under `dist/`:
 sh scripts/package.sh
 ```
 
-Linux produces a `.tar.gz`, macOS an unsigned `.app` inside `.tar.gz`, and
-Windows a portable `.zip`. See [the release checklist](docs/releasing.md) and
+Linux produces a `.tar.gz`, macOS an unsigned `.app` in both `.tar.gz` and DMG
+formats, and Windows a portable `.zip` with an optional per-user installer.
+Archives are verified by installing and running their packaged binary, and
+SHA-256 sidecars are written next to them. See the
+[packaging guide](docs/packaging.md), [release checklist](docs/releasing.md), and
 [platform validation guide](docs/platform-validation.md).
 
 ## Architecture

@@ -70,14 +70,17 @@ cargo build --release --locked
 
 ### インストール・更新・アンインストール
 
-ReleaseからOS・CPUに合うarchiveを取得します。Linuxでは展開した`toyoterm`を
-`~/.local/bin`など`PATH`上へコピーします。macOSでは展開した`toyoterm.app`を
-`/Applications`へ移動します。Windowsではportable zipを展開し、CLIから使う
-場合はそのdirectoryを`PATH`へ追加します。
+ReleaseからOS・CPUに合う成果物を取得します。Linuxではarchiveを展開して
+`./install.sh`を実行すると、`~/.local`への導入とdesktop menu登録を行います。
+macOSではDMGを開いて`toyoterm.app`をApplicationsへdragします（`.tar.gz`も
+提供します）。Windowsではportable zipを展開し、`Install-Toyoterm.ps1`を実行
+するか、installせず展開先からそのまま利用できます。
 
-更新時はtoyotermを終了し、以前のbinaryまたは`.app`を新しい版で置き換えます。
-アンインストールはbinary、app bundle、またはWindowsの展開directoryを削除します。
-`~/.config/toyoterm/`のユーザー設定は保持されるため、不要な場合だけ別途削除してください。
+新しい成果物を同じ場所へinstallすると更新できます。Linuxのuninstallerは
+`~/.local/lib/toyoterm/uninstall.sh`、Windowsでは実行ファイルと同じdirectoryの
+`Uninstall-Toyoterm.ps1`です。ユーザー設定`~/.config/toyoterm/`は保持します。
+各ReleaseにはSHA-256 checksumを同梱します。任意のinstall先、portable利用、
+検証、削除方法は[packaging・install guide](docs/packaging.md)を参照してください。
 
 設定ファイルを明示する場合：
 
@@ -348,8 +351,10 @@ sh scripts/check-licenses.sh
 sh scripts/package.sh
 ```
 
-Linuxは`.tar.gz`、macOSは未署名`.app`を含む`.tar.gz`、Windowsはportable
-`.zip`を生成します。詳細は[release checklist](docs/releasing.md)と
+Linuxは`.tar.gz`、macOSは未署名`.app`を含む`.tar.gz`とDMG、Windowsは任意実行の
+per-user installerを含むportable `.zip`を生成します。archive内のbinaryを実際に
+install・実行して検証し、SHA-256 sidecarも生成します。詳細は
+[packaging guide](docs/packaging.md)、[release checklist](docs/releasing.md)、
 [platform validation guide](docs/platform-validation.md)を参照してください。
 
 ## アーキテクチャ

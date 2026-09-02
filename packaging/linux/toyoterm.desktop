@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=toyoterm
+Comment=Programmable terminal emulator
+Comment[ja]=プログラマブルターミナルエミュレーター
+Exec="@TOYOTERM_BINARY@"
+Icon=toyoterm
+Terminal=false
+Categories=System;TerminalEmulator;
+Keywords=terminal;shell;console;
+StartupNotify=true
