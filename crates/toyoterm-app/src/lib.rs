@@ -339,6 +339,7 @@ struct ToyotermApplication {
     status_text: String,
     status_pending: bool,
     next_status_at: Option<Instant>,
+    terminal_render_pending: bool,
     mux: Mux,
     render_style: RenderStyle,
     fatal_error: Option<String>,
@@ -614,6 +615,10 @@ impl ApplicationHandler<AppEvent> for ToyotermApplication {
                 window.request_redraw();
             }
             WindowEvent::RedrawRequested => {
+                if self.terminal_render_pending {
+                    self.terminal_render_pending = false;
+                    self.sync_active_renderer(window.scale_factor());
+                }
                 let render_result = self.renderer.as_mut().map(GpuRenderer::render);
                 match render_result {
                     Some(Ok(RenderOutcome::DeviceLost)) => {
@@ -738,11 +743,16 @@ impl ApplicationHandler<AppEvent> for ToyotermApplication {
                     self.fail(event_loop, error);
                     return;
                 }
-                if self.pane_layout.rect(pane).is_some()
-                    && let Some(window) = self.window.clone()
-                {
-                    self.sync_active_renderer(window.scale_factor());
-                    window.request_redraw();
+                if self.pane_layout.rect(pane).is_some() {
+                    // Winit coalesces redraw requests. Keep parsing PTY bytes
+                    // immediately to preserve ordering, but defer the costly
+                    // full-grid snapshot and text shaping until the matching
+                    // redraw. This prevents bursty alternate-screen output
+                    // (notably Neovim exit) from building a render backlog.
+                    self.terminal_render_pending = true;
+                    if let Some(window) = self.window.as_ref() {
+                        window.request_redraw();
+                    }
                 }
             }
             AppEvent::Eof { pane } => {
@@ -878,6 +888,7 @@ impl ToyotermApplication {
             status_text: String::new(),
             status_pending: false,
             next_status_at: None,
+            terminal_render_pending: false,
             mux,
             render_style,
             fatal_error: None,
