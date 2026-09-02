@@ -16,7 +16,56 @@ if [ ! -s "$archive" ]; then
   exit 1
 fi
 
-listing=$(tar -tf "$archive")
+list_archive() {
+  case "$target" in
+    *-windows-*)
+      if command -v powershell.exe >/dev/null 2>&1; then
+        archive_directory=$(CDPATH= cd -- "$(dirname -- "$archive")" && pwd)
+        windows_archive=$(cygpath -w "$archive_directory/$(basename "$archive")")
+        TOYOTERM_VERIFY_ARCHIVE="$windows_archive" powershell.exe -NoProfile -Command '
+          Add-Type -AssemblyName System.IO.Compression.FileSystem
+          $zip = [IO.Compression.ZipFile]::OpenRead($env:TOYOTERM_VERIFY_ARCHIVE)
+          try { $zip.Entries | ForEach-Object { $_.FullName } }
+          finally { $zip.Dispose() }
+        '
+      elif command -v bsdtar >/dev/null 2>&1; then
+        bsdtar -tf "$archive"
+      else
+        tar -tf "$archive"
+      fi
+      ;;
+    *)
+      tar -tf "$archive"
+      ;;
+  esac
+}
+
+extract_archive() {
+  destination=$1
+  case "$target" in
+    *-windows-*)
+      if command -v powershell.exe >/dev/null 2>&1; then
+        archive_directory=$(CDPATH= cd -- "$(dirname -- "$archive")" && pwd)
+        windows_archive=$(cygpath -w "$archive_directory/$(basename "$archive")")
+        windows_destination=$(cygpath -w "$destination")
+        TOYOTERM_VERIFY_ARCHIVE="$windows_archive" \
+          TOYOTERM_VERIFY_DESTINATION="$windows_destination" \
+          powershell.exe -NoProfile -Command '
+            Expand-Archive -LiteralPath $env:TOYOTERM_VERIFY_ARCHIVE -DestinationPath $env:TOYOTERM_VERIFY_DESTINATION
+          '
+      elif command -v bsdtar >/dev/null 2>&1; then
+        bsdtar -xf "$archive" -C "$destination"
+      else
+        tar -xf "$archive" -C "$destination"
+      fi
+      ;;
+    *)
+      tar -xf "$archive" -C "$destination"
+      ;;
+  esac
+}
+
+listing=$(list_archive | tr -d '\r' | tr '\\' '/')
 if printf '%s\n' "$listing" | grep -Eq '(^/|(^|/)\.\.(/|$))'; then
   echo "package verification: archive contains an unsafe path" >&2
   exit 1
@@ -66,7 +115,7 @@ require_entry "$executable"
 
 verification_root=$(mktemp -d)
 trap 'rm -rf "$verification_root"' EXIT HUP INT TERM
-tar -xf "$archive" -C "$verification_root"
+extract_archive "$verification_root"
 actual_version=$("$verification_root/$executable" version)
 if [ "$actual_version" != "toyoterm $version" ]; then
   echo "package verification: expected 'toyoterm $version', got '$actual_version'" >&2
