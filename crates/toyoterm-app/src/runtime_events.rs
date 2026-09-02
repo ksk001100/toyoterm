@@ -1,0 +1,162 @@
+use super::*;
+
+impl ToyotermApplication {
+    pub(super) fn script_context(&mut self) -> Result<ScriptContext, String> {
+        let clipboard = self
+            .clipboard()
+            .and_then(|clipboard| {
+                clipboard
+                    .get_text()
+                    .map_err(|error| format!("read clipboard for Ruby: {error}"))
+            })
+            .ok();
+        Ok(ScriptContext {
+            model: ruby_object_model(&self.mux, Some(&self.pane_runtimes))?,
+            handles: self.mux.native_handles(),
+            clipboard,
+        })
+    }
+
+    pub(super) fn submit_script(&mut self, invocation: ScriptInvocation) -> Result<u64, String> {
+        let id = self.next_script_request;
+        self.next_script_request = self.next_script_request.wrapping_add(1).max(1);
+        self.pending_script.push_back((id, invocation));
+        self.start_next_script()?;
+        Ok(id)
+    }
+
+    pub(super) fn start_next_script(&mut self) -> Result<(), String> {
+        if self.script_in_flight {
+            return Ok(());
+        }
+        let Some((id, invocation)) = self.pending_script.pop_front() else {
+            return Ok(());
+        };
+        let request = ScriptRequest {
+            id,
+            context: self.script_context()?,
+            invocation,
+        };
+        self.script_thread
+            .submit(request)
+            .map_err(|error| error.to_string())?;
+        self.script_in_flight = true;
+        Ok(())
+    }
+
+    pub(super) fn handle_script_completion(
+        &mut self,
+        completion: ScriptCompletion,
+    ) -> Result<(), String> {
+        let waiter = self.eval_waiters.remove(&completion.id);
+        let is_reload = matches!(completion.invocation, ScriptInvocation::Reload);
+        let is_status = matches!(completion.invocation, ScriptInvocation::Status);
+        let mut result = match completion.result {
+            Ok(result) => result,
+            Err(error) => {
+                let message = error.to_string();
+                tracing::warn!(
+                    target: "toyoterm::script",
+                    operation = error.operation(),
+                    request_id = completion.id,
+                    %error,
+                    "script request failed"
+                );
+                if is_reload {
+                    self.config_error_notice = Some(ConfigErrorNotice {
+                        message: message.clone(),
+                        log_expanded: false,
+                        console_hint: false,
+                    });
+                }
+                if is_status {
+                    self.status_pending = false;
+                    self.next_status_at = self
+                        .script_snapshot
+                        .config
+                        .status_interval
+                        .map(|interval| Instant::now() + interval);
+                }
+                self.finish_eval(waiter, Err(message));
+                return Ok(());
+            }
+        };
+
+        if is_status {
+            self.status_pending = false;
+            self.status_text = result.value.take().unwrap_or_default();
+            self.next_status_at = self
+                .script_snapshot
+                .config
+                .status_interval
+                .map(|interval| Instant::now() + interval);
+        }
+        let value = result.value.unwrap_or_default();
+        let apply_result: Result<(), String> = (|| {
+            if let Some(snapshot) = result.snapshot {
+                self.config_error_notice = None;
+                self.apply_script_snapshot(snapshot)?;
+            }
+            let mut reload_requested = false;
+            for command in result.commands {
+                match command {
+                    NativeCommand::Mux(command) => {
+                        self.mux
+                            .dispatch(command)
+                            .map_err(|error| error.to_string())?;
+                    }
+                    NativeCommand::ClipboardWrite(text) => self.pending_clipboard_writes.push(text),
+                    NativeCommand::ReloadConfig => reload_requested = true,
+                }
+            }
+            self.flush_script_clipboard_writes()?;
+            self.reconcile_pane_runtimes()?;
+            self.flush_mux_input()?;
+            self.deliver_runtime_events()?;
+            if reload_requested && !is_reload {
+                self.reload_config_with_notification()?;
+            }
+            Ok(())
+        })();
+        if let Err(error) = apply_result {
+            self.finish_eval(waiter, Err(error.clone()));
+            return Err(error);
+        }
+        self.finish_eval(waiter, Ok(value));
+        Ok(())
+    }
+
+    pub(super) fn finish_eval(
+        &mut self,
+        waiter: Option<EvalWaiter>,
+        result: Result<String, String>,
+    ) {
+        match waiter {
+            Some(EvalWaiter::Ipc(response)) => {
+                let _ = response.send(result);
+            }
+            Some(EvalWaiter::Palette(source)) => match result {
+                Ok(value) => self.palette.push_console_result(&source, Ok(&value)),
+                Err(error) if toyoterm_ipc::is_incomplete_ruby_error(&error) => {
+                    self.palette.insert(&source);
+                    self.palette.insert("\n");
+                }
+                Err(error) => self.palette.push_console_result(&source, Err(&error)),
+            },
+            None => {}
+        }
+    }
+
+    pub(super) fn flush_script_clipboard_writes(&mut self) -> Result<(), String> {
+        if self.pending_clipboard_writes.is_empty() {
+            return Ok(());
+        }
+        let writes = std::mem::take(&mut self.pending_clipboard_writes);
+        for text in writes {
+            self.clipboard()?
+                .set_text(text)
+                .map_err(|error| format!("write clipboard from Ruby: {error}"))?;
+        }
+        Ok(())
+    }
+}
