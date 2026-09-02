@@ -300,21 +300,6 @@ v0.1のログ出力先は標準エラー出力のみで、ログファイルの�
 組み込みのGUIキーバインドはありません。`examples/default_config.rb`のキーバインドを`config.rb`へコピーし、必要に応じて変更してください。
 
 - 通常のキー入力：PTYへ入力を送信
-- Linux・Windowsの`Ctrl+Shift+C`またはmacOSの`Cmd+C`：選択範囲をコピー
-- Linux・Windowsの`Ctrl+Shift+V`またはmacOSの`Cmd+V`：貼り付け
-- Linux・Windowsの`Ctrl+Shift+T`またはmacOSの`Cmd+T`：新しいタブを作成
-- Linux・Windowsの`Ctrl+Shift+R`またはmacOSの`Cmd+Shift+R`：有効な設定ファイルを再読込
-- Linux・Windowsの`Ctrl+Shift+W`またはmacOSの`Cmd+W`：active Tabを閉じる（最後のタブは維持）
-- `Ctrl+Tab` / `Ctrl+Shift+Tab`：次／前のタブをactivate
-- Linux・Windowsの`Ctrl+Shift+\` / `Ctrl+Shift+-`またはmacOSの`Cmd+D` / `Cmd+Shift+D`：active Paneを右／下へ分割
-- Linux・Windowsの`Ctrl+Shift+矢印`またはmacOSの`Cmd+Option+矢印`：指定方向の最寄りPaneへfocus
-- Linux・Windowsの`Ctrl+Shift+Q`またはmacOSの`Cmd+Shift+W`：active Paneを閉じる（最後のPaneは維持）
-- Linux・Windowsの`Ctrl+Shift+N`またはmacOSの`Cmd+N`：`Workspace 2`以降の連番名でWorkspaceを作成してactivate（初期Workspaceは`Workspace 1`）
-- Linux・Windowsの`Ctrl+Shift+F`またはmacOSの`Cmd+Shift+F`：viewportとscrollbackをliteral検索（Enter／Shift+Enterで次／前のmatchへ移動）
-- `F11`：フルスクリーンを切替
-- Linux・Windowsの`Alt+F10`：最大化／元のサイズを切替、`Alt+F9`：最小化
-- macOSの`Ctrl+Cmd+F`：フルスクリーンを切替
-- `Ctrl+Alt+Left` / `Ctrl+Alt+Right`：前／次のWorkspaceをactivate
 - Workspaceまたはタブのラベルをクリック：対象をactivate
 - 左マウスボタンでドラッグ：テキストを選択
 - マウスホイール：履歴をスクロール。アプリケーションがマウスレポートを要求している場合はホイール入力を送信

@@ -303,21 +303,6 @@ There are no built-in GUI key bindings. Copy the bindings from
 `examples/default_config.rb` into your `config.rb` and change them as needed.
 
 - Type normally to send input to the PTY
-- `Ctrl+Shift+C` on Linux/Windows or `Cmd+C` on macOS: copy the selection
-- `Ctrl+Shift+V` on Linux/Windows or `Cmd+V` on macOS: paste
-- `Ctrl+Shift+T` on Linux/Windows or `Cmd+T` on macOS: open a new tab
-- `Ctrl+Shift+R` on Linux/Windows or `Cmd+Shift+R` on macOS: reload the active configuration file
-- `Ctrl+Shift+W` on Linux/Windows or `Cmd+W` on macOS: close the active tab (the final tab is kept open)
-- `Ctrl+Tab` / `Ctrl+Shift+Tab`: activate the next / previous tab
-- `Ctrl+Shift+\` / `Ctrl+Shift+-` on Linux/Windows or `Cmd+D` / `Cmd+Shift+D` on macOS: split the active pane right / down
-- `Ctrl+Shift+Arrow` on Linux/Windows or `Cmd+Option+Arrow` on macOS: focus the nearest pane in that direction
-- `Ctrl+Shift+Q` on Linux/Windows or `Cmd+Shift+W` on macOS: close the active pane (the final pane is kept open)
-- `Ctrl+Shift+N` on Linux/Windows or `Cmd+N` on macOS: create and activate the next numbered workspace (`Workspace 1` is the initial workspace)
-- `Ctrl+Shift+F` on Linux/Windows or `Cmd+Shift+F` on macOS: search literal text across the viewport and scrollback; Enter/Shift+Enter selects the next/previous match
-- `F11`: toggle fullscreen
-- `Alt+F10` on Linux/Windows: toggle maximize/restore, `Alt+F9`: minimize
-- `Ctrl+Cmd+F` on macOS: toggle fullscreen
-- `Ctrl+Alt+Left` / `Ctrl+Alt+Right`: activate the previous / next workspace
 - Click a workspace or tab label to activate it
 - Drag with the left mouse button: select text
 - Mouse wheel: scroll through history, or report wheel input when the terminal application requests mouse reporting
