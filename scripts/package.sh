@@ -111,10 +111,10 @@ case "$target" in
     chmod 755 "$staging_directory/install.sh" "$staging_directory/uninstall.sh"
     mkdir -p \
       "$staging_directory/share/applications" \
-      "$staging_directory/share/icons/hicolor/scalable/apps"
+      "$staging_directory/share/icons/hicolor/1024x1024/apps"
     cp packaging/linux/toyoterm.desktop "$staging_directory/share/applications/"
-    cp packaging/linux/toyoterm.svg \
-      "$staging_directory/share/icons/hicolor/scalable/apps/toyoterm.svg"
+    cp packaging/app-icon.png \
+      "$staging_directory/share/icons/hicolor/1024x1024/apps/toyoterm.png"
     archive_path="dist/$archive_name.tar.gz"
     tar -C "$staging_root" -czf "$archive_path" "$archive_name"
     created_artifacts=$archive_path

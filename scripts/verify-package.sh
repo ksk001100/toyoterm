@@ -98,7 +98,7 @@ case "$target" in
     require_entry "$archive_name/install.sh"
     require_entry "$archive_name/uninstall.sh"
     require_entry "$archive_name/share/applications/toyoterm.desktop"
-    require_entry "$archive_name/share/icons/hicolor/scalable/apps/toyoterm.svg"
+    require_entry "$archive_name/share/icons/hicolor/1024x1024/apps/toyoterm.png"
     ;;
   *)
     echo "package verification: unsupported target: $target" >&2
@@ -142,6 +142,7 @@ if printf '%s' "$target" | grep -q -- '-linux-'; then
   for installed_path in \
     "$install_prefix/bin/toyoterm" \
     "$install_prefix/share/applications/toyoterm.desktop" \
+    "$install_prefix/share/icons/hicolor/1024x1024/apps/toyoterm.png" \
     "$install_prefix/share/icons/hicolor/scalable/apps/toyoterm.svg" \
     "$install_prefix/lib/toyoterm/uninstall.sh"; do
     if [ -e "$installed_path" ]; then

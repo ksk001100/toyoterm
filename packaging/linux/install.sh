@@ -21,7 +21,7 @@ esac
 script_directory=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 binary_directory="$prefix/bin"
 application_directory="$prefix/share/applications"
-icon_directory="$prefix/share/icons/hicolor/scalable/apps"
+icon_directory="$prefix/share/icons/hicolor/1024x1024/apps"
 support_directory="$prefix/lib/toyoterm"
 
 mkdir -p "$binary_directory" "$application_directory" "$icon_directory" "$support_directory"
@@ -30,8 +30,11 @@ temporary_desktop="$application_directory/.toyoterm.desktop-$$"
 trap 'rm -f "$temporary_binary" "$temporary_desktop"' EXIT HUP INT TERM
 install -m 755 "$script_directory/toyoterm" "$temporary_binary"
 mv -f "$temporary_binary" "$binary_directory/toyoterm"
-install -m 644 "$script_directory/share/icons/hicolor/scalable/apps/toyoterm.svg" \
-  "$icon_directory/toyoterm.svg"
+install -m 644 "$script_directory/share/icons/hicolor/1024x1024/apps/toyoterm.png" \
+  "$icon_directory/toyoterm.png"
+# Remove the legacy SVG so icon lookup cannot keep preferring the old artwork
+# after an in-place upgrade.
+rm -f -- "$prefix/share/icons/hicolor/scalable/apps/toyoterm.svg"
 install -m 755 "$script_directory/uninstall.sh" "$support_directory/uninstall.sh"
 
 escaped_binary=$(printf '%s' "$binary_directory/toyoterm" \
@@ -47,6 +50,9 @@ mv -f "$temporary_desktop" "$application_directory/toyoterm.desktop"
 
 if command -v update-desktop-database >/dev/null 2>&1; then
   update-desktop-database "$application_directory" >/dev/null 2>&1 || true
+fi
+if command -v gtk-update-icon-cache >/dev/null 2>&1; then
+  gtk-update-icon-cache -f -t "$prefix/share/icons/hicolor" >/dev/null 2>&1 || true
 fi
 
 echo "installed toyoterm to $binary_directory/toyoterm"
