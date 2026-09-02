@@ -42,6 +42,45 @@ impl ConfigManager {
         &self.config
     }
 
+    /// Starts a transaction for mutations made through the persistent Ruby VM.
+    /// The returned value is the command queue checkpoint associated with it.
+    pub(super) fn begin_config_transaction(&mut self) -> Result<String, ScriptError> {
+        self.runtime.eval("Toyoterm.__begin_config_transaction")?;
+        self.runtime.eval("Toyoterm.__command_checkpoint")
+    }
+
+    pub(super) fn rollback_config_transaction(
+        &mut self,
+        command_checkpoint: &str,
+    ) -> Result<(), ScriptError> {
+        self.runtime
+            .eval("Toyoterm.__rollback_config_transaction")?;
+        let checkpoint = command_checkpoint
+            .parse::<usize>()
+            .map_err(|_| ScriptError::new("rollback config", "command checkpoint is invalid"))?;
+        self.runtime
+            .eval(&format!("Toyoterm.__rollback_commands({checkpoint})"))?;
+        Ok(())
+    }
+
+    pub(super) fn commit_config_transaction(&mut self) -> Result<(), ScriptError> {
+        self.runtime.eval("Toyoterm.__commit_config_transaction")?;
+        Ok(())
+    }
+
+    /// Reads and validates the live Ruby config after a persistent-VM request.
+    /// A snapshot is returned only when a native setting actually changed.
+    pub(super) fn refresh_config_snapshot(
+        &mut self,
+    ) -> Result<Option<ScriptSnapshot>, ScriptError> {
+        let config = read_config(&mut self.runtime)?;
+        if config == self.config {
+            return Ok(None);
+        }
+        self.config = config;
+        Ok(Some(self.snapshot()))
+    }
+
     pub(super) fn snapshot(&self) -> ScriptSnapshot {
         ScriptSnapshot {
             config: self.config.clone(),
@@ -392,27 +431,55 @@ pub(super) fn run_script_request(
     manager.set_object_model(&context.model)?;
     manager.set_clipboard_text(context.clipboard.as_deref())?;
 
-    let (value, snapshot) = match invocation {
-        ScriptInvocation::DrainStartup => (None, None),
-        ScriptInvocation::KeyBinding { key, pane } => {
-            manager.trigger_keybinding(key, *pane)?;
-            (None, None)
-        }
-        ScriptInvocation::UserCommand { name, pane } => {
-            manager.trigger_user_command(name, *pane)?;
-            (None, None)
-        }
-        ScriptInvocation::Event(event) => {
-            manager.emit_native_event(event)?;
-            (None, None)
-        }
-        ScriptInvocation::Eval(source) => (Some(manager.eval_inspect(source)?), None),
-        ScriptInvocation::Reload => {
-            manager.reload_file()?;
-            (None, Some(manager.snapshot()))
-        }
-        ScriptInvocation::Status => (Some(manager.render_status()?), None),
+    let command_checkpoint = if matches!(invocation, ScriptInvocation::Reload) {
+        None
+    } else {
+        Some(manager.begin_config_transaction()?)
     };
+    let request_result: Result<(Option<String>, Option<ScriptSnapshot>), ScriptError> = (|| {
+        Ok(match invocation {
+            ScriptInvocation::DrainStartup => (None, None),
+            ScriptInvocation::KeyBinding { key, pane } => {
+                manager.trigger_keybinding(key, *pane)?;
+                (None, None)
+            }
+            ScriptInvocation::UserCommand { name, pane } => {
+                manager.trigger_user_command(name, *pane)?;
+                (None, None)
+            }
+            ScriptInvocation::Event(event) => {
+                manager.emit_native_event(event)?;
+                (None, None)
+            }
+            ScriptInvocation::Eval(source) => (Some(manager.eval_inspect(source)?), None),
+            ScriptInvocation::Reload => {
+                manager.reload_file()?;
+                (None, Some(manager.snapshot()))
+            }
+            ScriptInvocation::Status => (Some(manager.render_status()?), None),
+        })
+    })();
+    let (value, mut snapshot) = match request_result {
+        Ok(result) => result,
+        Err(error) => {
+            if let Some(checkpoint) = command_checkpoint.as_deref() {
+                manager.rollback_config_transaction(checkpoint)?;
+            }
+            return Err(error);
+        }
+    };
+    if let Some(checkpoint) = command_checkpoint.as_deref() {
+        match manager.refresh_config_snapshot() {
+            Ok(changed) => {
+                snapshot = changed;
+                manager.commit_config_transaction()?;
+            }
+            Err(error) => {
+                manager.rollback_config_transaction(checkpoint)?;
+                return Err(error);
+            }
+        }
+    }
     let model = &context.model;
     let commands = manager.drain_commands_with_context(
         model.current_workspace,
@@ -486,6 +553,62 @@ pub(super) fn load_config(
     runtime.eval_with_filename(source, filename)?;
     let plugins = load_plugins(&mut runtime, plugin_paths, source_dir);
 
+    let config = read_config(&mut runtime)?;
+    let binding_count = runtime
+        .eval("Toyoterm.__config.__binding_count")?
+        .parse::<usize>()
+        .map_err(|_| ScriptError::new("load key bindings", "binding count is invalid"))?;
+    let mut keybindings = HashSet::with_capacity(binding_count);
+    for index in 0..binding_count {
+        keybindings.insert(runtime.eval(&format!("Toyoterm.__config.__binding_key({index})"))?);
+    }
+
+    let static_count = runtime
+        .eval("Toyoterm.__config.__static_binding_count")?
+        .parse::<usize>()
+        .map_err(|_| ScriptError::new("load key bindings", "static binding count is invalid"))?;
+    let mut native_actions = HashMap::with_capacity(static_count);
+    for index in 0..static_count {
+        let key = runtime.eval(&format!("Toyoterm.__config.__static_binding_key({index})"))?;
+        let action = runtime.eval(&format!(
+            "Toyoterm.__config.__static_binding_action({index})"
+        ))?;
+        let argument = runtime.eval(&format!(
+            "Toyoterm.__config.__static_binding_argument({index})"
+        ))?;
+        native_actions.insert(key, decode_native_action(&action, &argument)?);
+    }
+
+    let event_count = runtime
+        .eval("Toyoterm.__event_count")?
+        .parse::<usize>()
+        .map_err(|_| ScriptError::new("load events", "event count is invalid"))?;
+    let mut event_names = HashSet::with_capacity(event_count);
+    for index in 0..event_count {
+        event_names.insert(runtime.eval(&format!("Toyoterm.__event_name({index})"))?);
+    }
+
+    let user_command_count = runtime
+        .eval("Toyoterm.__command_count")?
+        .parse::<usize>()
+        .map_err(|_| ScriptError::new("load user commands", "command count is invalid"))?;
+    let mut user_command_names = HashSet::with_capacity(user_command_count);
+    for index in 0..user_command_count {
+        user_command_names.insert(runtime.eval(&format!("Toyoterm.__command_name({index})"))?);
+    }
+
+    Ok(LoadedConfig {
+        runtime,
+        config,
+        keybindings,
+        native_actions,
+        event_names,
+        user_command_names,
+        plugins,
+    })
+}
+
+fn read_config(runtime: &mut MrubyRuntime) -> Result<ToyotermConfig, ScriptError> {
     let defaults = ToyotermConfig::default();
     let family = runtime.eval("Toyoterm.__config.font.family")?;
     if family.trim().is_empty() {
@@ -633,56 +756,5 @@ pub(super) fn load_config(
     for (index, color) in config.colors.ansi.iter().enumerate() {
         validate_color(&format!("ansi[{index}]"), color)?;
     }
-    let binding_count = runtime
-        .eval("Toyoterm.__config.__binding_count")?
-        .parse::<usize>()
-        .map_err(|_| ScriptError::new("load key bindings", "binding count is invalid"))?;
-    let mut keybindings = HashSet::with_capacity(binding_count);
-    for index in 0..binding_count {
-        keybindings.insert(runtime.eval(&format!("Toyoterm.__config.__binding_key({index})"))?);
-    }
-
-    let static_count = runtime
-        .eval("Toyoterm.__config.__static_binding_count")?
-        .parse::<usize>()
-        .map_err(|_| ScriptError::new("load key bindings", "static binding count is invalid"))?;
-    let mut native_actions = HashMap::with_capacity(static_count);
-    for index in 0..static_count {
-        let key = runtime.eval(&format!("Toyoterm.__config.__static_binding_key({index})"))?;
-        let action = runtime.eval(&format!(
-            "Toyoterm.__config.__static_binding_action({index})"
-        ))?;
-        let argument = runtime.eval(&format!(
-            "Toyoterm.__config.__static_binding_argument({index})"
-        ))?;
-        native_actions.insert(key, decode_native_action(&action, &argument)?);
-    }
-
-    let event_count = runtime
-        .eval("Toyoterm.__event_count")?
-        .parse::<usize>()
-        .map_err(|_| ScriptError::new("load events", "event count is invalid"))?;
-    let mut event_names = HashSet::with_capacity(event_count);
-    for index in 0..event_count {
-        event_names.insert(runtime.eval(&format!("Toyoterm.__event_name({index})"))?);
-    }
-
-    let user_command_count = runtime
-        .eval("Toyoterm.__command_count")?
-        .parse::<usize>()
-        .map_err(|_| ScriptError::new("load user commands", "command count is invalid"))?;
-    let mut user_command_names = HashSet::with_capacity(user_command_count);
-    for index in 0..user_command_count {
-        user_command_names.insert(runtime.eval(&format!("Toyoterm.__command_name({index})"))?);
-    }
-
-    Ok(LoadedConfig {
-        runtime,
-        config,
-        keybindings,
-        native_actions,
-        event_names,
-        user_command_names,
-        plugins,
-    })
+    Ok(config)
 }

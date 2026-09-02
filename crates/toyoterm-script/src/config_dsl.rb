@@ -209,6 +209,35 @@ module Toyoterm
       block ? block.call(@window) : @window
     end
 
+    def __checkpoint
+      [
+        [@font.family, @font.fallback.dup, @font.size, @font.weight],
+        [@colors.background, @colors.foreground, @colors.cursor, @colors.selection,
+         @colors.ansi.dup],
+        [@window.opacity, @default_shell, @scrollback_lines],
+        [@leader_key, @leader_timeout]
+      ]
+    end
+
+    def __restore(checkpoint)
+      font, colors, window, leader = checkpoint
+      @font.family = font[0]
+      @font.fallback = font[1]
+      @font.size = font[2]
+      @font.weight = font[3]
+      @colors.background = colors[0]
+      @colors.foreground = colors[1]
+      @colors.cursor = colors[2]
+      @colors.selection = colors[3]
+      @colors.ansi = colors[4]
+      @window.opacity = window[0]
+      @default_shell = window[1]
+      @scrollback_lines = window[2]
+      @leader_key = leader[0]
+      @leader_timeout = leader[1]
+      nil
+    end
+
     def bind(key, &block)
       raise ArgumentError, "key binding requires a block" unless block
       key = key.to_s.upcase
@@ -770,6 +799,28 @@ module Toyoterm
 
   def self.reload_config
     __queue_command(:reload_config, 0, nil)
+    nil
+  end
+
+  # The host validates mutations made in the persistent VM after each
+  # request. Keep a VM-side checkpoint so invalid changes can be rolled back.
+  def self.__begin_config_transaction
+    @config_transaction = [@config.__checkpoint, @status_interval, @status_callback]
+    nil
+  end
+
+  def self.__rollback_config_transaction
+    checkpoint = @config_transaction
+    return nil unless checkpoint
+    @config.__restore(checkpoint[0])
+    @status_interval = checkpoint[1]
+    @status_callback = checkpoint[2]
+    @config_transaction = nil
+    nil
+  end
+
+  def self.__commit_config_transaction
+    @config_transaction = nil
     nil
   end
 

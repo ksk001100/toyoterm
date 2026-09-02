@@ -1291,6 +1291,60 @@ fn interactive_evaluation_returns_inspect_output() {
 }
 
 #[test]
+fn interactive_config_mutations_return_a_new_native_snapshot() {
+    let mut manager = ConfigManager::new().unwrap();
+    manager
+        .reload(
+            r#"
+                Toyoterm.configure do |config|
+                  config.font.family = "Old Font"
+                  config.font.size = 14
+                  config.window.opacity = 1.0
+                end
+            "#,
+        )
+        .unwrap();
+
+    let result = run_script_request(
+        &mut manager,
+        &script_test_context(),
+        &ScriptInvocation::Eval(
+            r#"Toyoterm.configure { |config| config.font.family = "New Font"; config.font.size = 18; config.window.opacity = 0.8 }"#
+                .into(),
+        ),
+    )
+    .unwrap();
+
+    let config = result.snapshot.unwrap().config;
+    assert_eq!(config.font.family, "New Font");
+    assert_eq!(config.font.size, 18.0);
+    assert_eq!(config.window_opacity, 0.8);
+    assert_eq!(manager.config().font.family, "New Font");
+}
+
+#[test]
+fn invalid_interactive_config_mutations_are_rolled_back() {
+    let mut manager = ConfigManager::new().unwrap();
+    manager
+        .reload("Toyoterm.configure { |config| config.font.size = 14 }")
+        .unwrap();
+
+    let error = run_script_request(
+        &mut manager,
+        &script_test_context(),
+        &ScriptInvocation::Eval(
+            "Toyoterm.configure { |config| config.font.size = 0; config.window.opacity = 2 }"
+                .into(),
+        ),
+    )
+    .unwrap_err();
+
+    assert!(error.message().contains("font size must be positive"));
+    assert_eq!(manager.config().font.size, 14.0);
+    assert_eq!(manager.eval("Toyoterm.__config.font.size").unwrap(), "14");
+}
+
+#[test]
 fn resolves_config_paths_in_priority_order() {
     let explicit = Path::new("custom.rb");
     let environment = std::ffi::OsStr::new("environment.rb");

@@ -270,6 +270,16 @@ GUI configuration failures open a non-fatal error banner. `Open Log` expands the
 
 Changing `default_shell` does not replace the shell that is already running; it applies when a new terminal session is created.
 
+From the Ruby Console or `toyoterm ruby console`, `Toyoterm.configure` can change settings without reloading the config file. Settings such as `font.family`, `font.fallback`, `font.size`, `font.weight`, `colors`, `window.opacity`, `scrollback_lines`, and `leader` are validated after evaluation and applied immediately to the current window, renderer, and terminals. Invalid values roll back as one transaction.
+
+```ruby
+Toyoterm.configure do |config|
+  config.font.size = 16
+  config.font.family = "JetBrains Mono"
+  config.window.opacity = 0.9
+end
+```
+
 Executable configurations are available at `examples/minimal_config.rb`.
 
 The embedded runtime is mruby, not CRuby. CRuby gems, native extensions, and the complete CRuby standard library are not available unless toyoterm explicitly bundles them. `mruby-time` is not bundled in v0.1 because the current configuration and event APIs do not require it.

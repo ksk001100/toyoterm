@@ -268,6 +268,16 @@ GUIで設定の読込に失敗すると、アプリを終了せずエラーバ�
 
 `default_shell`を変更しても実行中のシェルは置き換えません。新しいターミナルセッションを作成するときに適用されます。
 
+Ruby Consoleまたは`toyoterm ruby console`から`Toyoterm.configure`を実行すると、設定ファイルのreloadなしで設定を変更できます。`font.family`、`font.fallback`、`font.size`、`font.weight`、`colors`、`window.opacity`、`scrollback_lines`、`leader`などの設定は評価完了後に検証され、変更があれば現在のwindow・renderer・terminalへ即時反映されます。値が不正な場合は変更全体を直前の値へ戻します。
+
+```ruby
+Toyoterm.configure do |config|
+  config.font.size = 16
+  config.font.family = "JetBrains Mono"
+  config.window.opacity = 0.9
+end
+```
+
 実行可能な設定例は`examples/minimal_config.rb`にあります。
 
 組み込みランタイムはCRubyではなくmrubyです。toyotermが明示的にbundleしていないCRuby gem、native extension、完全なCRuby標準ライブラリは利用できません。現在の設定・イベントAPIでは不要なため、v0.1では`mruby-time`をbundleしません。
