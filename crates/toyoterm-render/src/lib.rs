@@ -4,7 +4,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Mutex, OnceLock};
 
-use glyphon::cosmic_text::{Fallback, PlatformFallback};
+use glyphon::cosmic_text::{Cursor as TextCursor, Fallback, PlatformFallback};
 use glyphon::{
     Attrs, Buffer, Cache as GlyphCache, Color as GlyphColor, Family, FontSystem, Metrics,
     Resolution, Shaping, Style, SwashCache, TextArea, TextAtlas, TextBounds, TextRenderer,
@@ -270,6 +270,7 @@ struct PaneBuffers {
     focus: Buffer,
     layout: TextLayout,
     cursor: CursorState,
+    cursor_x: f32,
     rect: PaneRect,
     active: bool,
     has_selection: bool,
@@ -351,7 +352,6 @@ impl PaneBuffers {
         let mut buffer = || {
             let mut buffer = Buffer::new(font_system, metrics);
             buffer.set_wrap(Wrap::None);
-            buffer.set_monospace_width(Some(layout.cell_width.max(1.0)));
             buffer
         };
         Self {
@@ -366,19 +366,11 @@ impl PaneBuffers {
                 visible: false,
                 shape: CursorShape::Block,
             },
+            cursor_x: 0.0,
             rect: PaneRect::default(),
             active: false,
             has_selection: false,
         }
-    }
-
-    fn set_layout(&mut self, layout: TextLayout) {
-        self.layout = layout;
-        let cell_width = Some(layout.cell_width.max(1.0));
-        self.text.set_monospace_width(cell_width);
-        self.selection.set_monospace_width(cell_width);
-        self.cursor_glyph.set_monospace_width(cell_width);
-        self.focus.set_monospace_width(cell_width);
     }
 }
 
@@ -563,6 +555,7 @@ impl GpuRenderer {
         for pane in panes {
             let rich_text = terminal_rich_text(
                 pane.snapshot,
+                Some(pane.cursor),
                 &font_family,
                 font_weight,
                 foreground,
@@ -578,7 +571,7 @@ impl GpuRenderer {
                 .panes
                 .get_mut(&pane.pane)
                 .expect("pane buffers were inserted");
-            buffers.set_layout(layout);
+            buffers.layout = layout;
             buffers.cursor = pane.cursor;
             buffers.rect = pane.rect;
             buffers.active = pane.active;
@@ -618,6 +611,8 @@ impl GpuRenderer {
             buffers
                 .text
                 .shape_until_scroll(&mut self.font_system, false);
+            buffers.cursor_x = terminal_cursor_x(&buffers.text, pane.snapshot, pane.cursor)
+                .unwrap_or_else(|| f32::from(pane.cursor.column) * layout.cell_width);
 
             buffers.selection.set_metrics_and_size(
                 metrics,
@@ -1046,7 +1041,7 @@ impl GpuRenderer {
             }
         }
         for pane in self.panes.values() {
-            let placement = pane_text_placement(pane.rect, pane.layout, pane.cursor);
+            let placement = pane_text_placement(pane.rect, pane.layout, pane.cursor, pane.cursor_x);
             let bounds = pane_bounds(placement.bounds);
             if pane.has_selection {
                 text_areas.push(TextArea {
@@ -1187,6 +1182,7 @@ fn pane_text_placement(
     rect: PaneRect,
     layout: TextLayout,
     cursor: CursorState,
+    cursor_x: f32,
 ) -> PaneTextPlacement {
     let text_left = rect.x as f32 + layout.horizontal_padding;
     let text_top = rect.y as f32 + layout.vertical_padding;
@@ -1194,7 +1190,7 @@ fn pane_text_placement(
         bounds: rect,
         text_left,
         text_top,
-        cursor_left: text_left + f32::from(cursor.column) * layout.cell_width,
+        cursor_left: text_left + cursor_x,
         cursor_top: text_top + f32::from(cursor.row) * layout.line_height,
     }
 }
@@ -1251,8 +1247,45 @@ fn selection_text(snapshot: &TerminalSnapshot) -> String {
     text
 }
 
+fn terminal_cursor_x(
+    buffer: &Buffer,
+    snapshot: &TerminalSnapshot,
+    cursor: CursorState,
+) -> Option<f32> {
+    let text_cursor = TextCursor::new(
+        usize::from(cursor.row),
+        terminal_cursor_byte_index(snapshot, cursor),
+    );
+    buffer
+        .layout_runs()
+        .find(|run| run.line_i == usize::from(cursor.row))
+        .and_then(|run| run.cursor_position(&text_cursor))
+}
+
+fn terminal_cursor_byte_index(snapshot: &TerminalSnapshot, cursor: CursorState) -> usize {
+    let Some(cells) = snapshot.cells.get(usize::from(cursor.row)) else {
+        return usize::from(cursor.column);
+    };
+    let mut byte_index = 0;
+    let mut column = 0;
+    for cell in cells {
+        if cursor.column <= cell.column {
+            return byte_index + usize::from(cursor.column.saturating_sub(column));
+        }
+        byte_index += usize::from(cell.column.saturating_sub(column));
+        let cell_end = cell.column.saturating_add(u16::from(cell.width.max(1)));
+        if cursor.column < cell_end {
+            return byte_index;
+        }
+        byte_index += cell.text.len();
+        column = cell_end;
+    }
+    byte_index + usize::from(cursor.column.saturating_sub(column))
+}
+
 fn terminal_rich_text<'a>(
     snapshot: &TerminalSnapshot,
+    cursor: Option<CursorState>,
     font_family: &'a str,
     font_weight: u16,
     default_foreground: [u8; 3],
@@ -1292,6 +1325,14 @@ fn terminal_rich_text<'a>(
                 ),
             ));
             column = cell.column.saturating_add(u16::from(cell.width.max(1)));
+        }
+        if let Some(cursor) = cursor.filter(|cursor| cursor.row == row)
+            && cursor.column > column
+        {
+            spans.push((
+                " ".repeat(usize::from(cursor.column - column)),
+                default_attrs.clone(),
+            ));
         }
     }
     spans
@@ -1434,7 +1475,7 @@ fn glyph_color(color: [u8; 3], alpha: u8) -> GlyphColor {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use toyoterm_terminal::SelectionSpan;
+    use toyoterm_terminal::{AlacrittyTerminalBackend, SelectionSpan, TerminalBackend};
 
     #[test]
     fn render_plan_matches_snapshot() {
@@ -1453,6 +1494,7 @@ mod tests {
                 visible: true,
                 shape: CursorShape::Beam,
             },
+            27.0,
         );
         let style = RenderStyle {
             background: [32, 64, 128],
@@ -1509,34 +1551,47 @@ mod tests {
     }
 
     #[test]
-    fn terminal_buffers_use_the_configured_cell_width() {
-        let mut font_system = FontSystem::new();
-        let initial_layout = TextLayout {
-            font_size: 14.0,
-            line_height: 18.0,
-            cell_width: 9.0,
-            horizontal_padding: 8.0,
-            vertical_padding: 8.0,
-        };
-        let mut buffers = PaneBuffers::new(
-            &mut font_system,
-            Metrics::new(initial_layout.font_size, initial_layout.line_height),
-            initial_layout,
+    fn styled_shell_prompt_cursor_uses_the_rendered_text_position() {
+        let mut terminal = AlacrittyTerminalBackend::new(80, 4);
+        terminal.advance(
+            "\n\x1b[1;36mtoyoterm\x1b[0m \x1b[3;36mmaster\x1b[0m \
+             \x1b[36m? \x1b[1m❯\x1b[0m "
+                .as_bytes(),
         );
+        let snapshot = terminal.snapshot();
+        let cursor = terminal.cursor();
+        let metrics = Metrics::new(14.0, 18.0);
+        let mut font_system = FontSystem::new();
+        let mut buffer = Buffer::new(&mut font_system, metrics);
+        buffer.set_wrap(Wrap::None);
+        let rich_text = terminal_rich_text(
+            &snapshot,
+            Some(cursor),
+            "JetBrainsMono Nerd Font",
+            400,
+            [220, 225, 232],
+            [9, 11, 14],
+        );
+        let default_attrs = Attrs::new().family(Family::Name("JetBrainsMono Nerd Font"));
+        buffer.set_rich_text(
+            rich_text
+                .iter()
+                .map(|(text, attrs)| (text.as_str(), attrs.clone())),
+            &default_attrs,
+            Shaping::Advanced,
+            None,
+        );
+        buffer.shape_until_scroll(&mut font_system, false);
 
-        assert_eq!(buffers.text.monospace_width(), Some(9.0));
-        assert_eq!(buffers.selection.monospace_width(), Some(9.0));
-        assert_eq!(buffers.cursor_glyph.monospace_width(), Some(9.0));
-
-        buffers.set_layout(TextLayout {
-            cell_width: 13.5,
-            ..initial_layout
-        });
-
-        assert_eq!(buffers.text.monospace_width(), Some(13.5));
-        assert_eq!(buffers.selection.monospace_width(), Some(13.5));
-        assert_eq!(buffers.cursor_glyph.monospace_width(), Some(13.5));
-        assert_eq!(buffers.focus.monospace_width(), Some(13.5));
+        let rendered_cursor_x = terminal_cursor_x(&buffer, &snapshot, cursor)
+            .expect("cursor row and byte index are laid out");
+        let line_width = buffer
+            .layout_runs()
+            .find(|run| run.line_i == usize::from(cursor.row))
+            .map(|run| run.line_w)
+            .expect("cursor row is laid out");
+        assert!((rendered_cursor_x - line_width).abs() < 0.01);
+        assert!((rendered_cursor_x - f32::from(cursor.column) * 9.0).abs() > 1.0);
     }
 
     #[test]
