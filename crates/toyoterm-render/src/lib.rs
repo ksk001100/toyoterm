@@ -312,6 +312,7 @@ struct PaneBuffers {
     active: bool,
     has_selection: bool,
     backgrounds: Vec<(PaneRect, [u8; 3])>,
+    search_highlights: Vec<(PaneRect, bool)>,
 }
 
 #[repr(C)]
@@ -423,6 +424,7 @@ impl PaneBuffers {
             active: false,
             has_selection: false,
             backgrounds: Vec::new(),
+            search_highlights: Vec::new(),
         }
     }
 }
@@ -650,6 +652,7 @@ impl GpuRenderer {
                 foreground,
                 &ansi,
             );
+            buffers.search_highlights = search_highlight_rects(pane.snapshot, pane.rect, layout);
             let content_width = pane
                 .rect
                 .width
@@ -1324,6 +1327,19 @@ impl GpuRenderer {
                     self.configuration.height,
                 );
             }
+            for (rect, active) in &pane.search_highlights {
+                push_ui_rect(
+                    &mut vertices,
+                    *rect,
+                    if *active {
+                        rgba([255, 190, 58], 0.72)
+                    } else {
+                        rgba([196, 151, 47], 0.38)
+                    },
+                    self.configuration.width,
+                    self.configuration.height,
+                );
+            }
         }
 
         for pane in self.panes.values().filter(|pane| pane.active) {
@@ -1653,6 +1669,42 @@ fn terminal_backgrounds(
     backgrounds
 }
 
+fn search_highlight_rects(
+    snapshot: &TerminalSnapshot,
+    pane: PaneRect,
+    layout: TextLayout,
+) -> Vec<(PaneRect, bool)> {
+    let origin_x = pane.x as f32 + layout.horizontal_padding;
+    let origin_y = pane.y as f32 + layout.vertical_padding;
+    let right = pane.x.saturating_add(pane.width);
+    let bottom = pane.y.saturating_add(pane.height);
+    snapshot
+        .search_matches
+        .iter()
+        .filter_map(|found| {
+            let left =
+                (origin_x + f32::from(found.start_column) * layout.cell_width).floor() as u32;
+            let match_right = (origin_x
+                + f32::from(found.end_column.saturating_add(1)) * layout.cell_width)
+                .ceil() as u32;
+            let top = (origin_y + f32::from(found.row) * layout.line_height).floor() as u32;
+            let match_bottom = (origin_y
+                + f32::from(found.row.saturating_add(1)) * layout.line_height)
+                .ceil() as u32;
+            let left = left.max(pane.x);
+            let top = top.max(pane.y);
+            let match_right = match_right.min(right);
+            let match_bottom = match_bottom.min(bottom);
+            (match_right > left && match_bottom > top).then(|| {
+                (
+                    PaneRect::new(left, top, match_right - left, match_bottom - top),
+                    found.active,
+                )
+            })
+        })
+        .collect()
+}
+
 fn terminal_rich_text<'a>(
     snapshot: &TerminalSnapshot,
     cursor: Option<CursorState>,
@@ -1685,10 +1737,14 @@ fn terminal_rich_text<'a>(
                     default_attrs.clone(),
                 ));
             }
+            let mut attributes = cell.attributes;
+            if cell.hyperlink.is_some() {
+                attributes.underline = true;
+            }
             spans.push((
                 cell.text.clone(),
                 glyph_attrs(
-                    cell.attributes,
+                    attributes,
                     font_family,
                     font_weight,
                     default_foreground,
@@ -1895,6 +1951,7 @@ mod tests {
                     end_column: 1,
                 },
             ],
+            search_matches: Vec::new(),
         };
         let selection_mask = selection_text(&terminal).replace(' ', "·");
         let snapshot = format!(
@@ -1990,6 +2047,7 @@ mod tests {
                     end_column: 1,
                 },
             ],
+            search_matches: Vec::new(),
         };
         assert_eq!(selection_text(&snapshot), "  ███\n██\n");
     }
@@ -2051,6 +2109,7 @@ mod tests {
                         background: CellColor::Indexed(196),
                         ..CellAttributes::default()
                     },
+                    hyperlink: None,
                 },
                 toyoterm_terminal::TerminalCell {
                     column: 1,
@@ -2061,9 +2120,11 @@ mod tests {
                         inverse: true,
                         ..CellAttributes::default()
                     },
+                    hyperlink: None,
                 },
             ]],
             selection: Vec::new(),
+            search_matches: Vec::new(),
         };
         let backgrounds = terminal_backgrounds(
             &snapshot,

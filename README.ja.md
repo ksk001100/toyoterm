@@ -286,10 +286,12 @@ v0.1のログ出力先は標準エラー出力のみで、ログファイルの�
 - Linux・Windowsの`Ctrl+Shift+矢印`またはmacOSの`Cmd+Option+矢印`：指定方向の最寄りPaneへfocus
 - Linux・Windowsの`Ctrl+Shift+Q`またはmacOSの`Cmd+Shift+W`：active Paneを閉じる（最後のPaneは維持）
 - Linux・Windowsの`Ctrl+Shift+N`またはmacOSの`Cmd+N`：`Workspace 2`以降の連番名でWorkspaceを作成してactivate（初期Workspaceは`Workspace 1`）
+- Linux・Windowsの`Ctrl+Shift+F`またはmacOSの`Cmd+Shift+F`：viewportとscrollbackをliteral検索（Enter／Shift+Enterで次／前のmatchへ移動）
 - `Ctrl+Alt+Left` / `Ctrl+Alt+Right`：前／次のWorkspaceをactivate
 - Workspaceまたはタブのラベルをクリック：対象をactivate
 - 左マウスボタンでドラッグ：テキストを選択
 - マウスホイール：履歴をスクロール。アプリケーションがマウスレポートを要求している場合はホイール入力を送信
+- Linux・WindowsのControl+クリックまたはmacOSのCommand+クリック：scheme検証後にOSC 8または自動検出したWeb／メールリンクを開く
 
 シェルが`exit`などで終了すると、そのPaneを自動的に閉じます。空になったタブとWorkspaceも閉じ、最後のPaneだった場合はtoyotermを終了します。PTYの読取りエラーでは、診断できるよう終了画面を保持します。
 

@@ -32,6 +32,26 @@ pub struct SelectionSpan {
     pub end_column: u16,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct SearchMatchSpan {
+    pub row: u16,
+    pub start_column: u16,
+    pub end_column: u16,
+    pub active: bool,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum SearchDirection {
+    Next,
+    Previous,
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct SearchResult {
+    pub current: usize,
+    pub total: usize,
+}
+
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub enum CellColor {
     #[default]
@@ -59,6 +79,8 @@ pub struct TerminalCell {
     pub text: String,
     pub width: u8,
     pub attributes: CellAttributes,
+    /// Explicit OSC 8 target, or a safely detected URL.
+    pub hyperlink: Option<String>,
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -76,6 +98,7 @@ pub struct TerminalSnapshot {
     pub lines: Vec<String>,
     pub cells: Vec<Vec<TerminalCell>>,
     pub selection: Vec<SelectionSpan>,
+    pub search_matches: Vec<SearchMatchSpan>,
 }
 
 /// Adapter boundary for a VT implementation such as `alacritty_terminal`.
@@ -90,6 +113,8 @@ pub trait TerminalBackend: Send {
     fn update_selection(&mut self, column: u16, row: u16);
     fn clear_selection(&mut self);
     fn selected_text(&self) -> Option<String>;
+    fn search(&mut self, query: &str, direction: SearchDirection) -> SearchResult;
+    fn clear_search(&mut self);
 }
 
 mod alacritty;

@@ -290,10 +290,12 @@ v0.1 writes logs only to stderr and does not create or rotate log files. Redirec
 - `Ctrl+Shift+Arrow` on Linux/Windows or `Cmd+Option+Arrow` on macOS: focus the nearest pane in that direction
 - `Ctrl+Shift+Q` on Linux/Windows or `Cmd+Shift+W` on macOS: close the active pane (the final pane is kept open)
 - `Ctrl+Shift+N` on Linux/Windows or `Cmd+N` on macOS: create and activate the next numbered workspace (`Workspace 1` is the initial workspace)
+- `Ctrl+Shift+F` on Linux/Windows or `Cmd+Shift+F` on macOS: search literal text across the viewport and scrollback; Enter/Shift+Enter selects the next/previous match
 - `Ctrl+Alt+Left` / `Ctrl+Alt+Right`: activate the previous / next workspace
 - Click a workspace or tab label to activate it
 - Drag with the left mouse button: select text
 - Mouse wheel: scroll through history, or report wheel input when the terminal application requests mouse reporting
+- Control+click on Linux/Windows or Command+click on macOS: open an OSC 8 or detected web/mail link after scheme validation
 
 When a shell exits, toyoterm closes its pane automatically. Empty tabs and workspaces are collapsed, and exiting the final pane closes toyoterm. A pane is retained after a PTY read error so the failure remains visible for diagnosis.
 

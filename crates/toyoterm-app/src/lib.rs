@@ -42,8 +42,8 @@ pub use toyoterm_render::{
 pub use toyoterm_script::ConfigManager;
 pub use toyoterm_terminal::{
     AlacrittyTerminalBackend, BindingKey, KeyChord, KeyModifiers, KeyPress, KeypadKey,
-    MouseWheelDirection, SelectionKind, TerminalBackend, TerminalEvent, TerminalKey, TerminalMode,
-    encode_key, encode_mouse_wheel, encode_paste,
+    MouseWheelDirection, SearchDirection, SearchResult, SelectionKind, TerminalBackend,
+    TerminalEvent, TerminalKey, TerminalMode, encode_key, encode_mouse_wheel, encode_paste,
 };
 
 const MULTI_CLICK_INTERVAL: Duration = Duration::from_millis(500);
@@ -316,6 +316,9 @@ struct ToyotermApplication {
     workspace_layout: WorkspaceStripLayout,
     palette_open: bool,
     palette: CommandPalette,
+    search_open: bool,
+    search_query: String,
+    search_result: SearchResult,
     _ipc_server: Option<IpcServer>,
     config_error_layout: ConfigErrorLayout,
     config_error_notice: Option<ConfigErrorNotice>,
@@ -471,6 +474,11 @@ impl ApplicationHandler<AppEvent> for ToyotermApplication {
                         self.sync_active_renderer(window.scale_factor());
                         window.request_redraw();
                     }
+                    if self.search_open {
+                        self.close_search();
+                        self.sync_active_renderer(window.scale_factor());
+                        window.request_redraw();
+                    }
                 }
                 if self
                     .active_terminal()
@@ -527,6 +535,12 @@ impl ApplicationHandler<AppEvent> for ToyotermApplication {
                 if self.palette_open && matches!(event.logical_key, Key::Named(NamedKey::Escape)) {
                     self.palette_open = false;
                     self.palette.close();
+                    self.sync_active_renderer(window.scale_factor());
+                    window.request_redraw();
+                    return;
+                }
+                if self.search_open {
+                    self.handle_search_key(&event, modifiers);
                     self.sync_active_renderer(window.scale_factor());
                     window.request_redraw();
                     return;
@@ -599,6 +613,13 @@ impl ApplicationHandler<AppEvent> for ToyotermApplication {
                 self.ime_preedit = None;
                 if self.palette_open {
                     self.palette.insert(&text);
+                    self.sync_active_renderer(window.scale_factor());
+                    window.request_redraw();
+                    return;
+                }
+                if self.search_open {
+                    self.search_query.push_str(&text);
+                    self.refresh_search(SearchDirection::Next);
                     self.sync_active_renderer(window.scale_factor());
                     window.request_redraw();
                     return;
@@ -856,6 +877,9 @@ impl ToyotermApplication {
             workspace_layout: WorkspaceStripLayout::default(),
             palette_open: false,
             palette: CommandPalette::default(),
+            search_open: false,
+            search_query: String::new(),
+            search_result: SearchResult::default(),
             _ipc_server: ipc_server,
             config_error_layout: ConfigErrorLayout::default(),
             config_error_notice: startup_config_error.map(|message| ConfigErrorNotice {
@@ -1062,11 +1086,13 @@ impl ToyotermApplication {
     }
 
     fn open_command_palette(&mut self) {
+        self.close_search();
         self.palette_open = true;
         self.palette.open();
     }
 
     fn open_ruby_console(&mut self) {
+        self.close_search();
         self.palette_open = true;
         self.palette.open_console();
     }
@@ -1156,6 +1182,55 @@ impl ToyotermApplication {
         Ok(())
     }
 
+    fn open_search(&mut self) {
+        self.palette_open = false;
+        self.palette.close();
+        self.search_open = true;
+        self.search_query.clear();
+        self.search_result = SearchResult::default();
+        if let Some(terminal) = self.active_terminal_mut() {
+            terminal.clear_search();
+        }
+    }
+
+    fn close_search(&mut self) {
+        self.search_open = false;
+        self.search_query.clear();
+        self.search_result = SearchResult::default();
+        if let Some(terminal) = self.active_terminal_mut() {
+            terminal.clear_search();
+        }
+    }
+
+    fn refresh_search(&mut self, direction: SearchDirection) {
+        let query = self.search_query.clone();
+        self.search_result = self
+            .active_terminal_mut()
+            .map(|terminal| terminal.search(&query, direction))
+            .unwrap_or_default();
+    }
+
+    fn handle_search_key(&mut self, event: &KeyEvent, modifiers: ModifiersState) {
+        match &event.logical_key {
+            Key::Named(NamedKey::Escape) => self.close_search(),
+            Key::Named(NamedKey::Enter) => self.refresh_search(if modifiers.shift_key() {
+                SearchDirection::Previous
+            } else {
+                SearchDirection::Next
+            }),
+            Key::Named(NamedKey::Backspace) => {
+                self.search_query.pop();
+                self.refresh_search(SearchDirection::Next);
+            }
+            Key::Character(text) if !modifiers.control_key() && !modifiers.super_key() => {
+                self.search_query
+                    .push_str(event.text.as_deref().unwrap_or(text));
+                self.refresh_search(SearchDirection::Next);
+            }
+            _ => {}
+        }
+    }
+
     fn execute_palette_action(&mut self, action: PaletteAction) -> Result<(), String> {
         if let Some(command) = palette_native_command(&action, self.mux.current_pane())? {
             return match command {
@@ -1205,6 +1280,7 @@ impl ToyotermApplication {
                     self.reload_config_with_notification()?;
                 }
                 GuiManagementShortcut::CommandPalette => self.open_command_palette(),
+                GuiManagementShortcut::Search => self.open_search(),
                 GuiManagementShortcut::NewTab => {
                     self.dispatch_gui_command(Command::NewTab)?;
                 }
@@ -1910,6 +1986,11 @@ impl ToyotermApplication {
                 self.sync_active_renderer(window.scale_factor());
                 window.request_redraw();
             }
+            if self.search_open {
+                self.close_search();
+                self.sync_active_renderer(window.scale_factor());
+                window.request_redraw();
+            }
             if self.config_error_notice.is_some()
                 && self
                     .config_error_layout
@@ -1981,6 +2062,19 @@ impl ToyotermApplication {
             {
                 tracing::warn!(target: "toyoterm::mux", %error, pane = %hovered, "focus pane failed");
                 return;
+            }
+            if has_link_modifier(self.modifiers, current_shortcut_platform()) {
+                let (column, row) = self.mouse_cell(window.scale_factor());
+                if let Some(url) = self
+                    .active_terminal()
+                    .map(TerminalBackend::snapshot)
+                    .and_then(|snapshot| hyperlink_at(&snapshot, column, row))
+                {
+                    if let Err(error) = open_allowed_url(&url) {
+                        tracing::warn!(target: "toyoterm::app", %error, %url, "open hyperlink failed");
+                    }
+                    return;
+                }
             }
         }
         if self
@@ -2330,15 +2424,20 @@ impl ToyotermApplication {
                 })
         });
         let layout = self.cell_metrics.text_layout(scale_factor);
-        let palette_text = self.palette_render_text();
+        let palette_text = if self.search_open {
+            self.search_render_text()
+        } else {
+            self.palette_render_text()
+        };
         let palette_rect = self.window.as_ref().map(|window| {
             let size = window.inner_size();
             let width = size
                 .width
                 .min((560.0 * scale_factor.max(0.1)).round() as u32);
+            let requested_height = if self.search_open { 52.0 } else { 360.0 };
             let height = size
                 .height
-                .min((360.0 * scale_factor.max(0.1)).round() as u32);
+                .min((requested_height * scale_factor.max(0.1)).round() as u32);
             PaneRect::new(
                 (size.width - width) / 2,
                 (size.height - height) / 4,
@@ -2351,7 +2450,7 @@ impl ToyotermApplication {
             renderer.update_tabs(&tabs, layout);
             renderer.update_workspaces(&workspaces, layout);
             renderer.update_palette(
-                self.palette_open.then(|| PaletteRenderData {
+                (self.palette_open || self.search_open).then(|| PaletteRenderData {
                     rect: palette_rect.unwrap_or_default(),
                     text: &palette_text,
                 }),
@@ -2413,6 +2512,23 @@ impl ToyotermApplication {
             );
         }
         lines.join("\n")
+    }
+
+    fn search_render_text(&self) -> String {
+        let status = if self.search_query.is_empty() {
+            "Type to search".to_owned()
+        } else if self.search_result.total == 0 {
+            "No matches".to_owned()
+        } else {
+            format!(
+                "{} / {}",
+                self.search_result.current, self.search_result.total
+            )
+        };
+        format!(
+            "Find: {}▏  {}  (Enter next, Shift+Enter previous, Esc close)",
+            self.search_query, status
+        )
     }
 
     fn update_ime_cursor_area(&self, scale_factor: f64) {
@@ -2888,6 +3004,7 @@ enum ShortcutPlatform {
 enum GuiManagementShortcut {
     ReloadConfig,
     CommandPalette,
+    Search,
     NewTab,
     NewWorkspace,
     CloseTab,
@@ -2909,6 +3026,74 @@ fn has_gui_primary_modifier(modifiers: ModifiersState, platform: ShortcutPlatfor
         ShortcutPlatform::MacOs => modifiers.super_key(),
         ShortcutPlatform::LinuxOrWindows => modifiers.control_key() && modifiers.shift_key(),
     }
+}
+
+fn has_link_modifier(modifiers: ModifiersState, platform: ShortcutPlatform) -> bool {
+    match platform {
+        ShortcutPlatform::MacOs => modifiers.super_key(),
+        ShortcutPlatform::LinuxOrWindows => modifiers.control_key(),
+    }
+}
+
+fn hyperlink_at(
+    snapshot: &toyoterm_terminal::TerminalSnapshot,
+    column: u16,
+    row: u16,
+) -> Option<String> {
+    snapshot
+        .cells
+        .get(usize::from(row))?
+        .iter()
+        .find(|cell| {
+            let end = cell.column.saturating_add(u16::from(cell.width.max(1)));
+            (cell.column..end).contains(&column)
+        })?
+        .hyperlink
+        .clone()
+}
+
+fn validate_allowed_url(url: &str) -> Result<(), String> {
+    if url.len() > 2_048 || url.chars().any(char::is_control) {
+        return Err("URL is invalid or too long".to_owned());
+    }
+    let Some((scheme, _)) = url.split_once(':') else {
+        return Err("URL has no scheme".to_owned());
+    };
+    if !matches!(
+        scheme.to_ascii_lowercase().as_str(),
+        "http" | "https" | "mailto"
+    ) {
+        return Err(format!("URL scheme {scheme:?} is not allowed"));
+    }
+    Ok(())
+}
+
+fn open_allowed_url(url: &str) -> Result<(), String> {
+    validate_allowed_url(url)?;
+
+    #[cfg(target_os = "macos")]
+    let mut command = {
+        let mut command = std::process::Command::new("open");
+        command.arg(url);
+        command
+    };
+    #[cfg(target_os = "windows")]
+    let mut command = {
+        let mut command = std::process::Command::new("rundll32.exe");
+        command.args(["url.dll,FileProtocolHandler", url]);
+        command
+    };
+    #[cfg(all(unix, not(target_os = "macos")))]
+    let mut command = {
+        let mut command = std::process::Command::new("xdg-open");
+        command.arg(url);
+        command
+    };
+
+    command
+        .spawn()
+        .map(|_| ())
+        .map_err(|error| format!("launch URL handler: {error}"))
 }
 
 fn gui_management_shortcut(
@@ -2937,6 +3122,7 @@ fn gui_management_shortcut(
                 Some(key) if key.eq_ignore_ascii_case("p") => {
                     Some(GuiManagementShortcut::CommandPalette)
                 }
+                Some(key) if key.eq_ignore_ascii_case("f") => Some(GuiManagementShortcut::Search),
                 Some(key) if key.eq_ignore_ascii_case("t") => Some(GuiManagementShortcut::NewTab),
                 Some(key) if key.eq_ignore_ascii_case("n") => {
                     Some(GuiManagementShortcut::NewWorkspace)
@@ -2956,6 +3142,9 @@ fn gui_management_shortcut(
             }
             Some(key) if key.eq_ignore_ascii_case("p") && modifiers.shift_key() => {
                 Some(GuiManagementShortcut::CommandPalette)
+            }
+            Some(key) if key.eq_ignore_ascii_case("f") && modifiers.shift_key() => {
+                Some(GuiManagementShortcut::Search)
             }
             Some(key) if key.eq_ignore_ascii_case("t") && !modifiers.shift_key() => {
                 Some(GuiManagementShortcut::NewTab)
@@ -3262,6 +3451,22 @@ mod tests {
     fn gui_management_shortcuts_follow_platform_conventions() {
         assert_eq!(
             gui_management_shortcut(
+                &Key::Character("f".into()),
+                ModifiersState::CONTROL | ModifiersState::SHIFT,
+                ShortcutPlatform::LinuxOrWindows,
+            ),
+            Some(GuiManagementShortcut::Search)
+        );
+        assert_eq!(
+            gui_management_shortcut(
+                &Key::Character("f".into()),
+                ModifiersState::SUPER | ModifiersState::SHIFT,
+                ShortcutPlatform::MacOs,
+            ),
+            Some(GuiManagementShortcut::Search)
+        );
+        assert_eq!(
+            gui_management_shortcut(
                 &Key::Character("p".into()),
                 ModifiersState::CONTROL | ModifiersState::SHIFT,
                 ShortcutPlatform::LinuxOrWindows,
@@ -3308,6 +3513,24 @@ mod tests {
             ),
             None
         );
+    }
+
+    #[test]
+    fn hyperlink_hit_testing_and_scheme_allowlist_are_safe() {
+        let mut terminal = AlacrittyTerminalBackend::new(30, 2);
+        terminal.advance(b"visit https://example.com now");
+        let snapshot = terminal.snapshot();
+
+        assert_eq!(
+            hyperlink_at(&snapshot, 8, 0).as_deref(),
+            Some("https://example.com")
+        );
+        assert_eq!(hyperlink_at(&snapshot, 0, 0), None);
+        assert!(validate_allowed_url("https://example.com/path").is_ok());
+        assert!(validate_allowed_url("mailto:user@example.com").is_ok());
+        assert!(validate_allowed_url("file:///etc/passwd").is_err());
+        assert!(validate_allowed_url("javascript:alert(1)").is_err());
+        assert!(validate_allowed_url("https://example.com\ncommand").is_err());
     }
 
     #[test]

@@ -12,8 +12,9 @@ use alacritty_terminal::vte::ansi::{
 };
 
 use super::{
-    CellAttributes, CellColor, CursorShape, CursorState, SelectionKind, SelectionSpan,
-    TerminalBackend, TerminalCell, TerminalMode, TerminalSnapshot,
+    CellAttributes, CellColor, CursorShape, CursorState, SearchDirection, SearchMatchSpan,
+    SearchResult, SelectionKind, SelectionSpan, TerminalBackend, TerminalCell, TerminalMode,
+    TerminalSnapshot,
 };
 
 pub const DEFAULT_SCROLLBACK_LINES: usize = 10_000;
@@ -183,6 +184,21 @@ pub struct AlacrittyTerminalBackend {
     shell_integration: ShellIntegrationParser,
     pending_events: Vec<TerminalEvent>,
     selection_anchor: Option<Point>,
+    search: SearchState,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct GridMatch {
+    line: Line,
+    start_column: u16,
+    end_column: u16,
+}
+
+#[derive(Default)]
+struct SearchState {
+    query: String,
+    matches: Vec<GridMatch>,
+    current: Option<usize>,
 }
 
 impl AlacrittyTerminalBackend {
@@ -201,6 +217,7 @@ impl AlacrittyTerminalBackend {
             shell_integration: ShellIntegrationParser::default(),
             pending_events: Vec::new(),
             selection_anchor: None,
+            search: SearchState::default(),
         }
     }
 
@@ -249,6 +266,16 @@ impl TerminalBackend for AlacrittyTerminalBackend {
         let shell_events = self.shell_integration.advance(bytes);
         self.processor.advance(&mut self.terminal, bytes);
         self.pending_events.extend(shell_events);
+        if !self.search.query.is_empty() {
+            self.search.matches = terminal_matches(&self.terminal, &self.search.query);
+            if self
+                .search
+                .current
+                .is_some_and(|current| current >= self.search.matches.len())
+            {
+                self.search.current = self.search.matches.len().checked_sub(1);
+            }
+        }
     }
 
     fn resize(&mut self, columns: u16, rows: u16) {
@@ -295,6 +322,7 @@ impl TerminalBackend for AlacrittyTerminalBackend {
                         1
                     },
                     attributes: cell_attributes(cell.fg, cell.bg, cell.flags),
+                    hyperlink: cell.hyperlink().map(|link| link.uri().to_owned()),
                 });
             }
             lines.push(text.trim_end().to_owned());
@@ -317,12 +345,28 @@ impl TerminalBackend for AlacrittyTerminalBackend {
             }
         }
 
+        detect_plain_urls(&lines, &mut rows_of_cells);
+
+        let mut search_matches = Vec::new();
+        for (index, found) in self.search.matches.iter().enumerate() {
+            let viewport_row = found.line.0 + display_offset;
+            if (0..i32::from(rows)).contains(&viewport_row) {
+                search_matches.push(SearchMatchSpan {
+                    row: viewport_row as u16,
+                    start_column: found.start_column,
+                    end_column: found.end_column,
+                    active: self.search.current == Some(index),
+                });
+            }
+        }
+
         TerminalSnapshot {
             columns,
             rows,
             lines,
             cells: rows_of_cells,
             selection,
+            search_matches,
         }
     }
 
@@ -405,10 +449,144 @@ impl TerminalBackend for AlacrittyTerminalBackend {
     fn selected_text(&self) -> Option<String> {
         self.terminal.selection_to_string()
     }
+
+    fn search(&mut self, query: &str, direction: SearchDirection) -> SearchResult {
+        if query.is_empty() {
+            self.clear_search();
+            return SearchResult::default();
+        }
+
+        if self.search.query != query {
+            self.search.query = query.to_owned();
+            self.search.matches = terminal_matches(&self.terminal, query);
+            self.search.current = None;
+        }
+        let total = self.search.matches.len();
+        if total == 0 {
+            self.search.current = None;
+            return SearchResult::default();
+        }
+        let current = match (self.search.current, direction) {
+            (None, SearchDirection::Next) => 0,
+            (None, SearchDirection::Previous) => total - 1,
+            (Some(index), SearchDirection::Next) => (index + 1) % total,
+            (Some(index), SearchDirection::Previous) => (index + total - 1) % total,
+        };
+        self.search.current = Some(current);
+        reveal_line(&mut self.terminal, self.search.matches[current].line);
+        SearchResult {
+            current: current + 1,
+            total,
+        }
+    }
+
+    fn clear_search(&mut self) {
+        self.search = SearchState::default();
+    }
 }
 
 fn is_default_blank_cell(cell: &TerminalCell) -> bool {
-    cell.text == " " && cell.attributes == CellAttributes::default()
+    cell.text == " " && cell.attributes == CellAttributes::default() && cell.hyperlink.is_none()
+}
+
+fn terminal_matches<T: EventListener>(terminal: &Term<T>, query: &str) -> Vec<GridMatch> {
+    let grid = terminal.grid();
+    let start = -(grid.history_size() as i32);
+    let end = grid.screen_lines() as i32;
+    let mut matches = Vec::new();
+    for line_number in start..end {
+        let line = Line(line_number);
+        let mut text = String::new();
+        let mut byte_cells = Vec::new();
+        for column in 0..grid.columns() {
+            let cell = &grid[line][Column(column)];
+            if cell
+                .flags
+                .intersects(Flags::WIDE_CHAR_SPACER | Flags::LEADING_WIDE_CHAR_SPACER)
+            {
+                continue;
+            }
+            let start = text.len();
+            text.push(cell.c);
+            if let Some(zerowidth) = cell.zerowidth() {
+                text.extend(zerowidth);
+            }
+            byte_cells.push((
+                start,
+                text.len(),
+                column as u16,
+                cell.flags.contains(Flags::WIDE_CHAR),
+            ));
+        }
+        for (start_byte, _) in text.match_indices(query) {
+            let end_byte = start_byte + query.len();
+            let Some(start_cell) = byte_cells.iter().find(|(_, end, _, _)| *end > start_byte)
+            else {
+                continue;
+            };
+            let Some(end_cell) = byte_cells
+                .iter()
+                .rev()
+                .find(|(start, _, _, _)| *start < end_byte)
+            else {
+                continue;
+            };
+            matches.push(GridMatch {
+                line,
+                start_column: start_cell.2,
+                end_column: end_cell.2 + u16::from(end_cell.3),
+            });
+        }
+    }
+    matches
+}
+
+fn reveal_line<T: EventListener>(terminal: &mut Term<T>, line: Line) {
+    let grid = terminal.grid();
+    let offset = grid.display_offset() as i32;
+    let rows = grid.screen_lines() as i32;
+    let desired = if line.0 < -offset {
+        -line.0
+    } else if line.0 >= rows - offset {
+        (rows - 1 - line.0).max(0)
+    } else {
+        offset
+    };
+    terminal.scroll_display(Scroll::Delta(desired - offset));
+}
+
+fn detect_plain_urls(lines: &[String], cells: &mut [Vec<TerminalCell>]) {
+    const PREFIXES: [&str; 3] = ["https://", "http://", "mailto:"];
+    for (line, cells) in lines.iter().zip(cells) {
+        let mut from = 0;
+        while from < line.len() {
+            let Some((start, _)) = PREFIXES
+                .iter()
+                .filter_map(|prefix| line[from..].find(prefix).map(|at| (from + at, *prefix)))
+                .min_by_key(|(at, _)| *at)
+            else {
+                break;
+            };
+            let raw_end = line[start..]
+                .find(char::is_whitespace)
+                .map_or(line.len(), |length| start + length);
+            let url = line[start..raw_end]
+                .trim_end_matches(['.', ',', ';', '!', '?', ')', ']', '}', '\'', '"']);
+            let end = start + url.len();
+            if end > start {
+                let mut byte = 0;
+                for cell in cells.iter_mut() {
+                    let cell_start = byte;
+                    let cell_end = byte + cell.text.len();
+                    if cell_start < end && cell_end > start && cell.hyperlink.is_none() {
+                        cell.hyperlink = Some(url.to_owned());
+                    }
+                    byte = cell_end;
+                }
+            }
+            from = raw_end.max(start + 1);
+        }
+    }
 }
 
 fn cell_attributes(foreground: Color, background: Color, flags: Flags) -> CellAttributes {
@@ -553,6 +731,68 @@ mod tests {
         assert!(cell.attributes.underline);
         assert!(cell.attributes.inverse);
         assert!(cell.attributes.strikethrough);
+    }
+
+    #[test]
+    fn exposes_osc8_links_and_detects_plain_urls() {
+        let mut backend = AlacrittyTerminalBackend::new(60, 2);
+        backend.advance(
+            b"\x1b]8;;https://example.com/docs\x1b\\manual\x1b]8;;\x1b\\ http://localhost:3000/test).",
+        );
+
+        let snapshot = backend.snapshot();
+        assert_eq!(
+            snapshot.cells[0][0].hyperlink.as_deref(),
+            Some("https://example.com/docs")
+        );
+        let plain = snapshot.cells[0]
+            .iter()
+            .find(|cell| cell.text == "l" && cell.column > 10)
+            .expect("plain URL cell");
+        assert_eq!(
+            plain.hyperlink.as_deref(),
+            Some("http://localhost:3000/test")
+        );
+    }
+
+    #[test]
+    fn literal_search_navigates_scrollback_and_marks_visible_matches() {
+        let mut backend = AlacrittyTerminalBackend::new(20, 2);
+        backend.advance(b"needle one\r\nother\r\nneedle two");
+
+        assert_eq!(
+            backend.search("needle", SearchDirection::Next),
+            SearchResult {
+                current: 1,
+                total: 2
+            }
+        );
+        let snapshot = backend.snapshot();
+        assert_eq!(snapshot.lines[0], "needle one");
+        assert!(
+            snapshot
+                .search_matches
+                .iter()
+                .any(|found| found.active && found.row == 0)
+        );
+
+        assert_eq!(
+            backend.search("needle", SearchDirection::Next),
+            SearchResult {
+                current: 2,
+                total: 2
+            }
+        );
+        assert_eq!(backend.snapshot().lines[1], "needle two");
+        assert_eq!(
+            backend.search("needle", SearchDirection::Previous),
+            SearchResult {
+                current: 1,
+                total: 2
+            }
+        );
+        backend.clear_search();
+        assert!(backend.snapshot().search_matches.is_empty());
     }
 
     #[test]
