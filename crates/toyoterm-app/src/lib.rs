@@ -378,23 +378,23 @@ impl ApplicationHandler<AppEvent> for ToyotermApplication {
                 return;
             }
         };
-        let mut renderer = match pollster::block_on(GpuRenderer::new(window.clone())) {
-            Ok(renderer) => renderer,
-            Err(error) => {
-                tracing::error!(
-                    target: "toyoterm::render",
-                    operation = error.operation(),
-                    width = window.inner_size().width,
-                    height = window.inner_size().height,
-                    scale_factor = window.scale_factor(),
-                    %error,
-                    "initialize renderer failed"
-                );
-                self.fail(event_loop, error.to_string());
-                return;
-            }
-        };
-        renderer.set_style(self.render_style.clone());
+        let mut renderer =
+            match pollster::block_on(GpuRenderer::new(window.clone(), self.render_style.clone())) {
+                Ok(renderer) => renderer,
+                Err(error) => {
+                    tracing::error!(
+                        target: "toyoterm::render",
+                        operation = error.operation(),
+                        width = window.inner_size().width,
+                        height = window.inner_size().height,
+                        scale_factor = window.scale_factor(),
+                        %error,
+                        "initialize renderer failed"
+                    );
+                    self.fail(event_loop, error.to_string());
+                    return;
+                }
+            };
         self.cell_metrics.width =
             f64::from(renderer.terminal_cell_width(self.cell_metrics.font_size));
         let size = self

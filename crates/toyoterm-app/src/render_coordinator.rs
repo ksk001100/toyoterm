@@ -1,6 +1,25 @@
 use super::*;
 
 impl ToyotermApplication {
+    pub(super) fn replace_renderer(&mut self, style: RenderStyle) -> Result<(), String> {
+        let window = self
+            .window
+            .clone()
+            .ok_or_else(|| "recreate GPU renderer: window is unavailable".to_owned())?;
+        // A surface's supported alpha modes can change after it is configured
+        // (notably on Windows/DXGI). Rebuild the renderer when switching
+        // between opaque and transparent swapchains instead of reconfiguring
+        // an already-configured surface with a stale alpha mode.
+        self.renderer = None;
+        let mut renderer = pollster::block_on(GpuRenderer::new(window.clone(), style))
+            .map_err(|error| format!("recreate GPU renderer: {error}"))?;
+        renderer.resize(window.inner_size());
+        self.cell_metrics.width =
+            f64::from(renderer.terminal_cell_width(self.cell_metrics.font_size));
+        self.renderer = Some(renderer);
+        Ok(())
+    }
+
     pub(super) fn recover_renderer(&mut self) -> Result<(), String> {
         let window = self
             .window
@@ -13,9 +32,9 @@ impl ToyotermApplication {
             scale_factor = window.scale_factor(),
             "recreating renderer after GPU device loss"
         );
-        let mut renderer = pollster::block_on(GpuRenderer::new(window.clone()))
-            .map_err(|error| format!("recover GPU renderer: {error}"))?;
-        renderer.set_style(self.render_style.clone());
+        let mut renderer =
+            pollster::block_on(GpuRenderer::new(window.clone(), self.render_style.clone()))
+                .map_err(|error| format!("recover GPU renderer: {error}"))?;
         renderer.resize(window.inner_size());
         self.renderer = Some(renderer);
         self.sync_active_renderer(window.scale_factor());

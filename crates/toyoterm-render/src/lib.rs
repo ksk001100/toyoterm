@@ -532,6 +532,10 @@ mod tests {
             preferred_alpha_mode(&supported, 1.0),
             CompositeAlphaMode::Opaque
         );
+        assert_eq!(
+            preferred_alpha_mode(&[CompositeAlphaMode::Opaque], 0.8),
+            CompositeAlphaMode::Auto
+        );
     }
 
     #[test]

@@ -579,6 +579,7 @@ impl ToyotermApplication {
 
     pub(super) fn apply_script_snapshot(&mut self, snapshot: ScriptSnapshot) -> Result<(), String> {
         let config = snapshot.config.clone();
+        let previous_opacity = self.script_snapshot.config.window_opacity;
         self.leader_deadline = None;
         let render_style = RenderStyle::from_hex_with_ansi(
             &config.font.family,
@@ -611,13 +612,17 @@ impl ToyotermApplication {
             .config
             .status_interval
             .map(|_| Instant::now());
-        if let Some(renderer) = self.renderer.as_mut() {
-            renderer.set_style(render_style);
-            self.cell_metrics.width =
-                f64::from(renderer.terminal_cell_width(self.cell_metrics.font_size));
-        }
         if let Some(window) = self.window.clone() {
             window.set_transparent(config.window_opacity < 1.0);
+            let transparency_mode_changed =
+                (previous_opacity < 1.0) != (config.window_opacity < 1.0);
+            if transparency_mode_changed {
+                self.replace_renderer(render_style.clone())?;
+            } else if let Some(renderer) = self.renderer.as_mut() {
+                renderer.set_style(render_style);
+                self.cell_metrics.width =
+                    f64::from(renderer.terminal_cell_width(self.cell_metrics.font_size));
+            }
             self.resize_panes(window.inner_size(), window.scale_factor())?;
             self.sync_active_renderer(window.scale_factor());
             window.request_redraw();

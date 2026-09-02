@@ -264,7 +264,7 @@ impl PaneBuffers {
 }
 
 impl GpuRenderer {
-    pub async fn new(window: Arc<Window>) -> Result<Self, RenderError> {
+    pub async fn new(window: Arc<Window>, style: RenderStyle) -> Result<Self, RenderError> {
         tracing::debug!(target: "toyoterm::render", "initialize GPU renderer");
         let size = window.inner_size();
         let width = size.width.max(1);
@@ -313,6 +313,7 @@ impl GpuRenderer {
         {
             configuration.format = format;
         }
+        configuration.alpha_mode = preferred_alpha_mode(&supported_alpha_modes, style.opacity);
         configuration.desired_maximum_frame_latency = 1;
         surface.configure(&device, &configuration);
         tracing::info!(
@@ -320,10 +321,11 @@ impl GpuRenderer {
             width,
             height,
             format = ?configuration.format,
+            alpha_modes = ?supported_alpha_modes,
             "GPU renderer initialized"
         );
 
-        let mut font_system = configured_font_system(&[]);
+        let mut font_system = configured_font_system(&style.font_fallback);
         let swash_cache = SwashCache::new();
         let glyph_cache = GlyphCache::new(&device);
         let viewport = Viewport::new(&device, &glyph_cache);
@@ -354,7 +356,6 @@ impl GpuRenderer {
             dismiss: config_error_buffer(),
             layout: None,
         };
-        let style = RenderStyle::default();
         let initial_alpha_mode = configuration.alpha_mode;
         Ok(Self {
             instance,
