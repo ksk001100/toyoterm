@@ -395,6 +395,8 @@ impl ApplicationHandler<AppEvent> for ToyotermApplication {
             }
         };
         renderer.set_style(self.render_style.clone());
+        self.cell_metrics.width =
+            f64::from(renderer.terminal_cell_width(self.cell_metrics.font_size));
         let size = self
             .cell_metrics
             .terminal_size_at_scale(window.inner_size(), window.scale_factor());

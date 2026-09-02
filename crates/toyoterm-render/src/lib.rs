@@ -265,29 +265,31 @@ mod tests {
     }
 
     #[test]
-    fn styled_shell_prompt_cursor_uses_the_rendered_text_position() {
+    fn styled_shell_prompt_cursor_stays_on_the_terminal_cell_grid() {
         let mut terminal = AlacrittyTerminalBackend::new(80, 4);
         terminal.advance(
             "\n\x1b[1;36mtoyoterm\x1b[0m \x1b[3;36mmaster\x1b[0m \
-             \x1b[36m? \x1b[1m❯\x1b[0m "
+             \x1b[36m? \x1b[1m>\x1b[0m "
                 .as_bytes(),
         );
         let snapshot = terminal.snapshot();
         let cursor = terminal.cursor();
         let metrics = Metrics::new(14.0, 18.0);
-        let mut font_system = FontSystem::new();
+        let mut font_system = configured_font_system(&[]);
+        let cell_width = measure_cell_width(&mut font_system, "monospace", 400, 14.0);
         let mut buffer = Buffer::new(&mut font_system, metrics);
         buffer.set_wrap(Wrap::None);
+        buffer.set_monospace_width(Some(cell_width));
         let rich_text = terminal_rich_text(
             &snapshot,
             Some(cursor),
-            "JetBrainsMono Nerd Font",
+            "monospace",
             400,
             [220, 225, 232],
             [9, 11, 14],
             &default_ansi_palette(),
         );
-        let default_attrs = Attrs::new().family(Family::Name("JetBrainsMono Nerd Font"));
+        let default_attrs = Attrs::new().family(Family::Monospace);
         buffer.set_rich_text(
             rich_text
                 .iter()
@@ -300,13 +302,11 @@ mod tests {
 
         let rendered_cursor_x = terminal_cursor_x(&buffer, &snapshot, cursor)
             .expect("cursor row and byte index are laid out");
-        let line_width = buffer
-            .layout_runs()
-            .find(|run| run.line_i == usize::from(cursor.row))
-            .map(|run| run.line_w)
-            .expect("cursor row is laid out");
-        assert!((rendered_cursor_x - line_width).abs() < 0.01);
-        assert!((rendered_cursor_x - f32::from(cursor.column) * 9.0).abs() > 1.0);
+        assert!(
+            (rendered_cursor_x - f32::from(cursor.column) * cell_width).abs() < 0.01,
+            "cursor x {rendered_cursor_x} did not match column {} at {cell_width}px",
+            cursor.column,
+        );
     }
 
     #[test]

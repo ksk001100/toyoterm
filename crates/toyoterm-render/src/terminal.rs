@@ -213,7 +213,7 @@ pub(super) fn terminal_rich_text<'a>(
     }
 
     let default_attrs = Attrs::new()
-        .family(Family::Name(font_family))
+        .family(resolve_font_family(font_family))
         .weight(Weight(font_weight));
     let mut spans = Vec::new();
     for row in 0..snapshot.rows {
@@ -281,7 +281,7 @@ pub(super) fn glyph_attrs<'a>(
         255
     };
     let mut attrs = Attrs::new()
-        .family(Family::Name(font_family))
+        .family(resolve_font_family(font_family))
         .weight(Weight(font_weight))
         .color(glyph_color(foreground, alpha));
     if attributes.bold {

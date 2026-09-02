@@ -613,6 +613,8 @@ impl ToyotermApplication {
             .map(|_| Instant::now());
         if let Some(renderer) = self.renderer.as_mut() {
             renderer.set_style(render_style);
+            self.cell_metrics.width =
+                f64::from(renderer.terminal_cell_width(self.cell_metrics.font_size));
         }
         if let Some(window) = self.window.clone() {
             window.set_transparent(config.window_opacity < 1.0);

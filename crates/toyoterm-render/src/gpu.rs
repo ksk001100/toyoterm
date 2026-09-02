@@ -207,16 +207,27 @@ pub(super) fn intern_font_family(family: &str) -> &'static str {
     interned
 }
 
-pub(super) fn configured_font_system(fallback: &[String]) -> FontSystem {
-    if fallback.is_empty() {
-        return FontSystem::new();
+pub(super) fn resolve_font_family(family: &str) -> Family<'_> {
+    match family.to_ascii_lowercase().as_str() {
+        "monospace" => Family::Monospace,
+        "sans-serif" | "sans serif" => Family::SansSerif,
+        "serif" => Family::Serif,
+        "cursive" => Family::Cursive,
+        "fantasy" => Family::Fantasy,
+        _ => Family::Name(family),
     }
+}
+
+pub(super) fn configured_font_system(fallback: &[String]) -> FontSystem {
     let locale = sys_locale::get_locale().unwrap_or_else(|| "en-US".to_owned());
     let mut database = glyphon::fontdb::Database::new();
     database.load_system_fonts();
+    #[cfg(windows)]
+    database.set_monospace_family("Consolas");
+    #[cfg(target_os = "macos")]
+    database.set_monospace_family("Menlo");
+    #[cfg(not(any(windows, target_os = "macos")))]
     database.set_monospace_family("Noto Sans Mono");
-    database.set_sans_serif_family("Open Sans");
-    database.set_serif_family("DejaVu Serif");
     FontSystem::new_with_locale_and_db_and_fallback(
         locale,
         database,
@@ -312,7 +323,7 @@ impl GpuRenderer {
             "GPU renderer initialized"
         );
 
-        let mut font_system = FontSystem::new();
+        let mut font_system = configured_font_system(&[]);
         let swash_cache = SwashCache::new();
         let glyph_cache = GlyphCache::new(&device);
         let viewport = Viewport::new(&device, &glyph_cache);
@@ -392,6 +403,20 @@ impl GpuRenderer {
         if alpha_mode_changed && !self.suspended {
             self.surface.configure(&self.device, &self.configuration);
         }
+    }
+
+    /// Returns the logical advance of one cell for the active terminal font.
+    ///
+    /// Cell geometry must come from the resolved font rather than a platform-
+    /// independent constant: the generic `monospace` family resolves to fonts
+    /// with different advances on Windows, macOS, and Linux.
+    pub fn terminal_cell_width(&mut self, font_size: f32) -> f32 {
+        measure_cell_width(
+            &mut self.font_system,
+            &self.style.font_family,
+            self.style.font_weight,
+            font_size,
+        )
     }
 
     fn reset_font_system(&mut self, fallback: &[String]) {
@@ -485,11 +510,18 @@ impl GpuRenderer {
                 pane.rect
                     .height
                     .saturating_sub((layout.vertical_padding * 2.0) as u32) as f32;
+            // A terminal is a fixed grid even when the selected font (or a
+            // platform-specific fallback) reports a different advance.  In
+            // particular, Windows' generic monospace resolution and DPI
+            // scaling can otherwise accumulate enough fractional advance to
+            // visibly break columnar output such as `ls` and move the cursor
+            // away from its logical cell.
+            buffers.text.set_monospace_width(Some(layout.cell_width));
             buffers
                 .text
                 .set_metrics_and_size(metrics, Some(content_width), Some(content_height));
             let default_attrs = Attrs::new()
-                .family(Family::Name(&font_family))
+                .family(resolve_font_family(&font_family))
                 .weight(Weight(font_weight));
             if rich_text.is_empty() {
                 buffers.text.set_text(
@@ -514,6 +546,9 @@ impl GpuRenderer {
             buffers.cursor_x = terminal_cursor_x(&buffers.text, pane.snapshot, pane.cursor)
                 .unwrap_or_else(|| f32::from(pane.cursor.column) * layout.cell_width);
 
+            buffers
+                .selection
+                .set_monospace_width(Some(layout.cell_width));
             buffers.selection.set_metrics_and_size(
                 metrics,
                 Some(content_width),
@@ -522,7 +557,7 @@ impl GpuRenderer {
             buffers.selection.set_text(
                 &selection_text(pane.snapshot),
                 &Attrs::new()
-                    .family(Family::Name(&self.style.font_family))
+                    .family(resolve_font_family(&self.style.font_family))
                     .weight(Weight(self.style.font_weight)),
                 Shaping::Advanced,
                 None,
@@ -541,7 +576,7 @@ impl GpuRenderer {
                     CursorShape::Underline => "▁",
                 },
                 &Attrs::new()
-                    .family(Family::Name(&self.style.font_family))
+                    .family(resolve_font_family(&self.style.font_family))
                     .weight(Weight(self.style.font_weight)),
                 Shaping::Advanced,
                 None,
@@ -583,7 +618,7 @@ impl GpuRenderer {
             buffer.text.set_text(
                 tab.title,
                 &Attrs::new()
-                    .family(Family::Name(&self.style.font_family))
+                    .family(resolve_font_family(&self.style.font_family))
                     .weight(Weight(self.style.font_weight)),
                 Shaping::Advanced,
                 None,
@@ -634,7 +669,7 @@ impl GpuRenderer {
             buffer.text.set_text(
                 workspace.name,
                 &Attrs::new()
-                    .family(Family::Name(&self.style.font_family))
+                    .family(resolve_font_family(&self.style.font_family))
                     .weight(Weight(self.style.font_weight)),
                 Shaping::Advanced,
                 None,
@@ -658,7 +693,7 @@ impl GpuRenderer {
         self.palette.text.set_text(
             palette.text,
             &Attrs::new()
-                .family(Family::Name(&self.style.font_family))
+                .family(resolve_font_family(&self.style.font_family))
                 .weight(Weight(self.style.font_weight)),
             Shaping::Advanced,
             None,
@@ -690,7 +725,7 @@ impl GpuRenderer {
         self.status_bar.text.set_text(
             status.text,
             &Attrs::new()
-                .family(Family::Name(&self.style.font_family))
+                .family(resolve_font_family(&self.style.font_family))
                 .weight(Weight(self.style.font_weight)),
             Shaping::Advanced,
             None,
@@ -718,7 +753,7 @@ impl GpuRenderer {
         });
         let metrics = Metrics::new(layout.font_size.max(1.0), layout.line_height.max(1.0));
         let attrs = Attrs::new()
-            .family(Family::Name(&self.style.font_family))
+            .family(resolve_font_family(&self.style.font_family))
             .weight(Weight(self.style.font_weight));
 
         self.config_error.title.set_metrics_and_size(
@@ -792,7 +827,7 @@ impl GpuRenderer {
         self.preedit.set_text(
             text,
             &Attrs::new()
-                .family(Family::Name(&self.style.font_family))
+                .family(resolve_font_family(&self.style.font_family))
                 .weight(Weight(self.style.font_weight)),
             Shaping::Advanced,
             None,
@@ -1203,4 +1238,30 @@ impl GpuRenderer {
         self.surface.configure(&self.device, &self.configuration);
         Ok(())
     }
+}
+
+pub(super) fn measure_cell_width(
+    font_system: &mut FontSystem,
+    font_family: &str,
+    font_weight: u16,
+    font_size: f32,
+) -> f32 {
+    let font_size = font_size.max(1.0);
+    let mut probe = Buffer::new(font_system, Metrics::new(font_size, font_size * 2.0));
+    probe.set_wrap(Wrap::None);
+    probe.set_text(
+        "0",
+        &Attrs::new()
+            .family(resolve_font_family(font_family))
+            .weight(Weight(font_weight)),
+        Shaping::Advanced,
+        None,
+    );
+    probe.shape_until_scroll(font_system, false);
+    probe
+        .layout_runs()
+        .next()
+        .map(|run| run.line_w)
+        .filter(|width| width.is_finite() && *width >= 1.0)
+        .unwrap_or(font_size * (9.0 / 14.0))
 }
