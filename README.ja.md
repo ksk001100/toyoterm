@@ -20,7 +20,7 @@ toyotermは、Rustと組み込みmrubyで作る実験的なプログラマブル
 - mruby 4.0を組み込んだ設定ランタイム
 - ネイティブコマンドを発行できる動的Rubyキーバインド
 - アトミックな設定リロード。不正な更新時は以前の設定を維持
-- `app_started`と`config_reloaded`のRubyイベント
+- 起動・設定reload、Window・Tab・Pane、title・cwd・bell、Workspace変更のRubyイベント
 - タブ、ペイン分割、ワークスペースに対応したネイティブCommand・Muxモデル
 - PaneごとにPTYとTerminalBackendを持つGUIタブ
 - Paneごとのresizeとfocusに対応した分割Pane描画
@@ -29,15 +29,20 @@ toyotermは、Rustと組み込みmrubyで作る実験的なプログラマブル
 - fuzzy検索対応のCommand Paletteとユーザー定義Rubyコマンド
 - 起動中GUIの単一mruby VMへ接続するライブRuby REPL
 - metadata・互換性検査・failure isolationを備えたlocal Ruby plugin
+- viewportとscrollbackを対象にしたliteral検索
+- OSC 8 hyperlinkと通常URLの検出、安全なmodifier+click
+- shell integration、local IPC CLI、Ruby status bar
 
 ## 現在の状態
 
 主な開発環境はLinuxです。アーキテクチャと依存ライブラリはクロスプラットフォームを意識していますが、macOSとWindowsではまだ十分な動作検証を行っていません。
 
-GUIへ未接続の機能：
+初回リリースの対象外：
 
 - 複数OSウィンドウ
-- 検索、リンク、画像プロトコル、セッション永続化
+- 画像プロトコル、セッション永続化
+
+主要機能は実装済みですが、初回リリース前にLinux Wayland/X11、macOS、Windowsでの対話的な実機検証と性能・画像回帰テストが必要です。残作業と優先順位は[`TODO.md`](TODO.md)を参照してください。
 
 ## ビルドと起動
 

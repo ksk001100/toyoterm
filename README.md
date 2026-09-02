@@ -20,7 +20,7 @@ This is a personal project built for my own use and an experimental toy.
 - Embedded mruby 4.0 configuration runtime
 - Dynamic Ruby key bindings that dispatch native commands
 - Atomic configuration reload: invalid updates leave the previous config active
-- `app_started` and `config_reloaded` Ruby events
+- Ruby events for startup/reload, windows, tabs, panes, title, cwd, bell, and workspace changes
 - Native command and mux model for tabs, pane splits, and workspaces
 - GUI tabs with one PTY and terminal backend per pane
 - Rendered split panes with per-pane resize and focus
@@ -29,15 +29,20 @@ This is a personal project built for my own use and an experimental toy.
 - A fuzzy-search command palette and user-defined Ruby commands
 - A live Ruby REPL connected to the running GUI's single mruby VM
 - Local Ruby plugins with metadata, compatibility checks, and failure isolation
+- Literal search across the viewport and scrollback
+- OSC 8 hyperlinks and plain-URL detection with safe modifier-click opening
+- Shell integration, a local IPC CLI, and a Ruby-driven status bar
 
 ## Current status
 
 The primary development environment is Linux. The architecture and dependencies are cross-platform, but macOS and Windows support has not yet been fully validated.
 
-Not yet exposed in the GUI:
+Outside the initial release scope:
 
 - Multiple OS windows
-- Search, links, image protocols, and session persistence
+- Image protocols and session persistence
+
+The main features are implemented, but the initial release still requires interactive validation on Linux Wayland/X11, macOS, and Windows, together with performance and image-regression coverage. See [`TODO.md`](TODO.md) for the remaining work and priorities.
 
 ## Build and run
 
