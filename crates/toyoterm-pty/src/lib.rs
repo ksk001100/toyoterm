@@ -333,6 +333,8 @@ impl Drop for NativePtySession {
 mod tests {
     use super::*;
 
+    use toyoterm_terminal::{AlacrittyTerminalBackend, TerminalBackend};
+
     #[cfg(unix)]
     use toyoterm_terminal::{KeyModifiers, KeyPress, TerminalKey, TerminalMode, encode_key};
 
@@ -368,6 +370,40 @@ mod tests {
 
         assert!(status.code == 0, "unexpected status: {status:?}");
         assert!(output.contains("toyoterm-pty-ok"), "output was {output:?}");
+    }
+
+    #[test]
+    fn real_shell_output_reaches_the_terminal_snapshot() {
+        let mut session = NativePty
+            .spawn(test_command(test_pipeline_script()), PtySize::new(80, 24))
+            .expect("spawn pipeline test command");
+        let mut reader = session.take_reader().expect("take pipeline PTY reader");
+        let reader_thread = std::thread::spawn(move || {
+            let mut output = Vec::new();
+            reader
+                .read_to_end(&mut output)
+                .expect("read pipeline process output");
+            output
+        });
+
+        let status = session.wait().expect("wait for pipeline test command");
+        let output = reader_thread.join().expect("join pipeline PTY reader");
+        assert_eq!(status.code, 0, "unexpected status: {status:?}");
+
+        let mut terminal = AlacrittyTerminalBackend::new(80, 24);
+        for chunk in output.chunks(3) {
+            terminal.advance(chunk);
+        }
+        let snapshot = terminal.snapshot();
+
+        assert!(
+            snapshot
+                .lines
+                .iter()
+                .any(|line| line.contains("toyoterm-pipeline-ok")),
+            "PTY output did not reach terminal snapshot: {:?}",
+            snapshot.lines
+        );
     }
 
     #[cfg(windows)]
@@ -519,5 +555,15 @@ mod tests {
     #[cfg(windows)]
     fn test_output_script() -> &'static str {
         "echo toyoterm-pty-ok"
+    }
+
+    #[cfg(unix)]
+    fn test_pipeline_script() -> &'static str {
+        r"printf '\033[32mtoyoterm-pipeline-ok\033[0m\n'"
+    }
+
+    #[cfg(windows)]
+    fn test_pipeline_script() -> &'static str {
+        "echo toyoterm-pipeline-ok"
     }
 }

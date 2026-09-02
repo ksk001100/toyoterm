@@ -3457,12 +3457,20 @@ fail_config
     #[test]
     fn converts_object_model_operations_to_native_commands() {
         let mut manager = ConfigManager::new().unwrap();
+        assert_eq!(
+            manager
+                .eval(
+                    "[Toyoterm.current_pane.split(:left), \
+                      Toyoterm.current_window.new_tab, \
+                      Toyoterm.current_workspace.create_window].map(&:inspect)",
+                )
+                .unwrap(),
+            "[\"#<Toyoterm::Pane:0>\", \"#<Toyoterm::Window:0>\", \"#<Toyoterm::Workspace:0>\"]"
+        );
         manager
             .eval(
-                "Toyoterm.current_pane.split(:left); Toyoterm.current_pane.focus; \
-                 Toyoterm.current_tab.close; Toyoterm.current_window.new_tab; \
-                 Toyoterm.current_window.close; Toyoterm.current_workspace.activate; \
-                 Toyoterm.current_workspace.create_window",
+                "Toyoterm.current_pane.focus; Toyoterm.current_tab.close; \
+                 Toyoterm.current_window.close; Toyoterm.current_workspace.activate",
             )
             .unwrap();
 
@@ -3475,12 +3483,12 @@ fail_config
                     pane: PaneId(40),
                     direction: SplitDirection::Left,
                 }),
+                NativeCommand::Mux(Command::NewTabIn(WindowId(20))),
+                NativeCommand::Mux(Command::CreateWindow(WorkspaceId(10))),
                 NativeCommand::Mux(Command::ActivatePane(PaneId(40))),
                 NativeCommand::Mux(Command::CloseTab(TabId(30))),
-                NativeCommand::Mux(Command::NewTabIn(WindowId(20))),
                 NativeCommand::Mux(Command::CloseWindow(WindowId(20))),
                 NativeCommand::Mux(Command::ActivateWorkspace(WorkspaceId(10))),
-                NativeCommand::Mux(Command::CreateWindow(WorkspaceId(10))),
             ]
         );
     }
