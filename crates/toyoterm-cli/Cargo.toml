@@ -16,3 +16,6 @@ toyoterm-ipc.workspace = true
 toyoterm-mux.workspace = true
 toyoterm-pty.workspace = true
 toyoterm-terminal.workspace = true
+
+[build-dependencies]
+embed-resource = "2.5"

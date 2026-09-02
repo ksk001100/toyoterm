@@ -31,7 +31,9 @@ if (-not $NoStartMenu) {
     New-Item -ItemType Directory -Force -Path $startMenuDirectory | Out-Null
     $shell = New-Object -ComObject WScript.Shell
     $shortcut = $shell.CreateShortcut((Join-Path $startMenuDirectory "toyoterm.lnk"))
-    $shortcut.TargetPath = Join-Path $resolvedInstallDirectory "toyoterm.exe"
+    $installedExecutable = Join-Path $resolvedInstallDirectory "toyoterm.exe"
+    $shortcut.TargetPath = $installedExecutable
+    $shortcut.IconLocation = "$installedExecutable,0"
     $shortcut.WorkingDirectory = $env:USERPROFILE
     $shortcut.Description = "Programmable terminal emulator"
     $shortcut.Save()
@@ -42,4 +44,3 @@ if (-not $NoPath) {
     Write-Host "Open a new terminal before using toyoterm from PATH."
 }
 Write-Host "Uninstall with: powershell -ExecutionPolicy Bypass -File `"$(Join-Path $resolvedInstallDirectory 'Uninstall-Toyoterm.ps1')`""
-

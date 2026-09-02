@@ -1,3 +1,5 @@
+#![cfg_attr(windows, windows_subsystem = "windows")]
+
 use std::io::Read;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::path::PathBuf;
