@@ -1,5 +1,9 @@
 # toyoterm
 
+<p align="center">
+  <img src="packaging/app-icon.png" alt="toyoterm icon" width="180">
+</p>
+
 [English](README.md)
 
 toyotermは、Rustと組み込みmrubyで作る実験的なプログラマブル・ターミナルエミュレータです。ターミナルのホットパスはネイティブ実装のまま保ち、設定、動的キーバインド、ランタイムイベント、コマンドにRubyを利用します。

@@ -1,5 +1,9 @@
 # toyoterm
 
+<p align="center">
+  <img src="packaging/app-icon.png" alt="toyoterm icon" width="180">
+</p>
+
 [日本語](README.ja.md)
 
 toyoterm is an experimental, programmable terminal emulator powered by Rust and embedded mruby. Its terminal hot path stays native, while Ruby is used for configuration, dynamic key bindings, runtime events, and commands.
