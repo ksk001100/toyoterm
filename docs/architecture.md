@@ -19,3 +19,24 @@ Production dependencies point toward lower-level contracts. In particular,
 script runtime. The app is the composition root that applies commands to the
 mux. `toyoterm-ipc` keeps transport code out of both the app and CLI, avoiding a
 dependency cycle between those two entry-point crates.
+
+## Dependency contract
+
+The production dependency graph has three roles:
+
+- contract and leaf crates: `toyoterm-api`, `toyoterm-config`, `toyoterm-pty`,
+  and `toyoterm-terminal`
+- subsystem crates: `toyoterm-ipc`, `toyoterm-mux`, `toyoterm-render`, and
+  `toyoterm-script`
+- composition roots: `toyoterm-app` and `toyoterm-cli`
+
+Subsystem crates may depend on contract or leaf crates, but not on a composition
+root. `toyoterm-app` may assemble every subsystem. `toyoterm-cli` may depend on
+the app and on lower-level crates needed by its diagnostic subcommands. The
+production graph must remain acyclic.
+
+Run `python3 scripts/check-crate-architecture.py` to validate the exact internal
+dependency allowlist, the small allowlist of test-only dependencies, and cycle
+freedom. CI runs this check on Linux, macOS, and Windows. When adding a crate or
+dependency, update the script and this document in the same change so the new
+direction is an explicit design decision.
