@@ -161,7 +161,7 @@ xterm 6×6×6カラ―キューブ、232〜255はグレースケールです。`
 
 `config.keys`では`ctrl`、`ctrl_shift`、`primary`、`primary_shift`、`alt`、`super_key`、`leader`、`physical`ヘルパーを使用できます。`primary`はmacOSで`SUPER`、Linux・Windowsで`CTRL`に展開されるため、1つの設定でOSごとの慣習に合わせられます。modifier名はOS間で共通で、macOSのOptionは`ALT`、macOSのCommandとWindowsキーは`SUPER`です。`physical("KeyH", "CTRL")`のように指定すると、論理文字ではなく物理キー位置へ割り当てられます。両方が一致した場合はphysical設定、組み込みGUIショートカットと競合した場合はユーザー設定を優先します。同じchordの重複定義は設定エラーです。
 
-`config.leader`では、ミリ秒単位のtimeout付きLeader prefixをネイティブ側へ設定できます。`leader("v")`の割り当てはmrubyを呼ばずに解決されます。Leader prefix自体は破棄し、不一致またはtimeout後の次キーは通常のキー処理へ戻します。repeat、IME入力、フォーカス喪失、設定reloadではLeader待機状態を解除します。
+`config.leader`では、ミリ秒単位のtimeout付きLeader prefixをネイティブ側へ設定できます。`leader("v")`の割り当てはmrubyを呼ばずに解決されます。Leader prefix自体は破棄し、不一致またはtimeout後の次キーは通常のキー処理へ戻します。Prefixのrepeatは元のtimeoutを延長せずに破棄し、IME入力、フォーカス喪失、設定reloadではLeader待機状態を解除します。
 
 割り当てのないキーはmrubyを呼ばず、ネイティブのターミナルキーエンコーダへ直接渡されます。Ruby callbackで例外が発生した場合はエラーをログへ出し、シェルの実行を継続します。
 
@@ -256,7 +256,7 @@ GUIで設定の読込に失敗すると、アプリを終了せずエラーバ�
 
 `default_shell`を変更しても実行中のシェルは置き換えません。新しいターミナルセッションを作成するときに適用されます。
 
-実行可能な設定例は`examples/minimal_config.rb`と`examples/tokyo_night_config.rb`にあります。Tokyo Nightテーマは`toyoterm --config examples/tokyo_night_config.rb`で試せます。
+実行可能な設定例は`examples/minimal_config.rb`にあります。
 
 組み込みランタイムはCRubyではなくmrubyです。toyotermが明示的にbundleしていないCRuby gem、native extension、完全なCRuby標準ライブラリは利用できません。現在の設定・イベントAPIでは不要なため、v0.1では`mruby-time`をbundleしません。
 

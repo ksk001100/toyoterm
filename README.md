@@ -165,7 +165,7 @@ Key names are case-insensitive. Modifiers use names such as `CTRL`, `SHIFT`, `AL
 
 `config.keys` provides `ctrl`, `ctrl_shift`, `primary`, `primary_shift`, `alt`, `super_key`, `leader`, and `physical` helpers. `primary` resolves to `SUPER` on macOS and `CTRL` on Linux/Windows, so one configuration can follow each platform's conventions. Modifier names are portable: `ALT` is the Option key on macOS, while `SUPER` is Command on macOS and the Windows key on Windows. The `physical` helper distinguishes a hardware position from the logical character, for example `physical("KeyH", "CTRL")`. When both match, physical bindings take priority over logical bindings. User-configured bindings take priority over built-in GUI shortcuts. Defining the same chord more than once is a configuration error.
 
-`config.leader` defines a native leader prefix with a timeout in milliseconds. `leader("v")` bindings are resolved without invoking mruby. The leader prefix is discarded; an unmatched or expired suffix continues through normal key handling. Leader state is cleared by repeat events, IME activity, focus loss, and configuration reload.
+`config.leader` defines a native leader prefix with a timeout in milliseconds. `leader("v")` bindings are resolved without invoking mruby. The leader prefix is discarded; an unmatched or expired suffix continues through normal key handling. Prefix repeat events are consumed without extending the original timeout, while IME activity, focus loss, and configuration reload clear leader state.
 
 Unmatched keys bypass mruby and go directly through the native terminal key encoder. If a Ruby callback raises an exception, toyoterm logs the error and keeps the shell running.
 
@@ -260,9 +260,7 @@ GUI configuration failures open a non-fatal error banner. `Open Log` expands the
 
 Changing `default_shell` does not replace the shell that is already running; it applies when a new terminal session is created.
 
-Executable configurations are available at `examples/minimal_config.rb` and
-`examples/tokyo_night_config.rb`. Try the Tokyo Night theme with
-`toyoterm --config examples/tokyo_night_config.rb`.
+Executable configurations are available at `examples/minimal_config.rb`.
 
 The embedded runtime is mruby, not CRuby. CRuby gems, native extensions, and the complete CRuby standard library are not available unless toyoterm explicitly bundles them. `mruby-time` is not bundled in v0.1 because the current configuration and event APIs do not require it.
 
