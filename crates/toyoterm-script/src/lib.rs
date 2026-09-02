@@ -3631,7 +3631,7 @@ fail_config
         assert_eq!(
             manager
                 .eval(
-                    r#"result = Toyoterm.spawn("cmd", "/C", "<nul set /p=out&<nul set /p=err 1>&2&exit /b 7"); [result.stdout, result.stderr, result.exit_status, result.success?].join('|')"#,
+                    r#"result = Toyoterm.spawn("cmd", "/C", "<nul set /p=out&1>&2 <nul set /p=err&exit /b 7"); [result.stdout, result.stderr, result.exit_status, result.success?].join('|')"#,
                 )
                 .unwrap(),
             "out|err|7|false"
