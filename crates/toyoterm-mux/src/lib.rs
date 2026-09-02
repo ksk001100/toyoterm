@@ -201,7 +201,7 @@ impl Mux {
             current_workspace: WorkspaceId(0),
             events: VecDeque::new(),
         };
-        let workspace = mux.create_workspace("default".to_owned());
+        let workspace = mux.create_workspace("Workspace 1".to_owned());
         mux.current_workspace = workspace;
         mux.events.clear();
         mux
@@ -782,7 +782,10 @@ mod tests {
         assert!(mux.current_window().is_some());
         assert!(mux.current_tab().is_some());
         assert!(mux.current_pane().is_some());
-        assert_eq!(mux.summary(), "workspace=default windows=1 tabs=1 panes=1");
+        assert_eq!(
+            mux.summary(),
+            "workspace=Workspace 1 windows=1 tabs=1 panes=1"
+        );
     }
 
     #[test]
@@ -875,7 +878,7 @@ mod tests {
         assert_eq!(mux.summary(), "workspace=backend windows=1 tabs=1 panes=1");
 
         let result = mux
-            .dispatch(Command::SwitchWorkspace("default".into()))
+            .dispatch(Command::SwitchWorkspace("Workspace 1".into()))
             .unwrap();
         assert_eq!(result, CommandResult::Workspace(original));
     }

@@ -2790,7 +2790,7 @@ mod tests {
                 current_pane: PaneId(4),
                 workspaces: vec![RubyWorkspace {
                     id: WorkspaceId(1),
-                    name: "default".into(),
+                    name: "Workspace 1".into(),
                     windows: vec![WindowId(2)],
                 }],
                 windows: vec![RubyWindow {
@@ -2877,7 +2877,10 @@ mod tests {
             manager.config().status_interval,
             Some(Duration::from_millis(250))
         );
-        assert_eq!(manager.render_status().unwrap(), "default | Tab 3 | Pane 4");
+        assert_eq!(
+            manager.render_status().unwrap(),
+            "Workspace 1 | Tab 3 | Pane 4"
+        );
         assert!(manager.drain_commands(PaneId(4)).unwrap().is_empty());
     }
 

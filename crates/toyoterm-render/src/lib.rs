@@ -11,10 +11,14 @@ use glyphon::{
     Viewport, Weight, Wrap,
 };
 use unicode_script::Script;
+use wgpu::util::DeviceExt;
 use wgpu::{
-    Color, CommandEncoderDescriptor, CompositeAlphaMode, CurrentSurfaceTexture, Device,
-    DeviceDescriptor, Instance, LoadOp, Operations, Queue, RenderPassColorAttachment,
-    RenderPassDescriptor, StoreOp, Surface, SurfaceConfiguration, TextureViewDescriptor,
+    BlendState, BufferUsages, Color, ColorTargetState, ColorWrites, CommandEncoderDescriptor,
+    CompositeAlphaMode, CurrentSurfaceTexture, Device, DeviceDescriptor, FragmentState, Instance,
+    LoadOp, Operations, PipelineCompilationOptions, PrimitiveState, PrimitiveTopology, Queue,
+    RenderPassColorAttachment, RenderPassDescriptor, RenderPipeline, RenderPipelineDescriptor,
+    ShaderModuleDescriptor, ShaderSource, StoreOp, Surface, SurfaceConfiguration,
+    TextureViewDescriptor, VertexState,
 };
 use winit::dpi::PhysicalSize;
 use winit::window::Window;
@@ -223,6 +227,7 @@ pub struct GpuRenderer {
     viewport: Viewport,
     text_atlas: TextAtlas,
     text_renderer: TextRenderer,
+    ui_pipeline: RenderPipeline,
     panes: HashMap<PaneId, PaneBuffers>,
     tabs: HashMap<TabId, TabBuffer>,
     workspaces: HashMap<WorkspaceId, TabBuffer>,
@@ -267,13 +272,27 @@ struct PaneBuffers {
     selection: Buffer,
     text: Buffer,
     cursor_glyph: Buffer,
-    focus: Buffer,
     layout: TextLayout,
     cursor: CursorState,
     cursor_x: f32,
     rect: PaneRect,
     active: bool,
     has_selection: bool,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
+struct UiVertex {
+    position: [f32; 2],
+    color: [f32; 4],
+}
+
+impl UiVertex {
+    const LAYOUT: wgpu::VertexBufferLayout<'static> = wgpu::VertexBufferLayout {
+        array_stride: std::mem::size_of::<Self>() as wgpu::BufferAddress,
+        step_mode: wgpu::VertexStepMode::Vertex,
+        attributes: &wgpu::vertex_attr_array![0 => Float32x2, 1 => Float32x4],
+    };
 }
 
 struct ConfiguredFallback {
@@ -358,7 +377,6 @@ impl PaneBuffers {
             selection: buffer(),
             text: buffer(),
             cursor_glyph: buffer(),
-            focus: buffer(),
             layout,
             cursor: CursorState {
                 column: 0,
@@ -436,6 +454,7 @@ impl GpuRenderer {
             wgpu::MultisampleState::default(),
             None,
         );
+        let ui_pipeline = create_ui_pipeline(&device, configuration.format);
         let mut preedit = Buffer::new(&mut font_system, Metrics::new(14.0, 18.0));
         preedit.set_wrap(Wrap::None);
         let mut palette_text = Buffer::new(&mut font_system, Metrics::new(14.0, 18.0));
@@ -473,6 +492,7 @@ impl GpuRenderer {
             viewport,
             text_atlas,
             text_renderer,
+            ui_pipeline,
             panes: HashMap::new(),
             tabs: HashMap::new(),
             workspaces: HashMap::new(),
@@ -648,20 +668,6 @@ impl GpuRenderer {
             );
             buffers
                 .cursor_glyph
-                .shape_until_scroll(&mut self.font_system, false);
-
-            let focus_width = (pane.rect.width as f32 / layout.cell_width.max(1.0)) as usize;
-            buffers.focus.set_metrics_and_size(metrics, None, None);
-            buffers.focus.set_text(
-                &"━".repeat(focus_width),
-                &Attrs::new()
-                    .family(Family::Name(&self.style.font_family))
-                    .weight(Weight(self.style.font_weight)),
-                Shaping::Advanced,
-                None,
-            );
-            buffers
-                .focus
                 .shape_until_scroll(&mut self.font_system, false);
         }
     }
@@ -949,7 +955,7 @@ impl GpuRenderer {
             },
         );
         let mut text_areas =
-            Vec::with_capacity(self.panes.len() * 4 + self.tabs.len() + self.workspaces.len() + 7);
+            Vec::with_capacity(self.panes.len() * 3 + self.tabs.len() + self.workspaces.len() + 7);
         for workspace in self.workspaces.values() {
             text_areas.push(TextArea {
                 buffer: &workspace.text,
@@ -1063,17 +1069,6 @@ impl GpuRenderer {
                 default_color: glyph_color(self.style.foreground, 255),
                 custom_glyphs: &[],
             });
-            if pane.active {
-                text_areas.push(TextArea {
-                    buffer: &pane.focus,
-                    left: pane.rect.x as f32,
-                    top: pane.rect.y as f32,
-                    scale: 1.0,
-                    bounds,
-                    default_color: glyph_color(self.style.cursor, 190),
-                    custom_glyphs: &[],
-                });
-            }
             if pane.active && pane.cursor.visible {
                 text_areas.push(TextArea {
                     buffer: &pane.cursor_glyph,
@@ -1139,6 +1134,15 @@ impl GpuRenderer {
             .create_command_encoder(&CommandEncoderDescriptor {
                 label: Some("toyoterm frame encoder"),
             });
+        let ui_vertices = self.ui_vertices();
+        let ui_buffer = (!ui_vertices.is_empty()).then(|| {
+            self.device
+                .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                    label: Some("toyoterm UI vertices"),
+                    contents: bytemuck::cast_slice(&ui_vertices),
+                    usage: BufferUsages::VERTEX,
+                })
+        });
         {
             let color_attachments = [Some(RenderPassColorAttachment {
                 view: &view,
@@ -1150,10 +1154,15 @@ impl GpuRenderer {
                 },
             })];
             let mut pass = encoder.begin_render_pass(&RenderPassDescriptor {
-                label: Some("toyoterm clear pass"),
+                label: Some("toyoterm frame pass"),
                 color_attachments: &color_attachments,
                 ..Default::default()
             });
+            if let Some(ui_buffer) = ui_buffer.as_ref() {
+                pass.set_pipeline(&self.ui_pipeline);
+                pass.set_vertex_buffer(0, ui_buffer.slice(..));
+                pass.draw(0..ui_vertices.len() as u32, 0..1);
+            }
             self.text_renderer
                 .render(&self.text_atlas, &self.viewport, &mut pass)
                 .map_err(|error| RenderError::new("render terminal text", error))?;
@@ -1168,6 +1177,119 @@ impl GpuRenderer {
         Ok(RenderOutcome::Presented)
     }
 
+    fn ui_vertices(&self) -> Vec<UiVertex> {
+        let mut vertices = Vec::new();
+        let width = self.configuration.width;
+
+        if let Some(first) = self.workspaces.values().next() {
+            push_ui_rect(
+                &mut vertices,
+                PaneRect::new(0, first.rect.y, width, first.rect.height),
+                mix_rgb(self.style.background, self.style.foreground, 0.035, 0.96),
+                self.configuration.width,
+                self.configuration.height,
+            );
+        }
+        for workspace in self.workspaces.values() {
+            if workspace.active {
+                push_ui_rect(
+                    &mut vertices,
+                    PaneRect::new(
+                        workspace.rect.x.saturating_add(4),
+                        workspace
+                            .rect
+                            .y
+                            .saturating_add(workspace.rect.height.saturating_sub(2)),
+                        workspace.rect.width.saturating_sub(8),
+                        2,
+                    ),
+                    rgba(self.style.selection, 0.9),
+                    self.configuration.width,
+                    self.configuration.height,
+                );
+            }
+        }
+
+        if let Some(first) = self.tabs.values().next() {
+            push_ui_rect(
+                &mut vertices,
+                PaneRect::new(0, first.rect.y, width, first.rect.height),
+                mix_rgb(self.style.background, self.style.foreground, 0.055, 0.98),
+                self.configuration.width,
+                self.configuration.height,
+            );
+        }
+        for tab in self.tabs.values() {
+            let fill = if tab.active {
+                mix_rgb(self.style.background, self.style.selection, 0.18, 1.0)
+            } else {
+                mix_rgb(self.style.background, self.style.foreground, 0.075, 0.72)
+            };
+            push_ui_rect(
+                &mut vertices,
+                inset_rect(tab.rect, 1, 1, 1, 0),
+                fill,
+                self.configuration.width,
+                self.configuration.height,
+            );
+            push_ui_rect(
+                &mut vertices,
+                PaneRect::new(
+                    tab.rect.x.saturating_add(tab.rect.width.saturating_sub(1)),
+                    tab.rect.y.saturating_add(5),
+                    1,
+                    tab.rect.height.saturating_sub(10),
+                ),
+                rgba(self.style.foreground, 0.2),
+                self.configuration.width,
+                self.configuration.height,
+            );
+            if tab.active {
+                push_ui_rect(
+                    &mut vertices,
+                    PaneRect::new(
+                        tab.rect.x.saturating_add(1),
+                        tab.rect.y.saturating_add(tab.rect.height.saturating_sub(3)),
+                        tab.rect.width.saturating_sub(2),
+                        3,
+                    ),
+                    rgba(self.style.selection, 1.0),
+                    self.configuration.width,
+                    self.configuration.height,
+                );
+            }
+        }
+
+        for pane in self.panes.values().filter(|pane| pane.active) {
+            push_ui_rect(
+                &mut vertices,
+                PaneRect::new(pane.rect.x, pane.rect.y, pane.rect.width, 2),
+                rgba(self.style.selection, 0.95),
+                self.configuration.width,
+                self.configuration.height,
+            );
+        }
+
+        if let Some(rect) = self.status_bar.rect {
+            push_ui_rect(
+                &mut vertices,
+                rect,
+                mix_rgb(self.style.background, self.style.foreground, 0.045, 0.96),
+                self.configuration.width,
+                self.configuration.height,
+            );
+            push_ui_rect(
+                &mut vertices,
+                PaneRect::new(rect.x, rect.y, rect.width, 1),
+                rgba(self.style.foreground, 0.14),
+                self.configuration.width,
+                self.configuration.height,
+            );
+        }
+
+        vertices
+    }
+
     fn recreate_surface(&mut self) -> Result<(), RenderError> {
         self.surface = self
             .instance
@@ -1176,6 +1298,121 @@ impl GpuRenderer {
         self.surface.configure(&self.device, &self.configuration);
         Ok(())
     }
+}
+
+fn create_ui_pipeline(device: &Device, format: wgpu::TextureFormat) -> RenderPipeline {
+    let shader = device.create_shader_module(ShaderModuleDescriptor {
+        label: Some("toyoterm UI shader"),
+        source: ShaderSource::Wgsl(
+            r#"
+struct VertexInput {
+    @location(0) position: vec2<f32>,
+    @location(1) color: vec4<f32>,
+};
+
+struct VertexOutput {
+    @builtin(position) position: vec4<f32>,
+    @location(0) color: vec4<f32>,
+};
+
+@vertex
+fn vs_main(input: VertexInput) -> VertexOutput {
+    var output: VertexOutput;
+    output.position = vec4<f32>(input.position, 0.0, 1.0);
+    output.color = input.color;
+    return output;
+}
+
+@fragment
+fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
+    return input.color;
+}
+"#
+            .into(),
+        ),
+    });
+    device.create_render_pipeline(&RenderPipelineDescriptor {
+        label: Some("toyoterm UI pipeline"),
+        layout: None,
+        vertex: VertexState {
+            module: &shader,
+            entry_point: Some("vs_main"),
+            compilation_options: PipelineCompilationOptions::default(),
+            buffers: &[Some(UiVertex::LAYOUT)],
+        },
+        primitive: PrimitiveState {
+            topology: PrimitiveTopology::TriangleList,
+            ..Default::default()
+        },
+        depth_stencil: None,
+        multisample: wgpu::MultisampleState::default(),
+        fragment: Some(FragmentState {
+            module: &shader,
+            entry_point: Some("fs_main"),
+            compilation_options: PipelineCompilationOptions::default(),
+            targets: &[Some(ColorTargetState {
+                format,
+                blend: Some(BlendState::ALPHA_BLENDING),
+                write_mask: ColorWrites::ALL,
+            })],
+        }),
+        multiview_mask: None,
+        cache: None,
+    })
+}
+
+fn push_ui_rect(
+    vertices: &mut Vec<UiVertex>,
+    rect: PaneRect,
+    color: [f32; 4],
+    surface_width: u32,
+    surface_height: u32,
+) {
+    if rect.width == 0 || rect.height == 0 || surface_width == 0 || surface_height == 0 {
+        return;
+    }
+    let left = rect.x as f32 / surface_width as f32 * 2.0 - 1.0;
+    let right = rect.x.saturating_add(rect.width) as f32 / surface_width as f32 * 2.0 - 1.0;
+    let top = 1.0 - rect.y as f32 / surface_height as f32 * 2.0;
+    let bottom = 1.0 - rect.y.saturating_add(rect.height) as f32 / surface_height as f32 * 2.0;
+    for position in [
+        [left, top],
+        [left, bottom],
+        [right, bottom],
+        [left, top],
+        [right, bottom],
+        [right, top],
+    ] {
+        vertices.push(UiVertex { position, color });
+    }
+}
+
+fn inset_rect(rect: PaneRect, left: u32, top: u32, right: u32, bottom: u32) -> PaneRect {
+    PaneRect::new(
+        rect.x.saturating_add(left),
+        rect.y.saturating_add(top),
+        rect.width.saturating_sub(left.saturating_add(right)),
+        rect.height.saturating_sub(top.saturating_add(bottom)),
+    )
+}
+
+fn rgba(rgb: [u8; 3], alpha: f32) -> [f32; 4] {
+    [
+        f32::from(rgb[0]) / 255.0,
+        f32::from(rgb[1]) / 255.0,
+        f32::from(rgb[2]) / 255.0,
+        alpha,
+    ]
+}
+
+fn mix_rgb(base: [u8; 3], tint: [u8; 3], amount: f32, alpha: f32) -> [f32; 4] {
+    let amount = amount.clamp(0.0, 1.0);
+    [
+        (f32::from(base[0]) * (1.0 - amount) + f32::from(tint[0]) * amount) / 255.0,
+        (f32::from(base[1]) * (1.0 - amount) + f32::from(tint[1]) * amount) / 255.0,
+        (f32::from(base[2]) * (1.0 - amount) + f32::from(tint[2]) * amount) / 255.0,
+        alpha,
+    ]
 }
 
 fn pane_text_placement(

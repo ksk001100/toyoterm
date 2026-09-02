@@ -2368,6 +2368,7 @@ dependencies = [
 name = "toyoterm-render"
 version = "0.0.1"
 dependencies = [
+ "bytemuck",
  "glyphon",
  "sys-locale",
  "toyoterm-api",

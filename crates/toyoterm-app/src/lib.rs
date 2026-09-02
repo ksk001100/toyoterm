@@ -1243,7 +1243,7 @@ impl ToyotermApplication {
     fn create_workspace(&mut self) -> Result<(), String> {
         let mut suffix = self.mux.workspaces().len() + 1;
         let name = loop {
-            let candidate = format!("workspace-{suffix}");
+            let candidate = format!("Workspace {suffix}");
             if self
                 .mux
                 .workspaces()
@@ -1632,7 +1632,7 @@ impl ToyotermApplication {
         WorkspaceStripLayout::calculate(
             &self.mux.workspaces(),
             PaneRect::new(0, 0, window_size.width, workspace_bar_height(scale_factor)),
-            (140.0 * scale_factor.max(0.1)).round() as u32,
+            chrome_item_width(scale_factor),
         )
     }
 
@@ -1672,7 +1672,7 @@ impl ToyotermApplication {
                 window_size.width,
                 tab_bar_height(scale_factor),
             ),
-            (160.0 * scale_factor.max(0.1)).round() as u32,
+            chrome_item_width(scale_factor),
         )
     }
 
@@ -2646,6 +2646,10 @@ fn tab_bar_height(scale_factor: f64) -> u32 {
     (30.0 * scale_factor.max(0.1)).round() as u32
 }
 
+fn chrome_item_width(scale_factor: f64) -> u32 {
+    (160.0 * scale_factor.max(0.1)).round() as u32
+}
+
 fn workspace_bar_height(scale_factor: f64) -> u32 {
     (24.0 * scale_factor.max(0.1)).round() as u32
 }
@@ -3396,6 +3400,12 @@ mod tests {
             status_bar_rect(PhysicalSize::new(1200, 750), 1.5),
             PaneRect::new(0, 714, 1200, 36)
         );
+    }
+
+    #[test]
+    fn chrome_item_width_scales_from_a_shared_logical_width() {
+        assert_eq!(chrome_item_width(1.0), 160);
+        assert_eq!(chrome_item_width(1.5), 240);
     }
 
     #[test]

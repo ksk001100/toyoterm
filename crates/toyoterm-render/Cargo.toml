@@ -9,6 +9,7 @@ publish.workspace = true
 toyoterm-api.workspace = true
 toyoterm-mux.workspace = true
 toyoterm-terminal.workspace = true
+bytemuck.workspace = true
 glyphon.workspace = true
 sys-locale.workspace = true
 unicode-script.workspace = true
