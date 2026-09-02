@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::ffi::{CStr, CString, c_char, c_void};
 use std::fmt;
 use std::marker::PhantomData;
@@ -21,6 +21,7 @@ pub use toyoterm_config::{
 };
 
 const SLOW_CALLBACK_THRESHOLD: Duration = Duration::from_millis(100);
+pub const PLUGIN_API_VERSION: &str = "0.1.0";
 
 fn return_host_bytes(bytes: Vec<u8>, output: *mut *mut u8, length: *mut usize) {
     let mut bytes = bytes.into_boxed_slice();
@@ -456,6 +457,15 @@ module Toyoterm
       end
       true
     end
+
+    def __plugin_checkpoint
+      [@bindings.dup, @static_bindings.dup]
+    end
+
+    def __rollback_plugin(checkpoint)
+      @bindings = checkpoint[0]
+      @static_bindings = checkpoint[1]
+    end
   end
 
   class InvalidHandleError < RuntimeError
@@ -699,6 +709,52 @@ module Toyoterm
     end
   end
 
+  class Plugin
+    class Definition
+      attr_reader :name
+      attr_accessor :version, :requires
+
+      def initialize(name)
+        @name = name.to_s
+        @version = nil
+        @requires = nil
+      end
+
+      def command(name, &block)
+        Toyoterm.command(name, &block)
+      end
+
+      def on(name, &block)
+        Toyoterm.on(name, &block)
+      end
+
+      def bind(key, &block)
+        Toyoterm.__config.bind(key, &block)
+      end
+
+      def keys(&block)
+        Toyoterm.__config.keys(&block)
+      end
+
+      def __validate!
+        raise ArgumentError, "plugin name cannot be empty" if @name.empty?
+        raise ArgumentError, "plugin version is required" if @version.nil? || @version.to_s.empty?
+        @version = @version.to_s
+        @requires = @requires.nil? ? "" : @requires.to_s
+      end
+    end
+
+    def self.define(name)
+      raise RuntimeError, "Plugin.define can only be used while loading a plugin" unless Toyoterm.__loading_plugin?
+      raise ArgumentError, "plugin definition requires a block" unless block_given?
+      definition = Definition.new(name)
+      yield definition
+      definition.__validate!
+      Toyoterm.__register_plugin(definition)
+      definition
+    end
+  end
+
   @config = Config.new
   @current_pane = Pane.new(0)
   @current_tab = Tab.new(0)
@@ -720,6 +776,9 @@ module Toyoterm
   }
   @object_data = { workspace: {}, window: {}, tab: {}, pane: {} }
   @pane_badges = {}
+  @plugins = []
+  @plugin_requests = []
+  @current_plugin_path = nil
 
   def self.configure(&block)
     block.call(@config)
@@ -781,6 +840,89 @@ module Toyoterm
       raise ArgumentError, "program and arguments cannot contain NUL bytes"
     end
     ProcessResult.new(*__host_spawn(values))
+  end
+
+  def self.plugin(path)
+    path = path.to_s
+    raise ArgumentError, "plugin path cannot be empty" if path.empty?
+    raise ArgumentError, "plugin path contains a NUL byte" if path.index("\0")
+    @plugin_requests << [path, @current_plugin_path]
+    nil
+  end
+
+  def self.plugins
+    @plugins.dup
+  end
+
+  def self.__loading_plugin?
+    !@current_plugin_path.nil?
+  end
+
+  def self.__begin_plugin(path)
+    @current_plugin_path = path
+  end
+
+  def self.__end_plugin
+    @current_plugin_path = nil
+  end
+
+  def self.__register_plugin(plugin)
+    if @plugins.any? { |loaded| loaded.name == plugin.name }
+      raise ArgumentError, "duplicate plugin name: #{plugin.name}"
+    end
+    @plugins << plugin
+  end
+
+  def self.__plugin_checkpoint
+    event_handlers = {}
+    @event_handlers.each { |name, handlers| event_handlers[name] = handlers.dup }
+    [
+      @plugins.dup,
+      @user_commands.dup,
+      event_handlers,
+      @config.__plugin_checkpoint,
+      @plugin_requests.length
+    ]
+  end
+
+  def self.__rollback_plugin(checkpoint)
+    @plugins = checkpoint[0]
+    @user_commands = checkpoint[1]
+    @event_handlers = checkpoint[2]
+    @config.__rollback_plugin(checkpoint[3])
+    @plugin_requests.pop while @plugin_requests.length > checkpoint[4]
+  end
+
+  def self.__plugin_request_count
+    @plugin_requests.length
+  end
+
+  def self.__plugin_request_path(index)
+    @plugin_requests[index][0]
+  end
+
+  def self.__plugin_request_parent(index)
+    @plugin_requests[index][1] || ""
+  end
+
+  def self.__discard_plugin_requests(count)
+    @plugin_requests.shift(count)
+  end
+
+  def self.__plugin_count
+    @plugins.length
+  end
+
+  def self.__plugin_name(index)
+    @plugins[index].name
+  end
+
+  def self.__plugin_version(index)
+    @plugins[index].version
+  end
+
+  def self.__plugin_requires(index)
+    @plugins[index].requires
   end
 
   def self.__replace_env(entries)
@@ -1153,6 +1295,14 @@ pub struct RubyEvent {
     pub cwd: Option<String>,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PluginMetadata {
+    pub name: String,
+    pub version: String,
+    pub requires: String,
+    pub path: PathBuf,
+}
+
 /// Immutable script registry mirrored on the main thread.  It contains no VM
 /// state and is safe to use for native key resolution and palette rendering.
 #[derive(Clone, Debug)]
@@ -1162,6 +1312,7 @@ pub struct ScriptSnapshot {
     pub keybindings: HashSet<String>,
     pub event_names: HashSet<String>,
     pub user_command_names: HashSet<String>,
+    pub plugins: Vec<PluginMetadata>,
 }
 
 #[derive(Clone, Debug)]
@@ -1653,7 +1804,9 @@ pub struct ConfigManager {
     native_actions: HashMap<String, NativeAction>,
     event_names: HashSet<String>,
     user_command_names: HashSet<String>,
+    plugins: Vec<PluginMetadata>,
     source_path: Option<PathBuf>,
+    plugin_dir: Option<PathBuf>,
 }
 
 struct LoadedConfig {
@@ -1663,11 +1816,12 @@ struct LoadedConfig {
     native_actions: HashMap<String, NativeAction>,
     event_names: HashSet<String>,
     user_command_names: HashSet<String>,
+    plugins: Vec<PluginMetadata>,
 }
 
 impl ConfigManager {
     pub fn new() -> Result<Self, ScriptError> {
-        let loaded = load_config("", "(default config)")?;
+        let loaded = load_config("", "(default config)", &[], None)?;
         Ok(Self {
             runtime: loaded.runtime,
             config: loaded.config,
@@ -1675,7 +1829,9 @@ impl ConfigManager {
             native_actions: loaded.native_actions,
             event_names: loaded.event_names,
             user_command_names: loaded.user_command_names,
+            plugins: loaded.plugins,
             source_path: None,
+            plugin_dir: None,
         })
     }
 
@@ -1690,6 +1846,7 @@ impl ConfigManager {
             keybindings: self.keybindings.clone(),
             event_names: self.event_names.clone(),
             user_command_names: self.user_command_names.clone(),
+            plugins: self.plugins.clone(),
         }
     }
 
@@ -1707,6 +1864,10 @@ impl ConfigManager {
         let env_path = std::env::var_os("TOYOTERM_CONFIG_FILE").filter(|path| !path.is_empty());
         let home = home_directory();
         let mut manager = Self::new()?;
+        manager.plugin_dir = home
+            .as_deref()
+            .map(|home| home.join(".config").join("toyoterm").join("plugins"));
+        manager.reload_named("", "(default config)")?;
         let Some(path) = resolve_config_path(explicit_path, env_path.as_deref(), home.as_deref())
         else {
             return Ok((manager, None));
@@ -1746,19 +1907,30 @@ impl ConfigManager {
         source: &str,
         filename: &str,
     ) -> Result<&ToyotermConfig, ScriptError> {
-        let loaded = load_config(source, filename)?;
+        let plugin_paths = self
+            .plugin_dir
+            .as_deref()
+            .map(discover_plugins)
+            .unwrap_or_default();
+        let source_dir = self.source_path.as_deref().and_then(Path::parent);
+        let loaded = load_config(source, filename, &plugin_paths, source_dir)?;
         self.runtime = loaded.runtime;
         self.config = loaded.config;
         self.keybindings = loaded.keybindings;
         self.native_actions = loaded.native_actions;
         self.event_names = loaded.event_names;
         self.user_command_names = loaded.user_command_names;
+        self.plugins = loaded.plugins;
         tracing::info!(target: "toyoterm::config", filename, "config loaded");
         Ok(&self.config)
     }
 
     pub fn eval(&mut self, source: &str) -> Result<String, ScriptError> {
         self.runtime.eval(source)
+    }
+
+    pub fn plugins(&self) -> &[PluginMetadata] {
+        &self.plugins
     }
 
     /// Evaluates interactive Ruby and returns the value's `inspect` representation.
@@ -2095,7 +2267,12 @@ fn resolve_config_path(
         .or_else(|| home.map(|home| home.join(".config").join("toyoterm").join("config.rb")))
 }
 
-fn load_config(source: &str, filename: &str) -> Result<LoadedConfig, ScriptError> {
+fn load_config(
+    source: &str,
+    filename: &str,
+    plugin_paths: &[PathBuf],
+    source_dir: Option<&Path>,
+) -> Result<LoadedConfig, ScriptError> {
     let mut runtime = MrubyRuntime::new()?;
     let config_dsl =
         CONFIG_DSL.replace("__TOYOTERM_PRIMARY_MODIFIER__", platform_primary_modifier());
@@ -2104,6 +2281,7 @@ fn load_config(source: &str, filename: &str) -> Result<LoadedConfig, ScriptError
     unsafe { toyoterm_mruby_install_host_api(runtime.state.as_ptr()) };
     runtime.set_environment()?;
     runtime.eval_with_filename(source, filename)?;
+    let plugins = load_plugins(&mut runtime, plugin_paths, source_dir);
 
     let defaults = ToyotermConfig::default();
     let family = runtime.eval("Toyoterm.__config.font.family")?;
@@ -2283,6 +2461,223 @@ fn load_config(source: &str, filename: &str) -> Result<LoadedConfig, ScriptError
         native_actions,
         event_names,
         user_command_names,
+        plugins,
+    })
+}
+
+fn discover_plugins(directory: &Path) -> Vec<PathBuf> {
+    let entries = match std::fs::read_dir(directory) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Vec::new(),
+        Err(error) => {
+            tracing::warn!(
+                target: "toyoterm::script",
+                path = %directory.display(),
+                %error,
+                "cannot scan local plugin directory"
+            );
+            return Vec::new();
+        }
+    };
+    let mut paths = entries
+        .filter_map(Result::ok)
+        .map(|entry| entry.path())
+        .filter(|path| path.extension().and_then(|value| value.to_str()) == Some("rb"))
+        .collect::<Vec<_>>();
+    paths.sort();
+    paths
+}
+
+fn load_plugins(
+    runtime: &mut MrubyRuntime,
+    automatic: &[PathBuf],
+    source_dir: Option<&Path>,
+) -> Vec<PluginMetadata> {
+    let mut queue = automatic
+        .iter()
+        .cloned()
+        .map(|path| (path, None))
+        .collect::<VecDeque<_>>();
+    queue.extend(drain_plugin_requests(runtime, source_dir));
+    let mut loaded_paths = HashSet::new();
+    let mut plugins = Vec::new();
+
+    while let Some((path, parent)) = queue.pop_front() {
+        let path = resolve_plugin_path(&path, parent.as_deref().or(source_dir));
+        let identity = std::fs::canonicalize(&path).unwrap_or_else(|_| path.clone());
+        if !loaded_paths.insert(identity) {
+            tracing::debug!(target: "toyoterm::script", path = %path.display(), "skip duplicate plugin path");
+            continue;
+        }
+        match load_plugin(runtime, &path) {
+            Ok(metadata) => {
+                tracing::info!(
+                    target: "toyoterm::script",
+                    plugin = %metadata.name,
+                    version = %metadata.version,
+                    path = %path.display(),
+                    "local plugin loaded"
+                );
+                plugins.push(metadata);
+                queue.extend(drain_plugin_requests(runtime, path.parent()));
+            }
+            Err(error) => {
+                tracing::warn!(
+                    target: "toyoterm::script",
+                    path = %path.display(),
+                    %error,
+                    "local plugin disabled after load failure"
+                );
+            }
+        }
+    }
+    plugins
+}
+
+fn drain_plugin_requests(
+    runtime: &mut MrubyRuntime,
+    default_parent: Option<&Path>,
+) -> Vec<(PathBuf, Option<PathBuf>)> {
+    let count = runtime
+        .eval("Toyoterm.__plugin_request_count")
+        .ok()
+        .and_then(|count| count.parse::<usize>().ok())
+        .unwrap_or(0);
+    let mut requests = Vec::with_capacity(count);
+    for index in 0..count {
+        let Ok(path) = runtime.eval(&format!("Toyoterm.__plugin_request_path({index})")) else {
+            continue;
+        };
+        let parent = runtime
+            .eval(&format!("Toyoterm.__plugin_request_parent({index})"))
+            .ok()
+            .filter(|parent| !parent.is_empty())
+            .and_then(|parent| PathBuf::from(parent).parent().map(Path::to_owned))
+            .or_else(|| default_parent.map(Path::to_owned));
+        requests.push((PathBuf::from(path), parent));
+    }
+    let _ = runtime.eval(&format!("Toyoterm.__discard_plugin_requests({count})"));
+    requests
+}
+
+fn resolve_plugin_path(path: &Path, parent: Option<&Path>) -> PathBuf {
+    let text = path.to_string_lossy();
+    if let Some(rest) = text.strip_prefix("~/")
+        && let Some(home) = home_directory()
+    {
+        return home.join(rest);
+    }
+    if path.is_absolute() {
+        path.to_owned()
+    } else {
+        parent
+            .map(|parent| parent.join(path))
+            .unwrap_or_else(|| path.to_owned())
+    }
+}
+
+fn load_plugin(runtime: &mut MrubyRuntime, path: &Path) -> Result<PluginMetadata, ScriptError> {
+    let source = std::fs::read_to_string(path)
+        .map_err(|error| ScriptError::new("load plugin", format!("{}: {error}", path.display())))?;
+    let before = runtime
+        .eval("Toyoterm.__plugin_count")?
+        .parse::<usize>()
+        .map_err(|_| ScriptError::new("load plugin", "plugin count is invalid"))?;
+    runtime.eval("$__toyoterm_plugin_checkpoint = Toyoterm.__plugin_checkpoint")?;
+    runtime.eval(&format!(
+        "Toyoterm.__begin_plugin({})",
+        ruby_string_literal(&path.display().to_string())
+    ))?;
+    let evaluated = runtime.eval_with_filename(&source, &path.display().to_string());
+    let _ = runtime.eval("Toyoterm.__end_plugin");
+    if let Err(error) = evaluated {
+        let _ = runtime.eval("Toyoterm.__rollback_plugin($__toyoterm_plugin_checkpoint)");
+        return Err(ScriptError::new(
+            "load plugin",
+            format!("{}: {error}", path.display()),
+        ));
+    }
+    let result = (|| {
+        let after = runtime
+            .eval("Toyoterm.__plugin_count")?
+            .parse::<usize>()
+            .map_err(|_| ScriptError::new("load plugin", "plugin count is invalid"))?;
+        if after != before + 1 {
+            return Err(ScriptError::new(
+                "load plugin",
+                "a plugin file must call Toyoterm::Plugin.define exactly once",
+            ));
+        }
+        let name = runtime.eval(&format!("Toyoterm.__plugin_name({before})"))?;
+        let version = runtime.eval(&format!("Toyoterm.__plugin_version({before})"))?;
+        let requires = runtime.eval(&format!("Toyoterm.__plugin_requires({before})"))?;
+        parse_semver(&version).map_err(|message| {
+            ScriptError::new("load plugin", format!("plugin {name} has {message}"))
+        })?;
+        if !requires.is_empty() && !version_requirement_matches(&requires, PLUGIN_API_VERSION)? {
+            return Err(ScriptError::new(
+                "load plugin",
+                format!(
+                    "plugin {name} requires toyoterm plugin API `{requires}`, current version is {PLUGIN_API_VERSION}"
+                ),
+            ));
+        }
+        Ok(PluginMetadata {
+            name,
+            version,
+            requires,
+            path: path.to_owned(),
+        })
+    })();
+    if result.is_err() {
+        let _ = runtime.eval("Toyoterm.__rollback_plugin($__toyoterm_plugin_checkpoint)");
+    }
+    result
+}
+
+fn parse_semver(value: &str) -> Result<(u64, u64, u64), String> {
+    let parts = value.split('.').collect::<Vec<_>>();
+    if parts.len() != 3
+        || parts.iter().any(|part| {
+            part.is_empty()
+                || !part.bytes().all(|byte| byte.is_ascii_digit())
+                || (part.len() > 1 && part.starts_with('0'))
+        })
+    {
+        return Err(format!("invalid semantic version `{value}`"));
+    }
+    let parsed = parts
+        .iter()
+        .map(|part| part.parse::<u64>())
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|_| format!("invalid semantic version `{value}`"))?;
+    Ok((parsed[0], parsed[1], parsed[2]))
+}
+
+fn version_requirement_matches(requirement: &str, current: &str) -> Result<bool, ScriptError> {
+    let current =
+        parse_semver(current).map_err(|message| ScriptError::new("load plugin", message))?;
+    requirement.split(',').try_fold(true, |matches, clause| {
+        let clause = clause.trim();
+        let (operator, version) = [">=", "<=", ">", "<", "="]
+            .into_iter()
+            .find_map(|operator| {
+                clause
+                    .strip_prefix(operator)
+                    .map(|version| (operator, version))
+            })
+            .unwrap_or(("=", clause));
+        let version = parse_semver(version.trim())
+            .map_err(|message| ScriptError::new("load plugin", message))?;
+        let clause_matches = match operator {
+            ">=" => current >= version,
+            "<=" => current <= version,
+            ">" => current > version,
+            "<" => current < version,
+            "=" => current == version,
+            _ => unreachable!(),
+        };
+        Ok(matches && clause_matches)
     })
 }
 
@@ -2542,6 +2937,192 @@ mod tests {
         assert_eq!(config.window_opacity, 0.92);
         assert_eq!(config.default_shell.as_deref(), Some("/bin/zsh"));
         assert_eq!(config.scrollback_lines, 50_000);
+    }
+
+    #[test]
+    fn loads_local_plugins_with_metadata_and_registrations() {
+        let directory = temporary_test_directory("plugins");
+        let plugin = directory.join("git.rb");
+        std::fs::write(
+            &plugin,
+            r#"
+            Toyoterm::Plugin.define "git-tools" do |plugin|
+              plugin.version = "0.1.0"
+              plugin.requires = ">= 0.1.0, < 0.2.0"
+              plugin.command(:git_root) { |ctx| ctx.pane.send_text("git root\n") }
+              plugin.on(:bell) { |event| event.pane.badge = "bell" }
+              plugin.bind("CTRL+G") { |ctx| ctx.pane.send_text("git status\n") }
+              plugin.keys { ctrl_shift("G").command(:git_root) }
+            end
+            "#,
+        )
+        .unwrap();
+
+        let loaded = load_config("", "(config)", std::slice::from_ref(&plugin), None).unwrap();
+        assert_eq!(
+            loaded.plugins,
+            [PluginMetadata {
+                name: "git-tools".into(),
+                version: "0.1.0".into(),
+                requires: ">= 0.1.0, < 0.2.0".into(),
+                path: plugin.clone(),
+            }]
+        );
+        assert!(loaded.user_command_names.contains("git_root"));
+        assert!(loaded.event_names.contains("bell"));
+        assert!(loaded.keybindings.contains("CTRL+G"));
+        assert_eq!(
+            loaded.native_actions.get("CTRL+SHIFT+G"),
+            Some(&NativeAction::UserCommand("git_root".into()))
+        );
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn plugin_failures_are_isolated_and_rolled_back() {
+        let directory = temporary_test_directory("plugin-isolation");
+        let broken = directory.join("10-broken.rb");
+        let incompatible = directory.join("20-incompatible.rb");
+        let healthy = directory.join("30-healthy.rb");
+        std::fs::write(
+            &broken,
+            r#"
+            Toyoterm::Plugin.define "broken" do |plugin|
+              plugin.version = "0.1.0"
+              plugin.command(:leaked) { }
+              raise "boom"
+            end
+            "#,
+        )
+        .unwrap();
+        std::fs::write(
+            &incompatible,
+            r#"
+            Toyoterm::Plugin.define "future" do |plugin|
+              plugin.version = "1.0.0"
+              plugin.requires = ">= 1.0.0"
+              plugin.command(:also_leaked) { }
+            end
+            "#,
+        )
+        .unwrap();
+        std::fs::write(
+            &healthy,
+            r#"
+            Toyoterm::Plugin.define "healthy" do |plugin|
+              plugin.version = "0.2.0"
+              plugin.command(:works) { }
+            end
+            "#,
+        )
+        .unwrap();
+
+        let loaded = load_config(
+            "",
+            "(config)",
+            &[broken, incompatible, healthy.clone()],
+            None,
+        )
+        .unwrap();
+        assert_eq!(
+            loaded
+                .plugins
+                .iter()
+                .map(|plugin| plugin.name.as_str())
+                .collect::<Vec<_>>(),
+            ["healthy"]
+        );
+        assert_eq!(loaded.user_command_names, HashSet::from(["works".into()]));
+        assert_eq!(loaded.plugins[0].path, healthy);
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn explicit_plugins_resolve_relative_to_the_config_and_keep_declaration_order() {
+        let directory = temporary_test_directory("explicit-plugins");
+        let plugins = directory.join("plugins");
+        std::fs::create_dir(&plugins).unwrap();
+        for (file, name) in [("second.rb", "second"), ("first.rb", "first")] {
+            std::fs::write(
+                plugins.join(file),
+                format!(
+                    "Toyoterm::Plugin.define {name:?} do |plugin|\n  plugin.version = \"0.1.0\"\nend\n"
+                ),
+            )
+            .unwrap();
+        }
+        let loaded = load_config(
+            "Toyoterm.plugin 'plugins/second.rb'; Toyoterm.plugin 'plugins/first.rb'",
+            &directory.join("config.rb").display().to_string(),
+            &[],
+            Some(&directory),
+        )
+        .unwrap();
+        assert_eq!(
+            loaded
+                .plugins
+                .iter()
+                .map(|plugin| plugin.name.as_str())
+                .collect::<Vec<_>>(),
+            ["second", "first"]
+        );
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn automatic_plugins_are_sorted_and_duplicate_names_do_not_stop_later_plugins() {
+        let directory = temporary_test_directory("plugin-order");
+        for (file, name) in [
+            ("20-duplicate.rb", "shared"),
+            ("10-first.rb", "shared"),
+            ("30-last.rb", "last"),
+            ("ignored.txt", "ignored"),
+        ] {
+            std::fs::write(
+                directory.join(file),
+                format!(
+                    "Toyoterm::Plugin.define {name:?} do |plugin|\n  plugin.version = \"0.1.0\"\nend\n"
+                ),
+            )
+            .unwrap();
+        }
+        let paths = discover_plugins(&directory);
+        assert_eq!(
+            paths
+                .iter()
+                .filter_map(|path| path.file_name().and_then(|name| name.to_str()))
+                .collect::<Vec<_>>(),
+            ["10-first.rb", "20-duplicate.rb", "30-last.rb"]
+        );
+        let loaded = load_config("", "(config)", &paths, None).unwrap();
+        assert_eq!(
+            loaded
+                .plugins
+                .iter()
+                .map(|plugin| plugin.name.as_str())
+                .collect::<Vec<_>>(),
+            ["shared", "last"]
+        );
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn plugin_versions_use_strict_semver_triplets() {
+        assert_eq!(parse_semver("0.1.0"), Ok((0, 1, 0)));
+        assert!(parse_semver("0.1").is_err());
+        assert!(parse_semver("0.01.0").is_err());
+        assert!(parse_semver("0.1.beta").is_err());
+    }
+
+    fn temporary_test_directory(label: &str) -> PathBuf {
+        let unique = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let path =
+            std::env::temp_dir().join(format!("toyoterm-{label}-{}-{unique}", std::process::id()));
+        std::fs::create_dir(&path).unwrap();
+        path
     }
 
     #[test]

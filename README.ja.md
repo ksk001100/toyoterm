@@ -28,6 +28,7 @@ toyotermは、Rustと組み込みmrubyで作る実験的なプログラマブル
 - Workspaceごとのfocus復元に対応したWorkspaceバー
 - fuzzy検索対応のCommand Paletteとユーザー定義Rubyコマンド
 - 起動中GUIの単一mruby VMへ接続するライブRuby REPL
+- metadata・互換性検査・failure isolationを備えたlocal Ruby plugin
 
 ## 現在の状態
 
@@ -180,7 +181,43 @@ warn result.stderr unless result.success?
 
 `Toyoterm.env`はRuby VM作成時の環境変数snapshotのコピーを返し、Hashを変更してもprocess環境は変わりません。UTF-8で表せないentryは含まれません。path、program名、引数はUTF-8かつNUL byteを含まない文字列に限ります。`read_file`は内容のbyteを保持したRuby Stringを返します。`spawn`はScript Thread上で同期実行し、byteを保持した`stdout`と`stderr`をcaptureします。戻り値の`Toyoterm::ProcessResult`は`stdout`、`stderr`、`exit_status`、`success?`を持ち、portableな終了codeがない場合は`-1`です。filesystem操作とprocess起動の失敗は`RuntimeError`になり、子processの非zero終了は通常の結果として返ります。PTY読取りと描画は止まりませんが、長時間動く子processは後続のRuby callbackを待たせます。
 
-configはtrusted codeであり、MVPではこれらのAPIに制限を設けません。local pluginはまだ未実装です。導入当初はconfigと同じ権限を持つ任意code実行として明記し、filesystem・process・network・clipboardを分離するcapability modelは、存在しないsandboxを保証せず後続設計へ延期します。
+configはtrusted codeであり、MVPではこれらのAPIに制限を設けません。local pluginも現在は同じmruby VMで動作し、filesystem、process、environment、clipboardにconfigと同じ権限を持ちます。そのためpluginの導入は任意code実行の許可に相当します。sourceと更新元を信頼できるpluginだけを導入してください。filesystem・process・network・clipboardを分離するcapability modelは、存在しないsandboxを保証せず後続設計へ延期します。
+
+### Local plugin
+
+起動時とconfig reload時に、`~/.config/toyoterm/plugins/`直下の`*.rb`をファイル名の辞書順で読み込みます。その後、configで指定したpluginを記述順に追加します。相対pathは宣言元のconfigまたはpluginファイルを基準に解決し、`~/`はhome directoryへ展開します。
+
+```ruby
+Toyoterm.plugin "plugins/project.rb"
+Toyoterm.plugin "~/.config/toyoterm/extra/status.rb"
+```
+
+各pluginファイルは、一意なnameとsemantic versionを持つpluginをちょうど1つ定義する必要があります。任意の`requires`では、toyoterm plugin API version（`0.1.0`）への条件を、`,`区切りの`=`、`<`、`<=`、`>`、`>=`で指定できます。
+
+```ruby
+Toyoterm::Plugin.define "git-tools" do |plugin|
+  plugin.version = "0.1.0"
+  plugin.requires = ">= 0.1.0, < 0.2.0"
+
+  plugin.command :git_root do |context|
+    context.pane.send_text("git rev-parse --show-toplevel\n")
+  end
+
+  plugin.on :bell do |event|
+    event.pane.badge = "bell"
+  end
+
+  plugin.bind "CTRL+G" do |context|
+    context.pane.send_text("git status\n")
+  end
+
+  plugin.keys do
+    ctrl_shift("G").command(:git_root)
+  end
+end
+```
+
+`plugin.command`、`plugin.on`、`plugin.bind`、`plugin.keys`は、main configと同じcommand、event、dynamic binding、native binding APIを使用します。同じcanonical pathの重複読込は無視します。plugin nameや登録の重複、不正なmetadata、API version非互換、読込不能なファイル、Ruby例外が発生した場合は、そのpluginによる登録をすべてrollbackして無効化し、残りのpluginの読込を続け、`toyoterm::script`へwarningを記録します。config自体のエラーは、従来どおり候補VM全体をatomicに拒否します。
 
 ### Rubyオブジェクトモデル
 
@@ -278,7 +315,7 @@ IPCの状態directoryとUnix socketは所有者専用です。各requestはinsta
 
 ## セキュリティ
 
-設定ファイルは、組み込みmrubyランタイムで信頼済みのRubyコードとして評価されます。現在のtoyotermは設定や将来のプラグインに対するサンドボックス、capability制限を提供していません。信頼できる入手元の設定だけを読み込んでください。
+設定ファイルは、組み込みmrubyランタイムで信頼済みのRubyコードとして評価されます。pluginは第三者による任意codeであり、configと同じ権限を持ちます。現在のtoyotermは、どちらにもsandboxやcapability制限を提供していません。導入前にpluginのsourceと更新経路を確認し、信頼できる提供元のconfigとpluginだけを読み込んでください。
 
 ## 開発
 

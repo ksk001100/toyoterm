@@ -28,6 +28,7 @@ This is a personal project built for my own use and an experimental toy.
 - A clickable workspace bar with per-workspace focus restoration
 - A fuzzy-search command palette and user-defined Ruby commands
 - A live Ruby REPL connected to the running GUI's single mruby VM
+- Local Ruby plugins with metadata, compatibility checks, and failure isolation
 
 ## Current status
 
@@ -183,7 +184,43 @@ warn result.stderr unless result.success?
 
 `Toyoterm.env` returns a copy of the environment snapshot taken when the Ruby VM is created; changing the Hash does not change the process environment. Entries that cannot be represented as UTF-8 are omitted. Paths, program names, and arguments must be UTF-8 and cannot contain NUL bytes. `read_file` returns a byte-preserving Ruby String. `spawn` runs synchronously on the script thread, captures byte-preserving `stdout` and `stderr`, and returns a `Toyoterm::ProcessResult` with `stdout`, `stderr`, `exit_status`, and `success?`; a process terminated without a portable exit code uses `-1`. Filesystem and process-launch failures raise `RuntimeError`, while a nonzero child exit is a normal result. These calls do not block PTY reading or rendering, but a long-running child delays other Ruby callbacks.
 
-Configuration is trusted code and these APIs are intentionally unrestricted in the MVP. Local plugins are not implemented yet; when introduced, they will initially have the same authority and will be documented as arbitrary code execution. A separate filesystem/process/network/clipboard capability model is deferred rather than claiming a sandbox that does not exist.
+Configuration is trusted code and these APIs are intentionally unrestricted in the MVP. Local plugins currently run in the same mruby VM with the same filesystem, process, environment, and clipboard authority. Installing a plugin is therefore equivalent to allowing arbitrary code execution; only install plugin files whose source and updates you trust. A separate filesystem/process/network/clipboard capability model is deferred rather than claiming a sandbox that does not exist.
+
+### Local plugins
+
+At startup and on configuration reload, toyoterm loads `*.rb` files directly inside `~/.config/toyoterm/plugins/` in lexicographic filename order. The configuration can then append plugins in declaration order; relative paths are resolved from the declaring config or plugin file, and `~/` expands to the user's home directory:
+
+```ruby
+Toyoterm.plugin "plugins/project.rb"
+Toyoterm.plugin "~/.config/toyoterm/extra/status.rb"
+```
+
+Every plugin file must define exactly one plugin with a unique name and a semantic version. `requires` is optional and constrains the toyoterm plugin API version (`0.1.0`) using comma-separated `=`, `<`, `<=`, `>`, or `>=` clauses.
+
+```ruby
+Toyoterm::Plugin.define "git-tools" do |plugin|
+  plugin.version = "0.1.0"
+  plugin.requires = ">= 0.1.0, < 0.2.0"
+
+  plugin.command :git_root do |context|
+    context.pane.send_text("git rev-parse --show-toplevel\n")
+  end
+
+  plugin.on :bell do |event|
+    event.pane.badge = "bell"
+  end
+
+  plugin.bind "CTRL+G" do |context|
+    context.pane.send_text("git status\n")
+  end
+
+  plugin.keys do
+    ctrl_shift("G").command(:git_root)
+  end
+end
+```
+
+`plugin.command`, `plugin.on`, `plugin.bind`, and `plugin.keys` use the same command, event, dynamic-binding, and native-binding APIs as the main configuration. Loading the same canonical path twice is ignored. Duplicate plugin names or registrations, invalid metadata, incompatible API requirements, unreadable files, and Ruby exceptions disable only that plugin: all registrations made by the failed plugin are rolled back, remaining plugins continue loading, and a warning is written to `toyoterm::script`. A config error still rejects the complete candidate VM atomically.
 
 ### Ruby object model
 
@@ -281,7 +318,7 @@ The IPC state directory and Unix socket are owner-only. Each request also carrie
 
 ## Security
 
-Configuration is trusted Ruby code evaluated inside the embedded mruby runtime. toyoterm does not currently provide a sandbox or capability restrictions for configuration and future plugins. Only load configuration obtained from sources you trust.
+Configuration is trusted Ruby code evaluated inside the embedded mruby runtime. Plugins are third-party arbitrary code and receive the same authority as configuration. toyoterm does not currently provide a sandbox or capability restrictions for either. Review plugin source and its update channel before installing it, and only load configuration and plugins obtained from sources you trust.
 
 ## Development
 
