@@ -29,7 +29,6 @@ Toyoterm.configure do |config|
     ctrl_shift("o").activate_pane(:right)
     ctrl_shift("t").new_tab
     ctrl_shift("r").reload_config
-    ctrl_shift("p").command_palette
     leader("g").command(:git_status)
   end
 end

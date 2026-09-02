@@ -436,12 +436,6 @@ impl ToyotermApplication {
 
     pub(super) fn handle_left_mouse(&mut self, window: &Window, state: ElementState) {
         if state == ElementState::Pressed {
-            if self.palette_open {
-                self.palette_open = false;
-                self.palette.close();
-                self.sync_active_renderer(window.scale_factor());
-                window.request_redraw();
-            }
             if self.search_open {
                 self.close_search();
                 self.sync_active_renderer(window.scale_factor());
@@ -456,9 +450,6 @@ impl ToyotermApplication {
                 let open_log = self
                     .config_error_layout
                     .open_log_contains(self.mouse_position.x, self.mouse_position.y);
-                let open_ruby_console = self
-                    .config_error_layout
-                    .open_ruby_console_contains(self.mouse_position.x, self.mouse_position.y);
                 let dismiss = self
                     .config_error_layout
                     .dismiss_contains(self.mouse_position.x, self.mouse_position.y);
@@ -468,12 +459,8 @@ impl ToyotermApplication {
                     && open_log
                 {
                     notice.log_expanded = !notice.log_expanded;
-                    notice.console_hint = false;
                 }
-                if open_ruby_console {
-                    self.open_ruby_console();
-                }
-                if open_log || open_ruby_console || dismiss {
+                if open_log || dismiss {
                     if let Err(error) =
                         self.resize_panes(window.inner_size(), window.scale_factor())
                     {

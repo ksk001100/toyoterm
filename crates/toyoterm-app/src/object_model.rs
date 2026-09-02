@@ -1,31 +1,5 @@
 use super::*;
 
-pub(super) fn palette_native_command(
-    action: &PaletteAction,
-    current_pane: Option<PaneId>,
-) -> Result<Option<NativeCommand>, String> {
-    Ok(match action {
-        PaletteAction::ReloadConfig => Some(NativeCommand::ReloadConfig),
-        PaletteAction::NewTab => Some(NativeCommand::Mux(Command::NewTab)),
-        PaletteAction::Split(direction) => Some(NativeCommand::Mux(Command::Split {
-            pane: current_pane.ok_or_else(|| "mux has no current pane".to_owned())?,
-            direction: *direction,
-        })),
-        PaletteAction::ClosePane => Some(NativeCommand::Mux(Command::ClosePane(
-            current_pane.ok_or_else(|| "mux has no current pane".to_owned())?,
-        ))),
-        PaletteAction::SwitchWorkspace(name) => {
-            Some(NativeCommand::Mux(Command::SwitchWorkspace(name.clone())))
-        }
-        PaletteAction::MaximizeWindow
-        | PaletteAction::ToggleMaximize
-        | PaletteAction::MinimizeWindow
-        | PaletteAction::ToggleFullscreen
-        | PaletteAction::RubyConsole
-        | PaletteAction::UserCommand(_) => None,
-    })
-}
-
 impl Drop for ToyotermApplication {
     fn drop(&mut self) {
         // This is also reached while unwinding from a panic. PaneRuntime and

@@ -30,7 +30,7 @@ This is a personal project built for my own use and an experimental toy.
 - Rendered split panes with per-pane resize and focus
 - A clickable tab bar with keyboard tab navigation
 - A clickable workspace bar with per-workspace focus restoration
-- A fuzzy-search command palette and user-defined Ruby commands
+- User-defined Ruby commands and configurable native key bindings
 - A live Ruby REPL connected to the running GUI's single mruby VM
 - Local Ruby plugins with metadata, compatibility checks, and failure isolation
 - Literal search across the viewport and scrollback
@@ -98,8 +98,6 @@ Connect a live Ruby REPL to the running GUI from another terminal. It supports m
 ```sh
 cargo run -- ruby console
 ```
-
-Open the Command Palette with `Ctrl+Shift+P` (`Cmd+Shift+P` on macOS).
 
 ## Configuration
 
@@ -175,7 +173,7 @@ grayscale ramp. Assigning the entire `colors.ansi` array requires exactly 16
 
 Key names are case-insensitive. Modifiers use names such as `CTRL`, `SHIFT`, `ALT`, and `SUPER`. Named keys include `ENTER`, `TAB`, `SPACE`, arrow keys, navigation keys, and `F1` through `F12`.
 
-`config.keys` provides `ctrl`, `ctrl_shift`, `primary`, `primary_shift`, `alt`, `super_key`, `leader`, and `physical` helpers. `primary` resolves to `SUPER` on macOS and `CTRL` on Linux/Windows, so one configuration can follow each platform's conventions. Modifier names are portable: `ALT` is the Option key on macOS, while `SUPER` is Command on macOS and the Windows key on Windows. The `physical` helper distinguishes a hardware position from the logical character, for example `physical("KeyH", "CTRL")`. When both match, physical bindings take priority over logical bindings. User-configured bindings take priority over built-in GUI shortcuts. Defining the same chord more than once is a configuration error.
+`config.keys` provides `key`, `ctrl`, `ctrl_shift`, `ctrl_alt`, `ctrl_super`, `primary`, `primary_shift`, `primary_alt`, `alt`, `super_key`, `leader`, and `physical` helpers. Static actions include pane and tab management, workspace and tab cycling, search, window state changes, reload, and clipboard copy/paste. `primary` resolves to `SUPER` on macOS and `CTRL` on Linux/Windows, so one configuration can follow each platform's conventions. Modifier names are portable: `ALT` is the Option key on macOS, while `SUPER` is Command on macOS and the Windows key on Windows. The `physical` helper distinguishes a hardware position from the logical character, for example `physical("KeyH", "CTRL")`. Physical bindings take priority over logical bindings. There are no built-in GUI key bindings; defining the same chord more than once is a configuration error.
 
 `config.leader` defines a native leader prefix with a timeout in milliseconds. `leader("v")` bindings are resolved without invoking mruby. The leader prefix is discarded; an unmatched or expired suffix continues through normal key handling. Prefix repeat events are consumed without extending the original timeout, while IME activity, focus loss, and configuration reload clear leader state.
 
@@ -268,7 +266,7 @@ end
 
 Configuration errors include the source filename, line number, and Ruby backtrace. The previous configuration remains active when a reload fails.
 
-GUI configuration failures open a non-fatal error banner. `Open Log` expands the complete diagnostic, `Open Ruby Console` explains the current console availability, and `Dismiss` closes the banner. A broken startup configuration falls back to defaults while retaining its path for a later reload.
+GUI configuration failures open a non-fatal error banner. `Open Log` expands the complete diagnostic and `Dismiss` closes the banner. A broken startup configuration falls back to defaults while retaining its path for a later reload.
 
 Changing `default_shell` does not replace the shell that is already running; it applies when a new terminal session is created.
 
@@ -282,7 +280,7 @@ Toyoterm.configure do |config|
 end
 ```
 
-Executable configurations are available at `examples/minimal_config.rb`.
+Executable configurations are available at `examples/minimal_config.rb`; `examples/default_config.rb` contains the former standard GUI bindings as ordinary Ruby configuration.
 
 The embedded runtime is mruby, not CRuby. CRuby gems, native extensions, and the complete CRuby standard library are not available unless toyoterm explicitly bundles them. `mruby-time` is not bundled in v0.1 because the current configuration and event APIs do not require it.
 
@@ -301,6 +299,9 @@ v0.1 writes logs only to stderr and does not create or rotate log files. Redirec
 
 ## Controls
 
+There are no built-in GUI key bindings. Copy the bindings from
+`examples/default_config.rb` into your `config.rb` and change them as needed.
+
 - Type normally to send input to the PTY
 - `Ctrl+Shift+C` on Linux/Windows or `Cmd+C` on macOS: copy the selection
 - `Ctrl+Shift+V` on Linux/Windows or `Cmd+V` on macOS: paste
@@ -316,7 +317,6 @@ v0.1 writes logs only to stderr and does not create or rotate log files. Redirec
 - `F11`: toggle fullscreen
 - `Alt+F10` on Linux/Windows: toggle maximize/restore, `Alt+F9`: minimize
 - `Ctrl+Cmd+F` on macOS: toggle fullscreen
-- The Command Palette (`Ctrl+Shift+P` / `Cmd+Shift+P`) also provides maximize, minimize, and fullscreen actions
 - `Ctrl+Alt+Left` / `Ctrl+Alt+Right`: activate the previous / next workspace
 - Click a workspace or tab label to activate it
 - Drag with the left mouse button: select text
@@ -327,7 +327,7 @@ When a shell exits, toyoterm closes its pane automatically. Empty tabs and works
 
 ### Clipboard security
 
-OSC 52 clipboard access is disabled in v0.1. Terminal output may originate from an untrusted local process or remote host, so allowing OSC 52 would let it write the host clipboard without an explicit user gesture; clipboard query responses could also expose clipboard contents. The built-in copy and paste shortcuts and the trusted-configuration Ruby API remain available. Future OSC 52 support must be opt-in, keep clipboard reads disabled by default, and provide an explicit permission or confirmation UI with a payload size limit.
+OSC 52 clipboard access is disabled in v0.1. Terminal output may originate from an untrusted local process or remote host, so allowing OSC 52 would let it write the host clipboard without an explicit user gesture; clipboard query responses could also expose clipboard contents. Configured copy and paste shortcuts and the trusted-configuration Ruby API remain available. Future OSC 52 support must be opt-in, keep clipboard reads disabled by default, and provide an explicit permission or confirmation UI with a payload size limit.
 
 ## CLI
 
@@ -348,7 +348,7 @@ toyoterm version
 toyoterm help
 ```
 
-Except for the local `demo` commands, these commands connect to a running GUI over a Unix domain socket or Windows named pipe. `list` reports its live mux state; the `cli` mutations use the same native command model as Ruby and the command palette. If multiple GUIs are running, the most recently started one is selected. Set the same `TOYOTERM_INSTANCE=name` when starting the GUI and invoking a client to address a stable named instance.
+Except for the local `demo` commands, these commands connect to a running GUI over a Unix domain socket or Windows named pipe. `list` reports its live mux state; the `cli` mutations use the same native command model as Ruby. If multiple GUIs are running, the most recently started one is selected. Set the same `TOYOTERM_INSTANCE=name` when starting the GUI and invoking a client to address a stable named instance.
 
 The IPC state directory and Unix socket are owner-only. Each request also carries a random per-instance token and a protocol version. See [Local IPC design](docs/ipc.md) for the protocol and security boundaries.
 

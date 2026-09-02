@@ -30,7 +30,7 @@ toyotermは、Rustと組み込みmrubyで作る実験的なプログラマブル
 - Paneごとのresizeとfocusに対応した分割Pane描画
 - マウス操作とキーボード操作に対応したタブバー
 - Workspaceごとのfocus復元に対応したWorkspaceバー
-- fuzzy検索対応のCommand Paletteとユーザー定義Rubyコマンド
+- ユーザー定義RubyコマンドとRubyで設定可能なnativeキーバインド
 - 起動中GUIの単一mruby VMへ接続するライブRuby REPL
 - metadata・互換性検査・failure isolationを備えたlocal Ruby plugin
 - viewportとscrollbackを対象にしたliteral検索
@@ -97,8 +97,6 @@ cargo run -- --config /path/to/config.rb
 ```sh
 cargo run -- ruby console
 ```
-
-Command Paletteは`Ctrl+Shift+P`（macOSでは`Cmd+Shift+P`）で開きます。
 
 ## 設定
 
@@ -173,7 +171,7 @@ xterm 6×6×6カラ―キューブ、232〜255はグレースケールです。`
 
 キー名は大文字・小文字を区別しません。修飾キーには`CTRL`、`SHIFT`、`ALT`、`SUPER`などを使用します。名前付きキーは`ENTER`、`TAB`、`SPACE`、矢印キー、ナビゲーションキー、`F1`から`F12`に対応しています。
 
-`config.keys`では`ctrl`、`ctrl_shift`、`primary`、`primary_shift`、`alt`、`super_key`、`leader`、`physical`ヘルパーを使用できます。`primary`はmacOSで`SUPER`、Linux・Windowsで`CTRL`に展開されるため、1つの設定でOSごとの慣習に合わせられます。modifier名はOS間で共通で、macOSのOptionは`ALT`、macOSのCommandとWindowsキーは`SUPER`です。`physical("KeyH", "CTRL")`のように指定すると、論理文字ではなく物理キー位置へ割り当てられます。両方が一致した場合はphysical設定、組み込みGUIショートカットと競合した場合はユーザー設定を優先します。同じchordの重複定義は設定エラーです。
+`config.keys`では`key`、`ctrl`、`ctrl_shift`、`ctrl_alt`、`ctrl_super`、`primary`、`primary_shift`、`primary_alt`、`alt`、`super_key`、`leader`、`physical`ヘルパーを使用できます。Pane・Tab操作、Workspace／Tab切替、検索、window状態変更、reload、クリップボードのコピー／貼り付けなどのstatic actionを登録できます。`primary`はmacOSで`SUPER`、Linux・Windowsで`CTRL`に展開されるため、1つの設定でOSごとの慣習に合わせられます。modifier名はOS間で共通で、macOSのOptionは`ALT`、macOSのCommandとWindowsキーは`SUPER`です。`physical("KeyH", "CTRL")`のように指定すると、論理文字ではなく物理キー位置へ割り当てられます。physical設定は論理設定より優先されます。組み込みGUIキーバインドはなく、同じchordの重複定義は設定エラーです。
 
 `config.leader`では、ミリ秒単位のtimeout付きLeader prefixをネイティブ側へ設定できます。`leader("v")`の割り当てはmrubyを呼ばずに解決されます。Leader prefix自体は破棄し、不一致またはtimeout後の次キーは通常のキー処理へ戻します。Prefixのrepeatは元のtimeoutを延長せずに破棄し、IME入力、フォーカス喪失、設定reloadではLeader待機状態を解除します。
 
@@ -266,7 +264,7 @@ end
 
 設定エラーにはソースのファイル名、行番号、Ruby backtraceを表示します。再読込に失敗した場合は、それまでの設定を維持します。
 
-GUIで設定の読込に失敗すると、アプリを終了せずエラーバナーを表示します。`Open Log`で診断全体を展開し、`Open Ruby Console`で現在のConsole提供状況を案内し、`Dismiss`で閉じます。起動時の設定が壊れている場合はデフォルト設定で起動し、修正後に再読込できるよう元のパスを維持します。
+GUIで設定の読込に失敗すると、アプリを終了せずエラーバナーを表示します。`Open Log`で診断全体を展開し、`Dismiss`で閉じます。起動時の設定が壊れている場合はデフォルト設定で起動し、修正後に再読込できるよう元のパスを維持します。
 
 `default_shell`を変更しても実行中のシェルは置き換えません。新しいターミナルセッションを作成するときに適用されます。
 
@@ -280,7 +278,7 @@ Toyoterm.configure do |config|
 end
 ```
 
-実行可能な設定例は`examples/minimal_config.rb`にあります。
+実行可能な設定例は`examples/minimal_config.rb`にあります。`examples/default_config.rb`には、以前の標準GUIキーバインドを通常のRuby設定として収録しています。
 
 組み込みランタイムはCRubyではなくmrubyです。toyotermが明示的にbundleしていないCRuby gem、native extension、完全なCRuby標準ライブラリは利用できません。現在の設定・イベントAPIでは不要なため、v0.1では`mruby-time`をbundleしません。
 
@@ -299,6 +297,8 @@ v0.1のログ出力先は標準エラー出力のみで、ログファイルの�
 
 ## 操作
 
+組み込みのGUIキーバインドはありません。`examples/default_config.rb`のキーバインドを`config.rb`へコピーし、必要に応じて変更してください。
+
 - 通常のキー入力：PTYへ入力を送信
 - Linux・Windowsの`Ctrl+Shift+C`またはmacOSの`Cmd+C`：選択範囲をコピー
 - Linux・Windowsの`Ctrl+Shift+V`またはmacOSの`Cmd+V`：貼り付け
@@ -314,7 +314,6 @@ v0.1のログ出力先は標準エラー出力のみで、ログファイルの�
 - `F11`：フルスクリーンを切替
 - Linux・Windowsの`Alt+F10`：最大化／元のサイズを切替、`Alt+F9`：最小化
 - macOSの`Ctrl+Cmd+F`：フルスクリーンを切替
-- Command Palette（`Ctrl+Shift+P` / `Cmd+Shift+P`）からウィンドウの最大化、最小化、フルスクリーンを実行
 - `Ctrl+Alt+Left` / `Ctrl+Alt+Right`：前／次のWorkspaceをactivate
 - Workspaceまたはタブのラベルをクリック：対象をactivate
 - 左マウスボタンでドラッグ：テキストを選択
@@ -325,7 +324,7 @@ v0.1のログ出力先は標準エラー出力のみで、ログファイルの�
 
 ### クリップボードのセキュリティ
 
-v0.1ではOSC 52によるクリップボードアクセスを無効にします。端末出力は信頼できないローカルプロセスやSSH先から送られる可能性があり、OSC 52を許可すると、明示的なユーザー操作なしにホストのクリップボードを書き換えられます。また、読取り応答はクリップボード内容の流出経路になります。組み込みのコピー／貼り付けショートカットと、信頼済み設定向けRuby APIは引き続き使用できます。将来OSC 52を実装する場合はopt-inとし、クリップボード読取りはデフォルトで無効のまま、payloadサイズ上限と明示的な許可または確認UIを必須とします。
+v0.1ではOSC 52によるクリップボードアクセスを無効にします。端末出力は信頼できないローカルプロセスやSSH先から送られる可能性があり、OSC 52を許可すると、明示的なユーザー操作なしにホストのクリップボードを書き換えられます。また、読取り応答はクリップボード内容の流出経路になります。設定したコピー／貼り付けショートカットと、信頼済み設定向けRuby APIは引き続き使用できます。将来OSC 52を実装する場合はopt-inとし、クリップボード読取りはデフォルトで無効のまま、payloadサイズ上限と明示的な許可または確認UIを必須とします。
 
 ## CLI
 
@@ -346,7 +345,7 @@ toyoterm version
 toyoterm help
 ```
 
-ローカル実行の`demo`系コマンドを除き、Unix domain socketまたはWindows Named Pipeで起動中GUIへ接続します。`list`はGUIの最新Mux状態を表示し、`cli`の変更操作はRuby・Command Paletteと同じNative Commandモデルを使います。複数GUIが動作している場合は最後に起動したinstanceを選びます。安定した名前で対象を指定する場合は、GUI起動時とclient実行時の両方で同じ`TOYOTERM_INSTANCE=name`を設定してください。
+ローカル実行の`demo`系コマンドを除き、Unix domain socketまたはWindows Named Pipeで起動中GUIへ接続します。`list`はGUIの最新Mux状態を表示し、`cli`の変更操作はRubyと同じNative Commandモデルを使います。複数GUIが動作している場合は最後に起動したinstanceを選びます。安定した名前で対象を指定する場合は、GUI起動時とclient実行時の両方で同じ`TOYOTERM_INSTANCE=name`を設定してください。
 
 IPCの状態directoryとUnix socketは所有者専用です。各requestはinstanceごとのrandom tokenとprotocol versionも送信します。protocolとsecurity boundaryの詳細は[Local IPC設計](docs/ipc.md)を参照してください。
 

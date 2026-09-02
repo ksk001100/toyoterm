@@ -422,6 +422,25 @@ fn rejects_invalid_colors_without_replacing_the_config() {
 }
 
 #[test]
+fn bundled_default_key_configuration_is_executable() {
+    let mut manager = ConfigManager::new().unwrap();
+    manager
+        .reload(include_str!("../../../examples/default_config.rb"))
+        .unwrap();
+
+    assert!(manager.native_action("F11").is_some());
+    let search_key = if cfg!(target_os = "macos") {
+        "SHIFT+SUPER+F"
+    } else {
+        "CTRL+SHIFT+F"
+    };
+    assert!(manager.native_action(search_key).is_some());
+    assert!(manager.native_action("CTRL+TAB").is_some());
+    assert!(manager.native_action("CTRL+SHIFT+P").is_none());
+    assert!(manager.native_action("SHIFT+SUPER+P").is_none());
+}
+
+#[test]
 fn loads_and_validates_the_ansi_palette() {
     let mut manager = ConfigManager::new().unwrap();
     let config = manager

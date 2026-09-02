@@ -119,13 +119,23 @@ module Toyoterm
       self
     end
 
+    def close_tab
+      @config.__register_static(@key, :close_tab, nil)
+      self
+    end
+
+    def new_workspace
+      @config.__register_static(@key, :new_workspace, nil)
+      self
+    end
+
     def reload_config
       @config.__register_static(@key, :reload_config, nil)
       self
     end
 
-    def command_palette
-      @config.__register_static(@key, :command_palette, nil)
+    def search
+      @config.__register_static(@key, :search, nil)
       self
     end
 
@@ -149,6 +159,36 @@ module Toyoterm
       self
     end
 
+    def next_tab
+      @config.__register_static(@key, :next_tab, nil)
+      self
+    end
+
+    def previous_tab
+      @config.__register_static(@key, :previous_tab, nil)
+      self
+    end
+
+    def next_workspace
+      @config.__register_static(@key, :next_workspace, nil)
+      self
+    end
+
+    def previous_workspace
+      @config.__register_static(@key, :previous_workspace, nil)
+      self
+    end
+
+    def copy_selection
+      @config.__register_static(@key, :copy_selection, nil)
+      self
+    end
+
+    def paste_clipboard
+      @config.__register_static(@key, :paste_clipboard, nil)
+      self
+    end
+
     def command(name)
       @config.__register_static(@key, :user_command, name)
       self
@@ -168,6 +208,14 @@ module Toyoterm
       binding(key, "CTRL+SHIFT")
     end
 
+    def ctrl_alt(key)
+      binding(key, "CTRL+ALT")
+    end
+
+    def ctrl_super(key)
+      binding(key, "CTRL+SUPER")
+    end
+
     def primary(key)
       binding(key, Toyoterm.__primary_modifier)
     end
@@ -175,6 +223,11 @@ module Toyoterm
     def primary_shift(key)
       mods = Toyoterm.__primary_modifier
       binding(key, mods == "SUPER" ? "SHIFT+SUPER" : "#{mods}+SHIFT")
+    end
+
+    def primary_alt(key)
+      mods = Toyoterm.__primary_modifier
+      binding(key, mods == "SUPER" ? "ALT+SUPER" : "#{mods}+ALT")
     end
 
     def alt(key)
@@ -187,6 +240,10 @@ module Toyoterm
 
     def leader(key)
       binding(key, "LEADER")
+    end
+
+    def key(key)
+      StaticBinding.new(@config, key.to_s.upcase)
     end
 
     def physical(key, mods = "")

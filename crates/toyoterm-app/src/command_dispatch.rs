@@ -172,15 +172,26 @@ impl ToyotermApplication {
                     .ok_or_else(|| "mux has no current pane".to_owned())?;
                 self.dispatch_gui_command(Command::ClosePane(pane))
             }
-            NativeAction::ReloadConfig => self.reload_config_with_notification(),
-            NativeAction::CommandPalette => {
-                self.open_command_palette();
-                Ok(())
+            NativeAction::CloseTab => {
+                let tab = self
+                    .mux
+                    .current_tab()
+                    .ok_or_else(|| "mux has no current tab".to_owned())?;
+                self.dispatch_gui_command(Command::CloseTab(tab))
             }
+            NativeAction::NewWorkspace => self.create_workspace(),
+            NativeAction::ReloadConfig => self.reload_config_with_notification(),
+            NativeAction::Search => self.open_search(),
             NativeAction::MaximizeWindow => self.maximize_window(),
             NativeAction::ToggleMaximize => self.toggle_maximize_window(),
             NativeAction::MinimizeWindow => self.minimize_window(),
             NativeAction::ToggleFullscreen => self.toggle_fullscreen(),
+            NativeAction::NextTab => self.cycle_tab(false),
+            NativeAction::PreviousTab => self.cycle_tab(true),
+            NativeAction::NextWorkspace => self.cycle_workspace(false),
+            NativeAction::PreviousWorkspace => self.cycle_workspace(true),
+            NativeAction::CopySelection => self.copy_selection(),
+            NativeAction::PasteClipboard => self.paste_clipboard(),
             NativeAction::UserCommand(name) => self.execute_user_command(&name),
             NativeAction::Split(direction) => self.split_active_pane(direction),
             NativeAction::ActivatePane(direction) => self.focus_neighbor(direction),
@@ -228,128 +239,15 @@ impl ToyotermApplication {
         Ok(())
     }
 
-    pub(super) fn open_command_palette(&mut self) {
+    pub(super) fn open_search(&mut self) -> Result<(), String> {
         self.close_search();
-        self.palette_open = true;
-        self.palette.open();
-    }
-
-    pub(super) fn open_ruby_console(&mut self) {
-        self.close_search();
-        self.palette_open = true;
-        self.palette.open_console();
-    }
-
-    pub(super) fn palette_items(&self) -> Vec<PaletteItem> {
-        let mut items = vec![
-            PaletteItem {
-                label: "Reload Config".into(),
-                action: PaletteAction::ReloadConfig,
-            },
-            PaletteItem {
-                label: "New Tab".into(),
-                action: PaletteAction::NewTab,
-            },
-            PaletteItem {
-                label: "Maximize Window".into(),
-                action: PaletteAction::MaximizeWindow,
-            },
-            PaletteItem {
-                label: "Toggle Maximize".into(),
-                action: PaletteAction::ToggleMaximize,
-            },
-            PaletteItem {
-                label: "Minimize Window".into(),
-                action: PaletteAction::MinimizeWindow,
-            },
-            PaletteItem {
-                label: "Toggle Fullscreen".into(),
-                action: PaletteAction::ToggleFullscreen,
-            },
-            PaletteItem {
-                label: "Split Right".into(),
-                action: PaletteAction::Split(SplitDirection::Right),
-            },
-            PaletteItem {
-                label: "Split Down".into(),
-                action: PaletteAction::Split(SplitDirection::Down),
-            },
-            PaletteItem {
-                label: "Close Pane".into(),
-                action: PaletteAction::ClosePane,
-            },
-            PaletteItem {
-                label: "Ruby Console".into(),
-                action: PaletteAction::RubyConsole,
-            },
-        ];
-        for workspace in self.mux.workspaces() {
-            if let Some(name) = self.mux.workspace_name(workspace) {
-                items.push(PaletteItem {
-                    label: format!("Switch Workspace: {name}"),
-                    action: PaletteAction::SwitchWorkspace(name.to_owned()),
-                });
-            }
-        }
-        let mut names = self
-            .script_snapshot
-            .user_command_names
-            .iter()
-            .cloned()
-            .collect::<Vec<_>>();
-        names.sort();
-        items.extend(names.into_iter().map(|name| PaletteItem {
-            label: name.clone(),
-            action: PaletteAction::UserCommand(name),
-        }));
-        items
-    }
-
-    pub(super) fn handle_palette_key(&mut self, event: &KeyEvent) -> Result<(), String> {
-        match &event.logical_key {
-            Key::Named(NamedKey::ArrowUp) => {
-                let count = filter_items(&self.palette_items(), self.palette.query()).len();
-                self.palette.move_selection(-1, count);
-            }
-            Key::Named(NamedKey::ArrowDown) => {
-                let count = filter_items(&self.palette_items(), self.palette.query()).len();
-                self.palette.move_selection(1, count);
-            }
-            Key::Named(NamedKey::Backspace) => self.palette.backspace(),
-            Key::Named(NamedKey::Enter) if self.palette.is_console() => {
-                let source = self.palette.take_input();
-                if !source.trim().is_empty() {
-                    let id = self.submit_script(ScriptInvocation::Eval(source.clone()))?;
-                    self.eval_waiters.insert(id, EvalWaiter::Palette(source));
-                }
-            }
-            Key::Named(NamedKey::Enter) => {
-                let items = filter_items(&self.palette_items(), self.palette.query());
-                if let Some(item) = items.get(self.palette.selected()).cloned() {
-                    self.palette_open = false;
-                    self.palette.close();
-                    self.execute_palette_action(item.action)?;
-                }
-            }
-            Key::Character(text)
-                if !self.modifiers.control_key() && !self.modifiers.super_key() =>
-            {
-                self.palette.insert(text);
-            }
-            _ => {}
-        }
-        Ok(())
-    }
-
-    pub(super) fn open_search(&mut self) {
-        self.palette_open = false;
-        self.palette.close();
         self.search_open = true;
         self.search_query.clear();
         self.search_result = SearchResult::default();
         if let Some(terminal) = self.active_terminal_mut() {
             terminal.clear_search();
         }
+        Ok(())
     }
 
     pub(super) fn close_search(&mut self) {
@@ -390,34 +288,6 @@ impl ToyotermApplication {
         }
     }
 
-    pub(super) fn execute_palette_action(&mut self, action: PaletteAction) -> Result<(), String> {
-        if let Some(command) = palette_native_command(&action, self.mux.current_pane())? {
-            return match command {
-                NativeCommand::Mux(command) => self.dispatch_gui_command(command),
-                NativeCommand::ReloadConfig => self.reload_config_with_notification(),
-                NativeCommand::ClipboardWrite(_) => unreachable!("palette has no clipboard action"),
-            };
-        }
-        match action {
-            PaletteAction::ReloadConfig
-            | PaletteAction::NewTab
-            | PaletteAction::Split(_)
-            | PaletteAction::ClosePane
-            | PaletteAction::SwitchWorkspace(_) => {
-                unreachable!("native palette action was normalized")
-            }
-            PaletteAction::MaximizeWindow => self.maximize_window(),
-            PaletteAction::ToggleMaximize => self.toggle_maximize_window(),
-            PaletteAction::MinimizeWindow => self.minimize_window(),
-            PaletteAction::ToggleFullscreen => self.toggle_fullscreen(),
-            PaletteAction::RubyConsole => {
-                self.open_ruby_console();
-                Ok(())
-            }
-            PaletteAction::UserCommand(name) => self.execute_user_command(&name),
-        }
-    }
-
     pub(super) fn execute_user_command(&mut self, name: &str) -> Result<(), String> {
         let pane = self
             .mux
@@ -428,67 +298,6 @@ impl ToyotermApplication {
             pane,
         })?;
         Ok(())
-    }
-
-    pub(super) fn handle_tab_shortcut(
-        &mut self,
-        event: &KeyEvent,
-        modifiers: ModifiersState,
-    ) -> Result<bool, String> {
-        if let Some(shortcut) =
-            gui_management_shortcut(&event.logical_key, modifiers, current_shortcut_platform())
-        {
-            match shortcut {
-                GuiManagementShortcut::ReloadConfig => {
-                    self.reload_config_with_notification()?;
-                }
-                GuiManagementShortcut::CommandPalette => self.open_command_palette(),
-                GuiManagementShortcut::ToggleMaximize => self.toggle_maximize_window()?,
-                GuiManagementShortcut::MinimizeWindow => self.minimize_window()?,
-                GuiManagementShortcut::ToggleFullscreen => self.toggle_fullscreen()?,
-                GuiManagementShortcut::Search => self.open_search(),
-                GuiManagementShortcut::NewTab => {
-                    self.dispatch_gui_command(Command::NewTab)?;
-                }
-                GuiManagementShortcut::NewWorkspace => {
-                    self.create_workspace()?;
-                }
-                GuiManagementShortcut::CloseTab => {
-                    let tab = self
-                        .mux
-                        .current_tab()
-                        .ok_or_else(|| "mux has no current tab".to_owned())?;
-                    self.dispatch_gui_command(Command::CloseTab(tab))?;
-                }
-                GuiManagementShortcut::Split(direction) => self.split_active_pane(direction)?,
-                GuiManagementShortcut::ClosePane => {
-                    let pane = self
-                        .mux
-                        .current_pane()
-                        .ok_or_else(|| "mux has no current pane".to_owned())?;
-                    self.dispatch_gui_command(Command::ClosePane(pane))?;
-                }
-                GuiManagementShortcut::Focus(direction) => self.focus_neighbor(direction)?,
-            }
-            return Ok(true);
-        }
-
-        if modifiers.control_key() && matches!(&event.logical_key, Key::Named(NamedKey::Tab)) {
-            self.cycle_tab(modifiers.shift_key())?;
-            return Ok(true);
-        }
-        if modifiers.control_key() && modifiers.alt_key() {
-            let backwards = match &event.logical_key {
-                Key::Named(NamedKey::ArrowLeft) => Some(true),
-                Key::Named(NamedKey::ArrowRight) => Some(false),
-                _ => None,
-            };
-            if let Some(backwards) = backwards {
-                self.cycle_workspace(backwards)?;
-                return Ok(true);
-            }
-        }
-        Ok(false)
     }
 
     pub(super) fn create_workspace(&mut self) -> Result<(), String> {

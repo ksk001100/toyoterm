@@ -87,7 +87,7 @@ pub struct GpuRenderer {
     panes: HashMap<PaneId, PaneBuffers>,
     tabs: HashMap<TabId, TabBuffer>,
     workspaces: HashMap<WorkspaceId, TabBuffer>,
-    palette: OverlayBuffer,
+    search: OverlayBuffer,
     status_bar: OverlayBuffer,
     config_error: ConfigErrorBuffers,
     preedit: Buffer,
@@ -110,7 +110,6 @@ struct ConfigErrorBuffers {
     title: Buffer,
     message: Buffer,
     open_log: Buffer,
-    open_ruby_console: Buffer,
     dismiss: Buffer,
     layout: Option<ConfigErrorRenderLayout>,
 }
@@ -120,7 +119,6 @@ struct ConfigErrorRenderLayout {
     notice: PaneRect,
     message_top: f32,
     open_log: PaneRect,
-    open_ruby_console: PaneRect,
     dismiss: PaneRect,
 }
 
@@ -339,8 +337,8 @@ impl GpuRenderer {
         let ui_pipeline = create_ui_pipeline(&device, configuration.format);
         let mut preedit = Buffer::new(&mut font_system, Metrics::new(14.0, 18.0));
         preedit.set_wrap(Wrap::None);
-        let mut palette_text = Buffer::new(&mut font_system, Metrics::new(14.0, 18.0));
-        palette_text.set_wrap(Wrap::None);
+        let mut search_text = Buffer::new(&mut font_system, Metrics::new(14.0, 18.0));
+        search_text.set_wrap(Wrap::None);
         let mut status_text = Buffer::new(&mut font_system, Metrics::new(12.0, 15.0));
         status_text.set_wrap(Wrap::None);
         let mut config_error_buffer = || {
@@ -352,7 +350,6 @@ impl GpuRenderer {
             title: config_error_buffer(),
             message: config_error_buffer(),
             open_log: config_error_buffer(),
-            open_ruby_console: config_error_buffer(),
             dismiss: config_error_buffer(),
             layout: None,
         };
@@ -377,8 +374,8 @@ impl GpuRenderer {
             panes: HashMap::new(),
             tabs: HashMap::new(),
             workspaces: HashMap::new(),
-            palette: OverlayBuffer {
-                text: palette_text,
+            search: OverlayBuffer {
+                text: search_text,
                 rect: None,
             },
             status_bar: OverlayBuffer {
@@ -431,10 +428,10 @@ impl GpuRenderer {
         self.preedit = preedit;
         self.has_preedit = false;
 
-        let mut palette_text = Buffer::new(&mut self.font_system, Metrics::new(14.0, 18.0));
-        palette_text.set_wrap(Wrap::None);
-        self.palette = OverlayBuffer {
-            text: palette_text,
+        let mut search_text = Buffer::new(&mut self.font_system, Metrics::new(14.0, 18.0));
+        search_text.set_wrap(Wrap::None);
+        self.search = OverlayBuffer {
+            text: search_text,
             rect: None,
         };
         let mut status_text = Buffer::new(&mut self.font_system, Metrics::new(12.0, 15.0));
@@ -453,7 +450,6 @@ impl GpuRenderer {
             title: buffer(),
             message: buffer(),
             open_log: buffer(),
-            open_ruby_console: buffer(),
             dismiss: buffer(),
             layout: None,
         };
@@ -679,27 +675,27 @@ impl GpuRenderer {
         }
     }
 
-    pub fn update_palette(&mut self, palette: Option<PaletteRenderData<'_>>, layout: TextLayout) {
-        let Some(palette) = palette else {
-            self.palette.rect = None;
+    pub fn update_search(&mut self, search: Option<SearchRenderData<'_>>, layout: TextLayout) {
+        let Some(search) = search else {
+            self.search.rect = None;
             return;
         };
-        self.palette.rect = Some(palette.rect);
+        self.search.rect = Some(search.rect);
         let metrics = Metrics::new(layout.font_size.max(1.0), layout.line_height.max(1.0));
-        self.palette.text.set_metrics_and_size(
+        self.search.text.set_metrics_and_size(
             metrics,
-            Some(palette.rect.width.saturating_sub(24) as f32),
-            Some(palette.rect.height.saturating_sub(16) as f32),
+            Some(search.rect.width.saturating_sub(24) as f32),
+            Some(search.rect.height.saturating_sub(16) as f32),
         );
-        self.palette.text.set_text(
-            palette.text,
+        self.search.text.set_text(
+            search.text,
             &Attrs::new()
                 .family(resolve_font_family(&self.style.font_family))
                 .weight(Weight(self.style.font_weight)),
             Shaping::Advanced,
             None,
         );
-        self.palette
+        self.search
             .text
             .shape_until_scroll(&mut self.font_system, false);
     }
@@ -749,7 +745,6 @@ impl GpuRenderer {
             notice: error.notice_rect,
             message_top: error.notice_rect.y as f32 + layout.line_height + 4.0,
             open_log: error.open_log_rect,
-            open_ruby_console: error.open_ruby_console_rect,
             dismiss: error.dismiss_rect,
         });
         let metrics = Metrics::new(layout.font_size.max(1.0), layout.line_height.max(1.0));
@@ -798,11 +793,6 @@ impl GpuRenderer {
                 } else {
                     "Open Log"
                 },
-            ),
-            (
-                &mut self.config_error.open_ruby_console,
-                error.open_ruby_console_rect,
-                "Open Ruby Console",
             ),
             (
                 &mut self.config_error.dismiss,
@@ -902,9 +892,9 @@ impl GpuRenderer {
                 custom_glyphs: &[],
             });
         }
-        if let Some(rect) = self.palette.rect {
+        if let Some(rect) = self.search.rect {
             text_areas.push(TextArea {
-                buffer: &self.palette.text,
+                buffer: &self.search.text,
                 left: rect.x as f32 + 12.0,
                 top: rect.y as f32 + 8.0,
                 scale: 1.0,
@@ -945,10 +935,6 @@ impl GpuRenderer {
             });
             for (buffer, rect) in [
                 (&self.config_error.open_log, layout.open_log),
-                (
-                    &self.config_error.open_ruby_console,
-                    layout.open_ruby_console,
-                ),
                 (&self.config_error.dismiss, layout.dismiss),
             ] {
                 text_areas.push(TextArea {

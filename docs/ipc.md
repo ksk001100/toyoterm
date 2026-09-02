@@ -12,7 +12,7 @@ Runtime state lives under `$TOYOTERM_RUNTIME_DIR` when set. Otherwise Unix uses 
 
 Protocol version 1 uses a 32-bit big-endian frame length, a fixed magic value, a 16-bit version, and length-prefixed UTF-8 fields. Requests carry a request type, the per-instance token, and typed arguments. Responses carry the version, success/error status, and UTF-8 text. Frames and individual strings are limited to 1 MiB. Unknown versions, request types, invalid UTF-8, trailing data, and oversized frames are rejected.
 
-Mutating CLI requests normalize to `NativeCommand`: pane text, split, and workspace activation use `NativeCommand::Mux`, while reload uses `NativeCommand::ReloadConfig`. Ruby, the command palette, and IPC therefore share the same validation and mux dispatch path.
+Mutating CLI requests normalize to `NativeCommand`: pane text, split, and workspace activation use `NativeCommand::Mux`, while reload uses `NativeCommand::ReloadConfig`. Ruby and IPC therefore share the same validation and mux dispatch path.
 
 ## Security boundary
 

@@ -146,38 +146,10 @@ pub(super) fn key_modifiers(modifiers: ModifiersState) -> KeyModifiers {
     }
 }
 
-pub(super) fn is_clipboard_shortcut(
-    event: &KeyEvent,
-    modifiers: ModifiersState,
-    character: char,
-) -> bool {
-    let Key::Character(key) = &event.logical_key else {
-        return false;
-    };
-    let primary_modifier = has_gui_primary_modifier(modifiers, current_shortcut_platform());
-    primary_modifier && key.eq_ignore_ascii_case(&character.to_string())
-}
-
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) enum ShortcutPlatform {
     MacOs,
     LinuxOrWindows,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(super) enum GuiManagementShortcut {
-    ReloadConfig,
-    CommandPalette,
-    ToggleMaximize,
-    MinimizeWindow,
-    ToggleFullscreen,
-    Search,
-    NewTab,
-    NewWorkspace,
-    CloseTab,
-    Split(SplitDirection),
-    ClosePane,
-    Focus(SplitDirection),
 }
 
 pub(super) fn current_shortcut_platform() -> ShortcutPlatform {
@@ -185,16 +157,6 @@ pub(super) fn current_shortcut_platform() -> ShortcutPlatform {
         ShortcutPlatform::MacOs
     } else {
         ShortcutPlatform::LinuxOrWindows
-    }
-}
-
-pub(super) fn has_gui_primary_modifier(
-    modifiers: ModifiersState,
-    platform: ShortcutPlatform,
-) -> bool {
-    match platform {
-        ShortcutPlatform::MacOs => modifiers.super_key(),
-        ShortcutPlatform::LinuxOrWindows => modifiers.control_key() && modifiers.shift_key(),
     }
 }
 
@@ -264,95 +226,6 @@ pub(super) fn open_allowed_url(url: &str) -> Result<(), String> {
         .spawn()
         .map(|_| ())
         .map_err(|error| format!("launch URL handler: {error}"))
-}
-
-pub(super) fn gui_management_shortcut(
-    key: &Key,
-    modifiers: ModifiersState,
-    platform: ShortcutPlatform,
-) -> Option<GuiManagementShortcut> {
-    let character = match key {
-        Key::Character(character) => Some(character.as_str()),
-        _ => None,
-    };
-    let arrow = match key {
-        Key::Named(NamedKey::ArrowLeft) => Some(SplitDirection::Left),
-        Key::Named(NamedKey::ArrowRight) => Some(SplitDirection::Right),
-        Key::Named(NamedKey::ArrowUp) => Some(SplitDirection::Up),
-        Key::Named(NamedKey::ArrowDown) => Some(SplitDirection::Down),
-        _ => None,
-    };
-
-    if modifiers.is_empty() && matches!(key, Key::Named(NamedKey::F11)) {
-        return Some(GuiManagementShortcut::ToggleFullscreen);
-    }
-
-    match platform {
-        ShortcutPlatform::LinuxOrWindows if modifiers.control_key() && modifiers.shift_key() => {
-            match character {
-                Some(key) if key.eq_ignore_ascii_case("r") => {
-                    Some(GuiManagementShortcut::ReloadConfig)
-                }
-                Some(key) if key.eq_ignore_ascii_case("p") => {
-                    Some(GuiManagementShortcut::CommandPalette)
-                }
-                Some(key) if key.eq_ignore_ascii_case("f") => Some(GuiManagementShortcut::Search),
-                Some(key) if key.eq_ignore_ascii_case("t") => Some(GuiManagementShortcut::NewTab),
-                Some(key) if key.eq_ignore_ascii_case("n") => {
-                    Some(GuiManagementShortcut::NewWorkspace)
-                }
-                Some(key) if key.eq_ignore_ascii_case("w") => Some(GuiManagementShortcut::CloseTab),
-                Some("\\" | "|") => Some(GuiManagementShortcut::Split(SplitDirection::Right)),
-                Some("-" | "_") => Some(GuiManagementShortcut::Split(SplitDirection::Down)),
-                Some(key) if key.eq_ignore_ascii_case("q") => {
-                    Some(GuiManagementShortcut::ClosePane)
-                }
-                _ => arrow.map(GuiManagementShortcut::Focus),
-            }
-        }
-        ShortcutPlatform::LinuxOrWindows if modifiers.alt_key() => match key {
-            Key::Named(NamedKey::F10) => Some(GuiManagementShortcut::ToggleMaximize),
-            Key::Named(NamedKey::F9) => Some(GuiManagementShortcut::MinimizeWindow),
-            _ => None,
-        },
-        ShortcutPlatform::MacOs
-            if modifiers.control_key()
-                && modifiers.super_key()
-                && matches!(key, Key::Character(text) if text.eq_ignore_ascii_case("f")) =>
-        {
-            Some(GuiManagementShortcut::ToggleFullscreen)
-        }
-        ShortcutPlatform::MacOs if modifiers.super_key() => match character {
-            Some(key) if key.eq_ignore_ascii_case("r") && modifiers.shift_key() => {
-                Some(GuiManagementShortcut::ReloadConfig)
-            }
-            Some(key) if key.eq_ignore_ascii_case("p") && modifiers.shift_key() => {
-                Some(GuiManagementShortcut::CommandPalette)
-            }
-            Some(key) if key.eq_ignore_ascii_case("f") && modifiers.shift_key() => {
-                Some(GuiManagementShortcut::Search)
-            }
-            Some(key) if key.eq_ignore_ascii_case("t") && !modifiers.shift_key() => {
-                Some(GuiManagementShortcut::NewTab)
-            }
-            Some(key) if key.eq_ignore_ascii_case("n") && !modifiers.shift_key() => {
-                Some(GuiManagementShortcut::NewWorkspace)
-            }
-            Some(key) if key.eq_ignore_ascii_case("w") && modifiers.shift_key() => {
-                Some(GuiManagementShortcut::ClosePane)
-            }
-            Some(key) if key.eq_ignore_ascii_case("w") => Some(GuiManagementShortcut::CloseTab),
-            Some(key) if key.eq_ignore_ascii_case("d") && modifiers.shift_key() => {
-                Some(GuiManagementShortcut::Split(SplitDirection::Down))
-            }
-            Some(key) if key.eq_ignore_ascii_case("d") => {
-                Some(GuiManagementShortcut::Split(SplitDirection::Right))
-            }
-            _ if modifiers.alt_key() => arrow.map(GuiManagementShortcut::Focus),
-            _ => None,
-        },
-        _ => None,
-    }
 }
 
 pub(super) fn named_key(key: &NamedKey) -> Option<TerminalKey> {

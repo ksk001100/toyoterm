@@ -25,7 +25,6 @@ mod input;
 mod lifecycle;
 mod logging;
 mod object_model;
-mod palette;
 mod pane_lifecycle;
 mod render_coordinator;
 mod runtime_events;
@@ -37,7 +36,6 @@ use ui_geometry::*;
 
 pub use lifecycle::install_panic_hook;
 pub use logging::init_logging;
-pub use palette::{CommandPalette, PaletteAction, PaletteItem, filter_items};
 pub use toyoterm_api::{
     Command, Event as MuxEvent, NativeAction, NativeCommand, PaneId, SplitDirection,
 };
@@ -46,9 +44,9 @@ pub use toyoterm_ipc::{IpcRequest, IpcResponse, IpcServer};
 pub use toyoterm_mux::Mux;
 pub use toyoterm_pty::{NativePty, Pty, PtyCommand, PtyError, PtyExitStatus, PtySession, PtySize};
 pub use toyoterm_render::{
-    ConfigErrorLayout, ConfigErrorRenderData, GpuRenderer, PaletteRenderData, PaneLayout, PaneRect,
-    PaneRenderData, RenderOutcome, RenderStyle, StatusBarRenderData, TabRenderData, TabStripLayout,
-    TextLayout, WorkspaceRenderData, WorkspaceStripLayout,
+    ConfigErrorLayout, ConfigErrorRenderData, GpuRenderer, PaneLayout, PaneRect, PaneRenderData,
+    RenderOutcome, RenderStyle, SearchRenderData, StatusBarRenderData, TabRenderData,
+    TabStripLayout, TextLayout, WorkspaceRenderData, WorkspaceStripLayout,
 };
 pub use toyoterm_script::ConfigManager;
 pub use toyoterm_terminal::{
@@ -90,15 +88,10 @@ impl ClickTracker {
 struct ConfigErrorNotice {
     message: String,
     log_expanded: bool,
-    console_hint: bool,
 }
 
 impl ConfigErrorNotice {
     fn display_message(&self) -> String {
-        if self.console_hint {
-            return "Ruby Console is not available yet. Use Open Log to inspect the complete error."
-                .to_owned();
-        }
         if self.log_expanded {
             return self.message.clone();
         }
@@ -288,7 +281,6 @@ enum AppEvent {
 
 enum EvalWaiter {
     Ipc(mpsc::Sender<Result<String, String>>),
-    Palette(String),
 }
 
 struct PaneRuntime {
@@ -325,8 +317,6 @@ struct ToyotermApplication {
     pane_layout: PaneLayout,
     tab_layout: TabStripLayout,
     workspace_layout: WorkspaceStripLayout,
-    palette_open: bool,
-    palette: CommandPalette,
     search_open: bool,
     search_query: String,
     search_result: SearchResult,
@@ -481,12 +471,6 @@ impl ApplicationHandler<AppEvent> for ToyotermApplication {
                 if !focused {
                     clear_modifier_state(&mut self.modifiers, &mut self.alt_graph_active);
                     self.leader_deadline = None;
-                    if self.palette_open {
-                        self.palette_open = false;
-                        self.palette.close();
-                        self.sync_active_renderer(window.scale_factor());
-                        window.request_redraw();
-                    }
                     if self.search_open {
                         self.close_search();
                         self.sync_active_renderer(window.scale_factor());
@@ -545,23 +529,8 @@ impl ApplicationHandler<AppEvent> for ToyotermApplication {
                     window.request_redraw();
                     return;
                 }
-                if self.palette_open && matches!(event.logical_key, Key::Named(NamedKey::Escape)) {
-                    self.palette_open = false;
-                    self.palette.close();
-                    self.sync_active_renderer(window.scale_factor());
-                    window.request_redraw();
-                    return;
-                }
                 if self.search_open {
                     self.handle_search_key(&event, modifiers);
-                    self.sync_active_renderer(window.scale_factor());
-                    window.request_redraw();
-                    return;
-                }
-                if self.palette_open {
-                    if let Err(error) = self.handle_palette_key(&event) {
-                        tracing::warn!(target: "toyoterm::app", %error, "command palette action failed");
-                    }
                     self.sync_active_renderer(window.scale_factor());
                     window.request_redraw();
                     return;
@@ -574,33 +543,12 @@ impl ApplicationHandler<AppEvent> for ToyotermApplication {
                         return;
                     }
                 }
-                if is_clipboard_shortcut(&event, modifiers, 'c') {
-                    if let Err(error) = self.copy_selection() {
-                        tracing::warn!(target: "toyoterm::app", %error, "copy failed");
-                    }
-                    return;
-                }
-                if is_clipboard_shortcut(&event, modifiers, 'v') {
-                    if let Err(error) = self.paste_clipboard() {
-                        tracing::warn!(target: "toyoterm::app", %error, "paste failed");
-                    }
-                    return;
-                }
-                // Configured bindings override built-in GUI shortcuts. Physical
-                // bindings are checked before logical bindings by the resolver.
+                // Physical bindings are checked before logical bindings by the resolver.
                 match self.handle_keybinding(&event, modifiers) {
                     Ok(true) => return,
                     Ok(false) => {}
                     Err(error) => {
                         tracing::warn!(target: "toyoterm::script", %error, "key binding failed");
-                        return;
-                    }
-                }
-                match self.handle_tab_shortcut(&event, modifiers) {
-                    Ok(true) => return,
-                    Ok(false) => {}
-                    Err(error) => {
-                        tracing::warn!(target: "toyoterm::app", %error, "tab shortcut failed");
                         return;
                     }
                 }
@@ -624,12 +572,6 @@ impl ApplicationHandler<AppEvent> for ToyotermApplication {
             WindowEvent::Ime(Ime::Commit(text)) => {
                 self.leader_deadline = None;
                 self.ime_preedit = None;
-                if self.palette_open {
-                    self.palette.insert(&text);
-                    self.sync_active_renderer(window.scale_factor());
-                    window.request_redraw();
-                    return;
-                }
                 if self.search_open {
                     self.search_query.push_str(&text);
                     self.refresh_search(SearchDirection::Next);
@@ -888,8 +830,6 @@ impl ToyotermApplication {
             pane_layout: PaneLayout::default(),
             tab_layout: TabStripLayout::default(),
             workspace_layout: WorkspaceStripLayout::default(),
-            palette_open: false,
-            palette: CommandPalette::default(),
             search_open: false,
             search_query: String::new(),
             search_result: SearchResult::default(),
@@ -898,7 +838,6 @@ impl ToyotermApplication {
             config_error_notice: startup_config_error.map(|message| ConfigErrorNotice {
                 message,
                 log_expanded: false,
-                console_hint: false,
             }),
             ime_preedit: None,
             modifiers: ModifiersState::empty(),
@@ -1000,43 +939,15 @@ mod tests {
     }
 
     #[test]
-    fn cli_ruby_and_palette_normalize_to_the_same_command() {
-        let pane = PaneId(42);
-        let expected = NativeCommand::Mux(Command::Split {
-            pane,
-            direction: SplitDirection::Right,
-        });
-
-        let ipc = IpcRequest::Split {
-            direction: SplitDirection::Right,
-        }
-        .native_command(Some(pane))
-        .unwrap();
-        let palette =
-            palette_native_command(&PaletteAction::Split(SplitDirection::Right), Some(pane))
-                .unwrap();
-        let mut ruby = ConfigManager::new().unwrap();
-        ruby.reload("Toyoterm.current_pane.split(:right)").unwrap();
-
-        assert_eq!(ipc, Some(expected.clone()));
-        assert_eq!(palette, Some(expected.clone()));
-        assert_eq!(ruby.drain_commands(pane).unwrap(), vec![expected]);
-    }
-
-    #[test]
-    fn config_error_notice_switches_between_summary_log_and_console_hint() {
+    fn config_error_notice_switches_between_summary_and_log() {
         let mut notice = ConfigErrorNotice {
             message: "error\nconfig.rb:2\nconfig.rb:5\nextra".into(),
             log_expanded: false,
-            console_hint: false,
         };
         assert_eq!(notice.display_message(), "error\nconfig.rb:2\nconfig.rb:5");
 
         notice.log_expanded = true;
         assert_eq!(notice.display_message(), notice.message);
-
-        notice.console_hint = true;
-        assert!(notice.display_message().contains("not available yet"));
     }
 
     #[test]
@@ -1162,94 +1073,6 @@ mod tests {
         assert_eq!(
             keybinding_name(&Key::Character("x".into()), modifiers).as_deref(),
             Some("CTRL+ALT+X")
-        );
-    }
-
-    #[test]
-    fn gui_primary_modifier_matches_each_platform_default() {
-        assert!(has_gui_primary_modifier(
-            ModifiersState::SUPER,
-            ShortcutPlatform::MacOs,
-        ));
-        assert!(!has_gui_primary_modifier(
-            ModifiersState::CONTROL | ModifiersState::SHIFT,
-            ShortcutPlatform::MacOs,
-        ));
-        assert!(has_gui_primary_modifier(
-            ModifiersState::CONTROL | ModifiersState::SHIFT,
-            ShortcutPlatform::LinuxOrWindows,
-        ));
-        assert!(!has_gui_primary_modifier(
-            ModifiersState::SUPER,
-            ShortcutPlatform::LinuxOrWindows,
-        ));
-    }
-
-    #[test]
-    fn gui_management_shortcuts_follow_platform_conventions() {
-        assert_eq!(
-            gui_management_shortcut(
-                &Key::Character("f".into()),
-                ModifiersState::CONTROL | ModifiersState::SHIFT,
-                ShortcutPlatform::LinuxOrWindows,
-            ),
-            Some(GuiManagementShortcut::Search)
-        );
-        assert_eq!(
-            gui_management_shortcut(
-                &Key::Character("f".into()),
-                ModifiersState::SUPER | ModifiersState::SHIFT,
-                ShortcutPlatform::MacOs,
-            ),
-            Some(GuiManagementShortcut::Search)
-        );
-        assert_eq!(
-            gui_management_shortcut(
-                &Key::Character("p".into()),
-                ModifiersState::CONTROL | ModifiersState::SHIFT,
-                ShortcutPlatform::LinuxOrWindows,
-            ),
-            Some(GuiManagementShortcut::CommandPalette)
-        );
-        assert_eq!(
-            gui_management_shortcut(
-                &Key::Character("p".into()),
-                ModifiersState::SUPER | ModifiersState::SHIFT,
-                ShortcutPlatform::MacOs,
-            ),
-            Some(GuiManagementShortcut::CommandPalette)
-        );
-        assert_eq!(
-            gui_management_shortcut(
-                &Key::Character("t".into()),
-                ModifiersState::CONTROL | ModifiersState::SHIFT,
-                ShortcutPlatform::LinuxOrWindows,
-            ),
-            Some(GuiManagementShortcut::NewTab)
-        );
-        assert_eq!(
-            gui_management_shortcut(
-                &Key::Character("t".into()),
-                ModifiersState::SUPER,
-                ShortcutPlatform::MacOs,
-            ),
-            Some(GuiManagementShortcut::NewTab)
-        );
-        assert_eq!(
-            gui_management_shortcut(
-                &Key::Character("d".into()),
-                ModifiersState::SUPER | ModifiersState::SHIFT,
-                ShortcutPlatform::MacOs,
-            ),
-            Some(GuiManagementShortcut::Split(SplitDirection::Down))
-        );
-        assert_eq!(
-            gui_management_shortcut(
-                &Key::Character("q".into()),
-                ModifiersState::SUPER,
-                ShortcutPlatform::MacOs,
-            ),
-            None
         );
     }
 

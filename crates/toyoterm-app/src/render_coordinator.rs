@@ -135,26 +135,20 @@ impl ToyotermApplication {
                     message,
                     notice_rect: self.config_error_layout.notice(),
                     open_log_rect: self.config_error_layout.open_log(),
-                    open_ruby_console_rect: self.config_error_layout.open_ruby_console(),
                     dismiss_rect: self.config_error_layout.dismiss(),
                     log_expanded: notice.log_expanded,
                 })
         });
         let layout = self.cell_metrics.text_layout(scale_factor);
-        let palette_text = if self.search_open {
-            self.search_render_text()
-        } else {
-            self.palette_render_text()
-        };
-        let palette_rect = self.window.as_ref().map(|window| {
+        let search_text = self.search_render_text();
+        let search_rect = self.window.as_ref().map(|window| {
             let size = window.inner_size();
             let width = size
                 .width
                 .min((560.0 * scale_factor.max(0.1)).round() as u32);
-            let requested_height = if self.search_open { 52.0 } else { 360.0 };
             let height = size
                 .height
-                .min((requested_height * scale_factor.max(0.1)).round() as u32);
+                .min((52.0 * scale_factor.max(0.1)).round() as u32);
             PaneRect::new(
                 (size.width - width) / 2,
                 (size.height - height) / 4,
@@ -166,10 +160,10 @@ impl ToyotermApplication {
             renderer.update_panes(&panes, layout);
             renderer.update_tabs(&tabs, layout);
             renderer.update_workspaces(&workspaces, layout);
-            renderer.update_palette(
-                (self.palette_open || self.search_open).then(|| PaletteRenderData {
-                    rect: palette_rect.unwrap_or_default(),
-                    text: &palette_text,
+            renderer.update_search(
+                self.search_open.then(|| SearchRenderData {
+                    rect: search_rect.unwrap_or_default(),
+                    text: &search_text,
                 }),
                 layout,
             );
@@ -194,41 +188,6 @@ impl ToyotermApplication {
         }
         self.update_ime_cursor_area(scale_factor);
         self.update_window_title();
-    }
-
-    pub(super) fn palette_render_text(&self) -> String {
-        if self.palette.is_console() {
-            let mut lines = vec!["Ruby Console  (Esc to close)".to_owned()];
-            lines.extend(self.palette.console_output().iter().cloned());
-            lines.push(format!("toyoterm> {}▏", self.palette.query()));
-            return lines.join("\n");
-        }
-        let items = filter_items(&self.palette_items(), self.palette.query());
-        let mut lines = vec![format!("> {}▏", self.palette.query())];
-        if items.is_empty() {
-            lines.push("  No matching commands".into());
-        } else {
-            let start = self.palette.selected().saturating_sub(11);
-            lines.extend(
-                items
-                    .iter()
-                    .enumerate()
-                    .skip(start)
-                    .take(12)
-                    .map(|(index, item)| {
-                        format!(
-                            "{} {}",
-                            if index == self.palette.selected() {
-                                "›"
-                            } else {
-                                " "
-                            },
-                            item.label
-                        )
-                    }),
-            );
-        }
-        lines.join("\n")
     }
 
     pub(super) fn search_render_text(&self) -> String {

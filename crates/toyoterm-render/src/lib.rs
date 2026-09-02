@@ -72,7 +72,7 @@ pub struct WorkspaceRenderData<'a> {
 }
 
 #[derive(Clone, Copy, Debug)]
-pub struct PaletteRenderData<'a> {
+pub struct SearchRenderData<'a> {
     pub rect: PaneRect,
     pub text: &'a str,
 }
@@ -88,7 +88,6 @@ pub struct ConfigErrorRenderData<'a> {
     pub message: &'a str,
     pub notice_rect: PaneRect,
     pub open_log_rect: PaneRect,
-    pub open_ruby_console_rect: PaneRect,
     pub dismiss_rect: PaneRect,
     pub log_expanded: bool,
 }

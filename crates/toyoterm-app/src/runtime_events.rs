@@ -66,7 +66,6 @@ impl ToyotermApplication {
                     self.config_error_notice = Some(ConfigErrorNotice {
                         message: message.clone(),
                         log_expanded: false,
-                        console_hint: false,
                     });
                 }
                 if is_status {
@@ -137,14 +136,6 @@ impl ToyotermApplication {
             Some(EvalWaiter::Ipc(response)) => {
                 let _ = response.send(result);
             }
-            Some(EvalWaiter::Palette(source)) => match result {
-                Ok(value) => self.palette.push_console_result(&source, Ok(&value)),
-                Err(error) if toyoterm_ipc::is_incomplete_ruby_error(&error) => {
-                    self.palette.insert(&source);
-                    self.palette.insert("\n");
-                }
-                Err(error) => self.palette.push_console_result(&source, Err(&error)),
-            },
             None => {}
         }
     }
