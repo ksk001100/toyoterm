@@ -21,6 +21,15 @@ pub(super) fn decode_native_action(
         "previous_workspace" => Ok(NativeAction::PreviousWorkspace),
         "copy_selection" => Ok(NativeAction::CopySelection),
         "paste_clipboard" => Ok(NativeAction::PasteClipboard),
+        "start_visual_mode" => Ok(NativeAction::StartVisualMode),
+        "toggle_visual_mode" => Ok(NativeAction::ToggleVisualMode),
+        "start_visual_selection" => Ok(NativeAction::StartVisualSelection),
+        "select_visual_selection" => Ok(NativeAction::SelectVisualSelection),
+        "end_visual_selection" => Ok(NativeAction::EndVisualSelection),
+        "move_visual_selection" => {
+            parse_selection_motion(argument).map(NativeAction::MoveVisualSelection)
+        }
+        "yank_selection" => Ok(NativeAction::YankSelection),
         "user_command" if !argument.is_empty() => Ok(NativeAction::UserCommand(argument.into())),
         "user_command" => Err(ScriptError::new(
             "load key bindings",
@@ -31,6 +40,21 @@ pub(super) fn decode_native_action(
         other => Err(ScriptError::new(
             "load key bindings",
             format!("unsupported native action {other}"),
+        )),
+    }
+}
+
+fn parse_selection_motion(motion: &str) -> Result<toyoterm_api::SelectionMotion, ScriptError> {
+    match motion.to_ascii_lowercase().as_str() {
+        "left" => Ok(toyoterm_api::SelectionMotion::Left),
+        "right" => Ok(toyoterm_api::SelectionMotion::Right),
+        "up" => Ok(toyoterm_api::SelectionMotion::Up),
+        "down" => Ok(toyoterm_api::SelectionMotion::Down),
+        "line_start" => Ok(toyoterm_api::SelectionMotion::LineStart),
+        "line_end" => Ok(toyoterm_api::SelectionMotion::LineEnd),
+        _ => Err(ScriptError::new(
+            "load key bindings",
+            format!("invalid visual selection motion `{motion}`"),
         )),
     }
 }

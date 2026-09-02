@@ -51,26 +51,6 @@ pub(super) fn pane_bounds(rect: PaneRect) -> TextBounds {
     }
 }
 
-pub(super) fn selection_text(snapshot: &TerminalSnapshot) -> String {
-    if snapshot.selection.is_empty() {
-        return String::new();
-    }
-
-    let mut text = String::new();
-    for row in 0..snapshot.rows {
-        if row > 0 {
-            text.push('\n');
-        }
-        let Some(span) = snapshot.selection.iter().find(|span| span.row == row) else {
-            continue;
-        };
-        text.extend(std::iter::repeat_n(' ', usize::from(span.start_column)));
-        let width = span.end_column.saturating_sub(span.start_column) + 1;
-        text.extend(std::iter::repeat_n('█', usize::from(width)));
-    }
-    text
-}
-
 pub(super) fn terminal_cursor_x(
     buffer: &Buffer,
     snapshot: &TerminalSnapshot,
@@ -84,6 +64,57 @@ pub(super) fn terminal_cursor_x(
         .layout_runs()
         .find(|run| run.line_i == usize::from(cursor.row))
         .and_then(|run| run.cursor_position(&text_cursor))
+}
+
+pub(super) fn selection_highlight_rects(
+    snapshot: &TerminalSnapshot,
+    pane: PaneRect,
+    layout: TextLayout,
+) -> Vec<PaneRect> {
+    let origin_x = pane.x as f32 + layout.horizontal_padding;
+    let origin_y = pane.y as f32 + layout.vertical_padding;
+    let pane_right = pane.x.saturating_add(pane.width);
+    let pane_bottom = pane.y.saturating_add(pane.height);
+    snapshot
+        .selection
+        .iter()
+        .filter_map(|span| {
+            let left = (origin_x + f32::from(span.start_column) * layout.cell_width)
+                .floor()
+                .max(0.0) as u32;
+            let right = (origin_x
+                + f32::from(span.end_column.saturating_add(1)) * layout.cell_width)
+                .ceil()
+                .max(0.0) as u32;
+            let top = (origin_y + f32::from(span.row) * layout.line_height)
+                .floor()
+                .max(0.0) as u32;
+            let bottom = (origin_y + f32::from(span.row.saturating_add(1)) * layout.line_height)
+                .ceil()
+                .max(0.0) as u32;
+            let left = left.max(pane.x);
+            let top = top.max(pane.y);
+            let right = right.min(pane_right);
+            let bottom = bottom.min(pane_bottom);
+            (right > left && bottom > top)
+                .then(|| PaneRect::new(left, top, right - left, bottom - top))
+        })
+        .collect()
+}
+
+pub(super) fn pane_cursor_x(
+    buffer: &Buffer,
+    snapshot: &TerminalSnapshot,
+    cursor: CursorState,
+    cell_width: f32,
+    cursor_uses_grid: bool,
+) -> f32 {
+    if cursor_uses_grid {
+        f32::from(cursor.column) * cell_width
+    } else {
+        terminal_cursor_x(buffer, snapshot, cursor)
+            .unwrap_or_else(|| f32::from(cursor.column) * cell_width)
+    }
 }
 
 pub(super) fn terminal_cursor_byte_index(

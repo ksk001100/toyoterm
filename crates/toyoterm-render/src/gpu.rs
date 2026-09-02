@@ -123,7 +123,6 @@ struct ConfigErrorRenderLayout {
 }
 
 struct PaneBuffers {
-    selection: Buffer,
     text: Buffer,
     cursor_glyph: Buffer,
     layout: TextLayout,
@@ -131,8 +130,8 @@ struct PaneBuffers {
     cursor_x: f32,
     rect: PaneRect,
     active: bool,
-    has_selection: bool,
     backgrounds: Vec<(PaneRect, [u8; 3])>,
+    selection_highlights: Vec<PaneRect>,
     search_highlights: Vec<(PaneRect, bool)>,
 }
 
@@ -241,7 +240,6 @@ impl PaneBuffers {
             buffer
         };
         Self {
-            selection: buffer(),
             text: buffer(),
             cursor_glyph: buffer(),
             layout,
@@ -254,8 +252,8 @@ impl PaneBuffers {
             cursor_x: 0.0,
             rect: PaneRect::default(),
             active: false,
-            has_selection: false,
             backgrounds: Vec::new(),
+            selection_highlights: Vec::new(),
             search_highlights: Vec::new(),
         }
     }
@@ -488,7 +486,6 @@ impl GpuRenderer {
             buffers.cursor = pane.cursor;
             buffers.rect = pane.rect;
             buffers.active = pane.active;
-            buffers.has_selection = !pane.snapshot.selection.is_empty();
             buffers.backgrounds = terminal_backgrounds(
                 pane.snapshot,
                 pane.rect,
@@ -497,6 +494,8 @@ impl GpuRenderer {
                 foreground,
                 &ansi,
             );
+            buffers.selection_highlights =
+                selection_highlight_rects(pane.snapshot, pane.rect, layout);
             buffers.search_highlights = search_highlight_rects(pane.snapshot, pane.rect, layout);
             let content_width = pane
                 .rect
@@ -540,28 +539,13 @@ impl GpuRenderer {
             buffers
                 .text
                 .shape_until_scroll(&mut self.font_system, false);
-            buffers.cursor_x = terminal_cursor_x(&buffers.text, pane.snapshot, pane.cursor)
-                .unwrap_or_else(|| f32::from(pane.cursor.column) * layout.cell_width);
-
-            buffers
-                .selection
-                .set_monospace_width(Some(layout.cell_width));
-            buffers.selection.set_metrics_and_size(
-                metrics,
-                Some(content_width),
-                Some(content_height),
+            buffers.cursor_x = pane_cursor_x(
+                &buffers.text,
+                pane.snapshot,
+                pane.cursor,
+                layout.cell_width,
+                pane.cursor_uses_grid,
             );
-            buffers.selection.set_text(
-                &selection_text(pane.snapshot),
-                &Attrs::new()
-                    .family(resolve_font_family(&self.style.font_family))
-                    .weight(Weight(self.style.font_weight)),
-                Shaping::Advanced,
-                None,
-            );
-            buffers
-                .selection
-                .shape_until_scroll(&mut self.font_system, false);
 
             buffers
                 .cursor_glyph
@@ -951,17 +935,6 @@ impl GpuRenderer {
         for pane in self.panes.values() {
             let placement = pane_text_placement(pane.rect, pane.layout, pane.cursor, pane.cursor_x);
             let bounds = pane_bounds(placement.bounds);
-            if pane.has_selection {
-                text_areas.push(TextArea {
-                    buffer: &pane.selection,
-                    left: placement.text_left,
-                    top: placement.text_top,
-                    scale: 1.0,
-                    bounds,
-                    default_color: glyph_color(self.style.selection, 210),
-                    custom_glyphs: &[],
-                });
-            }
             text_areas.push(TextArea {
                 buffer: &pane.text,
                 left: placement.text_left,
@@ -1168,6 +1141,15 @@ impl GpuRenderer {
                     &mut vertices,
                     *rect,
                     rgba(*color, 1.0),
+                    self.configuration.width,
+                    self.configuration.height,
+                );
+            }
+            for rect in &pane.selection_highlights {
+                push_ui_rect(
+                    &mut vertices,
+                    *rect,
+                    rgba(self.style.selection, 210.0 / 255.0),
                     self.configuration.width,
                     self.configuration.height,
                 );

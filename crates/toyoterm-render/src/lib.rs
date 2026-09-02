@@ -51,6 +51,7 @@ pub struct PaneRenderData<'a> {
     pub pane: PaneId,
     pub snapshot: &'a TerminalSnapshot,
     pub cursor: CursorState,
+    pub cursor_uses_grid: bool,
     pub rect: PaneRect,
     pub active: bool,
 }
@@ -191,15 +192,17 @@ mod tests {
 
     #[test]
     fn render_plan_matches_snapshot() {
+        let pane = PaneRect::new(10, 20, 320, 180);
+        let layout = TextLayout {
+            font_size: 14.0,
+            line_height: 18.0,
+            cell_width: 9.0,
+            horizontal_padding: 4.0,
+            vertical_padding: 6.0,
+        };
         let placement = pane_text_placement(
-            PaneRect::new(10, 20, 320, 180),
-            TextLayout {
-                font_size: 14.0,
-                line_height: 18.0,
-                cell_width: 9.0,
-                horizontal_padding: 4.0,
-                vertical_padding: 6.0,
-            },
+            pane,
+            layout,
             CursorState {
                 column: 3,
                 row: 2,
@@ -233,14 +236,14 @@ mod tests {
             ],
             search_matches: Vec::new(),
         };
-        let selection_mask = selection_text(&terminal).replace(' ', "·");
+        let selection_rects = selection_highlight_rects(&terminal, pane, layout);
         let snapshot = format!(
             concat!(
                 "background_rgba=({:.6},{:.6},{:.6},{:.6})\n",
                 "glyph_origin=({:.1},{:.1})\n",
                 "cursor_origin=({:.1},{:.1})\n",
                 "clip=({},{},{},{})\n",
-                "selection_mask:\n{}",
+                "selection_rects={:?}\n",
                 "resize_minimized={:?}\n",
                 "resize_restored={:?}\n"
             ),
@@ -256,7 +259,7 @@ mod tests {
             placement.bounds.y,
             placement.bounds.width,
             placement.bounds.height,
-            selection_mask,
+            selection_rects,
             surface_resize(PhysicalSize::new(0, 180)),
             surface_resize(PhysicalSize::new(640, 360)),
         );
@@ -309,7 +312,41 @@ mod tests {
     }
 
     #[test]
-    fn builds_a_cell_aligned_selection_mask() {
+    fn visual_cursor_uses_the_same_fixed_cell_grid_as_selection() {
+        let snapshot = TerminalSnapshot {
+            columns: 12,
+            rows: 1,
+            lines: vec!["wide: 日本語".into()],
+            cells: Vec::new(),
+            selection: Vec::new(),
+            search_matches: Vec::new(),
+        };
+        let cursor = CursorState {
+            column: 7,
+            row: 0,
+            visible: true,
+            shape: CursorShape::Block,
+        };
+        let metrics = Metrics::new(14.0, 18.0);
+        let mut font_system = configured_font_system(&[]);
+        let cell_width = measure_cell_width(&mut font_system, "monospace", 400, 14.0);
+        let mut buffer = Buffer::new(&mut font_system, metrics);
+        buffer.set_text(
+            &snapshot.lines.join("\n"),
+            &Attrs::new().family(Family::Monospace),
+            Shaping::Advanced,
+            None,
+        );
+        buffer.shape_until_scroll(&mut font_system, false);
+
+        assert_eq!(
+            pane_cursor_x(&buffer, &snapshot, cursor, cell_width, true),
+            f32::from(cursor.column) * cell_width
+        );
+    }
+
+    #[test]
+    fn builds_cell_aligned_selection_rectangles() {
         let snapshot = TerminalSnapshot {
             columns: 8,
             rows: 3,
@@ -329,7 +366,17 @@ mod tests {
             ],
             search_matches: Vec::new(),
         };
-        assert_eq!(selection_text(&snapshot), "  ███\n██\n");
+        let layout = TextLayout {
+            font_size: 14.0,
+            line_height: 18.0,
+            cell_width: 9.0,
+            horizontal_padding: 8.0,
+            vertical_padding: 4.0,
+        };
+        assert_eq!(
+            selection_highlight_rects(&snapshot, PaneRect::new(10, 20, 100, 80), layout),
+            [PaneRect::new(36, 24, 27, 18), PaneRect::new(18, 42, 18, 18),]
+        );
     }
 
     #[test]

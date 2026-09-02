@@ -977,6 +977,12 @@ fn compiles_static_key_dsl_to_native_actions() {
                     primary_shift("o").reload_config
                     ctrl_shift("r").reload_config
                     physical("KeyH", "CTRL").activate_pane(:left)
+                    key("v").toggle_visual_selection
+                    key("ESCAPE").end_visual_selection
+                    key("h").move_visual_selection(:left)
+                    key("0").move_visual_selection(:line_start)
+                    key("$").move_visual_selection(:line_end)
+                    key("y").yank_selection
                   end
                 end
                 "#,
@@ -994,6 +1000,36 @@ fn compiles_static_key_dsl_to_native_actions() {
     assert_eq!(
         manager.native_action("CTRL+PHYSICAL:KEYH"),
         Some(NativeAction::ActivatePane(SplitDirection::Left))
+    );
+    assert_eq!(
+        manager.native_action("V"),
+        Some(NativeAction::ToggleVisualMode)
+    );
+    assert_eq!(
+        manager.native_action("ESCAPE"),
+        Some(NativeAction::EndVisualSelection)
+    );
+    assert_eq!(
+        manager.native_action("H"),
+        Some(NativeAction::MoveVisualSelection(
+            toyoterm_api::SelectionMotion::Left
+        ))
+    );
+    assert_eq!(
+        manager.native_action("0"),
+        Some(NativeAction::MoveVisualSelection(
+            toyoterm_api::SelectionMotion::LineStart
+        ))
+    );
+    assert_eq!(
+        manager.native_action("$"),
+        Some(NativeAction::MoveVisualSelection(
+            toyoterm_api::SelectionMotion::LineEnd
+        ))
+    );
+    assert_eq!(
+        manager.native_action("Y"),
+        Some(NativeAction::YankSelection)
     );
     assert_eq!(manager.native_action("CTRL+T"), Some(NativeAction::NewTab));
     assert_eq!(

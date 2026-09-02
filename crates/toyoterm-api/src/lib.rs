@@ -90,6 +90,16 @@ pub enum SplitDirection {
     Down,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum SelectionMotion {
+    Left,
+    Right,
+    Up,
+    Down,
+    LineStart,
+    LineEnd,
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum NativeAction {
     NewTab,
@@ -108,6 +118,13 @@ pub enum NativeAction {
     PreviousWorkspace,
     CopySelection,
     PasteClipboard,
+    StartVisualMode,
+    ToggleVisualMode,
+    StartVisualSelection,
+    SelectVisualSelection,
+    EndVisualSelection,
+    MoveVisualSelection(SelectionMotion),
+    YankSelection,
     UserCommand(String),
     Split(SplitDirection),
     ActivatePane(SplitDirection),

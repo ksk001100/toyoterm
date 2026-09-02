@@ -189,6 +189,69 @@ module Toyoterm
       self
     end
 
+    def start_visual_selection
+      @config.__register_static(@key, :start_visual_selection, nil)
+      self
+    end
+
+    def start_visual_mode
+      @config.__register_static(@key, :start_visual_mode, nil)
+      self
+    end
+
+    def enter_visual_mode
+      start_visual_mode
+    end
+
+    def toggle_visual_mode
+      @config.__register_static(@key, :toggle_visual_mode, nil)
+      self
+    end
+
+    def toggle_visual_selection
+      toggle_visual_mode
+    end
+
+    def select_visual_selection
+      @config.__register_static(@key, :select_visual_selection, nil)
+      self
+    end
+
+    def select
+      select_visual_selection
+    end
+
+    def end_visual_selection
+      @config.__register_static(@key, :end_visual_selection, nil)
+      self
+    end
+
+    def exit_visual_mode
+      end_visual_selection
+    end
+
+    def move_visual_selection(direction)
+      direction = direction.to_s.downcase
+      unless ["left", "right", "up", "down", "line_start", "line_end"].include?(direction)
+        raise ArgumentError, "visual selection direction must be left, right, up, down, line_start, or line_end"
+      end
+      @config.__register_static(@key, :move_visual_selection, direction)
+      self
+    end
+
+    def visual_move(direction)
+      move_visual_selection(direction)
+    end
+
+    def yank_selection
+      @config.__register_static(@key, :yank_selection, nil)
+      self
+    end
+
+    def copy_visual_selection
+      yank_selection
+    end
+
     def command(name)
       @config.__register_static(@key, :user_command, name)
       self

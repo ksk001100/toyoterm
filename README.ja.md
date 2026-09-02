@@ -171,11 +171,13 @@ xterm 6×6×6カラ―キューブ、232〜255はグレースケールです。`
 
 キー名は大文字・小文字を区別しません。修飾キーには`CTRL`、`SHIFT`、`ALT`、`SUPER`などを使用します。名前付きキーは`ENTER`、`TAB`、`SPACE`、矢印キー、ナビゲーションキー、`F1`から`F12`に対応しています。
 
-`config.keys`では`key`、`ctrl`、`ctrl_shift`、`ctrl_alt`、`ctrl_super`、`primary`、`primary_shift`、`primary_alt`、`alt`、`super_key`、`leader`、`physical`ヘルパーを使用できます。Pane・Tab操作、Workspace／Tab切替、検索、window状態変更、reload、クリップボードのコピー／貼り付けなどのstatic actionを登録できます。`primary`はmacOSで`SUPER`、Linux・Windowsで`CTRL`に展開されるため、1つの設定でOSごとの慣習に合わせられます。modifier名はOS間で共通で、macOSのOptionは`ALT`、macOSのCommandとWindowsキーは`SUPER`です。`physical("KeyH", "CTRL")`のように指定すると、論理文字ではなく物理キー位置へ割り当てられます。physical設定は論理設定より優先されます。組み込みGUIキーバインドはなく、同じchordの重複定義は設定エラーです。
+`config.keys`では`key`、`ctrl`、`ctrl_shift`、`ctrl_alt`、`ctrl_super`、`primary`、`primary_shift`、`primary_alt`、`alt`、`super_key`、`leader`、`physical`ヘルパーを使用できます。Pane・Tab操作、Workspace／Tab切替、検索、window状態変更、reload、クリップボードのコピー／貼り付け、ビジュアル選択（`start_visual_mode`、`toggle_visual_mode`、`start_visual_selection`、`select_visual_selection`、`end_visual_selection`、`move_visual_selection`、`yank_selection`）などのstatic actionを登録できます。`primary`はmacOSで`SUPER`、Linux・Windowsで`CTRL`に展開されるため、1つの設定でOSごとの慣習に合わせられます。modifier名はOS間で共通で、macOSのOptionは`ALT`、macOSのCommandとWindowsキーは`SUPER`です。`physical("KeyH", "CTRL")`のように指定すると、論理文字ではなく物理キー位置へ割り当てられます。physical設定は論理設定より優先されます。組み込みGUIキーバインドはなく、同じchordの重複定義は設定エラーです。
 
 `config.leader`では、ミリ秒単位のtimeout付きLeader prefixをネイティブ側へ設定できます。`leader("v")`の割り当てはmrubyを呼ばずに解決されます。Leader prefix自体は破棄し、不一致またはtimeout後の次キーは通常のキー処理へ戻します。Prefixのrepeatは元のtimeoutを延長せずに破棄し、IME入力、フォーカス喪失、設定reloadではLeader待機状態を解除します。
 
 割り当てのないキーはmrubyを呼ばず、ネイティブのターミナルキーエンコーダへ直接渡されます。Ruby callbackで例外が発生した場合はエラーをログへ出し、シェルの実行を継続します。
+
+Vim風にする場合は、`leader("v").toggle_visual_mode`、`key("SPACE").select_visual_selection`、`move_visual_selection(:left)`／`:right`／`:up`／`:down`／`:line_start`／`:line_end`、`yank_selection`を割り当てます。ビジュアルモード開始時は選択せず、目的のログ位置まで移動してから選択を開始し、範囲を伸ばします。移動・選択actionは通常モードでは無効なので、`h/j/k/l`を割り当てても通常のシェル入力は奪いません。Leaderを使うことで通常の`v`もシェルへ入力できます。
 
 Ruby callbackからは`Toyoterm.clipboard.read`と`Toyoterm.clipboard.write(text)`でホストのテキストクリップボードを操作できます。動的キーバインドまたはイベントcallbackの実行直前に、クリップボードのsnapshotを更新します。プラットフォームのクリップボードを利用できない場合、`read`は`RuntimeError`を発生させます。書込みはcallbackが正常終了した後だけ反映するため、例外時は他のqueue済みcommandと一緒にロールバックされます。
 

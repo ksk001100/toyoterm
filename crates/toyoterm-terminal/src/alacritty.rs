@@ -417,7 +417,11 @@ impl TerminalBackend for AlacrittyTerminalBackend {
             SelectionKind::Word => SelectionType::Semantic,
             SelectionKind::Line => SelectionType::Lines,
         };
-        self.terminal.selection = Some(Selection::new(selection_type, point, Side::Left));
+        let mut selection = Selection::new(selection_type, point, Side::Left);
+        if selection_type == SelectionType::Simple {
+            selection.update(point, Side::Right);
+        }
+        self.terminal.selection = Some(selection);
     }
 
     fn update_selection(&mut self, column: u16, row: u16) {
@@ -981,6 +985,67 @@ mod tests {
         backend.start_selection(4, 0, SelectionKind::Simple);
         backend.update_selection(4, 0);
         assert_eq!(backend.selected_text().as_deref(), Some("e"));
+    }
+
+    #[test]
+    fn simple_selection_marks_the_anchor_and_spans_multiple_rows_exactly() {
+        let mut backend = AlacrittyTerminalBackend::new(8, 3);
+        backend.advance(b"abcdef\r\nghijkl\r\nmnopqr");
+
+        backend.start_selection(2, 0, SelectionKind::Simple);
+        assert_eq!(
+            backend.snapshot().selection,
+            [SelectionSpan {
+                row: 0,
+                start_column: 2,
+                end_column: 2,
+            }]
+        );
+
+        backend.update_selection(3, 2);
+        assert_eq!(
+            backend.snapshot().selection,
+            [
+                SelectionSpan {
+                    row: 0,
+                    start_column: 2,
+                    end_column: 7,
+                },
+                SelectionSpan {
+                    row: 1,
+                    start_column: 0,
+                    end_column: 7,
+                },
+                SelectionSpan {
+                    row: 2,
+                    start_column: 0,
+                    end_column: 3,
+                },
+            ]
+        );
+
+        backend.start_selection(3, 2, SelectionKind::Simple);
+        backend.update_selection(2, 0);
+        assert_eq!(
+            backend.snapshot().selection,
+            [
+                SelectionSpan {
+                    row: 0,
+                    start_column: 2,
+                    end_column: 7,
+                },
+                SelectionSpan {
+                    row: 1,
+                    start_column: 0,
+                    end_column: 7,
+                },
+                SelectionSpan {
+                    row: 2,
+                    start_column: 0,
+                    end_column: 3,
+                },
+            ]
+        );
     }
 
     #[test]

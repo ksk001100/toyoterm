@@ -10,9 +10,21 @@ enum KeybindingDispatch {
 fn resolve_keybinding(
     snapshot: &ScriptSnapshot,
     keys: impl IntoIterator<Item = String>,
+    visual_mode: bool,
 ) -> KeybindingDispatch {
     for key in keys {
         if let Some(action) = snapshot.native_actions.get(&key).cloned() {
+            if !visual_mode
+                && matches!(
+                    &action,
+                    NativeAction::EndVisualSelection
+                        | NativeAction::SelectVisualSelection
+                        | NativeAction::MoveVisualSelection(_)
+                        | NativeAction::YankSelection
+                )
+            {
+                continue;
+            }
             return KeybindingDispatch::Native(action);
         }
         if snapshot.keybindings.contains(&key) {
@@ -20,6 +32,20 @@ fn resolve_keybinding(
         }
     }
     KeybindingDispatch::Unassigned
+}
+
+fn visual_line_end_column(snapshot: &toyoterm_terminal::TerminalSnapshot, row: u16) -> u16 {
+    snapshot
+        .cells
+        .get(usize::from(row))
+        .and_then(|cells| cells.last())
+        .map(|cell| {
+            cell.column
+                .saturating_add(u16::from(cell.width.max(1)))
+                .saturating_sub(1)
+        })
+        .unwrap_or(0)
+        .min(snapshot.columns.saturating_sub(1))
 }
 
 fn ruby_event_from_mux_event(event: MuxEvent) -> Option<RubyEvent> {
@@ -79,6 +105,119 @@ pub(super) fn dispatch_coordinator_command(
 }
 
 impl ToyotermApplication {
+    pub(super) fn start_visual_selection(&mut self) {
+        self.start_visual_mode();
+        self.select_visual_selection();
+    }
+
+    pub(super) fn start_visual_mode(&mut self) {
+        let Some((cursor, snapshot)) = self
+            .active_terminal()
+            .map(|terminal| (terminal.cursor(), terminal.snapshot()))
+        else {
+            return;
+        };
+        let position = VisualPosition {
+            column: cursor.column.min(snapshot.columns.saturating_sub(1)),
+            row: cursor.row.min(snapshot.rows.saturating_sub(1)),
+        };
+        if let Some(terminal) = self.active_terminal_mut() {
+            terminal.clear_selection();
+        }
+        self.visual_selection = Some(VisualSelection {
+            anchor: None,
+            current: position,
+        });
+    }
+
+    pub(super) fn select_visual_selection(&mut self) {
+        let Some(mut visual) = self.visual_selection else {
+            return;
+        };
+        visual.anchor = Some(visual.current);
+        if let Some(terminal) = self.active_terminal_mut() {
+            terminal.start_selection(
+                visual.current.column,
+                visual.current.row,
+                SelectionKind::Simple,
+            );
+        }
+        self.visual_selection = Some(visual);
+    }
+
+    pub(super) fn exit_visual_mode(&mut self) {
+        if self.visual_selection.take().is_some()
+            && let Some(terminal) = self.active_terminal_mut()
+        {
+            terminal.clear_selection();
+        }
+    }
+
+    pub(super) fn move_visual_selection(&mut self, motion: SelectionMotion) {
+        let Some(mut selection) = self.visual_selection else {
+            return;
+        };
+        let Some(snapshot) = self.active_terminal().map(TerminalBackend::snapshot) else {
+            return;
+        };
+        let max_column = snapshot.columns.saturating_sub(1);
+        let max_row = snapshot.rows.saturating_sub(1);
+        let mut scroll = 0;
+        match motion {
+            SelectionMotion::Left => {
+                selection.current.column = selection.current.column.saturating_sub(1)
+            }
+            SelectionMotion::Right => {
+                selection.current.column =
+                    selection.current.column.saturating_add(1).min(max_column)
+            }
+            SelectionMotion::Up => {
+                if selection.current.row == 0 {
+                    scroll = 1;
+                } else {
+                    selection.current.row -= 1;
+                }
+            }
+            SelectionMotion::Down => {
+                if selection.current.row == max_row {
+                    scroll = -1;
+                } else {
+                    selection.current.row += 1;
+                }
+            }
+            SelectionMotion::LineStart => selection.current.column = 0,
+            SelectionMotion::LineEnd => {
+                selection.current.column = visual_line_end_column(&snapshot, selection.current.row);
+            }
+        }
+        if let Some(terminal) = self.active_terminal_mut()
+            && selection.anchor.is_some()
+        {
+            if scroll != 0 {
+                terminal.scroll_display(scroll);
+            }
+            terminal.update_selection(selection.current.column, selection.current.row);
+        } else if scroll != 0
+            && let Some(terminal) = self.active_terminal_mut()
+        {
+            terminal.scroll_display(scroll);
+        }
+        self.visual_selection = Some(selection);
+    }
+
+    pub(super) fn yank_selection(&mut self) -> Result<(), String> {
+        if !self
+            .visual_selection
+            .as_ref()
+            .is_some_and(|visual| visual.anchor.is_some())
+        {
+            return Ok(());
+        }
+        self.copy_selection()?;
+        self.exit_visual_mode();
+        Ok(())
+    }
+
     pub(super) fn handle_keybinding(
         &mut self,
         event: &KeyEvent,
@@ -95,7 +234,7 @@ impl ToyotermApplication {
             .mux
             .current_pane()
             .ok_or_else(|| "mux has no current pane".to_owned())?;
-        match resolve_keybinding(&self.script_snapshot, keys) {
+        match resolve_keybinding(&self.script_snapshot, keys, self.visual_selection.is_some()) {
             KeybindingDispatch::Native(action) => {
                 self.execute_native_action(action)?;
                 Ok(true)
@@ -192,6 +331,35 @@ impl ToyotermApplication {
             NativeAction::PreviousWorkspace => self.cycle_workspace(true),
             NativeAction::CopySelection => self.copy_selection(),
             NativeAction::PasteClipboard => self.paste_clipboard(),
+            NativeAction::StartVisualSelection => {
+                self.start_visual_selection();
+                Ok(())
+            }
+            NativeAction::StartVisualMode => {
+                self.start_visual_mode();
+                Ok(())
+            }
+            NativeAction::ToggleVisualMode => {
+                if self.visual_selection.is_some() {
+                    self.exit_visual_mode();
+                } else {
+                    self.start_visual_mode();
+                }
+                Ok(())
+            }
+            NativeAction::SelectVisualSelection => {
+                self.select_visual_selection();
+                Ok(())
+            }
+            NativeAction::EndVisualSelection => {
+                self.exit_visual_mode();
+                Ok(())
+            }
+            NativeAction::MoveVisualSelection(motion) => {
+                self.move_visual_selection(motion);
+                Ok(())
+            }
+            NativeAction::YankSelection => self.yank_selection(),
             NativeAction::UserCommand(name) => self.execute_user_command(&name),
             NativeAction::Split(direction) => self.split_active_pane(direction),
             NativeAction::ActivatePane(direction) => self.focus_neighbor(direction),
@@ -362,6 +530,7 @@ impl ToyotermApplication {
         let previous_pane = self.mux.current_pane();
         dispatch_coordinator_command(&mut self.mux, &mut self.runtime_events, command)?;
         if self.mux.current_pane() != previous_pane {
+            self.exit_visual_mode();
             self.ime_preedit = None;
         }
         self.reconcile_pane_runtimes()?;
@@ -679,12 +848,47 @@ mod tests {
         };
         let mut ruby_invocations = 0;
 
-        let dispatch = resolve_keybinding(&snapshot, ["CTRL+UNASSIGNED".to_owned()]);
+        let dispatch = resolve_keybinding(&snapshot, ["CTRL+UNASSIGNED".to_owned()], false);
         if matches!(dispatch, KeybindingDispatch::Ruby(_)) {
             ruby_invocations += 1;
         }
 
         assert_eq!(dispatch, KeybindingDispatch::Unassigned);
         assert_eq!(ruby_invocations, 0);
+    }
+
+    #[test]
+    fn visual_only_actions_are_skipped_outside_visual_mode() {
+        let mut snapshot = ScriptSnapshot {
+            config: ToyotermConfig::default(),
+            native_actions: HashMap::new(),
+            keybindings: HashSet::new(),
+            event_names: HashSet::new(),
+            user_command_names: HashSet::new(),
+            plugins: Vec::new(),
+        };
+        snapshot.native_actions.insert(
+            "H".into(),
+            NativeAction::MoveVisualSelection(SelectionMotion::Left),
+        );
+
+        assert_eq!(
+            resolve_keybinding(&snapshot, ["H".into()], false),
+            KeybindingDispatch::Unassigned
+        );
+        assert_eq!(
+            resolve_keybinding(&snapshot, ["H".into()], true),
+            KeybindingDispatch::Native(NativeAction::MoveVisualSelection(SelectionMotion::Left))
+        );
+    }
+
+    #[test]
+    fn visual_line_end_stops_at_the_last_content_cell() {
+        let mut terminal = AlacrittyTerminalBackend::new(20, 2);
+        terminal.advance(b"short\r\nwide: \xe7\x8c\xab");
+        let snapshot = terminal.snapshot();
+
+        assert_eq!(visual_line_end_column(&snapshot, 0), 4);
+        assert_eq!(visual_line_end_column(&snapshot, 1), 7);
     }
 }

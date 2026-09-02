@@ -27,7 +27,23 @@ Toyoterm.configure do |config|
     ctrl_alt("LEFT").previous_workspace
     ctrl_alt("RIGHT").next_workspace
 
-    leader("v").split(:right)
+    # Vim-like visual selection. The leader keeps normal v available to the shell.
+    leader("v").toggle_visual_mode
+    key("SPACE").select_visual_selection
+    key("ESCAPE").end_visual_selection
+    key("h").move_visual_selection(:left)
+    key("j").move_visual_selection(:down)
+    key("k").move_visual_selection(:up)
+    key("l").move_visual_selection(:right)
+    key("LEFT").move_visual_selection(:left)
+    key("RIGHT").move_visual_selection(:right)
+    key("UP").move_visual_selection(:up)
+    key("DOWN").move_visual_selection(:down)
+    key("0").move_visual_selection(:line_start)
+    key("$").move_visual_selection(:line_end)
+    key("y").yank_selection
+
+    leader("s").split(:right)
 
     if Toyoterm.__primary_modifier == "SUPER"
       ctrl_super("f").toggle_fullscreen

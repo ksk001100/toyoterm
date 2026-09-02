@@ -435,6 +435,9 @@ impl ToyotermApplication {
     }
 
     pub(super) fn handle_left_mouse(&mut self, window: &Window, state: ElementState) {
+        if state == ElementState::Pressed && self.visual_selection.is_some() {
+            self.exit_visual_mode();
+        }
         if state == ElementState::Pressed {
             if self.search_open {
                 self.close_search();

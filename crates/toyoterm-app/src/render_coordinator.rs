@@ -51,25 +51,38 @@ impl ToyotermApplication {
             .iter()
             .filter_map(|placement| {
                 self.pane_runtimes.get(&placement.pane).map(|runtime| {
+                    let is_active = active == Some(placement.pane);
+                    let cursor_uses_grid = is_active && self.visual_selection.is_some();
+                    let mut cursor = runtime.terminal.cursor();
+                    if cursor_uses_grid && let Some(visual) = self.visual_selection {
+                        cursor.column = visual.current.column;
+                        cursor.row = visual.current.row;
+                        cursor.visible = true;
+                        cursor.shape = CursorShape::Block;
+                    }
                     (
                         placement.pane,
                         runtime.terminal.snapshot(),
-                        runtime.terminal.cursor(),
+                        cursor,
+                        cursor_uses_grid,
                         placement.rect,
-                        active == Some(placement.pane),
+                        is_active,
                     )
                 })
             })
             .collect::<Vec<_>>();
         let panes = snapshots
             .iter()
-            .map(|(pane, snapshot, cursor, rect, active)| PaneRenderData {
-                pane: *pane,
-                snapshot,
-                cursor: *cursor,
-                rect: *rect,
-                active: *active,
-            })
+            .map(
+                |(pane, snapshot, cursor, cursor_uses_grid, rect, active)| PaneRenderData {
+                    pane: *pane,
+                    snapshot,
+                    cursor: *cursor,
+                    cursor_uses_grid: *cursor_uses_grid,
+                    rect: *rect,
+                    active: *active,
+                },
+            )
             .collect::<Vec<_>>();
         let active_tab = self.mux.current_tab();
         let tab_titles = self

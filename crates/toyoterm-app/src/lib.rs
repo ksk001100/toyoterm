@@ -37,7 +37,8 @@ use ui_geometry::*;
 pub use lifecycle::install_panic_hook;
 pub use logging::init_logging;
 pub use toyoterm_api::{
-    Command, Event as MuxEvent, NativeAction, NativeCommand, PaneId, SplitDirection,
+    Command, Event as MuxEvent, NativeAction, NativeCommand, PaneId, SelectionMotion,
+    SplitDirection,
 };
 pub use toyoterm_config::ToyotermConfig;
 pub use toyoterm_ipc::{IpcRequest, IpcResponse, IpcServer};
@@ -50,7 +51,7 @@ pub use toyoterm_render::{
 };
 pub use toyoterm_script::ConfigManager;
 pub use toyoterm_terminal::{
-    AlacrittyTerminalBackend, BindingKey, KeyChord, KeyModifiers, KeyPress, KeypadKey,
+    AlacrittyTerminalBackend, BindingKey, CursorShape, KeyChord, KeyModifiers, KeyPress, KeypadKey,
     MouseWheelDirection, SearchDirection, SearchResult, SelectionKind, TerminalBackend,
     TerminalEvent, TerminalKey, TerminalMode, encode_key, encode_mouse_wheel, encode_paste,
 };
@@ -62,6 +63,18 @@ struct ClickTarget {
     pane: PaneId,
     column: u16,
     row: u16,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct VisualPosition {
+    column: u16,
+    row: u16,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct VisualSelection {
+    anchor: Option<VisualPosition>,
+    current: VisualPosition,
 }
 
 #[derive(Default)]
@@ -330,6 +343,7 @@ struct ToyotermApplication {
     mouse_position: PhysicalPosition<f64>,
     wheel_line_accumulator: f64,
     selecting: bool,
+    visual_selection: Option<VisualSelection>,
     click_tracker: ClickTracker,
     clipboard: Option<Clipboard>,
     pending_clipboard_writes: Vec<String>,
@@ -471,6 +485,7 @@ impl ApplicationHandler<AppEvent> for ToyotermApplication {
                 if !focused {
                     clear_modifier_state(&mut self.modifiers, &mut self.alt_graph_active);
                     self.leader_deadline = None;
+                    self.exit_visual_mode();
                     if self.search_open {
                         self.close_search();
                         self.sync_active_renderer(window.scale_factor());
@@ -535,6 +550,21 @@ impl ApplicationHandler<AppEvent> for ToyotermApplication {
                     window.request_redraw();
                     return;
                 }
+                if self.visual_selection.is_some() {
+                    match self.handle_keybinding(&event, modifiers) {
+                        Ok(true) => {}
+                        Ok(false) if matches!(event.logical_key, Key::Named(NamedKey::Escape)) => {
+                            self.exit_visual_mode();
+                        }
+                        Ok(false) => {}
+                        Err(error) => {
+                            tracing::warn!(target: "toyoterm::script", %error, "visual selection key binding failed");
+                        }
+                    }
+                    self.sync_active_renderer(window.scale_factor());
+                    window.request_redraw();
+                    return;
+                }
                 match self.handle_leader_key(&event, modifiers) {
                     Ok(true) => return,
                     Ok(false) => {}
@@ -572,6 +602,9 @@ impl ApplicationHandler<AppEvent> for ToyotermApplication {
             WindowEvent::Ime(Ime::Commit(text)) => {
                 self.leader_deadline = None;
                 self.ime_preedit = None;
+                if self.visual_selection.is_some() {
+                    return;
+                }
                 if self.search_open {
                     self.search_query.push_str(&text);
                     self.refresh_search(SearchDirection::Next);
@@ -846,6 +879,7 @@ impl ToyotermApplication {
             mouse_position: PhysicalPosition::new(0.0, 0.0),
             wheel_line_accumulator: 0.0,
             selecting: false,
+            visual_selection: None,
             click_tracker: ClickTracker::default(),
             clipboard: None,
             pending_clipboard_writes: Vec::new(),
