@@ -58,6 +58,50 @@ module Toyoterm
       raise TypeError, "colors.ansi entries must be strings" unless color.is_a?(String)
       color
     end
+
+    def __snapshot
+      [
+        @background, @foreground, @cursor, @selection,
+        @ansi.is_a?(Array) ? @ansi.dup : @ansi,
+        @tab_bar, @tab_active, @tab_inactive, @workspace_bar, @status_bar,
+        @pane_border, @search_match, @search_match_active
+      ]
+    end
+
+    def __restore(snapshot)
+      @background = snapshot[0]
+      @foreground = snapshot[1]
+      @cursor = snapshot[2]
+      @selection = snapshot[3]
+      @ansi = snapshot[4].is_a?(Array) ? snapshot[4].dup : snapshot[4]
+      @tab_bar = snapshot[5]
+      @tab_active = snapshot[6]
+      @tab_inactive = snapshot[7]
+      @workspace_bar = snapshot[8]
+      @status_bar = snapshot[9]
+      @pane_border = snapshot[10]
+      @search_match = snapshot[11]
+      @search_match_active = snapshot[12]
+      self
+    end
+
+    def __apply_with_overrides(theme, baseline)
+      overrides = __snapshot
+      __restore(theme.__snapshot)
+      return self unless baseline
+      themed = __snapshot
+      overrides.each_with_index do |value, index|
+        if index == 4 && value.is_a?(Array) && baseline[index].is_a?(Array) &&
+            value.length == baseline[index].length
+          value.each_with_index do |color, color_index|
+            themed[index][color_index] = color if color != baseline[index][color_index]
+          end
+        elsif value != baseline[index]
+          themed[index] = value
+        end
+      end
+      __restore(themed)
+    end
   end
 
   class WindowConfig
@@ -388,6 +432,8 @@ module Toyoterm
       @static_bindings = {}
       @leader_key = nil
       @leader_timeout = 1000
+      @theme = nil
+      @theme_color_checkpoint = nil
     end
 
     def font(&block)
@@ -396,6 +442,27 @@ module Toyoterm
 
     def colors(&block)
       block ? block.call(@colors) : @colors
+    end
+
+    def theme(name = nil)
+      return @theme if name.nil?
+      self.theme = name
+    end
+
+    def theme=(name)
+      name = name.to_s
+      raise ArgumentError, "theme name cannot be empty" if name.empty?
+      @theme = name
+      @theme_color_checkpoint = @colors.__snapshot
+      __apply_theme(Toyoterm.__theme(name))
+      name
+    end
+
+    def __apply_theme(theme)
+      return false unless theme
+      @colors.__apply_with_overrides(theme, @theme_color_checkpoint)
+      @theme_color_checkpoint = nil
+      true
     end
 
     def window(&block)
@@ -425,7 +492,8 @@ module Toyoterm
          @ui.workspace_bar_height, @ui.workspace_width, @ui.status_bar_height,
          @ui.pane_divider_width, @ui.active_pane_border_width],
         [@behavior.scroll_lines, @behavior.copy_on_select],
-        [@leader_key, @leader_timeout]
+        [@leader_key, @leader_timeout, @theme,
+         @theme_color_checkpoint && @theme_color_checkpoint.map { |value| value.is_a?(Array) ? value.dup : value }]
       ]
     end
 
@@ -475,6 +543,8 @@ module Toyoterm
       @behavior.copy_on_select = behavior[1]
       @leader_key = leader[0]
       @leader_timeout = leader[1]
+      @theme = leader[2]
+      @theme_color_checkpoint = leader[3]
       nil
     end
 
@@ -554,12 +624,13 @@ module Toyoterm
     end
 
     def __plugin_checkpoint
-      [@bindings.dup, @static_bindings.dup]
+      [@bindings.dup, @static_bindings.dup, __checkpoint]
     end
 
     def __rollback_plugin(checkpoint)
       @bindings = checkpoint[0]
       @static_bindings = checkpoint[1]
+      __restore(checkpoint[2])
     end
   end
 
@@ -831,6 +902,14 @@ module Toyoterm
         Toyoterm.__config.keys(&block)
       end
 
+      def theme(name)
+        raise ArgumentError, "theme definition requires a block" unless block_given?
+        theme = ColorConfig.new
+        yield theme
+        Toyoterm.__register_theme(name, theme)
+        theme
+      end
+
       def __validate!
         raise ArgumentError, "plugin name cannot be empty" if @name.empty?
         raise ArgumentError, "plugin version is required" if @version.nil? || @version.to_s.empty?
@@ -872,6 +951,7 @@ module Toyoterm
   @object_data = { workspace: {}, window: {}, tab: {}, pane: {} }
   @pane_badges = {}
   @plugins = []
+  @themes = {}
   @plugin_requests = []
   @current_plugin_path = nil
 
@@ -949,6 +1029,29 @@ module Toyoterm
     @plugins.dup
   end
 
+  def self.themes
+    @themes.keys.dup
+  end
+
+  def self.__theme(name)
+    @themes[name.to_s]
+  end
+
+  def self.__register_theme(name, theme)
+    name = name.to_s
+    raise ArgumentError, "theme name cannot be empty" if name.empty?
+    raise ArgumentError, "duplicate theme name: #{name}" if @themes.key?(name)
+    @themes[name] = theme
+    @config.__apply_theme(theme) if @config.theme == name
+    theme
+  end
+
+  def self.__validate_theme!
+    name = @config.theme
+    raise ArgumentError, "unknown theme: #{name}" if name && !@themes.key?(name)
+    nil
+  end
+
   def self.__loading_plugin?
     !@current_plugin_path.nil?
   end
@@ -976,7 +1079,8 @@ module Toyoterm
       @user_commands.dup,
       event_handlers,
       @config.__plugin_checkpoint,
-      @plugin_requests.length
+      @plugin_requests.length,
+      @themes.dup
     ]
   end
 
@@ -986,6 +1090,7 @@ module Toyoterm
     @event_handlers = checkpoint[2]
     @config.__rollback_plugin(checkpoint[3])
     @plugin_requests.pop while @plugin_requests.length > checkpoint[4]
+    @themes = checkpoint[5]
   end
 
   def self.__plugin_request_count

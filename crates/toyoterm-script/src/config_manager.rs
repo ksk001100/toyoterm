@@ -609,6 +609,7 @@ pub(super) fn load_config(
 }
 
 fn read_config(runtime: &mut MrubyRuntime) -> Result<ToyotermConfig, ScriptError> {
+    runtime.eval("Toyoterm.__validate_theme!")?;
     let defaults = ToyotermConfig::default();
     let family = runtime.eval("Toyoterm.__config.font.family")?;
     if family.trim().is_empty() {

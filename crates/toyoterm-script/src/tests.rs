@@ -220,6 +220,73 @@ fn loads_local_plugins_with_metadata_and_registrations() {
 }
 
 #[test]
+fn loads_and_selects_a_theme_defined_by_a_plugin() {
+    let directory = temporary_test_directory("theme-plugin");
+    let plugin = directory.join("night.rb");
+    std::fs::write(
+        &plugin,
+        r##"
+            Toyoterm::Plugin.define "night-themes" do |plugin|
+              plugin.version = "0.1.0"
+              plugin.theme "moon" do |theme|
+                theme.background = "#10131a"
+                theme.foreground = "#d8dee9"
+                theme.cursor = "#88c0d0"
+                theme.ansi = [
+                  "#000000", "#bf616a", "#a3be8c", "#ebcb8b",
+                  "#81a1c1", "#b48ead", "#88c0d0", "#e5e9f0",
+                  "#4c566a", "#bf616a", "#a3be8c", "#ebcb8b",
+                  "#81a1c1", "#b48ead", "#8fbcbb", "#eceff4"
+                ]
+              end
+            end
+        "##,
+    )
+    .unwrap();
+
+    let mut loaded = load_config(
+        r##"
+            Toyoterm.plugin "night.rb"
+            Toyoterm.configure do |config|
+              config.theme = "moon"
+              config.colors.cursor = "#ffffff"
+              config.colors.ansi[1] = "#ff0000"
+            end
+        "##,
+        &directory.join("config.rb").display().to_string(),
+        &[],
+        Some(&directory),
+    )
+    .unwrap();
+
+    assert_eq!(loaded.config.colors.background, "#10131a");
+    assert_eq!(loaded.config.colors.foreground, "#d8dee9");
+    assert_eq!(loaded.config.colors.cursor, "#ffffff");
+    assert_eq!(loaded.config.colors.ansi[1], "#ff0000");
+    assert_eq!(loaded.config.colors.ansi[2], "#a3be8c");
+    assert_eq!(
+        loaded.runtime.eval("Toyoterm.themes.join(',')").unwrap(),
+        "moon"
+    );
+    std::fs::remove_dir_all(directory).unwrap();
+}
+
+#[test]
+fn rejects_an_unknown_theme_without_replacing_the_active_config() {
+    let mut manager = ConfigManager::new().unwrap();
+    manager
+        .reload(r##"Toyoterm.configure { |config| config.colors.background = "#123456" }"##)
+        .unwrap();
+
+    let error = manager
+        .reload("Toyoterm.configure { |config| config.theme = 'missing' }")
+        .unwrap_err();
+
+    assert!(error.message().contains("unknown theme: missing"));
+    assert_eq!(manager.config().colors.background, "#123456");
+}
+
+#[test]
 fn plugin_failures_are_isolated_and_rolled_back() {
     let directory = temporary_test_directory("plugin-isolation");
     let broken = directory.join("10-broken.rb");

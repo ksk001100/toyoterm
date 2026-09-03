@@ -265,6 +265,41 @@ end
 
 `plugin.command`、`plugin.on`、`plugin.bind`、`plugin.keys`は、main configと同じcommand、event、dynamic binding、native binding APIを使用します。同じcanonical pathの重複読込は無視します。plugin nameや登録の重複、不正なmetadata、API version非互換、読込不能なファイル、Ruby例外が発生した場合は、そのpluginによる登録をすべてrollbackして無効化し、残りのpluginの読込を続け、`toyoterm::script`へwarningを記録します。config自体のエラーは、従来どおり候補VM全体をatomicに拒否します。
 
+プラグインは名前付きテーマも提供できます。テーマは`config.colors`と同じ全項目を持ち、省略した項目にはtoyotermの既定色が使われます。
+
+```ruby
+# ~/.config/toyoterm/plugins/moon-theme.rb
+Toyoterm::Plugin.define "moon-theme" do |plugin|
+  plugin.version = "0.1.0"
+
+  plugin.theme "moon" do |theme|
+    theme.background = "#10131a"
+    theme.foreground = "#d8dee9"
+    theme.cursor = "#88c0d0"
+    theme.selection = "#3b4252"
+    theme.ansi = [
+      "#000000", "#bf616a", "#a3be8c", "#ebcb8b",
+      "#81a1c1", "#b48ead", "#88c0d0", "#e5e9f0",
+      "#4c566a", "#bf616a", "#a3be8c", "#ebcb8b",
+      "#81a1c1", "#b48ead", "#8fbcbb", "#eceff4"
+    ]
+  end
+end
+```
+
+設定では自動読込されたテーマを名前で選択します。任意のプラグインファイルを`Toyoterm.plugin`で先に宣言する形にも対応します。テーマ選択より後に書いた個別の色設定はテーマ値を上書きします。
+
+```ruby
+Toyoterm.plugin "plugins/moon-theme.rb"
+
+Toyoterm.configure do |config|
+  config.theme = "moon"
+  config.colors.cursor = "#ffffff"
+end
+```
+
+`Toyoterm.themes`は現在登録されているテーマ名の配列を返します。テーマ名の重複は後から読み込んだプラグインだけを無効にし、選択したテーマが見つからない場合はconfig reload全体を拒否します。
+
 ### Rubyオブジェクトモデル
 
 各callbackでは、`Toyoterm.current_workspace`、`current_window`、`current_tab`、`current_pane`から最新のsnapshotを参照できます。`Toyoterm.workspaces`、`windows`、`workspace(name)`で検索でき、Workspace・Window・Tabから子要素を取得できます。Paneのメタデータは`title`、`cwd`、`pid`、`command_running?`、`last_exit_status`です。command関連フィールドは[Shell integration](docs/shell-integration.md)を有効にすると更新されます。`split`、`close`、`focus`／`activate`、`new_tab`、`create_window`などの変更操作はNative Commandをqueueし、callbackが正常終了した後に反映します。保存したオブジェクトのnative実体が削除済みの場合は`Toyoterm::InvalidHandleError`を発生させます。

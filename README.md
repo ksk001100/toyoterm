@@ -267,6 +267,41 @@ end
 
 `plugin.command`, `plugin.on`, `plugin.bind`, and `plugin.keys` use the same command, event, dynamic-binding, and native-binding APIs as the main configuration. Loading the same canonical path twice is ignored. Duplicate plugin names or registrations, invalid metadata, incompatible API requirements, unreadable files, and Ruby exceptions disable only that plugin: all registrations made by the failed plugin are rolled back, remaining plugins continue loading, and a warning is written to `toyoterm::script`. A config error still rejects the complete candidate VM atomically.
 
+Plugins can also provide named themes. A theme exposes every field available on `config.colors`; fields it does not set retain toyoterm's default colors.
+
+```ruby
+# ~/.config/toyoterm/plugins/moon-theme.rb
+Toyoterm::Plugin.define "moon-theme" do |plugin|
+  plugin.version = "0.1.0"
+
+  plugin.theme "moon" do |theme|
+    theme.background = "#10131a"
+    theme.foreground = "#d8dee9"
+    theme.cursor = "#88c0d0"
+    theme.selection = "#3b4252"
+    theme.ansi = [
+      "#000000", "#bf616a", "#a3be8c", "#ebcb8b",
+      "#81a1c1", "#b48ead", "#88c0d0", "#e5e9f0",
+      "#4c566a", "#bf616a", "#a3be8c", "#ebcb8b",
+      "#81a1c1", "#b48ead", "#8fbcbb", "#eceff4"
+    ]
+  end
+end
+```
+
+Select an automatically loaded theme by name in the configuration. You can also declare its plugin first with `Toyoterm.plugin`. Individual colors assigned after the theme selection override the theme.
+
+```ruby
+Toyoterm.plugin "plugins/moon-theme.rb"
+
+Toyoterm.configure do |config|
+  config.theme = "moon"
+  config.colors.cursor = "#ffffff"
+end
+```
+
+`Toyoterm.themes` returns the currently registered theme names. A duplicate theme name disables only the later plugin, while selecting an unknown theme rejects the complete config reload.
+
 ### Ruby object model
 
 Each callback receives a current snapshot through `Toyoterm.current_workspace`, `current_window`, `current_tab`, and `current_pane`. `Toyoterm.workspaces`, `windows`, and `workspace(name)` provide lookup; workspace, window, and tab objects expose their children. Pane metadata includes `title`, `cwd`, `pid`, `command_running?`, and `last_exit_status`. The command fields are populated when [shell integration](docs/shell-integration.md) is enabled. Mutating methods such as `split`, `close`, `focus`/`activate`, `new_tab`, and `create_window` enqueue native commands and take effect after the callback returns successfully. A saved object raises `Toyoterm::InvalidHandleError` after its native object is deleted.
