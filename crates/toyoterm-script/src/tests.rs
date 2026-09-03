@@ -818,6 +818,36 @@ fn converts_object_model_operations_to_native_commands() {
 }
 
 #[test]
+fn switches_to_a_named_workspace_through_a_native_command() {
+    let mut manager = ConfigManager::new().unwrap();
+    assert_eq!(
+        manager.eval("Toyoterm.switch_workspace(:backend)").unwrap(),
+        ""
+    );
+    assert_eq!(
+        manager.drain_commands(PaneId(40)).unwrap(),
+        vec![NativeCommand::Mux(Command::SwitchWorkspace(
+            "backend".into()
+        ))]
+    );
+
+    for (source, message) in [
+        (
+            "Toyoterm.switch_workspace('')",
+            "workspace name cannot be empty",
+        ),
+        (
+            "Toyoterm.switch_workspace(\"bad\\0name\")",
+            "workspace name contains a NUL byte",
+        ),
+    ] {
+        let error = manager.eval(source).unwrap_err();
+        assert!(error.message().contains(message), "{error}");
+    }
+    assert!(manager.drain_commands(PaneId(40)).unwrap().is_empty());
+}
+
+#[test]
 fn converts_custom_pane_launches_to_native_commands() {
     let mut manager = ConfigManager::new().unwrap();
     manager

@@ -414,6 +414,9 @@ impl ConfigManager {
                         resolve_bootstrap_id(raw_id, current_workspace.0),
                     ))))
                 }
+                "switch_workspace" => {
+                    commands.push(NativeCommand::Mux(Command::SwitchWorkspace(payload)))
+                }
                 "create_window" => commands.push(NativeCommand::Mux(Command::CreateWindow(
                     WorkspaceId(resolve_bootstrap_id(raw_id, current_workspace.0)),
                 ))),

@@ -1013,6 +1013,14 @@ module Toyoterm
     pair ? Workspace.new(pair[0]) : nil
   end
 
+  def self.switch_workspace(name)
+    name = name.to_s
+    raise ArgumentError, "workspace name cannot be empty" if name.empty?
+    raise ArgumentError, "workspace name contains a NUL byte" if name.index("\0")
+    __queue_command(:switch_workspace, 0, name)
+    nil
+  end
+
   def self.clipboard
     @clipboard
   end

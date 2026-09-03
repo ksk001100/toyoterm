@@ -152,6 +152,10 @@ Toyoterm.command :monitor_window do |context|
   Toyoterm.current_workspace.create_window(command: "btop", cwd: context.pane.cwd)
 end
 
+Toyoterm.command :backend_workspace do
+  Toyoterm.switch_workspace(:backend)
+end
+
 # Ruby commands can jump directly to a literal match in pane scrollback.
 Toyoterm.command :previous_error do |context|
   context.pane.search("error", direction: :previous)

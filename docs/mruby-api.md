@@ -247,6 +247,7 @@ Every callback sees a snapshot of the native object model:
 | `Toyoterm.workspaces` | All workspaces, ordered by ID |
 | `Toyoterm.windows` | All windows, ordered by ID |
 | `Toyoterm.workspace(name)` | Matching workspace, or `nil` |
+| `Toyoterm.switch_workspace(name)` | Queues activation or creation of a named workspace and returns `nil` |
 
 All native objects inherit from `Toyoterm::NativeHandle`. They expose a
 non-negative integer `id`, equality and hashing by class and ID, `valid?`, and
@@ -257,6 +258,19 @@ or enqueuing a mutation through a stale handle raises
 Mutating methods enqueue native work. Commands are applied only after the Ruby
 callback returns successfully, so the callback continues to see its input
 snapshot.
+
+`Toyoterm.switch_workspace(name)` converts `name` with `to_s` and rejects an
+empty name or NUL byte. If the name already exists it is activated; otherwise a
+complete workspace, window, tab, and pane hierarchy is created and activated.
+The new objects are not visible in the current callback snapshot. The command
+and its resulting `workspace_changed` and focus events are discarded if the
+callback raises before returning.
+
+```ruby
+Toyoterm.command :backend do
+  Toyoterm.switch_workspace(:backend)
+end
+```
 
 ### `Toyoterm::Workspace`
 

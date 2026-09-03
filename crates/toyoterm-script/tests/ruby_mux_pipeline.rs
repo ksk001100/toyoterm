@@ -15,6 +15,7 @@ enum Operation {
     CloseWindow,
     ActivateWindow,
     ActivateWorkspace,
+    SwitchWorkspace,
 }
 
 #[test]
@@ -31,6 +32,7 @@ fn ruby_object_operations_mutate_the_mux() {
         Operation::CloseWindow,
         Operation::ActivateWindow,
         Operation::ActivateWorkspace,
+        Operation::SwitchWorkspace,
     ];
 
     for operation in cases {
@@ -85,6 +87,7 @@ fn run_case(operation: Operation) {
                 .expect("create second workspace");
             format!("Toyoterm::Workspace.new({}).activate", original_workspace.0)
         }
+        Operation::SwitchWorkspace => "Toyoterm.switch_workspace(:backend)".to_owned(),
     };
     mux.drain_events().for_each(drop);
 
@@ -138,6 +141,11 @@ fn run_case(operation: Operation) {
         }
         Operation::ActivateWindow => assert_eq!(mux.current_window(), Some(original_window)),
         Operation::ActivateWorkspace => assert_eq!(mux.current_workspace(), original_workspace),
+        Operation::SwitchWorkspace => {
+            assert_ne!(mux.current_workspace(), original_workspace);
+            assert_eq!(mux.workspace_name(mux.current_workspace()), Some("backend"));
+            assert!(mux.current_pane().is_some());
+        }
     }
 }
 
