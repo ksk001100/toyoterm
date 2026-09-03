@@ -100,6 +100,12 @@ pub enum SelectionMotion {
     LineEnd,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum PaneSearchDirection {
+    Next,
+    Previous,
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum NativeAction {
     NewTab,
@@ -154,6 +160,11 @@ pub enum NativeCommand {
     SetPaneBadge {
         pane: PaneId,
         badge: Option<String>,
+    },
+    SearchPane {
+        pane: PaneId,
+        query: String,
+        direction: PaneSearchDirection,
     },
     ReloadConfig,
 }

@@ -317,6 +317,8 @@ Each callback receives a current snapshot through `Toyoterm.current_workspace`, 
 
 `pane.badge` is callback-owned display text rendered in the pane's upper-right corner. Assign `nil` to clear it. Badge changes are applied only after a successful callback and are discarded together with other queued mutations when the callback raises. `pane.chdir` is not provided: the shell owns its working directory, so configurations that want shell-specific directory changes should use `pane.send_text("cd ...\n")` with appropriate shell escaping.
 
+`pane.search(query, direction: :next)` opens the search bar on that pane and selects the next or previous literal match across its visible screen and scrollback. It is a queued mutation, so callback errors discard it before the UI changes.
+
 ### Runtime events
 
 `Toyoterm.on` supports `window_created`, `window_closed`, `tab_created`, `tab_closed`, `pane_created`, `pane_closed`, `pane_focused`, `title_changed`, `cwd_changed`, `command_started`, `command_finished`, `bell`, and `workspace_changed`, in addition to the startup and reload events. `Toyoterm::Event` exposes `name`, `workspace`, `window`, `tab`, `pane`, `title`, `cwd`, and `exit_status`; fields unrelated to an event are `nil`. Closed-object events retain the deleted object's typed ID, but dereferencing its state raises `Toyoterm::InvalidHandleError`. Command lifecycle events require OSC 133 shell integration; `command_finished.exit_status` is `nil` when no valid status was reported.

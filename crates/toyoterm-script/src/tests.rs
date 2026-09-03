@@ -911,6 +911,59 @@ fn validates_custom_pane_launch_options() {
 }
 
 #[test]
+fn converts_pane_searches_to_native_commands() {
+    let mut manager = ConfigManager::new().unwrap();
+    assert_eq!(
+        manager
+            .eval(
+                "[Toyoterm.current_pane.search('error'), \
+                  Toyoterm.current_pane.search('warning', direction: :previous)].map(&:inspect)",
+            )
+            .unwrap(),
+        "[\"#<Toyoterm::Pane:0>\", \"#<Toyoterm::Pane:0>\"]"
+    );
+
+    assert_eq!(
+        manager.drain_commands(PaneId(42)).unwrap(),
+        vec![
+            NativeCommand::SearchPane {
+                pane: PaneId(42),
+                query: "error".into(),
+                direction: PaneSearchDirection::Next,
+            },
+            NativeCommand::SearchPane {
+                pane: PaneId(42),
+                query: "warning".into(),
+                direction: PaneSearchDirection::Previous,
+            },
+        ]
+    );
+}
+
+#[test]
+fn validates_pane_search_options_before_queueing() {
+    let mut manager = ConfigManager::new().unwrap();
+    for (source, message) in [
+        (
+            "Toyoterm.current_pane.search('')",
+            "search query cannot be empty",
+        ),
+        (
+            "Toyoterm.current_pane.search(\"bad\\0query\")",
+            "search query contains a NUL byte",
+        ),
+        (
+            "Toyoterm.current_pane.search('error', direction: :sideways)",
+            "search direction must be next or previous",
+        ),
+    ] {
+        let error = manager.eval(source).unwrap_err();
+        assert!(error.message().contains(message), "{error}");
+    }
+    assert!(manager.drain_commands(PaneId(1)).unwrap().is_empty());
+}
+
+#[test]
 fn ruby_native_handles_are_typed_id_values() {
     let mut manager = ConfigManager::new().unwrap();
     manager.set_current_pane(PaneId(42)).unwrap();

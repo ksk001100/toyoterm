@@ -147,3 +147,8 @@ Toyoterm.command :login_shell_pane do |context|
     env: { "TOYOTERM_LAYOUT" => "login" }
   )
 end
+
+# Ruby commands can jump directly to a literal match in pane scrollback.
+Toyoterm.command :previous_error do |context|
+  context.pane.search("error", direction: :previous)
+end

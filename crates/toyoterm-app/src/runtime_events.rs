@@ -139,6 +139,11 @@ impl ToyotermApplication {
                             self.pane_badges.remove(&pane);
                         }
                     },
+                    NativeCommand::SearchPane {
+                        pane,
+                        query,
+                        direction,
+                    } => self.search_pane(pane, query, direction)?,
                     NativeCommand::ReloadConfig => reload_requested = true,
                 }
             }

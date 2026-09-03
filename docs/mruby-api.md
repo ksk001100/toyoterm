@@ -298,6 +298,7 @@ snapshot.
 | `close` | Queues closing the pane and returns `self`. |
 | `focus` | Queues activation and returns `self`. |
 | `send_text(text)` | Queues text for the PTY and returns `self`; rejects NUL bytes. |
+| `search(query, direction: :next)` | Queues a literal scrollback search and returns `self`. |
 | `badge` / `badge=` | Reads or queues pane-corner display text. Assign `nil` to clear it. |
 
 `Window#new_tab` and `Pane#split` accept an optional launch specification:
@@ -323,6 +324,20 @@ Invalid types and values raise `TypeError` or `ArgumentError` before anything is
 queued. As with other mutations, the new handle is not visible inside the
 callback that creates it, and the entire launch is discarded if the callback
 raises.
+
+`Pane#search` accepts a non-empty query converted with `to_s` and a direction of
+`:next` or `:previous`. It activates the target pane, opens the existing search
+bar, highlights literal matches in its visible screen and scrollback, and moves
+to the requested match. The query cannot contain NUL. Repeated calls continue
+from the terminal's current match; a query with no matches is not an error and
+displays zero matches. The search is applied only after a successful callback,
+like other queued mutations.
+
+```ruby
+Toyoterm.command :previous_error do |context|
+  context.pane.search("error", direction: :previous)
+end
+```
 
 `pane.chdir` is intentionally absent because the shell owns its working
 directory. If needed, send a correctly escaped shell command with `send_text`.

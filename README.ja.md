@@ -315,6 +315,8 @@ end
 
 `pane.badge`はPane右上に描画するcallback用テキストです。`nil`を代入すると消去します。badge変更はcallbackが正常終了した後だけ反映し、例外時は他のqueue済み変更と一緒に破棄します。`pane.chdir`は提供しません。作業ディレクトリはshellが所有するため、設定から変更する場合は対象shell向けに適切にescapeした`pane.send_text("cd ...\n")`を使用します。
 
+`pane.search(query, direction: :next)`は対象Paneで検索barを開き、表示中の画面とscrollbackから次または前のliteral matchを選択します。queueされる変更なので、callbackが例外終了した場合はUIへ反映せず破棄します。
+
 ### Runtime event
 
 `Toyoterm.on`では、起動・reloadイベントに加えて、`window_created`、`window_closed`、`tab_created`、`tab_closed`、`pane_created`、`pane_closed`、`pane_focused`、`title_changed`、`cwd_changed`、`command_started`、`command_finished`、`bell`、`workspace_changed`を購読できます。`Toyoterm::Event`は`name`、`workspace`、`window`、`tab`、`pane`、`title`、`cwd`、`exit_status`を公開し、イベントと無関係な属性は`nil`です。削除イベントには削除済みオブジェクトの型付きIDが残りますが、その状態を参照すると`Toyoterm::InvalidHandleError`が発生します。command lifecycleイベントにはOSC 133 shell integrationが必要で、有効な終了statusが報告されなかった場合の`command_finished.exit_status`は`nil`です。

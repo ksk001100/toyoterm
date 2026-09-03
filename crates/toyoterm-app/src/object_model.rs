@@ -137,6 +137,7 @@ pub(super) fn dispatch_script_commands(
             NativeCommand::ClipboardWrite(text) => effects.clipboard_writes.push(text),
             NativeCommand::NewTabWithLaunch { .. } | NativeCommand::SplitWithLaunch { .. } => {}
             NativeCommand::SetPaneBadge { .. } => {}
+            NativeCommand::SearchPane { .. } => {}
             NativeCommand::ReloadConfig => effects.reload_requested = true,
         }
     }

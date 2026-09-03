@@ -13,7 +13,7 @@ use std::time::{Duration, Instant};
 
 use toyoterm_api::{
     Command, HandleKind, NativeAction, NativeCommand, NativeHandle, PaneId, PaneLaunchSpec,
-    SplitDirection, TabId, WindowId, WorkspaceId,
+    PaneSearchDirection, SplitDirection, TabId, WindowId, WorkspaceId,
 };
 use toyoterm_config::home_directory;
 pub use toyoterm_config::{

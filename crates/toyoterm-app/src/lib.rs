@@ -38,7 +38,7 @@ pub use lifecycle::install_panic_hook;
 pub use logging::init_logging;
 pub use toyoterm_api::{
     Command, CommandResult, Event as MuxEvent, NativeAction, NativeCommand, PaneId, PaneLaunchSpec,
-    SelectionMotion, SplitDirection,
+    PaneSearchDirection, SelectionMotion, SplitDirection,
 };
 pub use toyoterm_config::ToyotermConfig;
 pub use toyoterm_ipc::{IpcRequest, IpcResponse, IpcServer};

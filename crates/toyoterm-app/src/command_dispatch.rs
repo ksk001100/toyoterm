@@ -448,6 +448,37 @@ impl ToyotermApplication {
         Ok(())
     }
 
+    pub(super) fn search_pane(
+        &mut self,
+        pane: PaneId,
+        query: String,
+        direction: PaneSearchDirection,
+    ) -> Result<(), String> {
+        if query.is_empty() {
+            return Err("pane search query cannot be empty".to_owned());
+        }
+        dispatch_coordinator_command(
+            &mut self.mux,
+            &mut self.runtime_events,
+            Command::ActivatePane(pane),
+        )?;
+        self.exit_visual_mode();
+        self.ime_preedit = None;
+        self.search_open = true;
+        self.search_query = query;
+        let direction = match direction {
+            PaneSearchDirection::Next => SearchDirection::Next,
+            PaneSearchDirection::Previous => SearchDirection::Previous,
+        };
+        self.search_result = self
+            .pane_runtimes
+            .get_mut(&pane)
+            .ok_or_else(|| format!("pane {pane} has no terminal runtime"))?
+            .terminal
+            .search(&self.search_query, direction);
+        Ok(())
+    }
+
     pub(super) fn close_search(&mut self) {
         self.search_open = false;
         self.search_query.clear();
@@ -597,6 +628,9 @@ impl ToyotermApplication {
             }
             NativeCommand::SetPaneBadge { .. } => {
                 return Err("pane badge commands are not exposed over IPC".to_owned());
+            }
+            NativeCommand::SearchPane { .. } => {
+                return Err("pane search commands are not exposed over IPC".to_owned());
             }
             NativeCommand::ClipboardWrite(_) => {
                 return Err("clipboard commands are not exposed over IPC".to_owned());

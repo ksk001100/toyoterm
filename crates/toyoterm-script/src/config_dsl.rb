@@ -842,6 +842,19 @@ module Toyoterm
       self
     end
 
+    def search(query, direction: :next)
+      validate!
+      query = query.to_s
+      raise ArgumentError, "search query cannot be empty" if query.empty?
+      raise ArgumentError, "search query contains a NUL byte" if query.index("\0")
+      direction = direction.to_s.downcase
+      unless ["next", "previous"].include?(direction)
+        raise ArgumentError, "search direction must be next or previous"
+      end
+      Toyoterm.__queue_command(:search_pane, @id, query, direction)
+      self
+    end
+
     private
     def __native_kind; :pane; end
   end
@@ -1420,6 +1433,10 @@ module Toyoterm
 
   def self.__current_command_payload
     @current_command[2]
+  end
+
+  def self.__current_command_search_direction
+    @current_command[3]
   end
 
   def self.__current_launch_has_program

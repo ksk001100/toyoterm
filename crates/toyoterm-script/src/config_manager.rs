@@ -425,6 +425,27 @@ impl ConfigManager {
                 "clear_pane_badge" => {
                     commands.push(NativeCommand::SetPaneBadge { pane, badge: None })
                 }
+                "search_pane" => {
+                    let direction = match self
+                        .runtime
+                        .eval("Toyoterm.__current_command_search_direction")?
+                        .as_str()
+                    {
+                        "next" => PaneSearchDirection::Next,
+                        "previous" => PaneSearchDirection::Previous,
+                        other => {
+                            return Err(ScriptError::new(
+                                "decode mruby command",
+                                format!("unsupported search direction {other}"),
+                            ));
+                        }
+                    };
+                    commands.push(NativeCommand::SearchPane {
+                        pane,
+                        query: payload,
+                        direction,
+                    });
+                }
                 "reload_config" => commands.push(NativeCommand::ReloadConfig),
                 other => {
                     return Err(ScriptError::new(
