@@ -227,13 +227,14 @@ end
 Trusted configuration can also use the host environment, filesystem, and child processes:
 
 ```ruby
+platform = Toyoterm.platform # :linux, :macos, :windows, or :other
 home = Toyoterm.env["HOME"]
 contents = Toyoterm.read_file("/path/to/file")
 result = Toyoterm.spawn("git", "status", "--short")
 warn result.stderr unless result.success?
 ```
 
-`Toyoterm.env` returns a copy of the environment snapshot taken when the Ruby VM is created; changing the Hash does not change the process environment. Entries that cannot be represented as UTF-8 are omitted. Paths, program names, and arguments must be UTF-8 and cannot contain NUL bytes. `read_file` returns a byte-preserving Ruby String. `spawn` runs synchronously on the script thread, captures byte-preserving `stdout` and `stderr`, and returns a `Toyoterm::ProcessResult` with `stdout`, `stderr`, `exit_status`, and `success?`; a process terminated without a portable exit code uses `-1`. Filesystem and process-launch failures raise `RuntimeError`, while a nonzero child exit is a normal result. These calls do not block PTY reading or rendering, but a long-running child delays other Ruby callbacks.
+`Toyoterm.platform` returns the host platform as a Symbol. `Toyoterm.env` returns a copy of the environment snapshot taken when the Ruby VM is created; changing the Hash does not change the process environment. Entries that cannot be represented as UTF-8 are omitted. Paths, program names, and arguments must be UTF-8 and cannot contain NUL bytes. `read_file` returns a byte-preserving Ruby String. `spawn` runs synchronously on the script thread, captures byte-preserving `stdout` and `stderr`, and returns a `Toyoterm::ProcessResult` with `stdout`, `stderr`, `exit_status`, and `success?`; a process terminated without a portable exit code uses `-1`. Filesystem and process-launch failures raise `RuntimeError`, while a nonzero child exit is a normal result. These calls do not block PTY reading or rendering, but a long-running child delays other Ruby callbacks.
 
 Configuration is trusted code and these APIs are intentionally unrestricted in the MVP. Local plugins currently run in the same mruby VM with the same filesystem, process, environment, and clipboard authority. Installing a plugin is therefore equivalent to allowing arbitrary code execution; only install plugin files whose source and updates you trust. A separate filesystem/process/network/clipboard capability model is deferred rather than claiming a sandbox that does not exist.
 

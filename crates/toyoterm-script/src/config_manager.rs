@@ -551,8 +551,9 @@ pub(super) fn load_config(
     source_dir: Option<&Path>,
 ) -> Result<LoadedConfig, ScriptError> {
     let mut runtime = MrubyRuntime::new()?;
-    let config_dsl =
-        CONFIG_DSL.replace("__TOYOTERM_PRIMARY_MODIFIER__", platform_primary_modifier());
+    let config_dsl = CONFIG_DSL
+        .replace("__TOYOTERM_PRIMARY_MODIFIER__", platform_primary_modifier())
+        .replace("__TOYOTERM_PLATFORM__", platform_name());
     runtime.eval_with_filename(&config_dsl, "(toyoterm DSL)")?;
     // SAFETY: The DSL has created the Toyoterm module in this exclusively owned VM.
     unsafe { toyoterm_mruby_install_host_api(runtime.state.as_ptr()) };

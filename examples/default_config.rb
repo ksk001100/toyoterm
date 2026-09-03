@@ -84,7 +84,7 @@ Toyoterm.configure do |config|
 
     leader("s").split(:right)
 
-    if Toyoterm.__primary_modifier == "SUPER"
+    if Toyoterm.platform == :macos
       ctrl_super("f").toggle_fullscreen
       primary("r").reload_config
       primary_shift("f").search

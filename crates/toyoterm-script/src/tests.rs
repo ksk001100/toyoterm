@@ -528,6 +528,27 @@ fn bundled_default_key_configuration_is_executable() {
 }
 
 #[test]
+fn exposes_the_host_platform_to_ruby() {
+    let mut manager = ConfigManager::new().unwrap();
+    manager.reload("").unwrap();
+
+    let expected = if cfg!(target_os = "linux") {
+        "linux"
+    } else if cfg!(target_os = "macos") {
+        "macos"
+    } else if cfg!(target_os = "windows") {
+        "windows"
+    } else {
+        "other"
+    };
+    assert_eq!(manager.eval("Toyoterm.platform"), Ok(expected.to_owned()));
+    assert_eq!(
+        manager.eval("Toyoterm.platform.class"),
+        Ok("Symbol".to_owned())
+    );
+}
+
+#[test]
 fn loads_and_validates_the_ansi_palette() {
     let mut manager = ConfigManager::new().unwrap();
     let config = manager

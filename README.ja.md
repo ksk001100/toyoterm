@@ -225,13 +225,14 @@ end
 trusted configからは、ホストの環境変数、filesystem、子processも利用できます。
 
 ```ruby
+platform = Toyoterm.platform # :linux、:macos、:windows、または :other
 home = Toyoterm.env["HOME"]
 contents = Toyoterm.read_file("/path/to/file")
 result = Toyoterm.spawn("git", "status", "--short")
 warn result.stderr unless result.success?
 ```
 
-`Toyoterm.env`はRuby VM作成時の環境変数snapshotのコピーを返し、Hashを変更してもprocess環境は変わりません。UTF-8で表せないentryは含まれません。path、program名、引数はUTF-8かつNUL byteを含まない文字列に限ります。`read_file`は内容のbyteを保持したRuby Stringを返します。`spawn`はScript Thread上で同期実行し、byteを保持した`stdout`と`stderr`をcaptureします。戻り値の`Toyoterm::ProcessResult`は`stdout`、`stderr`、`exit_status`、`success?`を持ち、portableな終了codeがない場合は`-1`です。filesystem操作とprocess起動の失敗は`RuntimeError`になり、子processの非zero終了は通常の結果として返ります。PTY読取りと描画は止まりませんが、長時間動く子processは後続のRuby callbackを待たせます。
+`Toyoterm.platform`はhost platformを`:linux`、`:macos`、`:windows`のいずれかのSymbolで返し、それ以外のtargetでは`:other`を返します。`Toyoterm.env`はRuby VM作成時の環境変数snapshotのコピーを返し、Hashを変更してもprocess環境は変わりません。UTF-8で表せないentryは含まれません。path、program名、引数はUTF-8かつNUL byteを含まない文字列に限ります。`read_file`は内容のbyteを保持したRuby Stringを返します。`spawn`はScript Thread上で同期実行し、byteを保持した`stdout`と`stderr`をcaptureします。戻り値の`Toyoterm::ProcessResult`は`stdout`、`stderr`、`exit_status`、`success?`を持ち、portableな終了codeがない場合は`-1`です。filesystem操作とprocess起動の失敗は`RuntimeError`になり、子processの非zero終了は通常の結果として返ります。PTY読取りと描画は止まりませんが、長時間動く子processは後続のRuby callbackを待たせます。
 
 configはtrusted codeであり、MVPではこれらのAPIに制限を設けません。local pluginも現在は同じmruby VMで動作し、filesystem、process、environment、clipboardにconfigと同じ権限を持ちます。そのためpluginの導入は任意code実行の許可に相当します。sourceと更新元を信頼できるpluginだけを導入してください。filesystem・process・network・clipboardを分離するcapability modelは、存在しないsandboxを保証せず後続設計へ延期します。
 

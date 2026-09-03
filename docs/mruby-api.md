@@ -374,7 +374,7 @@ end
 The bar is hidden when no callback is configured. Commands queued by a status
 callback are always discarded.
 
-## Clipboard, environment, files, and processes
+## Platform, clipboard, environment, files, and processes
 
 Configuration and plugins are trusted code. These APIs are intentionally not
 sandboxed and carry the authority of the toyoterm process.
@@ -383,6 +383,8 @@ sandboxed and carry the authority of the toyoterm process.
   raises `RuntimeError` if the clipboard is unavailable.
 - `Toyoterm.clipboard.write(text)` queues a write, returns the clipboard object,
   and rejects NUL bytes. A callback error rolls the write back.
+- `Toyoterm.platform` returns the host platform as `:linux`, `:macos`, or
+  `:windows`. Targets outside those three return `:other`.
 - `Toyoterm.env` returns a copy of the environment captured when the VM was
   created. Non-UTF-8 entries are omitted; changing the Hash affects no process.
 - `Toyoterm.read_file(path)` returns a byte-preserving String. The UTF-8 path
@@ -395,6 +397,10 @@ sandboxed and carry the authority of the toyoterm process.
 `success?`. A process terminated without a portable exit code reports `-1`.
 
 ```ruby
+Toyoterm.configure do |config|
+  config.window.decorations = false if Toyoterm.platform == :linux
+end
+
 result = Toyoterm.spawn("git", "status", "--short")
 warn result.stderr unless result.success?
 ```

@@ -1006,6 +1006,10 @@ module Toyoterm
     @env.dup
   end
 
+  def self.platform
+    :__TOYOTERM_PLATFORM__
+  end
+
   def self.read_file(path)
     path = path.to_s
     raise ArgumentError, "path contains a NUL byte" if path.index("\0")
