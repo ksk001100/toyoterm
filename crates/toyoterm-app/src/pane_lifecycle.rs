@@ -142,6 +142,8 @@ impl ToyotermApplication {
     }
 
     pub(super) fn reconcile_pane_runtimes(&mut self) -> Result<(), String> {
+        let live_panes = self.mux.pane_ids().collect::<HashSet<_>>();
+        self.pane_badges.retain(|pane, _| live_panes.contains(pane));
         self.refresh_pane_layout();
         let size = self
             .window

@@ -298,7 +298,7 @@ snapshot.
 | `close` | Queues closing the pane and returns `self`. |
 | `focus` | Queues activation and returns `self`. |
 | `send_text(text)` | Queues text for the PTY and returns `self`; rejects NUL bytes. |
-| `badge` / `badge=` | Reads or sets callback-owned display metadata. Assign `nil` to clear it. |
+| `badge` / `badge=` | Reads or queues pane-corner display text. Assign `nil` to clear it. |
 
 `pane.chdir` is intentionally absent because the shell owns its working
 directory. If needed, send a correctly escaped shell command with `send_text`.
@@ -322,8 +322,8 @@ Command names must be non-empty and unique. A command callback receives a
 ## Runtime events
 
 Register handlers with `Toyoterm.on(name) { |event| ... }`. `Toyoterm::Event`
-exposes `name`, `workspace`, `window`, `tab`, `pane`, `title`, and `cwd`;
-unrelated fields are `nil`.
+exposes `name`, `workspace`, `window`, `tab`, `pane`, `title`, `cwd`, and
+`exit_status`; unrelated fields are `nil`.
 
 | Event | Populated fields |
 | --- | --- |
@@ -335,6 +335,8 @@ unrelated fields are `nil`.
 | `pane_created`, `pane_closed`, `pane_focused` | `pane` |
 | `title_changed` | `pane`, `title` |
 | `cwd_changed` | `pane`, `cwd` |
+| `command_started` | `pane` |
+| `command_finished` | `pane`, `exit_status` when reported |
 | `bell` | `pane` |
 
 ```ruby
@@ -342,6 +344,13 @@ Toyoterm.on :cwd_changed do |event|
   event.pane.badge = event.cwd
 end
 ```
+
+`command_started` and `command_finished` require OSC 133 shell integration.
+`command_finished.exit_status` is `nil` when the shell emits a completion marker
+without a valid decimal status. Badge changes become visible after a successful
+callback and are discarded if it raises. Badge text is drawn in the pane's
+upper-right corner; assigning `nil` removes it, and configuration reload clears
+badges owned by the replaced VM.
 
 Closed-object events retain the deleted object's typed ID, but dereferencing it
 raises `Toyoterm::InvalidHandleError`. Events are processed in FIFO order. One

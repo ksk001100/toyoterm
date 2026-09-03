@@ -224,6 +224,8 @@ impl MrubyRuntime {
                 cwd,
                 cwd_length,
                 cwd_available,
+                event.exit_status.unwrap_or_default(),
+                i32::from(event.exit_status.is_some()),
                 &mut error,
             )
         };

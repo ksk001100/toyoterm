@@ -4,7 +4,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Mutex, OnceLock};
 
-use glyphon::cosmic_text::{Cursor as TextCursor, Fallback, PlatformFallback};
+use glyphon::cosmic_text::{Align, Cursor as TextCursor, Fallback, PlatformFallback};
 use glyphon::{
     Attrs, Buffer, Cache as GlyphCache, Color as GlyphColor, Family, FontSystem, Metrics,
     Resolution, Shaping, Style, SwashCache, TextArea, TextAtlas, TextBounds, TextRenderer,
@@ -54,6 +54,7 @@ pub struct PaneRenderData<'a> {
     pub cursor_uses_grid: bool,
     pub rect: PaneRect,
     pub active: bool,
+    pub badge: Option<&'a str>,
 }
 
 #[derive(Clone, Copy, Debug)]

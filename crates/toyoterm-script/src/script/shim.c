@@ -328,11 +328,12 @@ int toyoterm_mruby_emit_event(
     void *state, const char *name, size_t name_length, uint64_t workspace_id,
     uint64_t window_id, uint64_t tab_id, uint64_t pane_id, const char *title,
     size_t title_length, int title_available, const char *cwd, size_t cwd_length,
-    int cwd_available, char **error_output) {
+    int cwd_available, int exit_status, int exit_status_available,
+    char **error_output) {
   mrb_state *mrb = (mrb_state *)state;
   *error_output = NULL;
   mrb->exc = NULL;
-  mrb_value arguments[7] = {
+  mrb_value arguments[8] = {
       mrb_str_new(mrb, name, (mrb_int)name_length),
       optional_integer(mrb, workspace_id),
       optional_integer(mrb, window_id),
@@ -341,10 +342,12 @@ int toyoterm_mruby_emit_event(
       title_available ? mrb_str_new(mrb, title, (mrb_int)title_length)
                       : mrb_nil_value(),
       cwd_available ? mrb_str_new(mrb, cwd, (mrb_int)cwd_length)
-                    : mrb_nil_value(),
+                      : mrb_nil_value(),
+      exit_status_available ? mrb_int_value(mrb, (mrb_int)exit_status)
+                            : mrb_nil_value(),
   };
   mrb_funcall_argv(mrb, toyoterm_module(mrb),
-                   mrb_intern_lit(mrb, "__emit_native_event"), 7, arguments);
+                   mrb_intern_lit(mrb, "__emit_native_event"), 8, arguments);
   return finish_typed_call(mrb, error_output);
 }
 

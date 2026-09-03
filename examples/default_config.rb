@@ -122,3 +122,13 @@ Toyoterm.configure do |config|
     end
   end
 end
+
+# With shell integration enabled, show failed commands in the pane corner.
+Toyoterm.on :command_started do |event|
+  event.pane.badge = nil
+end
+
+Toyoterm.on :command_finished do |event|
+  status = event.exit_status
+  event.pane.badge = status.nil? || status == 0 ? nil : "exit #{status}"
+end

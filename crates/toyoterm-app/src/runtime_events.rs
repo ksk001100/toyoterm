@@ -92,6 +92,10 @@ impl ToyotermApplication {
         }
         let value = result.value.unwrap_or_default();
         let apply_result: Result<(), String> = (|| {
+            if is_reload {
+                // Reload replaces the mruby VM, so its callback-owned badge state is gone too.
+                self.pane_badges.clear();
+            }
             if let Some(snapshot) = result.snapshot {
                 self.config_error_notice = None;
                 self.apply_script_snapshot(snapshot)?;
@@ -107,6 +111,14 @@ impl ToyotermApplication {
                         )?;
                     }
                     NativeCommand::ClipboardWrite(text) => self.pending_clipboard_writes.push(text),
+                    NativeCommand::SetPaneBadge { pane, badge } => match badge {
+                        Some(badge) => {
+                            self.pane_badges.insert(pane, badge);
+                        }
+                        None => {
+                            self.pane_badges.remove(&pane);
+                        }
+                    },
                     NativeCommand::ReloadConfig => reload_requested = true,
                 }
             }

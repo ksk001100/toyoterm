@@ -562,6 +562,9 @@ impl ToyotermApplication {
                 self.flush_mux_input()?;
             }
             NativeCommand::ReloadConfig => self.reload_config_with_notification()?,
+            NativeCommand::SetPaneBadge { .. } => {
+                return Err("pane badge commands are not exposed over IPC".to_owned());
+            }
             NativeCommand::ClipboardWrite(_) => {
                 return Err("clipboard commands are not exposed over IPC".to_owned());
             }

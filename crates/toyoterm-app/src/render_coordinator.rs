@@ -67,6 +67,7 @@ impl ToyotermApplication {
                         cursor_uses_grid,
                         placement.rect,
                         is_active,
+                        self.pane_badges.get(&placement.pane).cloned(),
                     )
                 })
             })
@@ -74,13 +75,14 @@ impl ToyotermApplication {
         let panes = snapshots
             .iter()
             .map(
-                |(pane, snapshot, cursor, cursor_uses_grid, rect, active)| PaneRenderData {
+                |(pane, snapshot, cursor, cursor_uses_grid, rect, active, badge)| PaneRenderData {
                     pane: *pane,
                     snapshot,
                     cursor: *cursor,
                     cursor_uses_grid: *cursor_uses_grid,
                     rect: *rect,
                     active: *active,
+                    badge: badge.as_deref(),
                 },
             )
             .collect::<Vec<_>>();

@@ -51,6 +51,7 @@ pub struct RubyEvent {
     pub pane: Option<PaneId>,
     pub title: Option<String>,
     pub cwd: Option<String>,
+    pub exit_status: Option<i32>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -211,6 +212,7 @@ impl RubyEvent {
             pane: None,
             title: None,
             cwd: None,
+            exit_status: None,
         }
     }
 }

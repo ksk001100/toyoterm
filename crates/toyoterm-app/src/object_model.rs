@@ -135,6 +135,7 @@ pub(super) fn dispatch_script_commands(
                 mux.dispatch(command).map_err(|error| error.to_string())?;
             }
             NativeCommand::ClipboardWrite(text) => effects.clipboard_writes.push(text),
+            NativeCommand::SetPaneBadge { .. } => {}
             NativeCommand::ReloadConfig => effects.reload_requested = true,
         }
     }

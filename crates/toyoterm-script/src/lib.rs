@@ -280,6 +280,8 @@ unsafe extern "C" {
         cwd: *const c_char,
         cwd_length: usize,
         cwd_available: i32,
+        exit_status: i32,
+        exit_status_available: i32,
         error_output: *mut *mut c_char,
     ) -> i32;
     fn toyoterm_mruby_set_clipboard_text(

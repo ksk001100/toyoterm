@@ -175,9 +175,9 @@ module Toyoterm
   end
 
   class Event
-    attr_reader :name, :workspace, :window, :tab, :pane, :title, :cwd
+    attr_reader :name, :workspace, :window, :tab, :pane, :title, :cwd, :exit_status
 
-    def initialize(name, workspace = nil, window = nil, tab = nil, pane = nil, title = nil, cwd = nil)
+    def initialize(name, workspace = nil, window = nil, tab = nil, pane = nil, title = nil, cwd = nil, exit_status = nil)
       @name = name
       @workspace = workspace
       @window = window
@@ -185,6 +185,7 @@ module Toyoterm
       @pane = pane
       @title = title
       @cwd = cwd
+      @exit_status = exit_status
     end
   end
 
@@ -614,10 +615,12 @@ module Toyoterm
       callback = @bindings[key.to_s.upcase]
       return false unless callback
       checkpoint = Toyoterm.__command_checkpoint
+      badge_checkpoint = Toyoterm.__badge_checkpoint
       begin
         callback.call(KeyBindingContext.new(pane))
       rescue => error
         Toyoterm.__rollback_commands(checkpoint)
+        Toyoterm.__rollback_badges(badge_checkpoint)
         raise error
       end
       true
@@ -824,7 +827,9 @@ module Toyoterm
 
     def badge=(value)
       validate!
-      Toyoterm.__set_pane_badge(@id, value.nil? ? nil : value.to_s)
+      value = value.nil? ? nil : value.to_s
+      Toyoterm.__set_pane_badge(@id, value)
+      Toyoterm.__queue_command(value.nil? ? :clear_pane_badge : :set_pane_badge, @id, value)
     end
 
     def send_text(text)
@@ -1150,7 +1155,7 @@ module Toyoterm
   # The host validates mutations made in the persistent VM after each
   # request. Keep a VM-side checkpoint so invalid changes can be rolled back.
   def self.__begin_config_transaction
-    @config_transaction = [@config.__checkpoint, @status_interval, @status_callback]
+    @config_transaction = [@config.__checkpoint, @status_interval, @status_callback, @pane_badges.dup]
     nil
   end
 
@@ -1160,6 +1165,7 @@ module Toyoterm
     @config.__restore(checkpoint[0])
     @status_interval = checkpoint[1]
     @status_callback = checkpoint[2]
+    @pane_badges = checkpoint[3]
     @config_transaction = nil
     nil
   end
@@ -1205,10 +1211,12 @@ module Toyoterm
     return nil unless @status_callback
     context = StatusContext.new(current_workspace, current_window, current_tab, current_pane)
     checkpoint = __command_checkpoint
+    badge_checkpoint = __badge_checkpoint
     begin
       @status_callback.call(context).to_s
     ensure
       __rollback_commands(checkpoint)
+      __rollback_badges(badge_checkpoint)
     end
   end
 
@@ -1224,10 +1232,12 @@ module Toyoterm
     callback = @user_commands[name.to_s]
     raise ArgumentError, "undefined user command: #{name}" unless callback
     checkpoint = __command_checkpoint
+    badge_checkpoint = __badge_checkpoint
     begin
       callback.call(CommandContext.new(pane))
     rescue => error
       __rollback_commands(checkpoint)
+      __rollback_badges(badge_checkpoint)
       raise error
     end
     true
@@ -1245,7 +1255,7 @@ module Toyoterm
     __dispatch_event(name, Event.new(name.to_sym, nil, nil, nil, pane))
   end
 
-  def self.__emit_native_event(name, workspace_id, window_id, tab_id, pane_id, title, cwd)
+  def self.__emit_native_event(name, workspace_id, window_id, tab_id, pane_id, title, cwd, exit_status)
     event = Event.new(
       name.to_sym,
       workspace_id.nil? ? nil : Workspace.new(workspace_id),
@@ -1253,7 +1263,8 @@ module Toyoterm
       tab_id.nil? ? nil : Tab.new(tab_id),
       pane_id.nil? ? nil : Pane.new(pane_id),
       title,
-      cwd
+      cwd,
+      exit_status
     )
     __dispatch_event(name, event)
   end
@@ -1262,10 +1273,12 @@ module Toyoterm
     handlers = @event_handlers[name.to_s]
     return false unless handlers
     checkpoint = __command_checkpoint
+    badge_checkpoint = __badge_checkpoint
     begin
       handlers.each { |handler| handler.call(event) }
     rescue => error
       __rollback_commands(checkpoint)
+      __rollback_badges(badge_checkpoint)
       raise error
     end
     true
@@ -1312,6 +1325,14 @@ module Toyoterm
 
   def self.__set_pane_badge(id, value)
     value.nil? ? @pane_badges.delete(id) : @pane_badges[id] = value
+  end
+
+  def self.__badge_checkpoint
+    @pane_badges.dup
+  end
+
+  def self.__rollback_badges(checkpoint)
+    @pane_badges = checkpoint
   end
 
   def self.__replace_live_handles(workspaces, windows, tabs, panes)

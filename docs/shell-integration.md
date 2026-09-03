@@ -11,8 +11,8 @@ Shells write these OSC sequences to the terminal. Both BEL (`0x07`) and ST
 | State | Sequence | Pane metadata |
 | --- | --- | --- |
 | Working directory | `OSC 7;file://<host>/<percent-encoded-path> ST` | `cwd` |
-| Command start | `OSC 133;C ST` | `command_running? = true` |
-| Command end | `OSC 133;D;<decimal-status> ST` | `command_running? = false`, `last_exit_status` |
+| Command start | `OSC 133;C ST` | `command_running? = true`, Ruby `command_started` event |
+| Command end | `OSC 133;D;<decimal-status> ST` | `command_running? = false`, `last_exit_status`, Ruby `command_finished` event |
 
 OSC payloads are limited to 8 KiB. Invalid UTF-8 paths and malformed status
 values are ignored; an OSC 133 command-end marker without a valid status still
@@ -22,7 +22,9 @@ included in the protocol.
 OSC 7 is also accepted independently of the bundled scripts, preserving cwd
 updates from shells and remote tools that already emit it. Title changes remain
 the standard OSC 0/2 terminal events. Title and cwd changes are delivered to
-Ruby as `title_changed` and `cwd_changed` events.
+Ruby as `title_changed` and `cwd_changed` events. Command lifecycle events expose
+the affected `pane`; `command_finished` also exposes `exit_status`, or `nil`
+when no valid decimal status was reported.
 
 ## Enabling a shell
 

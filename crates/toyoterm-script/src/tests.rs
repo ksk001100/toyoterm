@@ -740,6 +740,21 @@ fn exposes_the_synced_ruby_object_model() {
 
     manager.eval("Toyoterm.current_pane.badge = 'dev'").unwrap();
     assert_eq!(manager.eval("Toyoterm.current_pane.badge").unwrap(), "dev");
+    assert_eq!(
+        manager.drain_commands(PaneId(40)).unwrap(),
+        vec![NativeCommand::SetPaneBadge {
+            pane: PaneId(40),
+            badge: Some("dev".into()),
+        }]
+    );
+    manager.eval("Toyoterm.current_pane.badge = nil").unwrap();
+    assert_eq!(
+        manager.drain_commands(PaneId(40)).unwrap(),
+        vec![NativeCommand::SetPaneBadge {
+            pane: PaneId(40),
+            badge: None,
+        }]
+    );
 }
 
 #[test]
@@ -993,6 +1008,28 @@ fn ruby_callback_errors_roll_back_clipboard_writes() {
     let error = manager.trigger_keybinding("CTRL+C", PaneId(4)).unwrap_err();
     assert!(error.message().contains("broken clipboard callback"));
     assert!(manager.drain_commands(PaneId(4)).unwrap().is_empty());
+}
+
+#[test]
+fn ruby_callback_errors_roll_back_pane_badges() {
+    let mut manager = ConfigManager::new().unwrap();
+    manager
+        .reload(
+            r#"
+                Toyoterm.configure do |config|
+                  config.bind "CTRL+B" do |context|
+                    context.pane.badge = "must not persist"
+                    raise "broken badge callback"
+                  end
+                end
+                "#,
+        )
+        .unwrap();
+
+    let error = manager.trigger_keybinding("CTRL+B", PaneId(4)).unwrap_err();
+    assert!(error.message().contains("broken badge callback"));
+    assert!(manager.drain_commands(PaneId(4)).unwrap().is_empty());
+    assert_eq!(manager.eval("Toyoterm.current_pane.badge").unwrap(), "");
 }
 
 #[test]
@@ -1301,7 +1338,8 @@ fn emits_typed_native_event_payloads() {
                 Toyoterm.on :title_changed do |event|
                   $native_event = [
                     event.name, event.workspace.id, event.window.id,
-                    event.tab.id, event.pane.id, event.title, event.cwd
+                    event.tab.id, event.pane.id, event.title, event.cwd,
+                    event.exit_status
                   ]
                 end
                 "#,
@@ -1315,6 +1353,7 @@ fn emits_typed_native_event_payloads() {
         pane: Some(PaneId(4)),
         title: Some("server \"one\"".into()),
         cwd: Some("/srv/日本語".into()),
+        exit_status: Some(17),
     };
 
     assert!(manager.emit_native_event(&event).unwrap());
@@ -1324,6 +1363,7 @@ fn emits_typed_native_event_payloads() {
     );
     assert_eq!(manager.eval("$native_event[5]").unwrap(), "server \"one\"");
     assert_eq!(manager.eval("$native_event[6]").unwrap(), "/srv/日本語");
+    assert_eq!(manager.eval("$native_event[7]").unwrap(), "17");
 }
 
 #[test]

@@ -409,6 +409,13 @@ impl ConfigManager {
                     WorkspaceId(resolve_bootstrap_id(raw_id, current_workspace.0)),
                 ))),
                 "clipboard_write" => commands.push(NativeCommand::ClipboardWrite(payload)),
+                "set_pane_badge" => commands.push(NativeCommand::SetPaneBadge {
+                    pane,
+                    badge: Some(payload),
+                }),
+                "clear_pane_badge" => {
+                    commands.push(NativeCommand::SetPaneBadge { pane, badge: None })
+                }
                 "reload_config" => commands.push(NativeCommand::ReloadConfig),
                 other => {
                     return Err(ScriptError::new(

@@ -134,6 +134,7 @@ pub enum NativeAction {
 pub enum NativeCommand {
     Mux(Command),
     ClipboardWrite(String),
+    SetPaneBadge { pane: PaneId, badge: Option<String> },
     ReloadConfig,
 }
 

@@ -356,6 +356,7 @@ struct ToyotermApplication {
     click_tracker: ClickTracker,
     clipboard: Option<Clipboard>,
     pending_clipboard_writes: Vec<String>,
+    pane_badges: HashMap<PaneId, String>,
     runtime_events: VecDeque<RubyEvent>,
     next_script_request: u64,
     script_in_flight: bool,
@@ -372,6 +373,36 @@ struct ToyotermApplication {
     render_style: RenderStyle,
     fatal_error: Option<String>,
     exit_after_startup: bool,
+}
+
+fn ruby_event_from_terminal_event(pane: PaneId, event: TerminalEvent) -> Option<RubyEvent> {
+    let mut event = match event {
+        TerminalEvent::TitleChanged(title) => {
+            let mut event = RubyEvent::new("title_changed");
+            event.title = Some(title);
+            event
+        }
+        TerminalEvent::TitleReset => {
+            let mut event = RubyEvent::new("title_changed");
+            event.title = Some(format!("Pane {}", pane.0));
+            event
+        }
+        TerminalEvent::CwdChanged(cwd) => {
+            let mut event = RubyEvent::new("cwd_changed");
+            event.cwd = Some(cwd);
+            event
+        }
+        TerminalEvent::CommandStarted => RubyEvent::new("command_started"),
+        TerminalEvent::CommandFinished(exit_status) => {
+            let mut event = RubyEvent::new("command_finished");
+            event.exit_status = exit_status;
+            event
+        }
+        TerminalEvent::PtyWrite(_) => return None,
+        TerminalEvent::Bell => RubyEvent::new("bell"),
+    };
+    event.pane = Some(pane);
+    Some(event)
 }
 
 impl ApplicationHandler<AppEvent> for ToyotermApplication {
@@ -746,30 +777,9 @@ impl ApplicationHandler<AppEvent> for ToyotermApplication {
                     }
                 }
                 for event in terminal_events {
-                    let mut runtime_event = match event {
-                        TerminalEvent::TitleChanged(title) => {
-                            let mut event = RubyEvent::new("title_changed");
-                            event.title = Some(title);
-                            event
-                        }
-                        TerminalEvent::TitleReset => {
-                            let mut event = RubyEvent::new("title_changed");
-                            event.title = Some(format!("Pane {}", pane.0));
-                            event
-                        }
-                        TerminalEvent::CwdChanged(cwd) => {
-                            let mut event = RubyEvent::new("cwd_changed");
-                            event.cwd = Some(cwd);
-                            event
-                        }
-                        TerminalEvent::CommandStarted | TerminalEvent::CommandFinished(_) => {
-                            continue;
-                        }
-                        TerminalEvent::PtyWrite(_) => continue,
-                        TerminalEvent::Bell => RubyEvent::new("bell"),
-                    };
-                    runtime_event.pane = Some(pane);
-                    self.runtime_events.push_back(runtime_event);
+                    if let Some(runtime_event) = ruby_event_from_terminal_event(pane, event) {
+                        self.runtime_events.push_back(runtime_event);
+                    }
                 }
                 if let Err(error) = self.deliver_runtime_events() {
                     self.fail(event_loop, error);
@@ -905,6 +915,7 @@ impl ToyotermApplication {
             click_tracker: ClickTracker::default(),
             clipboard: None,
             pending_clipboard_writes: Vec::new(),
+            pane_badges: HashMap::new(),
             runtime_events: VecDeque::new(),
             next_script_request: 1,
             script_in_flight: false,
@@ -939,6 +950,21 @@ impl ToyotermApplication {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn maps_shell_command_lifecycle_to_ruby_events() {
+        let pane = PaneId(7);
+        let started = ruby_event_from_terminal_event(pane, TerminalEvent::CommandStarted).unwrap();
+        assert_eq!(started.name, "command_started");
+        assert_eq!(started.pane, Some(pane));
+        assert_eq!(started.exit_status, None);
+
+        let finished =
+            ruby_event_from_terminal_event(pane, TerminalEvent::CommandFinished(Some(23))).unwrap();
+        assert_eq!(finished.name, "command_finished");
+        assert_eq!(finished.pane, Some(pane));
+        assert_eq!(finished.exit_status, Some(23));
+    }
 
     struct KillTrackingSession(std::sync::Arc<std::sync::atomic::AtomicUsize>);
 

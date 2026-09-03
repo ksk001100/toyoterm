@@ -125,6 +125,8 @@ struct ConfigErrorRenderLayout {
 struct PaneBuffers {
     text: Buffer,
     cursor_glyph: Buffer,
+    badge: Buffer,
+    has_badge: bool,
     layout: TextLayout,
     cursor: CursorState,
     cursor_x: f32,
@@ -242,6 +244,8 @@ impl PaneBuffers {
         Self {
             text: buffer(),
             cursor_glyph: buffer(),
+            badge: buffer(),
+            has_badge: false,
             layout,
             cursor: CursorState {
                 column: 0,
@@ -564,6 +568,35 @@ impl GpuRenderer {
             );
             buffers
                 .cursor_glyph
+                .shape_until_scroll(&mut self.font_system, false);
+
+            buffers.has_badge = pane.badge.is_some_and(|badge| !badge.is_empty());
+            buffers.badge.set_metrics_and_size(
+                Metrics::new(
+                    (layout.font_size * 0.85).max(1.0),
+                    layout.line_height.max(1.0),
+                ),
+                Some(
+                    pane.rect
+                        .width
+                        .saturating_sub((layout.horizontal_padding * 2.0) as u32)
+                        as f32,
+                ),
+                Some(layout.line_height),
+            );
+            buffers.badge.set_text(
+                pane.badge.unwrap_or_default(),
+                &Attrs::new()
+                    .family(resolve_font_family(&self.style.font_family))
+                    .weight(Weight::SEMIBOLD),
+                Shaping::Advanced,
+                None,
+            );
+            if let Some(line) = buffers.badge.lines.first_mut() {
+                line.set_align(Some(Align::Right));
+            }
+            buffers
+                .badge
                 .shape_until_scroll(&mut self.font_system, false);
         }
     }
@@ -962,6 +995,17 @@ impl GpuRenderer {
                     top: placement.cursor_top,
                     scale: 1.0,
                     bounds,
+                    default_color: glyph_color(self.style.cursor, 255),
+                    custom_glyphs: &[],
+                });
+            }
+            if pane.has_badge {
+                text_areas.push(TextArea {
+                    buffer: &pane.badge,
+                    left: pane.rect.x as f32 + pane.layout.horizontal_padding,
+                    top: pane.rect.y as f32 + pane.layout.vertical_padding,
+                    scale: 1.0,
+                    bounds: pane_bounds(pane.rect),
                     default_color: glyph_color(self.style.cursor, 255),
                     custom_glyphs: &[],
                 });
