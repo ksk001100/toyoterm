@@ -831,6 +831,10 @@ fn converts_custom_pane_launches_to_native_commands() {
             )
             Toyoterm.current_window.new_tab(command: "btop")
             Toyoterm.current_window.new_tab(cwd: "/tmp")
+            Toyoterm.current_workspace.create_window(
+              command: ["tail", "-f", "app.log"],
+              env: { "LC_ALL" => "C" }
+            )
             "#,
         )
         .unwrap();
@@ -869,6 +873,15 @@ fn converts_custom_pane_launches_to_native_commands() {
                     args: Vec::new(),
                     cwd: Some("/tmp".into()),
                     environment: Vec::new(),
+                },
+            },
+            NativeCommand::CreateWindowWithLaunch {
+                workspace: WorkspaceId(10),
+                launch: PaneLaunchSpec {
+                    program: Some("tail".into()),
+                    args: vec!["-f".into(), "app.log".into()],
+                    cwd: None,
+                    environment: vec![("LC_ALL".into(), Some("C".into()))],
                 },
             },
         ]

@@ -95,6 +95,7 @@ fn ruby_event_from_mux_event(event: MuxEvent) -> Option<RubyEvent> {
 }
 
 pub(super) enum PaneCreation {
+    NewWindow(toyoterm_api::WorkspaceId),
     NewTab(toyoterm_api::WindowId),
     Split {
         pane: PaneId,
@@ -108,12 +109,19 @@ pub(super) fn dispatch_pane_creation(
     creation: PaneCreation,
 ) -> Result<PaneId, String> {
     let (command, expected) = match creation {
+        PaneCreation::NewWindow(workspace) => (Command::CreateWindow(workspace), "window"),
         PaneCreation::NewTab(window) => (Command::NewTabIn(window), "tab"),
         PaneCreation::Split { pane, direction } => (Command::Split { pane, direction }, "pane"),
     };
     let result = dispatch_coordinator_command(mux, runtime_events, command)?;
     match result {
         CommandResult::Pane(pane) => Ok(pane),
+        CommandResult::Window(window) => mux
+            .tabs(window)
+            .and_then(|tabs| tabs.first())
+            .and_then(|tab| mux.tab_panes(*tab))
+            .and_then(|panes| panes.into_iter().next())
+            .ok_or_else(|| format!("new window {window} has no pane")),
         CommandResult::Tab(tab) => mux
             .tab_panes(tab)
             .and_then(|panes| panes.into_iter().next())
@@ -623,7 +631,9 @@ impl ToyotermApplication {
                 self.flush_mux_input()?;
             }
             NativeCommand::ReloadConfig => self.reload_config_with_notification()?,
-            NativeCommand::NewTabWithLaunch { .. } | NativeCommand::SplitWithLaunch { .. } => {
+            NativeCommand::CreateWindowWithLaunch { .. }
+            | NativeCommand::NewTabWithLaunch { .. }
+            | NativeCommand::SplitWithLaunch { .. } => {
                 return Err("custom pane launch commands are not exposed over IPC".to_owned());
             }
             NativeCommand::SetPaneBadge { .. } => {
@@ -896,6 +906,7 @@ mod tests {
     fn pane_creation_returns_the_new_pane_for_custom_launch_staging() {
         let mut mux = Mux::new();
         let mut events = VecDeque::new();
+        let workspace = mux.current_workspace();
         let window = mux.current_window().unwrap();
         let original = mux.current_pane().unwrap();
 
@@ -915,8 +926,16 @@ mod tests {
         .unwrap();
         assert_ne!(split_pane, tab_pane);
         assert_eq!(mux.current_pane(), Some(split_pane));
+
+        let window_pane =
+            dispatch_pane_creation(&mut mux, &mut events, PaneCreation::NewWindow(workspace))
+                .unwrap();
+        assert_ne!(window_pane, split_pane);
+        assert_eq!(mux.current_pane(), Some(window_pane));
+        assert_eq!(mux.workspace_windows(workspace).unwrap().len(), 2);
         assert!(event_names(&events).contains(&"tab_created"));
         assert!(event_names(&events).contains(&"pane_created"));
+        assert!(event_names(&events).contains(&"window_created"));
     }
 
     #[test]

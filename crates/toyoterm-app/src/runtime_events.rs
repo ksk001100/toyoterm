@@ -110,6 +110,14 @@ impl ToyotermApplication {
                             command,
                         )?;
                     }
+                    NativeCommand::CreateWindowWithLaunch { workspace, launch } => {
+                        let pane = command_dispatch::dispatch_pane_creation(
+                            &mut self.mux,
+                            &mut self.runtime_events,
+                            command_dispatch::PaneCreation::NewWindow(workspace),
+                        )?;
+                        self.pending_pane_launches.insert(pane, launch);
+                    }
                     NativeCommand::NewTabWithLaunch { window, launch } => {
                         let pane = command_dispatch::dispatch_pane_creation(
                             &mut self.mux,

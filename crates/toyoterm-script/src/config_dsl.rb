@@ -704,9 +704,10 @@ module Toyoterm
       self
     end
 
-    def create_window
+    def create_window(command: nil, cwd: nil, env: nil)
       validate!
-      Toyoterm.__queue_command(:create_window, @id, nil)
+      launch = Toyoterm.__normalize_launch(command, cwd, env)
+      Toyoterm.__queue_command(launch ? :create_window_with_launch : :create_window, @id, nil, launch)
       self
     end
 

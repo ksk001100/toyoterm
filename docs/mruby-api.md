@@ -265,7 +265,7 @@ snapshot.
 | `name` | Workspace name. |
 | `windows` | Child `Window` handles. |
 | `activate` | Queues activation and returns `self`. |
-| `create_window` | Queues a new window in this workspace and returns `self`. |
+| `create_window(command: nil, cwd: nil, env: nil)` | Queues a new window in this workspace and returns `self`. |
 
 ### `Toyoterm::Window`
 
@@ -301,10 +301,12 @@ snapshot.
 | `search(query, direction: :next)` | Queues a literal scrollback search and returns `self`. |
 | `badge` / `badge=` | Reads or queues pane-corner display text. Assign `nil` to clear it. |
 
-`Window#new_tab` and `Pane#split` accept an optional launch specification:
+`Workspace#create_window`, `Window#new_tab`, and `Pane#split` accept an optional
+launch specification:
 
 ```ruby
 Toyoterm.command :dev_layout do |context|
+  Toyoterm.current_workspace.create_window(command: "btop")
   context.pane.split(
     :right,
     command: ["cargo", "watch", "-x", "test"],

@@ -417,6 +417,12 @@ impl ConfigManager {
                 "create_window" => commands.push(NativeCommand::Mux(Command::CreateWindow(
                     WorkspaceId(resolve_bootstrap_id(raw_id, current_workspace.0)),
                 ))),
+                "create_window_with_launch" => {
+                    commands.push(NativeCommand::CreateWindowWithLaunch {
+                        workspace: WorkspaceId(resolve_bootstrap_id(raw_id, current_workspace.0)),
+                        launch: self.read_current_launch_spec()?,
+                    })
+                }
                 "clipboard_write" => commands.push(NativeCommand::ClipboardWrite(payload)),
                 "set_pane_badge" => commands.push(NativeCommand::SetPaneBadge {
                     pane,
