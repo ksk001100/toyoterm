@@ -103,6 +103,10 @@ cargo run -- ruby console
 
 ## Configuration
 
+See the [mruby configuration DSL and API reference](docs/mruby-api.md) for the
+complete list of settings, key actions, callbacks, object methods, events, and
+plugin APIs.
+
 toyoterm looks for configuration in this order:
 
 1. The path passed with `--config`
