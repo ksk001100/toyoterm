@@ -27,6 +27,7 @@ fn script_test_context() -> ScriptContext {
                 pid: None,
                 command_running: false,
                 last_exit_status: None,
+                screen_text: "prompt>".into(),
             }],
         },
         handles: vec![
@@ -711,6 +712,7 @@ fn exposes_the_synced_ruby_object_model() {
                 pid: Some(1234),
                 command_running: true,
                 last_exit_status: Some(17),
+                screen_text: "build started\ncompiling toyoterm".into(),
             }],
         })
         .unwrap();
@@ -756,6 +758,17 @@ fn exposes_the_synced_ruby_object_model() {
             .eval("Toyoterm.current_pane.last_exit_status")
             .unwrap(),
         "17"
+    );
+    assert_eq!(
+        manager.eval("Toyoterm.current_pane.screen_text").unwrap(),
+        "build started\ncompiling toyoterm"
+    );
+    manager
+        .eval("Toyoterm.current_pane.screen_text << ' changed'")
+        .unwrap();
+    assert_eq!(
+        manager.eval("Toyoterm.current_pane.screen_text").unwrap(),
+        "build started\ncompiling toyoterm"
     );
     assert_eq!(manager.eval("Toyoterm.workspace('missing')").unwrap(), "");
 

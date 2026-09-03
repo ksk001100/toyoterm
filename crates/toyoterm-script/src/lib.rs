@@ -264,6 +264,8 @@ unsafe extern "C" {
         command_running: i32,
         last_exit_status: i32,
         last_exit_status_available: i32,
+        screen_text: *const c_char,
+        screen_text_length: usize,
         error_output: *mut *mut c_char,
     ) -> i32;
     fn toyoterm_mruby_emit_event(

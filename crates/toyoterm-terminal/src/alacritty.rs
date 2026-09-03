@@ -370,6 +370,37 @@ impl TerminalBackend for AlacrittyTerminalBackend {
         }
     }
 
+    fn visible_text(&self) -> String {
+        let grid = self.terminal.grid();
+        let (columns, rows) = self.dimensions();
+        let display_offset = grid.display_offset() as i32;
+        let mut text = String::new();
+        for viewport_row in 0..rows {
+            if viewport_row != 0 {
+                text.push('\n');
+            }
+            let line = Line(viewport_row as i32 - display_offset);
+            let line_start = text.len();
+            for column in 0..columns {
+                let cell = &grid[line][Column(column as usize)];
+                if cell
+                    .flags
+                    .intersects(Flags::WIDE_CHAR_SPACER | Flags::LEADING_WIDE_CHAR_SPACER)
+                {
+                    continue;
+                }
+                text.push(cell.c);
+                if let Some(zerowidth) = cell.zerowidth() {
+                    text.extend(zerowidth);
+                }
+            }
+            while text.len() > line_start && text.ends_with(char::is_whitespace) {
+                text.pop();
+            }
+        }
+        text
+    }
+
     fn cursor(&self) -> CursorState {
         let content = self.terminal.renderable_content();
         let (_, rows) = self.dimensions();
@@ -797,6 +828,17 @@ mod tests {
         );
         backend.clear_search();
         assert!(backend.snapshot().search_matches.is_empty());
+    }
+
+    #[test]
+    fn visible_text_tracks_the_current_viewport_without_cell_metadata() {
+        let mut backend = AlacrittyTerminalBackend::new(12, 2);
+        backend.advance("one\r\n日本語\r\nthree".as_bytes());
+
+        assert_eq!(backend.visible_text(), "日本語\nthree");
+        backend.scroll_display(1);
+        assert_eq!(backend.visible_text(), "one\n日本語");
+        assert_eq!(backend.visible_text(), backend.snapshot().lines.join("\n"));
     }
 
     #[test]

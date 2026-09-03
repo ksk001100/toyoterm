@@ -106,6 +106,7 @@ pub trait TerminalBackend: Send {
     fn advance(&mut self, bytes: &[u8]);
     fn resize(&mut self, columns: u16, rows: u16);
     fn snapshot(&self) -> TerminalSnapshot;
+    fn visible_text(&self) -> String;
     fn cursor(&self) -> CursorState;
     fn mode(&self) -> TerminalMode;
     fn scroll_display(&mut self, lines: i32);

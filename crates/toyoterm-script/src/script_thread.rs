@@ -40,6 +40,7 @@ pub struct RubyPane {
     pub pid: Option<u32>,
     pub command_running: bool,
     pub last_exit_status: Option<i32>,
+    pub screen_text: String,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]

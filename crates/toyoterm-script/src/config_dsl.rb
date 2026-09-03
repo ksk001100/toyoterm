@@ -800,6 +800,11 @@ module Toyoterm
       Toyoterm.__object_data(:pane, @id)[4]
     end
 
+    def screen_text
+      validate!
+      Toyoterm.__object_data(:pane, @id)[5].dup
+    end
+
     def split(direction, command: nil, cwd: nil, env: nil)
       validate!
       direction = direction.to_s.downcase
@@ -1374,8 +1379,8 @@ module Toyoterm
     @object_data[:tab][id] = [title, panes]
   end
 
-  def self.__add_pane(id, title, cwd, pid, command_running, last_exit_status)
-    @object_data[:pane][id] = [title, cwd, pid, command_running, last_exit_status]
+  def self.__add_pane(id, title, cwd, pid, command_running, last_exit_status, screen_text)
+    @object_data[:pane][id] = [title, cwd, pid, command_running, last_exit_status, screen_text]
   end
 
   def self.__object_data(kind, id)

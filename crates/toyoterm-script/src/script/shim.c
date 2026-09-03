@@ -299,11 +299,12 @@ int toyoterm_mruby_add_pane(void *state, uint64_t pane_id, const char *title,
                             int pid_available, int command_running,
                             int32_t last_exit_status,
                             int last_exit_status_available,
+                            const char *screen_text, size_t screen_text_length,
                             char **error_output) {
   mrb_state *mrb = (mrb_state *)state;
   *error_output = NULL;
   mrb->exc = NULL;
-  mrb_value arguments[6] = {
+  mrb_value arguments[7] = {
       mrb_int_value(mrb, (mrb_int)pane_id),
       mrb_str_new(mrb, title, (mrb_int)title_length),
       cwd_available ? mrb_str_new(mrb, cwd, (mrb_int)cwd_length)
@@ -313,9 +314,10 @@ int toyoterm_mruby_add_pane(void *state, uint64_t pane_id, const char *title,
       last_exit_status_available
           ? mrb_int_value(mrb, (mrb_int)last_exit_status)
           : mrb_nil_value(),
+      mrb_str_new(mrb, screen_text, (mrb_int)screen_text_length),
   };
   mrb_funcall_argv(mrb, toyoterm_module(mrb),
-                   mrb_intern_lit(mrb, "__add_pane"), 6, arguments);
+                   mrb_intern_lit(mrb, "__add_pane"), 7, arguments);
   return finish_typed_call(mrb, error_output);
 }
 

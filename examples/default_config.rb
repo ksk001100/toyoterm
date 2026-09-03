@@ -160,6 +160,10 @@ Toyoterm.command :presentation_mode do
   Toyoterm.action(:toggle_fullscreen)
 end
 
+Toyoterm.command :copy_screen do |context|
+  Toyoterm.clipboard.write(context.pane.screen_text)
+end
+
 # Ruby commands can jump directly to a literal match in pane scrollback.
 Toyoterm.command :previous_error do |context|
   context.pane.search("error", direction: :previous)

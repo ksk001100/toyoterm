@@ -177,6 +177,8 @@ impl MrubyRuntime {
                     i32::from(pane.command_running),
                     pane.last_exit_status.unwrap_or_default(),
                     i32::from(pane.last_exit_status.is_some()),
+                    pane.screen_text.as_ptr().cast(),
+                    pane.screen_text.len(),
                     &mut error,
                 )
             };

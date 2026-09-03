@@ -337,6 +337,7 @@ end
 | `pid` | Child process ID or `nil`. |
 | `command_running?` | Whether shell integration reports an active command. |
 | `last_exit_status` | Last reported exit status or `nil`. |
+| `screen_text` | Visible terminal rows joined with newlines. |
 | `split(direction, command: nil, cwd: nil, env: nil)` | Queues `:left`, `:right`, `:up`, or `:down`; returns `self`. |
 | `close` | Queues closing the pane and returns `self`. |
 | `focus` | Queues activation and returns `self`. |
@@ -381,6 +382,21 @@ like other queued mutations.
 ```ruby
 Toyoterm.command :previous_error do |context|
   context.pane.search("error", direction: :previous)
+end
+```
+
+`Pane#screen_text` returns a new String containing the viewport captured before
+the callback began. Rows are joined with `\n`, trailing whitespace on each row
+is removed, blank rows are retained, and no extra final newline is added. Text
+outside the current viewport is not included, even when it remains in
+scrollback. Changing the returned String does not affect the terminal or later
+reads. As with other handle reads, a stale Pane raises
+`Toyoterm::InvalidHandleError`. Capturing is proportional to the visible grids
+across all panes, so avoid high-frequency polling when many panes are open.
+
+```ruby
+Toyoterm.command :copy_screen do |context|
+  Toyoterm.clipboard.write(context.pane.screen_text)
 end
 ```
 

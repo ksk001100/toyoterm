@@ -81,6 +81,9 @@ pub(super) fn ruby_object_model(
                         pid: runtime.and_then(|runtime| runtime.process_id),
                         command_running: runtime.is_some_and(|runtime| runtime.command_running),
                         last_exit_status: runtime.and_then(|runtime| runtime.last_exit_status),
+                        screen_text: runtime
+                            .map(|runtime| runtime.terminal.visible_text())
+                            .unwrap_or_default(),
                     });
                 }
             }
