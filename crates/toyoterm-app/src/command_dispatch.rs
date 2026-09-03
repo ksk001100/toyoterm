@@ -94,14 +94,44 @@ fn ruby_event_from_mux_event(event: MuxEvent) -> Option<RubyEvent> {
     }
 }
 
+pub(super) enum PaneCreation {
+    NewTab(toyoterm_api::WindowId),
+    Split {
+        pane: PaneId,
+        direction: SplitDirection,
+    },
+}
+
+pub(super) fn dispatch_pane_creation(
+    mux: &mut Mux,
+    runtime_events: &mut VecDeque<RubyEvent>,
+    creation: PaneCreation,
+) -> Result<PaneId, String> {
+    let (command, expected) = match creation {
+        PaneCreation::NewTab(window) => (Command::NewTabIn(window), "tab"),
+        PaneCreation::Split { pane, direction } => (Command::Split { pane, direction }, "pane"),
+    };
+    let result = dispatch_coordinator_command(mux, runtime_events, command)?;
+    match result {
+        CommandResult::Pane(pane) => Ok(pane),
+        CommandResult::Tab(tab) => mux
+            .tab_panes(tab)
+            .and_then(|panes| panes.into_iter().next())
+            .ok_or_else(|| format!("new tab {tab} has no pane")),
+        _ => Err(format!(
+            "pane creation returned an invalid {expected} result"
+        )),
+    }
+}
+
 pub(super) fn dispatch_coordinator_command(
     mux: &mut Mux,
     runtime_events: &mut VecDeque<RubyEvent>,
     command: Command,
-) -> Result<(), String> {
-    mux.dispatch(command).map_err(|error| error.to_string())?;
+) -> Result<CommandResult, String> {
+    let result = mux.dispatch(command).map_err(|error| error.to_string())?;
     runtime_events.extend(mux.drain_events().filter_map(ruby_event_from_mux_event));
-    Ok(())
+    Ok(result)
 }
 
 impl ToyotermApplication {
@@ -562,6 +592,9 @@ impl ToyotermApplication {
                 self.flush_mux_input()?;
             }
             NativeCommand::ReloadConfig => self.reload_config_with_notification()?,
+            NativeCommand::NewTabWithLaunch { .. } | NativeCommand::SplitWithLaunch { .. } => {
+                return Err("custom pane launch commands are not exposed over IPC".to_owned());
+            }
             NativeCommand::SetPaneBadge { .. } => {
                 return Err("pane badge commands are not exposed over IPC".to_owned());
             }
@@ -823,6 +856,33 @@ mod tests {
                 "pane_focused"
             ]
         );
+    }
+
+    #[test]
+    fn pane_creation_returns_the_new_pane_for_custom_launch_staging() {
+        let mut mux = Mux::new();
+        let mut events = VecDeque::new();
+        let window = mux.current_window().unwrap();
+        let original = mux.current_pane().unwrap();
+
+        let tab_pane =
+            dispatch_pane_creation(&mut mux, &mut events, PaneCreation::NewTab(window)).unwrap();
+        assert_ne!(tab_pane, original);
+        assert_eq!(mux.current_pane(), Some(tab_pane));
+
+        let split_pane = dispatch_pane_creation(
+            &mut mux,
+            &mut events,
+            PaneCreation::Split {
+                pane: tab_pane,
+                direction: SplitDirection::Right,
+            },
+        )
+        .unwrap();
+        assert_ne!(split_pane, tab_pane);
+        assert_eq!(mux.current_pane(), Some(split_pane));
+        assert!(event_names(&events).contains(&"tab_created"));
+        assert!(event_names(&events).contains(&"pane_created"));
     }
 
     #[test]

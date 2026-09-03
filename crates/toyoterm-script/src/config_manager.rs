@@ -383,6 +383,11 @@ impl ConfigManager {
                     pane,
                     direction: parse_direction(&payload)?,
                 })),
+                "split_with_launch" => commands.push(NativeCommand::SplitWithLaunch {
+                    pane,
+                    direction: parse_direction(&payload)?,
+                    launch: self.read_current_launch_spec()?,
+                }),
                 "close_pane" => commands.push(NativeCommand::Mux(Command::ClosePane(pane))),
                 "activate_pane" => commands.push(NativeCommand::Mux(Command::ActivatePane(pane))),
                 "close_tab" => commands.push(NativeCommand::Mux(Command::CloseTab(TabId(
@@ -394,6 +399,10 @@ impl ConfigManager {
                 "new_tab" => commands.push(NativeCommand::Mux(Command::NewTabIn(WindowId(
                     resolve_bootstrap_id(raw_id, current_window.0),
                 )))),
+                "new_tab_with_launch" => commands.push(NativeCommand::NewTabWithLaunch {
+                    window: WindowId(resolve_bootstrap_id(raw_id, current_window.0)),
+                    launch: self.read_current_launch_spec()?,
+                }),
                 "close_window" => commands.push(NativeCommand::Mux(Command::CloseWindow(
                     WindowId(resolve_bootstrap_id(raw_id, current_window.0)),
                 ))),
@@ -426,6 +435,67 @@ impl ConfigManager {
             }
         }
         Ok(commands)
+    }
+
+    fn read_current_launch_spec(&mut self) -> Result<PaneLaunchSpec, ScriptError> {
+        let program = self
+            .ruby_bool("Toyoterm.__current_launch_has_program")?
+            .then(|| self.runtime.eval("Toyoterm.__current_launch_program"))
+            .transpose()?;
+        let arg_count = self.ruby_usize("Toyoterm.__current_launch_arg_count")?;
+        let mut args = Vec::with_capacity(arg_count);
+        for index in 0..arg_count {
+            args.push(
+                self.runtime
+                    .eval(&format!("Toyoterm.__current_launch_arg({index})"))?,
+            );
+        }
+        let cwd = self
+            .ruby_bool("Toyoterm.__current_launch_has_cwd")?
+            .then(|| self.runtime.eval("Toyoterm.__current_launch_cwd"))
+            .transpose()?;
+        let env_count = self.ruby_usize("Toyoterm.__current_launch_env_count")?;
+        let mut environment = Vec::with_capacity(env_count);
+        for index in 0..env_count {
+            let key = self
+                .runtime
+                .eval(&format!("Toyoterm.__current_launch_env_key({index})"))?;
+            let value = if self.ruby_bool(&format!(
+                "Toyoterm.__current_launch_env_value_is_nil({index})"
+            ))? {
+                None
+            } else {
+                Some(
+                    self.runtime
+                        .eval(&format!("Toyoterm.__current_launch_env_value({index})"))?,
+                )
+            };
+            environment.push((key, value));
+        }
+        Ok(PaneLaunchSpec {
+            program,
+            args,
+            cwd,
+            environment,
+        })
+    }
+
+    fn ruby_bool(&mut self, source: &str) -> Result<bool, ScriptError> {
+        match self.runtime.eval(source)?.as_str() {
+            "true" => Ok(true),
+            "false" => Ok(false),
+            _ => Err(ScriptError::new(
+                "decode mruby command",
+                "launch boolean is invalid",
+            )),
+        }
+    }
+
+    fn ruby_usize(&mut self, source: &str) -> Result<usize, ScriptError> {
+        self.runtime
+            .eval(source)?
+            .parse()
+            .map_err(|_| ScriptError::new("decode mruby command", "launch count is invalid"))
     }
 }
 

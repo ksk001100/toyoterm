@@ -110,6 +110,26 @@ impl ToyotermApplication {
                             command,
                         )?;
                     }
+                    NativeCommand::NewTabWithLaunch { window, launch } => {
+                        let pane = command_dispatch::dispatch_pane_creation(
+                            &mut self.mux,
+                            &mut self.runtime_events,
+                            command_dispatch::PaneCreation::NewTab(window),
+                        )?;
+                        self.pending_pane_launches.insert(pane, launch);
+                    }
+                    NativeCommand::SplitWithLaunch {
+                        pane,
+                        direction,
+                        launch,
+                    } => {
+                        let created = command_dispatch::dispatch_pane_creation(
+                            &mut self.mux,
+                            &mut self.runtime_events,
+                            command_dispatch::PaneCreation::Split { pane, direction },
+                        )?;
+                        self.pending_pane_launches.insert(created, launch);
+                    }
                     NativeCommand::ClipboardWrite(text) => self.pending_clipboard_writes.push(text),
                     NativeCommand::SetPaneBadge { pane, badge } => match badge {
                         Some(badge) => {

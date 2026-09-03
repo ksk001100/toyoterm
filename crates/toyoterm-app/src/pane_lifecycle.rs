@@ -1,18 +1,47 @@
 use super::*;
 
+pub(super) fn pty_command_for_launch(
+    default_shell: Option<&str>,
+    launch: Option<&PaneLaunchSpec>,
+) -> PtyCommand {
+    let mut command = match launch
+        .and_then(|launch| launch.program.as_deref())
+        .or(default_shell)
+    {
+        Some(shell) => PtyCommand::new(shell),
+        None => PtyCommand::default_shell(),
+    };
+    if let Some(launch) = launch {
+        command.args(&launch.args);
+        if let Some(cwd) = launch.cwd.as_deref() {
+            command.cwd(cwd);
+        }
+        for (key, value) in &launch.environment {
+            match value {
+                Some(value) => {
+                    command.env(key, value);
+                }
+                None => {
+                    command.env_remove(key);
+                }
+            }
+        }
+    }
+    command.env("TERM", "xterm-256color");
+    command.env("TERM_PROGRAM", "toyoterm");
+    command.env("TERM_PROGRAM_VERSION", env!("CARGO_PKG_VERSION"));
+    command
+}
+
 impl ToyotermApplication {
     pub(super) fn start_shell(
         &mut self,
         pane: PaneId,
         size: PtySize,
+        launch: Option<&PaneLaunchSpec>,
     ) -> Result<PaneRuntime, String> {
-        let mut command = match self.script_snapshot.config.default_shell.as_deref() {
-            Some(shell) => PtyCommand::new(shell),
-            None => PtyCommand::default_shell(),
-        };
-        command.env("TERM", "xterm-256color");
-        command.env("TERM_PROGRAM", "toyoterm");
-        command.env("TERM_PROGRAM_VERSION", env!("CARGO_PKG_VERSION"));
+        let command =
+            pty_command_for_launch(self.script_snapshot.config.default_shell.as_deref(), launch);
         let mut session = NativePty.spawn(command, size).map_err(|error| {
             tracing::error!(
                 target: "toyoterm::pty",
@@ -144,6 +173,8 @@ impl ToyotermApplication {
     pub(super) fn reconcile_pane_runtimes(&mut self) -> Result<(), String> {
         let live_panes = self.mux.pane_ids().collect::<HashSet<_>>();
         self.pane_badges.retain(|pane, _| live_panes.contains(pane));
+        self.pending_pane_launches
+            .retain(|pane, _| live_panes.contains(pane));
         self.refresh_pane_layout();
         let size = self
             .window
@@ -296,7 +327,9 @@ impl ToyotermApplication {
             .collect::<Vec<_>>();
         missing.sort_unstable();
         for pane in missing {
-            let runtime = self.start_shell(pane, size)?;
+            let launch = self.pending_pane_launches.get(&pane).cloned();
+            let runtime = self.start_shell(pane, size, launch.as_ref())?;
+            self.pending_pane_launches.remove(&pane);
             self.pane_runtimes.insert(pane, runtime);
         }
         self.flush_mux_input()?;

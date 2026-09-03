@@ -272,7 +272,7 @@ snapshot.
 | Member | Result |
 | --- | --- |
 | `tabs` | Child `Tab` handles. |
-| `new_tab` | Queues a new tab in this window and returns `self`. |
+| `new_tab(command: nil, cwd: nil, env: nil)` | Queues a new tab in this window and returns `self`. |
 | `close` | Queues closing this window and returns `self`. |
 | `focus` | Queues activation and returns `self`. |
 
@@ -294,11 +294,35 @@ snapshot.
 | `pid` | Child process ID or `nil`. |
 | `command_running?` | Whether shell integration reports an active command. |
 | `last_exit_status` | Last reported exit status or `nil`. |
-| `split(direction)` | Queues `:left`, `:right`, `:up`, or `:down`; returns `self`. |
+| `split(direction, command: nil, cwd: nil, env: nil)` | Queues `:left`, `:right`, `:up`, or `:down`; returns `self`. |
 | `close` | Queues closing the pane and returns `self`. |
 | `focus` | Queues activation and returns `self`. |
 | `send_text(text)` | Queues text for the PTY and returns `self`; rejects NUL bytes. |
 | `badge` / `badge=` | Reads or queues pane-corner display text. Assign `nil` to clear it. |
+
+`Window#new_tab` and `Pane#split` accept an optional launch specification:
+
+```ruby
+Toyoterm.command :dev_layout do |context|
+  context.pane.split(
+    :right,
+    command: ["cargo", "watch", "-x", "test"],
+    cwd: context.pane.cwd,
+    env: { "RUST_BACKTRACE" => "1", "OLD_TOKEN" => nil }
+  )
+end
+```
+
+`command` is either a non-empty program String or a non-empty argv Array of
+Strings whose first entry is the program. It is executed directly without shell
+parsing. When `command` is `nil`, the configured or platform default shell is
+used. `cwd` is an optional non-empty UTF-8 path. `env` is an optional Hash with
+non-empty String keys and String or `nil` values; names cannot contain `=`, and
+`nil` removes an inherited variable. Launch strings cannot contain NUL bytes.
+Invalid types and values raise `TypeError` or `ArgumentError` before anything is
+queued. As with other mutations, the new handle is not visible inside the
+callback that creates it, and the entire launch is discarded if the callback
+raises.
 
 `pane.chdir` is intentionally absent because the shell owns its working
 directory. If needed, send a correctly escaped shell command with `send_text`.

@@ -313,6 +313,8 @@ end
 
 Each callback receives a current snapshot through `Toyoterm.current_workspace`, `current_window`, `current_tab`, and `current_pane`. `Toyoterm.workspaces`, `windows`, and `workspace(name)` provide lookup; workspace, window, and tab objects expose their children. Pane metadata includes `title`, `cwd`, `pid`, `command_running?`, and `last_exit_status`. The command fields are populated when [shell integration](docs/shell-integration.md) is enabled. Mutating methods such as `split`, `close`, `focus`/`activate`, `new_tab`, and `create_window` enqueue native commands and take effect after the callback returns successfully. A saved object raises `Toyoterm::InvalidHandleError` after its native object is deleted.
 
+`pane.split` and `window.new_tab` accept `command:`, `cwd:`, and `env:` launch options. A command can be a program String or an argv Array and is executed directly without shell parsing. A `nil` environment value removes that variable from the child. Omitting `command` uses the configured or platform default shell, which is useful for opening a shell in `pane.cwd` with selected environment overrides.
+
 `pane.badge` is callback-owned display text rendered in the pane's upper-right corner. Assign `nil` to clear it. Badge changes are applied only after a successful callback and are discarded together with other queued mutations when the callback raises. `pane.chdir` is not provided: the shell owns its working directory, so configurations that want shell-specific directory changes should use `pane.send_text("cd ...\n")` with appropriate shell escaping.
 
 ### Runtime events

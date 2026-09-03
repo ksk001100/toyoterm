@@ -720,9 +720,10 @@ module Toyoterm
       Toyoterm.__object_data(:window, @id)[0].map { |id| Tab.new(id) }
     end
 
-    def new_tab
+    def new_tab(command: nil, cwd: nil, env: nil)
       validate!
-      Toyoterm.__queue_command(:new_tab, @id, nil)
+      launch = Toyoterm.__normalize_launch(command, cwd, env)
+      Toyoterm.__queue_command(launch ? :new_tab_with_launch : :new_tab, @id, nil, launch)
       self
     end
 
@@ -798,13 +799,14 @@ module Toyoterm
       Toyoterm.__object_data(:pane, @id)[4]
     end
 
-    def split(direction)
+    def split(direction, command: nil, cwd: nil, env: nil)
       validate!
       direction = direction.to_s.downcase
       unless ["left", "right", "up", "down"].include?(direction)
         raise ArgumentError, "split direction must be left, right, up, or down"
       end
-      Toyoterm.__queue_command(:split, @id, direction)
+      launch = Toyoterm.__normalize_launch(command, cwd, env)
+      Toyoterm.__queue_command(launch ? :split_with_launch : :split, @id, direction, launch)
       self
     end
 
@@ -1353,8 +1355,50 @@ module Toyoterm
     !ids.nil? && ids.include?(id)
   end
 
-  def self.__queue_command(type, pane_id, payload)
-    @commands << [type, pane_id, payload]
+  def self.__normalize_launch(command, cwd, env)
+    return nil if command.nil? && cwd.nil? && env.nil?
+
+    if command.nil?
+      program = nil
+      args = []
+    elsif command.is_a?(String)
+      program = command
+      args = []
+    elsif command.is_a?(Array)
+      raise ArgumentError, "command array cannot be empty" if command.empty?
+      unless command.all? { |part| part.is_a?(String) }
+        raise TypeError, "command array entries must be strings"
+      end
+      program = command[0]
+      args = command[1, command.length - 1]
+    else
+      raise TypeError, "command must be a string, an array of strings, or nil"
+    end
+    raise ArgumentError, "command program cannot be empty" if !program.nil? && program.empty?
+
+    unless cwd.nil? || cwd.is_a?(String)
+      raise TypeError, "cwd must be a string or nil"
+    end
+    raise ArgumentError, "cwd cannot be empty" if cwd == ""
+
+    env = {} if env.nil?
+    raise TypeError, "env must be a hash or nil" unless env.is_a?(Hash)
+    env.each do |key, value|
+      raise TypeError, "environment names must be strings" unless key.is_a?(String)
+      raise ArgumentError, "environment name cannot be empty" if key.empty?
+      raise ArgumentError, "environment name cannot contain =" if key.index("=")
+      unless value.nil? || value.is_a?(String)
+        raise TypeError, "environment values must be strings or nil"
+      end
+    end
+
+    values = [program, *args, cwd, *env.keys, *env.values].compact
+    raise ArgumentError, "launch value contains a NUL byte" if values.any? { |value| value.index("\0") }
+    [program, args, cwd, env]
+  end
+
+  def self.__queue_command(type, pane_id, payload, launch = nil)
+    @commands << [type, pane_id, payload, launch]
   end
 
   def self.__command_checkpoint
@@ -1376,5 +1420,45 @@ module Toyoterm
 
   def self.__current_command_payload
     @current_command[2]
+  end
+
+  def self.__current_launch_has_program
+    !@current_command[3][0].nil?
+  end
+
+  def self.__current_launch_program
+    @current_command[3][0]
+  end
+
+  def self.__current_launch_arg_count
+    @current_command[3][1].length
+  end
+
+  def self.__current_launch_arg(index)
+    @current_command[3][1][index]
+  end
+
+  def self.__current_launch_has_cwd
+    !@current_command[3][2].nil?
+  end
+
+  def self.__current_launch_cwd
+    @current_command[3][2]
+  end
+
+  def self.__current_launch_env_count
+    @current_command[3][3].length
+  end
+
+  def self.__current_launch_env_key(index)
+    @current_command[3][3].keys[index]
+  end
+
+  def self.__current_launch_env_value_is_nil(index)
+    @current_command[3][3].values[index].nil?
+  end
+
+  def self.__current_launch_env_value(index)
+    @current_command[3][3].values[index]
   end
 end

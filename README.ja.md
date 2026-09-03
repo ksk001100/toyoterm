@@ -311,6 +311,8 @@ end
 
 各callbackでは、`Toyoterm.current_workspace`、`current_window`、`current_tab`、`current_pane`から最新のsnapshotを参照できます。`Toyoterm.workspaces`、`windows`、`workspace(name)`で検索でき、Workspace・Window・Tabから子要素を取得できます。Paneのメタデータは`title`、`cwd`、`pid`、`command_running?`、`last_exit_status`です。command関連フィールドは[Shell integration](docs/shell-integration.md)を有効にすると更新されます。`split`、`close`、`focus`／`activate`、`new_tab`、`create_window`などの変更操作はNative Commandをqueueし、callbackが正常終了した後に反映します。保存したオブジェクトのnative実体が削除済みの場合は`Toyoterm::InvalidHandleError`を発生させます。
 
+`pane.split`と`window.new_tab`には`command:`、`cwd:`、`env:`の起動optionを指定できます。commandはprogram文字列またはargv配列で、shellによる解釈を挟まず直接実行します。環境変数の値に`nil`を指定すると子processからその変数を除去します。`command`を省略すると設定済みまたはplatform既定のshellを使うため、`pane.cwd`を引き継ぎつつ一部の環境変数だけを上書きしたshellも開けます。
+
 `pane.badge`はPane右上に描画するcallback用テキストです。`nil`を代入すると消去します。badge変更はcallbackが正常終了した後だけ反映し、例外時は他のqueue済み変更と一緒に破棄します。`pane.chdir`は提供しません。作業ディレクトリはshellが所有するため、設定から変更する場合は対象shell向けに適切にescapeした`pane.send_text("cd ...\n")`を使用します。
 
 ### Runtime event

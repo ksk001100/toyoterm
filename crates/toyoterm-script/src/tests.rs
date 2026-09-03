@@ -818,6 +818,99 @@ fn converts_object_model_operations_to_native_commands() {
 }
 
 #[test]
+fn converts_custom_pane_launches_to_native_commands() {
+    let mut manager = ConfigManager::new().unwrap();
+    manager
+        .eval(
+            r#"
+            Toyoterm.current_pane.split(
+              :right,
+              command: ["ssh", "devbox"],
+              cwd: "/srv/app",
+              env: { "MODE" => "dev", "OLD_TOKEN" => nil }
+            )
+            Toyoterm.current_window.new_tab(command: "btop")
+            Toyoterm.current_window.new_tab(cwd: "/tmp")
+            "#,
+        )
+        .unwrap();
+
+    assert_eq!(
+        manager
+            .drain_commands_with_context(WorkspaceId(10), WindowId(20), TabId(30), PaneId(40))
+            .unwrap(),
+        vec![
+            NativeCommand::SplitWithLaunch {
+                pane: PaneId(40),
+                direction: SplitDirection::Right,
+                launch: PaneLaunchSpec {
+                    program: Some("ssh".into()),
+                    args: vec!["devbox".into()],
+                    cwd: Some("/srv/app".into()),
+                    environment: vec![
+                        ("MODE".into(), Some("dev".into())),
+                        ("OLD_TOKEN".into(), None),
+                    ],
+                },
+            },
+            NativeCommand::NewTabWithLaunch {
+                window: WindowId(20),
+                launch: PaneLaunchSpec {
+                    program: Some("btop".into()),
+                    args: Vec::new(),
+                    cwd: None,
+                    environment: Vec::new(),
+                },
+            },
+            NativeCommand::NewTabWithLaunch {
+                window: WindowId(20),
+                launch: PaneLaunchSpec {
+                    program: None,
+                    args: Vec::new(),
+                    cwd: Some("/tmp".into()),
+                    environment: Vec::new(),
+                },
+            },
+        ]
+    );
+}
+
+#[test]
+fn validates_custom_pane_launch_options() {
+    let mut manager = ConfigManager::new().unwrap();
+    for (source, message) in [
+        (
+            "Toyoterm.current_pane.split(:right, command: [])",
+            "command array cannot be empty",
+        ),
+        (
+            "Toyoterm.current_pane.split(:right, command: ['sh', 1])",
+            "command array entries must be strings",
+        ),
+        (
+            "Toyoterm.current_window.new_tab(cwd: '')",
+            "cwd cannot be empty",
+        ),
+        (
+            "Toyoterm.current_window.new_tab(env: {'OK' => 1})",
+            "environment values must be strings or nil",
+        ),
+        (
+            "Toyoterm.current_window.new_tab(env: {'BAD=NAME' => 'value'})",
+            "environment name cannot contain =",
+        ),
+        (
+            "Toyoterm.current_window.new_tab(command: \"bad\\0program\")",
+            "launch value contains a NUL byte",
+        ),
+    ] {
+        let error = manager.eval(source).unwrap_err();
+        assert!(error.message().contains(message), "{error}");
+    }
+    assert!(manager.drain_commands(PaneId(1)).unwrap().is_empty());
+}
+
+#[test]
 fn ruby_native_handles_are_typed_id_values() {
     let mut manager = ConfigManager::new().unwrap();
     manager.set_current_pane(PaneId(42)).unwrap();

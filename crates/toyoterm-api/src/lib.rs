@@ -131,10 +131,30 @@ pub enum NativeAction {
 }
 
 #[derive(Clone, Debug, PartialEq)]
+pub struct PaneLaunchSpec {
+    pub program: Option<String>,
+    pub args: Vec<String>,
+    pub cwd: Option<String>,
+    pub environment: Vec<(String, Option<String>)>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
 pub enum NativeCommand {
     Mux(Command),
+    NewTabWithLaunch {
+        window: WindowId,
+        launch: PaneLaunchSpec,
+    },
+    SplitWithLaunch {
+        pane: PaneId,
+        direction: SplitDirection,
+        launch: PaneLaunchSpec,
+    },
     ClipboardWrite(String),
-    SetPaneBadge { pane: PaneId, badge: Option<String> },
+    SetPaneBadge {
+        pane: PaneId,
+        badge: Option<String>,
+    },
     ReloadConfig,
 }
 

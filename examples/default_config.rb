@@ -132,3 +132,18 @@ Toyoterm.on :command_finished do |event|
   status = event.exit_status
   event.pane.badge = status.nil? || status == 0 ? nil : "exit #{status}"
 end
+
+# Commands can build reusable layouts with a direct argv, cwd, and environment.
+Toyoterm.command :login_shell_pane do |context|
+  command = if Toyoterm.platform == :windows
+              ["powershell.exe", "-NoExit"]
+            else
+              [Toyoterm.env["SHELL"] || "/bin/sh", "-l"]
+            end
+  context.pane.split(
+    :right,
+    command: command,
+    cwd: context.pane.cwd,
+    env: { "TOYOTERM_LAYOUT" => "login" }
+  )
+end

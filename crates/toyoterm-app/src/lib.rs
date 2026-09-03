@@ -37,8 +37,8 @@ use ui_geometry::*;
 pub use lifecycle::install_panic_hook;
 pub use logging::init_logging;
 pub use toyoterm_api::{
-    Command, Event as MuxEvent, NativeAction, NativeCommand, PaneId, SelectionMotion,
-    SplitDirection,
+    Command, CommandResult, Event as MuxEvent, NativeAction, NativeCommand, PaneId, PaneLaunchSpec,
+    SelectionMotion, SplitDirection,
 };
 pub use toyoterm_config::ToyotermConfig;
 pub use toyoterm_ipc::{IpcRequest, IpcResponse, IpcServer};
@@ -336,6 +336,7 @@ struct ToyotermApplication {
     window: Option<Arc<Window>>,
     renderer: Option<GpuRenderer>,
     pane_runtimes: HashMap<PaneId, PaneRuntime>,
+    pending_pane_launches: HashMap<PaneId, PaneLaunchSpec>,
     pane_layout: PaneLayout,
     tab_layout: TabStripLayout,
     workspace_layout: WorkspaceStripLayout,
@@ -892,6 +893,7 @@ impl ToyotermApplication {
             window: None,
             renderer: None,
             pane_runtimes: HashMap::new(),
+            pending_pane_launches: HashMap::new(),
             pane_layout: PaneLayout::default(),
             tab_layout: TabStripLayout::default(),
             workspace_layout: WorkspaceStripLayout::default(),
@@ -964,6 +966,35 @@ mod tests {
         assert_eq!(finished.name, "command_finished");
         assert_eq!(finished.pane, Some(pane));
         assert_eq!(finished.exit_status, Some(23));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn custom_pane_launch_applies_argv_cwd_and_environment() {
+        let cwd = std::env::temp_dir();
+        let launch = PaneLaunchSpec {
+            program: Some("/bin/sh".into()),
+            args: vec![
+                "-c".into(),
+                "printf '%s|%s' \"$PWD\" \"$TOYOTERM_LAUNCH_TEST\"".into(),
+            ],
+            cwd: Some(cwd.display().to_string()),
+            environment: vec![("TOYOTERM_LAUNCH_TEST".into(), Some("works".into()))],
+        };
+        let command = pane_lifecycle::pty_command_for_launch(None, Some(&launch));
+        let mut session = NativePty
+            .spawn(command, PtySize::new(80, 24))
+            .expect("spawn custom pane command");
+        let mut reader = session.take_reader().expect("take PTY reader");
+        let mut output = String::new();
+        reader.read_to_string(&mut output).expect("read PTY output");
+        let status = session.wait().expect("wait for custom pane command");
+
+        assert_eq!(status.code, 0);
+        assert!(
+            output.contains(&format!("{}|works", cwd.display())),
+            "unexpected output: {output:?}"
+        );
     }
 
     struct KillTrackingSession(std::sync::Arc<std::sync::atomic::AtomicUsize>);
