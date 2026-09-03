@@ -403,16 +403,17 @@ mod tests {
         assert_eq!(
             candidates,
             vec![
-                PathBuf::from(r"C:\Users\toyo\AppData\Roaming\toyoterm\config.rb"),
-                PathBuf::from(r"C:\Users\toyo\.config\toyoterm\config.rb"),
+                PathBuf::from(appdata).join("toyoterm").join("config.rb"),
+                PathBuf::from(userprofile)
+                    .join(".config")
+                    .join("toyoterm")
+                    .join("config.rb"),
             ]
         );
         // If neither exists on disk, default is first candidate (APPDATA)
         assert_eq!(
             default_config_path_windows(Some(appdata), Some(userprofile)),
-            Some(PathBuf::from(
-                r"C:\Users\toyo\AppData\Roaming\toyoterm\config.rb"
-            ))
+            Some(PathBuf::from(appdata).join("toyoterm").join("config.rb"))
         );
     }
 
@@ -421,11 +422,21 @@ mod tests {
         let userprofile = std::ffi::OsStr::new(r"C:\Users\toyo");
         assert_eq!(
             default_config_path_windows(None, Some(userprofile)),
-            Some(PathBuf::from(r"C:\Users\toyo\.config\toyoterm\config.rb"))
+            Some(
+                PathBuf::from(userprofile)
+                    .join(".config")
+                    .join("toyoterm")
+                    .join("config.rb")
+            )
         );
         assert_eq!(
             default_plugin_dir_windows(None, Some(userprofile)),
-            Some(PathBuf::from(r"C:\Users\toyo\.config\toyoterm\plugins"))
+            Some(
+                PathBuf::from(userprofile)
+                    .join(".config")
+                    .join("toyoterm")
+                    .join("plugins")
+            )
         );
     }
 
