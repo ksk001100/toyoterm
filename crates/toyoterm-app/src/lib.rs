@@ -394,6 +394,7 @@ struct ToyotermApplication {
     fatal_error: Option<String>,
     exit_after_startup: bool,
     window_title_override: Option<String>,
+    #[cfg(target_os = "linux")]
     app_id: Option<String>,
 }
 
@@ -904,9 +905,10 @@ impl ToyotermApplication {
         let GuiOptions {
             initial_pane,
             title: window_title_override,
-            app_id,
             ..
         } = options;
+        #[cfg(target_os = "linux")]
+        let app_id = options.app_id;
         let mux = Mux::new();
         let mut pending_pane_launches = HashMap::new();
         if let Some(launch) = initial_pane {
@@ -981,6 +983,7 @@ impl ToyotermApplication {
             fatal_error: None,
             exit_after_startup,
             window_title_override,
+            #[cfg(target_os = "linux")]
             app_id,
         })
     }
