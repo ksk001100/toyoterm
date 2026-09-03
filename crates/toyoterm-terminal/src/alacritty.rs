@@ -5,7 +5,7 @@ use alacritty_terminal::event::{Event as AlacrittyEvent, EventListener};
 use alacritty_terminal::grid::{Dimensions, Scroll};
 use alacritty_terminal::index::{Column, Line, Point, Side};
 use alacritty_terminal::selection::{Selection, SelectionType};
-use alacritty_terminal::term::cell::Flags;
+use alacritty_terminal::term::cell::{Cell, Flags};
 use alacritty_terminal::term::{Config, MIN_COLUMNS, MIN_SCREEN_LINES, Osc52, TermMode};
 use alacritty_terminal::vte::ansi::{
     Color, CursorShape as AlacrittyCursorShape, NamedColor, Processor,
@@ -297,9 +297,22 @@ impl TerminalBackend for AlacrittyTerminalBackend {
 
         for viewport_row in 0..rows {
             let line = Line(viewport_row as i32 - display_offset);
-            let mut text = String::with_capacity(columns as usize);
-            let mut cells = Vec::with_capacity(columns as usize);
-            for column in 0..columns {
+            // The grid is normally dominated by untouched cells. Find the
+            // useful suffix once so we do not allocate a String and a
+            // TerminalCell for every trailing blank only to pop them below.
+            let rendered_columns = (0..columns)
+                .rev()
+                .find(|column| {
+                    let cell = &grid[line][Column(usize::from(*column))];
+                    !cell
+                        .flags
+                        .intersects(Flags::WIDE_CHAR_SPACER | Flags::LEADING_WIDE_CHAR_SPACER)
+                        && !is_default_blank_grid_cell(cell)
+                })
+                .map_or(0, |column| column + 1);
+            let mut text = String::with_capacity(rendered_columns as usize);
+            let mut cells = Vec::with_capacity(rendered_columns as usize);
+            for column in 0..rendered_columns {
                 let cell = &grid[line][Column(column as usize)];
                 if cell
                     .flags
@@ -326,9 +339,6 @@ impl TerminalBackend for AlacrittyTerminalBackend {
                 });
             }
             lines.push(text.trim_end().to_owned());
-            while cells.last().is_some_and(is_default_blank_cell) {
-                cells.pop();
-            }
             rows_of_cells.push(cells);
             if let Some(range) = selection_range {
                 let mut selected_columns = (0..columns).filter(|column| {
@@ -520,8 +530,11 @@ impl TerminalBackend for AlacrittyTerminalBackend {
     }
 }
 
-fn is_default_blank_cell(cell: &TerminalCell) -> bool {
-    cell.text == " " && cell.attributes == CellAttributes::default() && cell.hyperlink.is_none()
+fn is_default_blank_grid_cell(cell: &Cell) -> bool {
+    cell.c == ' '
+        && cell.zerowidth().is_none_or(<[char]>::is_empty)
+        && cell_attributes(cell.fg, cell.bg, cell.flags) == CellAttributes::default()
+        && cell.hyperlink().is_none()
 }
 
 fn terminal_matches<T: EventListener>(terminal: &Term<T>, query: &str) -> Vec<GridMatch> {

@@ -249,7 +249,7 @@ pub(super) fn terminal_rich_text<'a>(
     let mut spans = Vec::new();
     for row in 0..snapshot.rows {
         if row > 0 {
-            spans.push(("\n".to_owned(), default_attrs.clone()));
+            push_rich_span(&mut spans, "\n", default_attrs.clone());
         }
         let Some(cells) = snapshot.cells.get(usize::from(row)) else {
             continue;
@@ -257,17 +257,19 @@ pub(super) fn terminal_rich_text<'a>(
         let mut column = 0;
         for cell in cells {
             if cell.column > column {
-                spans.push((
-                    " ".repeat(usize::from(cell.column - column)),
+                push_rich_spaces(
+                    &mut spans,
+                    usize::from(cell.column - column),
                     default_attrs.clone(),
-                ));
+                );
             }
             let mut attributes = cell.attributes;
             if cell.hyperlink.is_some() {
                 attributes.underline = true;
             }
-            spans.push((
-                cell.text.clone(),
+            push_rich_span(
+                &mut spans,
+                &cell.text,
                 glyph_attrs(
                     attributes,
                     font_family,
@@ -276,19 +278,46 @@ pub(super) fn terminal_rich_text<'a>(
                     default_background,
                     ansi,
                 ),
-            ));
+            );
             column = cell.column.saturating_add(u16::from(cell.width.max(1)));
         }
         if let Some(cursor) = cursor.filter(|cursor| cursor.row == row)
             && cursor.column > column
         {
-            spans.push((
-                " ".repeat(usize::from(cursor.column - column)),
+            push_rich_spaces(
+                &mut spans,
+                usize::from(cursor.column - column),
                 default_attrs.clone(),
-            ));
+            );
         }
     }
     spans
+}
+
+fn push_rich_span<'a>(spans: &mut Vec<(String, Attrs<'a>)>, text: &str, attrs: Attrs<'a>) {
+    if text.is_empty() {
+        return;
+    }
+    if let Some((previous, previous_attrs)) = spans.last_mut()
+        && *previous_attrs == attrs
+    {
+        previous.push_str(text);
+    } else {
+        spans.push((text.to_owned(), attrs));
+    }
+}
+
+fn push_rich_spaces<'a>(spans: &mut Vec<(String, Attrs<'a>)>, count: usize, attrs: Attrs<'a>) {
+    if count == 0 {
+        return;
+    }
+    if let Some((previous, previous_attrs)) = spans.last_mut()
+        && *previous_attrs == attrs
+    {
+        previous.extend(std::iter::repeat_n(' ', count));
+    } else {
+        spans.push((" ".repeat(count), attrs));
+    }
 }
 
 pub(super) fn glyph_attrs<'a>(

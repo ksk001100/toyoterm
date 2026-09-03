@@ -375,6 +375,31 @@ mod tests {
     }
 
     #[test]
+    fn terminal_rich_text_coalesces_adjacent_cells_with_the_same_attributes() {
+        let mut terminal = AlacrittyTerminalBackend::new(10, 2);
+        terminal.advance(b"abcdefghij");
+        let snapshot = terminal.snapshot();
+        let spans = terminal_rich_text(
+            &snapshot,
+            None,
+            "monospace",
+            400,
+            [220, 225, 232],
+            [9, 11, 14],
+            &default_ansi_palette(),
+        );
+
+        assert_eq!(
+            spans
+                .iter()
+                .map(|(text, _)| text.as_str())
+                .collect::<String>(),
+            "abcdefghij\n"
+        );
+        assert_eq!(spans.len(), 2, "one text run plus the row separator");
+    }
+
+    #[test]
     fn visual_cursor_uses_the_same_fixed_cell_grid_as_selection() {
         let snapshot = TerminalSnapshot {
             columns: 12,
