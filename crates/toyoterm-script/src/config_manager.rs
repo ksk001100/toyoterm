@@ -668,6 +668,25 @@ fn read_config(runtime: &mut MrubyRuntime) -> Result<ToyotermConfig, ScriptError
             "window opacity must be between 0 and 1",
         ));
     }
+    let number = |runtime: &mut MrubyRuntime, field: &str, ruby: &str| {
+        parse_positive_f32(field, &runtime.eval(ruby)?)
+    };
+    let nonnegative = |runtime: &mut MrubyRuntime, field: &str, ruby: &str| {
+        parse_nonnegative_f32(field, &runtime.eval(ruby)?)
+    };
+    let boolean = |runtime: &mut MrubyRuntime, field: &str, ruby: &str| match runtime
+        .eval(&format!(
+            "({ruby}) == true ? 'true' : (({ruby}) == false ? 'false' : 'invalid')"
+        ))?
+        .as_str()
+    {
+        "true" => Ok(true),
+        "false" => Ok(false),
+        _ => Err(ScriptError::new(
+            "validate config",
+            format!("{field} must be true or false"),
+        )),
+    };
     let scrollback_lines = runtime
         .eval("Toyoterm.__config.scrollback_lines")?
         .parse::<usize>()
@@ -738,8 +757,104 @@ fn read_config(runtime: &mut MrubyRuntime) -> Result<ToyotermConfig, ScriptError
             cursor: runtime.eval("Toyoterm.__config.colors.cursor")?,
             selection: runtime.eval("Toyoterm.__config.colors.selection")?,
             ansi,
+            tab_bar: runtime.eval("Toyoterm.__config.colors.tab_bar")?,
+            tab_active: runtime.eval("Toyoterm.__config.colors.tab_active")?,
+            tab_inactive: runtime.eval("Toyoterm.__config.colors.tab_inactive")?,
+            workspace_bar: runtime.eval("Toyoterm.__config.colors.workspace_bar")?,
+            status_bar: runtime.eval("Toyoterm.__config.colors.status_bar")?,
+            pane_border: runtime.eval("Toyoterm.__config.colors.pane_border")?,
+            search_match: runtime.eval("Toyoterm.__config.colors.search_match")?,
+            search_match_active: runtime.eval("Toyoterm.__config.colors.search_match_active")?,
         },
-        window_opacity: opacity,
+        ui: UiConfig {
+            padding_x: nonnegative(runtime, "ui.padding_x", "Toyoterm.__config.ui.padding_x")?,
+            padding_y: nonnegative(runtime, "ui.padding_y", "Toyoterm.__config.ui.padding_y")?,
+            line_height: number(
+                runtime,
+                "ui.line_height",
+                "Toyoterm.__config.ui.line_height",
+            )?,
+            tab_bar: boolean(runtime, "ui.tab_bar", "Toyoterm.__config.ui.tab_bar")?,
+            tab_bar_height: number(
+                runtime,
+                "ui.tab_bar_height",
+                "Toyoterm.__config.ui.tab_bar_height",
+            )?,
+            tab_width: number(runtime, "ui.tab_width", "Toyoterm.__config.ui.tab_width")?,
+            workspace_bar: boolean(
+                runtime,
+                "ui.workspace_bar",
+                "Toyoterm.__config.ui.workspace_bar",
+            )?,
+            workspace_bar_height: number(
+                runtime,
+                "ui.workspace_bar_height",
+                "Toyoterm.__config.ui.workspace_bar_height",
+            )?,
+            workspace_width: number(
+                runtime,
+                "ui.workspace_width",
+                "Toyoterm.__config.ui.workspace_width",
+            )?,
+            status_bar_height: number(
+                runtime,
+                "ui.status_bar_height",
+                "Toyoterm.__config.ui.status_bar_height",
+            )?,
+            pane_divider_width: nonnegative(
+                runtime,
+                "ui.pane_divider_width",
+                "Toyoterm.__config.ui.pane_divider_width",
+            )?,
+            active_pane_border_width: nonnegative(
+                runtime,
+                "ui.active_pane_border_width",
+                "Toyoterm.__config.ui.active_pane_border_width",
+            )?,
+        },
+        window: WindowConfig {
+            opacity,
+            width: number(runtime, "window.width", "Toyoterm.__config.window.width")?,
+            height: number(runtime, "window.height", "Toyoterm.__config.window.height")?,
+            min_width: number(
+                runtime,
+                "window.min_width",
+                "Toyoterm.__config.window.min_width",
+            )?,
+            min_height: number(
+                runtime,
+                "window.min_height",
+                "Toyoterm.__config.window.min_height",
+            )?,
+            decorations: boolean(
+                runtime,
+                "window.decorations",
+                "Toyoterm.__config.window.decorations",
+            )?,
+            resizable: boolean(
+                runtime,
+                "window.resizable",
+                "Toyoterm.__config.window.resizable",
+            )?,
+            always_on_top: boolean(
+                runtime,
+                "window.always_on_top",
+                "Toyoterm.__config.window.always_on_top",
+            )?,
+            title: runtime.eval("Toyoterm.__config.window.title")?,
+        },
+        behavior: BehaviorConfig {
+            scroll_lines: number(
+                runtime,
+                "behavior.scroll_lines",
+                "Toyoterm.__config.behavior.scroll_lines",
+            )?,
+            copy_on_select: boolean(
+                runtime,
+                "behavior.copy_on_select",
+                "Toyoterm.__config.behavior.copy_on_select",
+            )?,
+        },
         default_shell: if default_shell.is_empty() {
             defaults.default_shell
         } else {
@@ -753,6 +868,24 @@ fn read_config(runtime: &mut MrubyRuntime) -> Result<ToyotermConfig, ScriptError
     validate_color("foreground", &config.colors.foreground)?;
     validate_color("cursor", &config.colors.cursor)?;
     validate_color("selection", &config.colors.selection)?;
+    for (name, color) in [
+        ("tab_bar", &config.colors.tab_bar),
+        ("tab_active", &config.colors.tab_active),
+        ("tab_inactive", &config.colors.tab_inactive),
+        ("workspace_bar", &config.colors.workspace_bar),
+        ("status_bar", &config.colors.status_bar),
+        ("pane_border", &config.colors.pane_border),
+        ("search_match", &config.colors.search_match),
+        ("search_match_active", &config.colors.search_match_active),
+    ] {
+        validate_color(name, color)?;
+    }
+    if config.window.title.trim().is_empty() {
+        return Err(ScriptError::new(
+            "validate config",
+            "window.title cannot be empty",
+        ));
+    }
     for (index, color) in config.colors.ansi.iter().enumerate() {
         validate_color(&format!("ansi[{index}]"), color)?;
     }

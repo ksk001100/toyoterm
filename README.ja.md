@@ -129,6 +129,27 @@ Toyoterm.configure do |config|
   end
 
   config.window.opacity = 0.96
+  config.window.title = "my toyoterm"
+
+  config.ui do |ui|
+    ui.padding_x = 10
+    ui.padding_y = 8
+    ui.line_height = 1.3
+    ui.tab_bar = true
+    ui.tab_bar_height = 30
+    ui.tab_width = 160
+    ui.workspace_bar = true
+    ui.workspace_bar_height = 24
+    ui.workspace_width = 160
+    ui.status_bar_height = 24
+    ui.pane_divider_width = 2
+    ui.active_pane_border_width = 2
+  end
+
+  config.behavior do |behavior|
+    behavior.scroll_lines = 3
+    behavior.copy_on_select = false
+  end
   config.scrollback_lines = 20_000
   config.leader key: "b", mods: "CTRL", timeout: 1000
 
@@ -166,6 +187,10 @@ xterm 6×6×6カラ―キューブ、232〜255はグレースケールです。`
 全体を代入する場合は、`#RRGGBB`形式の文字列をちょうど16個指定してください。
 
 `font.fallback`は省略できます。CJK、emoji、記号などの不足グリフに対し、インストール済みのフォントを指定順で試した後、OS標準のfallbackを使います。存在しないフォント名はフォントシステムが読み飛ばします。
+
+`config.window`では`opacity`、`width`、`height`、`min_width`、`min_height`、`decorations`、`resizable`、`always_on_top`、`title`を設定できます。初期サイズは起動時に、その他の変更可能な属性はreload時にも反映されます。
+
+UI配色は`tab_bar`、`tab_active`、`tab_inactive`、`workspace_bar`、`status_bar`、`pane_border`、`search_match`、`search_match_active`を`config.colors`で指定できます。バーを隠すには`config.ui.tab_bar = false`または`workspace_bar = false`を使います。余白と境界幅には`0`も指定できます。
 
 ### キーバインド
 

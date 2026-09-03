@@ -102,8 +102,17 @@ pub struct RenderStyle {
     pub foreground: [u8; 3],
     pub cursor: [u8; 3],
     pub selection: [u8; 3],
+    pub tab_bar: [u8; 3],
+    pub tab_active: [u8; 3],
+    pub tab_inactive: [u8; 3],
+    pub workspace_bar: [u8; 3],
+    pub status_bar: [u8; 3],
+    pub pane_border: [u8; 3],
+    pub search_match: [u8; 3],
+    pub search_match_active: [u8; 3],
     pub ansi: [[u8; 3]; 16],
     pub opacity: f32,
+    pub active_pane_border_width: f32,
 }
 
 impl Default for RenderStyle {
@@ -116,8 +125,17 @@ impl Default for RenderStyle {
             foreground: [220, 225, 232],
             cursor: [245, 247, 250],
             selection: [55, 88, 145],
+            tab_bar: [17, 21, 27],
+            tab_active: [24, 36, 58],
+            tab_inactive: [21, 25, 31],
+            workspace_bar: [13, 16, 20],
+            status_bar: [16, 20, 25],
+            pane_border: [55, 88, 145],
+            search_match: [196, 151, 47],
+            search_match_active: [255, 190, 58],
             ansi: default_ansi_palette(),
             opacity: 1.0,
+            active_pane_border_width: 2.0,
         }
     }
 }
@@ -171,7 +189,51 @@ impl RenderStyle {
             selection: parse_rgb(selection)?,
             ansi: parsed_ansi,
             opacity,
+            ..Self::default()
         })
+    }
+
+    pub fn from_hex_with_ui(
+        font_family: impl Into<String>,
+        font_fallback: Vec<String>,
+        font_weight: u16,
+        colors: [&str; 12],
+        ansi: &[String],
+        opacity: f32,
+        active_pane_border_width: f32,
+    ) -> Result<Self, RenderError> {
+        let [
+            background,
+            foreground,
+            cursor,
+            selection,
+            tab_bar,
+            tab_active,
+            tab_inactive,
+            workspace_bar,
+            status_bar,
+            pane_border,
+            search_match,
+            search_match_active,
+        ] = colors;
+        let mut style = Self::from_hex_with_ansi(
+            font_family,
+            font_fallback,
+            font_weight,
+            [background, foreground, cursor, selection],
+            ansi,
+            opacity,
+        )?;
+        style.tab_bar = parse_rgb(tab_bar)?;
+        style.tab_active = parse_rgb(tab_active)?;
+        style.tab_inactive = parse_rgb(tab_inactive)?;
+        style.workspace_bar = parse_rgb(workspace_bar)?;
+        style.status_bar = parse_rgb(status_bar)?;
+        style.pane_border = parse_rgb(pane_border)?;
+        style.search_match = parse_rgb(search_match)?;
+        style.search_match_active = parse_rgb(search_match_active)?;
+        style.active_pane_border_width = active_pane_border_width;
+        Ok(style)
     }
 }
 

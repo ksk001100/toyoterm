@@ -190,7 +190,10 @@ impl ToyotermApplication {
                                 .as_ref()
                                 .map(|window| window.inner_size())
                                 .unwrap_or_default(),
-                            scale_factor,
+                            scaled_ui_size(
+                                self.script_snapshot.config.ui.status_bar_height,
+                                scale_factor,
+                            ),
                         ),
                         text: &self.status_text,
                     }),
@@ -256,11 +259,11 @@ impl ToyotermApplication {
             return;
         };
         let Some(pane) = self.mux.current_pane() else {
-            window.set_title("toyoterm");
+            window.set_title(&self.script_snapshot.config.window.title);
             return;
         };
         let Some(runtime) = self.pane_runtimes.get(&pane) else {
-            window.set_title("toyoterm");
+            window.set_title(&self.script_snapshot.config.window.title);
             return;
         };
         let tab = self
@@ -284,8 +287,8 @@ impl ToyotermApplication {
             .map(|cwd| format!(" · {}", cwd.display()))
             .unwrap_or_default();
         window.set_title(&format!(
-            "toyoterm — {workspace}{tab}{}{pid}{cwd}",
-            runtime.title
+            "{} — {workspace}{tab}{}{pid}{cwd}",
+            self.script_snapshot.config.window.title, runtime.title
         ));
     }
 }

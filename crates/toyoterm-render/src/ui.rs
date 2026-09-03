@@ -105,21 +105,6 @@ pub(super) fn rgba(rgb: [u8; 3], alpha: f32) -> [f32; 4] {
     ]
 }
 
-pub(super) fn mix_rgb(base: [u8; 3], tint: [u8; 3], amount: f32, alpha: f32) -> [f32; 4] {
-    let amount = amount.clamp(0.0, 1.0);
-    let mix = |base: u8, tint: u8| {
-        (f32::from(base) * (1.0 - amount) + f32::from(tint) * amount).round() as u8
-    };
-    rgba(
-        [
-            mix(base[0], tint[0]),
-            mix(base[1], tint[1]),
-            mix(base[2], tint[2]),
-        ],
-        alpha,
-    )
-}
-
 pub(super) fn srgb_channel_to_linear(channel: u8) -> f32 {
     let value = f32::from(channel) / 255.0;
     if value <= 0.04045 {

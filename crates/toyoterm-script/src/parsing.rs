@@ -102,6 +102,17 @@ pub(super) fn parse_positive_f32(name: &str, value: &str) -> Result<f32, ScriptE
     Ok(value)
 }
 
+pub(super) fn parse_nonnegative_f32(name: &str, value: &str) -> Result<f32, ScriptError> {
+    let value = parse_f32(name, value)?;
+    if value < 0.0 {
+        return Err(ScriptError::new(
+            "validate config",
+            format!("{name} must not be negative"),
+        ));
+    }
+    Ok(value)
+}
+
 pub(super) fn validate_color(name: &str, value: &str) -> Result<(), ScriptError> {
     let hex = value.strip_prefix('#').unwrap_or(value);
     if hex.len() == 6 && hex.bytes().all(|byte| byte.is_ascii_hexdigit()) {

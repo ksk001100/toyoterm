@@ -625,9 +625,9 @@ impl ToyotermApplication {
 
     pub(super) fn apply_script_snapshot(&mut self, snapshot: ScriptSnapshot) -> Result<(), String> {
         let config = snapshot.config.clone();
-        let previous_opacity = self.script_snapshot.config.window_opacity;
+        let previous_opacity = self.script_snapshot.config.window.opacity;
         self.leader_deadline = None;
-        let render_style = RenderStyle::from_hex_with_ansi(
+        let render_style = RenderStyle::from_hex_with_ui(
             &config.font.family,
             config.font.fallback.clone(),
             config.font.weight,
@@ -636,14 +636,25 @@ impl ToyotermApplication {
                 &config.colors.foreground,
                 &config.colors.cursor,
                 &config.colors.selection,
+                &config.colors.tab_bar,
+                &config.colors.tab_active,
+                &config.colors.tab_inactive,
+                &config.colors.workspace_bar,
+                &config.colors.status_bar,
+                &config.colors.pane_border,
+                &config.colors.search_match,
+                &config.colors.search_match_active,
             ],
             &config.colors.ansi,
-            config.window_opacity,
+            config.window.opacity,
+            config.ui.active_pane_border_width,
         )
         .map_err(|error| error.to_string())?;
         let font_scale = f64::from(config.font.size) / 14.0;
         self.cell_metrics.width = 9.0 * font_scale;
-        self.cell_metrics.height = 18.0 * font_scale;
+        self.cell_metrics.height = f64::from(config.font.size * config.ui.line_height);
+        self.cell_metrics.horizontal_padding = config.ui.padding_x.round() as u32;
+        self.cell_metrics.vertical_padding = config.ui.padding_y.round() as u32;
         self.cell_metrics.font_size = config.font.size;
         for runtime in self.pane_runtimes.values_mut() {
             runtime
@@ -659,9 +670,16 @@ impl ToyotermApplication {
             .status_interval
             .map(|_| Instant::now());
         if let Some(window) = self.window.clone() {
-            window.set_transparent(config.window_opacity < 1.0);
+            window.set_transparent(config.window.opacity < 1.0);
+            window.set_decorations(config.window.decorations);
+            window.set_resizable(config.window.resizable);
+            window.set_window_level(if config.window.always_on_top {
+                winit::window::WindowLevel::AlwaysOnTop
+            } else {
+                winit::window::WindowLevel::Normal
+            });
             let transparency_mode_changed =
-                (previous_opacity < 1.0) != (config.window_opacity < 1.0);
+                (previous_opacity < 1.0) != (config.window.opacity < 1.0);
             if transparency_mode_changed {
                 self.replace_renderer(render_style.clone())?;
             } else if let Some(renderer) = self.renderer.as_mut() {

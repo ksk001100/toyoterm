@@ -173,8 +173,13 @@ impl ToyotermApplication {
     ) -> WorkspaceStripLayout {
         WorkspaceStripLayout::calculate(
             &self.mux.workspaces(),
-            PaneRect::new(0, 0, window_size.width, workspace_bar_height(scale_factor)),
-            chrome_item_width(scale_factor),
+            PaneRect::new(
+                0,
+                0,
+                window_size.width,
+                workspace_bar_height(&self.script_snapshot.config, scale_factor),
+            ),
+            scaled_ui_size(self.script_snapshot.config.ui.workspace_width, scale_factor),
         )
     }
 
@@ -186,12 +191,13 @@ impl ToyotermApplication {
         let Some(notice) = self.config_error_notice.as_ref() else {
             return ConfigErrorLayout::default();
         };
-        let y = workspace_bar_height(scale_factor).saturating_add(tab_bar_height(scale_factor));
+        let y = workspace_bar_height(&self.script_snapshot.config, scale_factor)
+            .saturating_add(tab_bar_height(&self.script_snapshot.config, scale_factor));
         let height = config_error_height(scale_factor, notice.log_expanded)
             .min(window_size.height.saturating_sub(y));
         ConfigErrorLayout::calculate(
             PaneRect::new(0, y, window_size.width, height),
-            tab_bar_height(scale_factor),
+            tab_bar_height(&self.script_snapshot.config, scale_factor),
         )
     }
 
@@ -210,11 +216,11 @@ impl ToyotermApplication {
             tabs,
             PaneRect::new(
                 0,
-                workspace_bar_height(scale_factor),
+                workspace_bar_height(&self.script_snapshot.config, scale_factor),
                 window_size.width,
-                tab_bar_height(scale_factor),
+                tab_bar_height(&self.script_snapshot.config, scale_factor),
             ),
-            chrome_item_width(scale_factor),
+            scaled_ui_size(self.script_snapshot.config.ui.tab_width, scale_factor),
         )
     }
 
@@ -234,15 +240,20 @@ impl ToyotermApplication {
             .as_ref()
             .map(|notice| config_error_height(scale_factor, notice.log_expanded))
             .unwrap_or(0);
-        let chrome_height = workspace_bar_height(scale_factor)
-            .saturating_add(tab_bar_height(scale_factor))
+        let chrome_height = workspace_bar_height(&self.script_snapshot.config, scale_factor)
+            .saturating_add(tab_bar_height(&self.script_snapshot.config, scale_factor))
             .saturating_add(notification_height)
             .min(window_size.height);
         let status_height = self
             .script_snapshot
             .config
             .status_interval
-            .map(|_| status_bar_height(scale_factor))
+            .map(|_| {
+                scaled_ui_size(
+                    self.script_snapshot.config.ui.status_bar_height,
+                    scale_factor,
+                )
+            })
             .unwrap_or(0)
             .min(window_size.height.saturating_sub(chrome_height));
         PaneLayout::calculate(
@@ -256,7 +267,10 @@ impl ToyotermApplication {
                     .saturating_sub(chrome_height)
                     .saturating_sub(status_height),
             ),
-            (2.0 * scale_factor.max(0.1)).round() as u32,
+            scaled_ui_size(
+                self.script_snapshot.config.ui.pane_divider_width,
+                scale_factor,
+            ),
         )
     }
 
@@ -359,7 +373,7 @@ impl ToyotermApplication {
             MouseScrollDelta::PixelDelta(position) => {
                 position.y / (self.cell_metrics.height * window.scale_factor()).max(1.0)
             }
-        };
+        } * f64::from(self.script_snapshot.config.behavior.scroll_lines);
         self.wheel_line_accumulator += lines;
         let steps = self.wheel_line_accumulator.trunc() as i32;
         self.wheel_line_accumulator -= f64::from(steps);
@@ -556,6 +570,11 @@ impl ToyotermApplication {
                     terminal.update_selection(column, row);
                 }
                 self.selecting = false;
+                if self.script_snapshot.config.behavior.copy_on_select
+                    && let Err(error) = self.copy_selection()
+                {
+                    tracing::warn!(target: "toyoterm::app", %error, "copy-on-select failed");
+                }
             }
             ElementState::Released => return,
         }

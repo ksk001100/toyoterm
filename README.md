@@ -130,6 +130,27 @@ Toyoterm.configure do |config|
   end
 
   config.window.opacity = 0.96
+  config.window.title = "my toyoterm"
+
+  config.ui do |ui|
+    ui.padding_x = 10
+    ui.padding_y = 8
+    ui.line_height = 1.3
+    ui.tab_bar = true
+    ui.tab_bar_height = 30
+    ui.tab_width = 160
+    ui.workspace_bar = true
+    ui.workspace_bar_height = 24
+    ui.workspace_width = 160
+    ui.status_bar_height = 24
+    ui.pane_divider_width = 2
+    ui.active_pane_border_width = 2
+  end
+
+  config.behavior do |behavior|
+    behavior.scroll_lines = 3
+    behavior.copy_on_select = false
+  end
   config.scrollback_lines = 20_000
   config.leader key: "b", mods: "CTRL", timeout: 1000
 
@@ -168,6 +189,10 @@ grayscale ramp. Assigning the entire `colors.ansi` array requires exactly 16
 `#RRGGBB` strings.
 
 `font.fallback` is optional. Installed families are tried in the listed order for missing CJK, emoji, symbol, and other glyphs, followed by the platform defaults. Unknown families are skipped by the font system.
+
+`config.window` exposes `opacity`, `width`, `height`, `min_width`, `min_height`, `decorations`, `resizable`, `always_on_top`, and `title`. Initial dimensions apply at startup; mutable window attributes also apply on reload.
+
+UI colors include `tab_bar`, `tab_active`, `tab_inactive`, `workspace_bar`, `status_bar`, `pane_border`, `search_match`, and `search_match_active`. Set `config.ui.tab_bar = false` or `workspace_bar = false` to hide a strip. Padding and border widths accept zero.
 
 ### Key bindings
 

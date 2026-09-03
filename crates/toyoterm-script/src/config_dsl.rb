@@ -23,7 +23,9 @@ module Toyoterm
   end
 
   class ColorConfig
-    attr_accessor :background, :foreground, :cursor, :selection, :ansi
+    attr_accessor :background, :foreground, :cursor, :selection, :ansi,
+                  :tab_bar, :tab_active, :tab_inactive, :workspace_bar,
+                  :status_bar, :pane_border, :search_match, :search_match_active
 
     def initialize
       @background = "#090b0e"
@@ -36,6 +38,14 @@ module Toyoterm
         "#7f7f7f", "#ff0000", "#00ff00", "#ffff00",
         "#5c5cff", "#ff00ff", "#00ffff", "#ffffff"
       ]
+      @tab_bar = "#11151b"
+      @tab_active = "#18243a"
+      @tab_inactive = "#15191f"
+      @workspace_bar = "#0d1014"
+      @status_bar = "#101419"
+      @pane_border = "#375891"
+      @search_match = "#c4972f"
+      @search_match_active = "#ffbe3a"
     end
 
     def __ansi_count
@@ -51,10 +61,51 @@ module Toyoterm
   end
 
   class WindowConfig
-    attr_accessor :opacity
+    attr_accessor :opacity, :width, :height, :min_width, :min_height,
+                  :decorations, :resizable, :always_on_top, :title
 
     def initialize
       @opacity = 1.0
+      @width = 960
+      @height = 600
+      @min_width = 320
+      @min_height = 180
+      @decorations = true
+      @resizable = true
+      @always_on_top = false
+      @title = "toyoterm"
+    end
+  end
+
+  class UiConfig
+    attr_accessor :padding_x, :padding_y, :line_height,
+                  :tab_bar, :tab_bar_height, :tab_width,
+                  :workspace_bar, :workspace_bar_height, :workspace_width,
+                  :status_bar_height, :pane_divider_width,
+                  :active_pane_border_width
+
+    def initialize
+      @padding_x = 8
+      @padding_y = 8
+      @line_height = 1.2857143
+      @tab_bar = true
+      @tab_bar_height = 30
+      @tab_width = 160
+      @workspace_bar = true
+      @workspace_bar_height = 24
+      @workspace_width = 160
+      @status_bar_height = 24
+      @pane_divider_width = 2
+      @active_pane_border_width = 2
+    end
+  end
+
+  class BehaviorConfig
+    attr_accessor :scroll_lines, :copy_on_select
+
+    def initialize
+      @scroll_lines = 3
+      @copy_on_select = false
     end
   end
 
@@ -329,6 +380,8 @@ module Toyoterm
       @font = FontConfig.new
       @colors = ColorConfig.new
       @window = WindowConfig.new
+      @ui = UiConfig.new
+      @behavior = BehaviorConfig.new
       @default_shell = nil
       @scrollback_lines = 10_000
       @bindings = {}
@@ -349,18 +402,35 @@ module Toyoterm
       block ? block.call(@window) : @window
     end
 
+    def ui(&block)
+      block ? block.call(@ui) : @ui
+    end
+
+    def behavior(&block)
+      block ? block.call(@behavior) : @behavior
+    end
+
     def __checkpoint
       [
         [@font.family, @font.fallback.dup, @font.size, @font.weight],
         [@colors.background, @colors.foreground, @colors.cursor, @colors.selection,
-         @colors.ansi.dup],
-        [@window.opacity, @default_shell, @scrollback_lines],
+         @colors.ansi.dup, @colors.tab_bar, @colors.tab_active, @colors.tab_inactive,
+         @colors.workspace_bar, @colors.status_bar, @colors.pane_border,
+         @colors.search_match, @colors.search_match_active],
+        [@window.opacity, @window.width, @window.height, @window.min_width,
+         @window.min_height, @window.decorations, @window.resizable,
+         @window.always_on_top, @window.title, @default_shell, @scrollback_lines],
+        [@ui.padding_x, @ui.padding_y, @ui.line_height, @ui.tab_bar,
+         @ui.tab_bar_height, @ui.tab_width, @ui.workspace_bar,
+         @ui.workspace_bar_height, @ui.workspace_width, @ui.status_bar_height,
+         @ui.pane_divider_width, @ui.active_pane_border_width],
+        [@behavior.scroll_lines, @behavior.copy_on_select],
         [@leader_key, @leader_timeout]
       ]
     end
 
     def __restore(checkpoint)
-      font, colors, window, leader = checkpoint
+      font, colors, window, ui, behavior, leader = checkpoint
       @font.family = font[0]
       @font.fallback = font[1]
       @font.size = font[2]
@@ -370,9 +440,39 @@ module Toyoterm
       @colors.cursor = colors[2]
       @colors.selection = colors[3]
       @colors.ansi = colors[4]
+      @colors.tab_bar = colors[5]
+      @colors.tab_active = colors[6]
+      @colors.tab_inactive = colors[7]
+      @colors.workspace_bar = colors[8]
+      @colors.status_bar = colors[9]
+      @colors.pane_border = colors[10]
+      @colors.search_match = colors[11]
+      @colors.search_match_active = colors[12]
       @window.opacity = window[0]
-      @default_shell = window[1]
-      @scrollback_lines = window[2]
+      @window.width = window[1]
+      @window.height = window[2]
+      @window.min_width = window[3]
+      @window.min_height = window[4]
+      @window.decorations = window[5]
+      @window.resizable = window[6]
+      @window.always_on_top = window[7]
+      @window.title = window[8]
+      @default_shell = window[9]
+      @scrollback_lines = window[10]
+      @ui.padding_x = ui[0]
+      @ui.padding_y = ui[1]
+      @ui.line_height = ui[2]
+      @ui.tab_bar = ui[3]
+      @ui.tab_bar_height = ui[4]
+      @ui.tab_width = ui[5]
+      @ui.workspace_bar = ui[6]
+      @ui.workspace_bar_height = ui[7]
+      @ui.workspace_width = ui[8]
+      @ui.status_bar_height = ui[9]
+      @ui.pane_divider_width = ui[10]
+      @ui.active_pane_border_width = ui[11]
+      @behavior.scroll_lines = behavior[0]
+      @behavior.copy_on_select = behavior[1]
       @leader_key = leader[0]
       @leader_timeout = leader[1]
       nil

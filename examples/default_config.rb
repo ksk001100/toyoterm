@@ -11,9 +11,48 @@ Toyoterm.configure do |config|
     colors.foreground = "#dce1e8"
     colors.cursor = "#f5f7fa"
     colors.selection = "#375891"
+    colors.tab_bar = "#11151b"
+    colors.tab_active = "#18243a"
+    colors.tab_inactive = "#15191f"
+    colors.workspace_bar = "#0d1014"
+    colors.status_bar = "#101419"
+    colors.pane_border = "#375891"
+    colors.search_match = "#c4972f"
+    colors.search_match_active = "#ffbe3a"
   end
 
-  config.window.opacity = 1.0
+  config.window do |window|
+    window.opacity = 1.0
+    window.width = 960
+    window.height = 600
+    window.min_width = 320
+    window.min_height = 180
+    window.decorations = true
+    window.resizable = true
+    window.always_on_top = false
+    window.title = "toyoterm"
+  end
+
+  config.ui do |ui|
+    ui.padding_x = 8
+    ui.padding_y = 8
+    ui.line_height = 1.2857143
+    ui.tab_bar = true
+    ui.tab_bar_height = 30
+    ui.tab_width = 160
+    ui.workspace_bar = true
+    ui.workspace_bar_height = 24
+    ui.workspace_width = 160
+    ui.status_bar_height = 24
+    ui.pane_divider_width = 2
+    ui.active_pane_border_width = 2
+  end
+
+  config.behavior do |behavior|
+    behavior.scroll_lines = 3
+    behavior.copy_on_select = false
+  end
+
   config.scrollback_lines = 10_000
 
   # The leader prefix is optional. These are the former built-in GUI bindings,

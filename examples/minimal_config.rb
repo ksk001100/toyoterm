@@ -16,6 +16,10 @@ Toyoterm.configure do |config|
   end
 
   config.window.opacity = 1.0
+  config.ui.padding_x = 8
+  config.ui.padding_y = 8
+  config.ui.line_height = 1.2857143
+  config.behavior.scroll_lines = 3
   config.scrollback_lines = 10_000
   config.leader key: "b", mods: "CTRL", timeout: 1000
 

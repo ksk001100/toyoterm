@@ -1060,7 +1060,7 @@ impl GpuRenderer {
             push_ui_rect(
                 &mut vertices,
                 PaneRect::new(0, first.rect.y, width, first.rect.height),
-                mix_rgb(self.style.background, self.style.foreground, 0.035, 0.96),
+                rgba(self.style.workspace_bar, 0.96),
                 self.configuration.width,
                 self.configuration.height,
             );
@@ -1089,16 +1089,16 @@ impl GpuRenderer {
             push_ui_rect(
                 &mut vertices,
                 PaneRect::new(0, first.rect.y, width, first.rect.height),
-                mix_rgb(self.style.background, self.style.foreground, 0.055, 0.98),
+                rgba(self.style.tab_bar, 0.98),
                 self.configuration.width,
                 self.configuration.height,
             );
         }
         for tab in self.tabs.values() {
             let fill = if tab.active {
-                mix_rgb(self.style.background, self.style.selection, 0.18, 1.0)
+                rgba(self.style.tab_active, 1.0)
             } else {
-                mix_rgb(self.style.background, self.style.foreground, 0.075, 0.72)
+                rgba(self.style.tab_inactive, 0.96)
             };
             push_ui_rect(
                 &mut vertices,
@@ -1159,9 +1159,9 @@ impl GpuRenderer {
                     &mut vertices,
                     *rect,
                     if *active {
-                        rgba([255, 190, 58], 0.72)
+                        rgba(self.style.search_match_active, 0.72)
                     } else {
-                        rgba([196, 151, 47], 0.38)
+                        rgba(self.style.search_match, 0.38)
                     },
                     self.configuration.width,
                     self.configuration.height,
@@ -1170,10 +1170,14 @@ impl GpuRenderer {
         }
 
         for pane in self.panes.values().filter(|pane| pane.active) {
+            let border_width = (f64::from(self.style.active_pane_border_width)
+                * self.window.scale_factor())
+            .round()
+            .max(0.0) as u32;
             push_ui_rect(
                 &mut vertices,
-                PaneRect::new(pane.rect.x, pane.rect.y, pane.rect.width, 2),
-                rgba(self.style.selection, 0.95),
+                PaneRect::new(pane.rect.x, pane.rect.y, pane.rect.width, border_width),
+                rgba(self.style.pane_border, 0.95),
                 self.configuration.width,
                 self.configuration.height,
             );
@@ -1183,7 +1187,7 @@ impl GpuRenderer {
             push_ui_rect(
                 &mut vertices,
                 rect,
-                mix_rgb(self.style.background, self.style.foreground, 0.045, 0.96),
+                rgba(self.style.status_bar, 0.96),
                 self.configuration.width,
                 self.configuration.height,
             );

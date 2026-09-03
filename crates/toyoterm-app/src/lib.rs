@@ -230,7 +230,7 @@ fn run_gui_inner(config_path: Option<&Path>, exit_after_startup: bool) -> Result
         error.to_string()
     });
     let config = &startup.snapshot.config;
-    let render_style = RenderStyle::from_hex_with_ansi(
+    let render_style = RenderStyle::from_hex_with_ui(
         &config.font.family,
         config.font.fallback.clone(),
         config.font.weight,
@@ -239,9 +239,18 @@ fn run_gui_inner(config_path: Option<&Path>, exit_after_startup: bool) -> Result
             &config.colors.foreground,
             &config.colors.cursor,
             &config.colors.selection,
+            &config.colors.tab_bar,
+            &config.colors.tab_active,
+            &config.colors.tab_inactive,
+            &config.colors.workspace_bar,
+            &config.colors.status_bar,
+            &config.colors.pane_border,
+            &config.colors.search_match,
+            &config.colors.search_match_active,
         ],
         &config.colors.ansi,
-        config.window_opacity,
+        config.window.opacity,
+        config.ui.active_pane_border_width,
     )
     .map_err(|error| {
         tracing::error!(
@@ -371,10 +380,23 @@ impl ApplicationHandler<AppEvent> for ToyotermApplication {
             return;
         }
         let attributes = Window::default_attributes()
-            .with_title("toyoterm")
-            .with_transparent(self.script_snapshot.config.window_opacity < 1.0)
-            .with_inner_size(LogicalSize::new(960.0, 600.0))
-            .with_min_inner_size(LogicalSize::new(320.0, 180.0));
+            .with_title(&self.script_snapshot.config.window.title)
+            .with_transparent(self.script_snapshot.config.window.opacity < 1.0)
+            .with_inner_size(LogicalSize::new(
+                self.script_snapshot.config.window.width,
+                self.script_snapshot.config.window.height,
+            ))
+            .with_min_inner_size(LogicalSize::new(
+                self.script_snapshot.config.window.min_width,
+                self.script_snapshot.config.window.min_height,
+            ))
+            .with_decorations(self.script_snapshot.config.window.decorations)
+            .with_resizable(self.script_snapshot.config.window.resizable)
+            .with_window_level(if self.script_snapshot.config.window.always_on_top {
+                winit::window::WindowLevel::AlwaysOnTop
+            } else {
+                winit::window::WindowLevel::Normal
+            });
         let window = match event_loop.create_window(attributes) {
             Ok(window) => Arc::new(window),
             Err(error) => {
@@ -890,9 +912,10 @@ impl ToyotermApplication {
             eval_waiters: HashMap::new(),
             cell_metrics: CellMetrics {
                 width: 9.0 * font_scale,
-                height: 18.0 * font_scale,
+                height: f64::from(config.font.size * config.ui.line_height),
+                horizontal_padding: config.ui.padding_x.round() as u32,
+                vertical_padding: config.ui.padding_y.round() as u32,
                 font_size: config.font.size,
-                ..CellMetrics::default()
             },
             script_thread,
             script_snapshot,
@@ -1221,19 +1244,19 @@ mod tests {
     #[test]
     fn status_bar_occupies_the_scaled_bottom_edge() {
         assert_eq!(
-            status_bar_rect(PhysicalSize::new(960, 600), 1.0),
+            status_bar_rect(PhysicalSize::new(960, 600), 24),
             PaneRect::new(0, 576, 960, 24)
         );
         assert_eq!(
-            status_bar_rect(PhysicalSize::new(1200, 750), 1.5),
+            status_bar_rect(PhysicalSize::new(1200, 750), 36),
             PaneRect::new(0, 714, 1200, 36)
         );
     }
 
     #[test]
-    fn chrome_item_width_scales_from_a_shared_logical_width() {
-        assert_eq!(chrome_item_width(1.0), 160);
-        assert_eq!(chrome_item_width(1.5), 240);
+    fn ui_sizes_scale_from_logical_pixels() {
+        assert_eq!(scaled_ui_size(160.0, 1.0), 160);
+        assert_eq!(scaled_ui_size(160.0, 1.5), 240);
     }
 
     #[test]

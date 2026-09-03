@@ -139,7 +139,17 @@ fn loads_the_configuration_dsl() {
                     font.weight = 500
                   end
                   config.colors.background = "#111111"
+                  config.colors.tab_active = "#224466"
                   config.window.opacity = 0.92
+                  config.window.title = "my terminal"
+                  config.window.width = 1200
+                  config.window.always_on_top = true
+                  config.ui.padding_x = 12
+                  config.ui.line_height = 1.4
+                  config.ui.tab_bar = false
+                  config.ui.pane_divider_width = 0
+                  config.behavior.scroll_lines = 5
+                  config.behavior.copy_on_select = true
                   config.default_shell = "/bin/zsh"
                   config.scrollback_lines = 50_000
                 end
@@ -155,7 +165,17 @@ fn loads_the_configuration_dsl() {
     assert_eq!(config.font.size, 16.0);
     assert_eq!(config.font.weight, 500);
     assert_eq!(config.colors.background, "#111111");
-    assert_eq!(config.window_opacity, 0.92);
+    assert_eq!(config.colors.tab_active, "#224466");
+    assert_eq!(config.window.opacity, 0.92);
+    assert_eq!(config.window.title, "my terminal");
+    assert_eq!(config.window.width, 1200.0);
+    assert!(config.window.always_on_top);
+    assert_eq!(config.ui.padding_x, 12.0);
+    assert_eq!(config.ui.line_height, 1.4);
+    assert!(!config.ui.tab_bar);
+    assert_eq!(config.ui.pane_divider_width, 0.0);
+    assert_eq!(config.behavior.scroll_lines, 5.0);
+    assert!(config.behavior.copy_on_select);
     assert_eq!(config.default_shell.as_deref(), Some("/bin/zsh"));
     assert_eq!(config.scrollback_lines, 50_000);
 }
@@ -1388,7 +1408,7 @@ fn interactive_config_mutations_return_a_new_native_snapshot() {
     let config = result.snapshot.unwrap().config;
     assert_eq!(config.font.family, "New Font");
     assert_eq!(config.font.size, 18.0);
-    assert_eq!(config.window_opacity, 0.8);
+    assert_eq!(config.window.opacity, 0.8);
     assert_eq!(manager.config().font.family, "New Font");
 }
 
