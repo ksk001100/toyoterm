@@ -375,6 +375,17 @@ impl ConfigManager {
             };
             let payload = self.runtime.eval("Toyoterm.__current_command_payload")?;
             match command_type.as_str() {
+                "invoke_action" => {
+                    let argument = self.runtime.eval("Toyoterm.__current_command_argument")?;
+                    let action = decode_native_action(&payload, &argument)?;
+                    if matches!(action, NativeAction::UserCommand(_)) {
+                        return Err(ScriptError::new(
+                            "decode mruby command",
+                            "user commands cannot be invoked as native actions",
+                        ));
+                    }
+                    commands.push(NativeCommand::InvokeAction(action));
+                }
                 "send_text" => commands.push(NativeCommand::Mux(Command::SendText {
                     pane,
                     text: payload,

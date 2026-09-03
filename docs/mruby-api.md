@@ -248,6 +248,7 @@ Every callback sees a snapshot of the native object model:
 | `Toyoterm.windows` | All windows, ordered by ID |
 | `Toyoterm.workspace(name)` | Matching workspace, or `nil` |
 | `Toyoterm.switch_workspace(name)` | Queues activation or creation of a named workspace and returns `nil` |
+| `Toyoterm.action(name, argument = nil)` | Queues a built-in action and returns `nil` |
 
 All native objects inherit from `Toyoterm::NativeHandle`. They expose a
 non-negative integer `id`, equality and hashing by class and ID, `valid?`, and
@@ -269,6 +270,34 @@ callback raises before returning.
 ```ruby
 Toyoterm.command :backend do
   Toyoterm.switch_workspace(:backend)
+end
+```
+
+`Toyoterm.action(name, argument = nil)` makes the native actions from the
+static-binding table available inside dynamic bindings, commands, and event
+handlers. Action names can be Strings or Symbols and are normalized to
+lowercase. `split` and `activate_pane` require `:left`, `:right`, `:up`, or
+`:down`; `move_visual_selection` requires one of its six documented motions.
+All other actions take no argument. An empty or unknown action, a missing or
+invalid required argument, or an argument supplied to a no-argument action
+raises `ArgumentError` before anything is queued.
+
+The `command(name)` static-binding action is intentionally excluded; call
+shared Ruby code directly instead. Actions run in queue order only after the
+callback succeeds, and are discarded if it raises. They operate on the active
+pane, tab, workspace, or native window at application time; use a handle method
+when an operation must target a specific snapshot object. Actions that depend
+on UI state retain their ordinary behavior: for example `search` opens the
+interactive search bar and `yank_selection` does nothing unless a visual
+selection is active.
+
+```ruby
+Toyoterm.command :presentation_mode do
+  Toyoterm.action(:toggle_fullscreen)
+end
+
+Toyoterm.on :bell do
+  Toyoterm.action(:search)
 end
 ```
 

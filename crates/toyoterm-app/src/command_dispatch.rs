@@ -630,6 +630,9 @@ impl ToyotermApplication {
                 self.dispatch_gui_command(command)?;
                 self.flush_mux_input()?;
             }
+            NativeCommand::InvokeAction(_) => {
+                return Err("native action commands are not exposed over IPC".to_owned());
+            }
             NativeCommand::ReloadConfig => self.reload_config_with_notification()?,
             NativeCommand::CreateWindowWithLaunch { .. }
             | NativeCommand::NewTabWithLaunch { .. }

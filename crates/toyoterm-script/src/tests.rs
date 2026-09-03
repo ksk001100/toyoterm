@@ -848,6 +848,83 @@ fn switches_to_a_named_workspace_through_a_native_command() {
 }
 
 #[test]
+fn queues_builtin_actions_from_ruby_callbacks() {
+    let mut manager = ConfigManager::new().unwrap();
+    manager
+        .eval(
+            r#"
+            Toyoterm.action(:toggle_fullscreen)
+            Toyoterm.action(:search)
+            Toyoterm.action(:yank_selection)
+            Toyoterm.action(:split, :down)
+            Toyoterm.action(:activate_pane, :left)
+            Toyoterm.action(:move_visual_selection, :line_end)
+            "#,
+        )
+        .unwrap();
+
+    assert_eq!(
+        manager.drain_commands(PaneId(40)).unwrap(),
+        vec![
+            NativeCommand::InvokeAction(NativeAction::ToggleFullscreen),
+            NativeCommand::InvokeAction(NativeAction::Search),
+            NativeCommand::InvokeAction(NativeAction::YankSelection),
+            NativeCommand::InvokeAction(NativeAction::Split(SplitDirection::Down)),
+            NativeCommand::InvokeAction(NativeAction::ActivatePane(SplitDirection::Left)),
+            NativeCommand::InvokeAction(NativeAction::MoveVisualSelection(
+                toyoterm_api::SelectionMotion::LineEnd,
+            )),
+        ]
+    );
+}
+
+#[test]
+fn validates_and_rolls_back_builtin_actions() {
+    let mut manager = ConfigManager::new().unwrap();
+    for (source, message) in [
+        ("Toyoterm.action('')", "action name cannot be empty"),
+        (
+            "Toyoterm.action(:toggle_fullscreen, :extra)",
+            "does not accept an argument",
+        ),
+        (
+            "Toyoterm.action(:split)",
+            "action split requires left, right, up, or down",
+        ),
+        (
+            "Toyoterm.action(:move_visual_selection, :page_down)",
+            "move_visual_selection requires",
+        ),
+        (
+            "Toyoterm.action(:user_command, :recursive)",
+            "unsupported action: user_command",
+        ),
+    ] {
+        let error = manager.eval(source).unwrap_err();
+        assert!(error.message().contains(message), "{error}");
+    }
+    assert!(manager.drain_commands(PaneId(40)).unwrap().is_empty());
+
+    manager
+        .reload(
+            r#"
+            Toyoterm.configure do |config|
+              config.bind "CTRL+A" do
+                Toyoterm.action(:toggle_fullscreen)
+                raise "cancel action"
+              end
+            end
+            "#,
+        )
+        .unwrap();
+    let error = manager
+        .trigger_keybinding("CTRL+A", PaneId(40))
+        .unwrap_err();
+    assert!(error.message().contains("cancel action"));
+    assert!(manager.drain_commands(PaneId(40)).unwrap().is_empty());
+}
+
+#[test]
 fn converts_custom_pane_launches_to_native_commands() {
     let mut manager = ConfigManager::new().unwrap();
     manager

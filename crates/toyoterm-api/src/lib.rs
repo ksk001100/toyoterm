@@ -147,6 +147,7 @@ pub struct PaneLaunchSpec {
 #[derive(Clone, Debug, PartialEq)]
 pub enum NativeCommand {
     Mux(Command),
+    InvokeAction(NativeAction),
     CreateWindowWithLaunch {
         workspace: WorkspaceId,
         launch: PaneLaunchSpec,

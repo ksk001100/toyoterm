@@ -315,6 +315,8 @@ Each callback receives a current snapshot through `Toyoterm.current_workspace`, 
 
 `Toyoterm.switch_workspace(name)` activates a workspace by name, creating its complete window, tab, and pane hierarchy when it does not exist. Like other mutations, it is queued until the callback returns successfully.
 
+`Toyoterm.action(name, argument = nil)` queues the same built-in operations available to static key bindings, allowing commands and event handlers to toggle fullscreen, open search, manage visual selection, cycle tabs or workspaces, and perform other native UI actions. Directional actions accept the same arguments as their static-binding counterparts. Actions operate on the active UI objects when applied; the user-command action is excluded.
+
 `pane.split`, `window.new_tab`, and `workspace.create_window` accept `command:`, `cwd:`, and `env:` launch options. A command can be a program String or an argv Array and is executed directly without shell parsing. A `nil` environment value removes that variable from the child. Omitting `command` uses the configured or platform default shell, which is useful for opening a shell in `pane.cwd` with selected environment overrides.
 
 `pane.badge` is callback-owned display text rendered in the pane's upper-right corner. Assign `nil` to clear it. Badge changes are applied only after a successful callback and are discarded together with other queued mutations when the callback raises. `pane.chdir` is not provided: the shell owns its working directory, so configurations that want shell-specific directory changes should use `pane.send_text("cd ...\n")` with appropriate shell escaping.

@@ -134,6 +134,7 @@ pub(super) fn dispatch_script_commands(
             NativeCommand::Mux(command) => {
                 mux.dispatch(command).map_err(|error| error.to_string())?;
             }
+            NativeCommand::InvokeAction(_) => {}
             NativeCommand::ClipboardWrite(text) => effects.clipboard_writes.push(text),
             NativeCommand::CreateWindowWithLaunch { .. }
             | NativeCommand::NewTabWithLaunch { .. }

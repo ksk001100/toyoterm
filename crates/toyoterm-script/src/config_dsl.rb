@@ -1021,6 +1021,43 @@ module Toyoterm
     nil
   end
 
+  def self.action(name, argument = nil)
+    name = name.to_s.downcase
+    raise ArgumentError, "action name cannot be empty" if name.empty?
+
+    no_argument = [
+      "new_tab", "close_pane", "close_tab", "new_workspace",
+      "reload_config", "search", "maximize_window", "toggle_maximize",
+      "minimize_window", "toggle_fullscreen", "next_tab", "previous_tab",
+      "next_workspace", "previous_workspace", "copy_selection",
+      "paste_clipboard", "start_visual_mode", "toggle_visual_mode",
+      "start_visual_selection", "select_visual_selection",
+      "end_visual_selection", "yank_selection"
+    ]
+    pane_directions = ["left", "right", "up", "down"]
+    visual_motions = pane_directions + ["line_start", "line_end"]
+
+    if no_argument.include?(name)
+      raise ArgumentError, "action #{name} does not accept an argument" unless argument.nil?
+      normalized_argument = nil
+    elsif ["split", "activate_pane"].include?(name)
+      normalized_argument = argument.to_s.downcase
+      unless pane_directions.include?(normalized_argument)
+        raise ArgumentError, "action #{name} requires left, right, up, or down"
+      end
+    elsif name == "move_visual_selection"
+      normalized_argument = argument.to_s.downcase
+      unless visual_motions.include?(normalized_argument)
+        raise ArgumentError, "move_visual_selection requires left, right, up, down, line_start, or line_end"
+      end
+    else
+      raise ArgumentError, "unsupported action: #{name}"
+    end
+
+    __queue_command(:invoke_action, 0, name, normalized_argument)
+    nil
+  end
+
   def self.clipboard
     @clipboard
   end
@@ -1445,6 +1482,10 @@ module Toyoterm
   end
 
   def self.__current_command_search_direction
+    @current_command[3]
+  end
+
+  def self.__current_command_argument
     @current_command[3]
   end
 

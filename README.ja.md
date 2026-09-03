@@ -313,6 +313,8 @@ end
 
 `Toyoterm.switch_workspace(name)`は名前でWorkspaceを有効化し、存在しない場合はWindow・Tab・Paneを含む完全な階層を作成します。他の変更操作と同様、callbackが正常終了するまでqueueされます。
 
+`Toyoterm.action(name, argument = nil)`は静的keybindingと同じ組み込み操作をqueueし、commandやevent handlerからfullscreen切替、検索開始、visual selection操作、Tab／Workspace移動などを実行できるようにします。方向付きactionの引数は静的bindingと共通です。適用時点でactiveなUI objectを対象とし、user command actionは対象外です。
+
 `pane.split`、`window.new_tab`、`workspace.create_window`には`command:`、`cwd:`、`env:`の起動optionを指定できます。commandはprogram文字列またはargv配列で、shellによる解釈を挟まず直接実行します。環境変数の値に`nil`を指定すると子processからその変数を除去します。`command`を省略すると設定済みまたはplatform既定のshellを使うため、`pane.cwd`を引き継ぎつつ一部の環境変数だけを上書きしたshellも開けます。
 
 `pane.badge`はPane右上に描画するcallback用テキストです。`nil`を代入すると消去します。badge変更はcallbackが正常終了した後だけ反映し、例外時は他のqueue済み変更と一緒に破棄します。`pane.chdir`は提供しません。作業ディレクトリはshellが所有するため、設定から変更する場合は対象shell向けに適切にescapeした`pane.send_text("cd ...\n")`を使用します。

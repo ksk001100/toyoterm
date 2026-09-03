@@ -110,6 +110,10 @@ impl ToyotermApplication {
                             command,
                         )?;
                     }
+                    NativeCommand::InvokeAction(NativeAction::ReloadConfig) => {
+                        reload_requested = true;
+                    }
+                    NativeCommand::InvokeAction(action) => self.execute_native_action(action)?,
                     NativeCommand::CreateWindowWithLaunch { workspace, launch } => {
                         let pane = command_dispatch::dispatch_pane_creation(
                             &mut self.mux,
