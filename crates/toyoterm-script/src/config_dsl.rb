@@ -255,6 +255,15 @@ module Toyoterm
       self
     end
 
+    def toggle_zoom
+      @config.__register_static(@key, :toggle_zoom, nil)
+      self
+    end
+
+    def toggle_pane_zoom
+      toggle_zoom
+    end
+
     def next_tab
       @config.__register_static(@key, :next_tab, nil)
       self

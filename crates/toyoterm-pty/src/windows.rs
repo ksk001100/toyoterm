@@ -1,5 +1,6 @@
 use std::ffi::OsString;
 use std::io::{Read, Write};
+use std::path::Path;
 
 use conpty_oxide::blocking::{
     Child as ConPtyChild, Command as ConPtyCommand, OwnedReadHalf, OwnedWriteHalf,
@@ -144,9 +145,7 @@ impl Pty for NativePty {
 
 fn command_builder(command: PtyCommand) -> ConPtyCommand {
     let program = match command.program {
-        Program::DefaultShell => std::env::var_os("ComSpec")
-            .filter(|program| !program.is_empty())
-            .unwrap_or_else(|| OsString::from("cmd.exe")),
+        Program::DefaultShell => default_shell_program(),
         Program::Executable(program) => program,
     };
     let mut builder = ConPtyCommand::new(program);
@@ -247,4 +246,33 @@ impl Drop for WindowsPtySession {
             let _ = self.child.kill();
         }
     }
+}
+
+pub(crate) fn default_shell_program() -> OsString {
+    find_executable_in_path("pwsh.exe")
+        .or_else(|| find_executable_in_path("powershell.exe"))
+        .or_else(|| {
+            std::env::var_os("SystemRoot").and_then(|root| {
+                let candidate =
+                    Path::new(&root).join(r"System32\WindowsPowerShell\v1.0\powershell.exe");
+                if candidate.is_file() {
+                    Some(candidate.into_os_string())
+                } else {
+                    None
+                }
+            })
+        })
+        .or_else(|| std::env::var_os("ComSpec").filter(|program| !program.is_empty()))
+        .unwrap_or_else(|| OsString::from("cmd.exe"))
+}
+
+fn find_executable_in_path(executable_name: &str) -> Option<OsString> {
+    let path_var = std::env::var_os("PATH")?;
+    for dir in std::env::split_paths(&path_var) {
+        let candidate = dir.join(executable_name);
+        if candidate.is_file() {
+            return Some(candidate.into_os_string());
+        }
+    }
+    None
 }

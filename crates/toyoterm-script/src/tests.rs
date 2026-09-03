@@ -529,6 +529,30 @@ fn bundled_default_key_configuration_is_executable() {
 }
 
 #[test]
+fn registers_toggle_zoom_keybinding() {
+    let mut manager = ConfigManager::new().unwrap();
+    manager
+        .reload(
+            r#"
+            Toyoterm.configure do |config|
+              config.keys.ctrl("z").toggle_zoom
+              config.keys.ctrl_shift("z").toggle_pane_zoom
+            end
+            "#,
+        )
+        .unwrap();
+
+    assert_eq!(
+        manager.native_action("CTRL+Z"),
+        Some(NativeAction::ToggleZoom)
+    );
+    assert_eq!(
+        manager.native_action("CTRL+SHIFT+Z"),
+        Some(NativeAction::ToggleZoom)
+    );
+}
+
+#[test]
 fn exposes_the_host_platform_to_ruby() {
     let mut manager = ConfigManager::new().unwrap();
     manager.reload("").unwrap();

@@ -162,7 +162,8 @@ Toyoterm.configure do |config|
   config.scrollback_lines = 20_000
   config.leader key: "b", mods: "CTRL", timeout: 1000
 
-  # Set an explicit shell when needed. Otherwise the platform default is used.
+  # Set an explicit shell when needed. Otherwise the platform default is used
+  # (on Windows: pwsh.exe -> powershell.exe -> %ComSpec%).
   # config.default_shell = "/bin/zsh"
 
   config.bind "CTRL+SHIFT+H" do |context|
@@ -172,6 +173,7 @@ Toyoterm.configure do |config|
   # Common actions compile to native bindings and do not invoke mruby on key press.
   config.keys do
     leader("v").split(:right)
+    leader("z").toggle_zoom
     ctrl_shift("e").split(:right)
     ctrl_shift("o").activate_pane(:right)
     ctrl_shift("t").new_tab

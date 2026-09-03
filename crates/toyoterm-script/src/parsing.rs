@@ -15,6 +15,7 @@ pub(super) fn decode_native_action(
         "toggle_maximize" => Ok(NativeAction::ToggleMaximize),
         "minimize_window" => Ok(NativeAction::MinimizeWindow),
         "toggle_fullscreen" => Ok(NativeAction::ToggleFullscreen),
+        "toggle_zoom" | "toggle_pane_zoom" => Ok(NativeAction::ToggleZoom),
         "next_tab" => Ok(NativeAction::NextTab),
         "previous_tab" => Ok(NativeAction::PreviousTab),
         "next_workspace" => Ok(NativeAction::NextWorkspace),

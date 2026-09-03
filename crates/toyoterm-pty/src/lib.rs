@@ -430,7 +430,7 @@ mod tests {
         // call wait first. The Windows backend must therefore finish output
         // autonomously when the root shell exits.
         let output = output_receiver
-            .recv_timeout(std::time::Duration::from_secs(5))
+            .recv_timeout(std::time::Duration::from_secs(10))
             .expect("ConPTY reader did not reach EOF after shell exit")
             .expect("read default shell output");
         let status = session.wait().expect("wait for default shell");
@@ -472,6 +472,19 @@ mod tests {
         assert!(
             output.contains("toyoterm-powershell-ok"),
             "output was {output:?}"
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn default_shell_resolves_to_powershell_or_pwsh() {
+        let shell = windows::default_shell_program();
+        let shell_str = shell.to_string_lossy().to_lowercase();
+        assert!(
+            shell_str.ends_with("pwsh.exe")
+                || shell_str.ends_with("powershell.exe")
+                || shell_str.ends_with("cmd.exe"),
+            "resolved default shell was unexpected: {shell_str}"
         );
     }
 

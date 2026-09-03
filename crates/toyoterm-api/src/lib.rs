@@ -134,6 +134,7 @@ pub enum NativeAction {
     UserCommand(String),
     Split(SplitDirection),
     ActivatePane(SplitDirection),
+    ToggleZoom,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -195,6 +196,7 @@ pub enum Command {
     },
     ActivateWorkspace(WorkspaceId),
     SwitchWorkspace(String),
+    ToggleZoom,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

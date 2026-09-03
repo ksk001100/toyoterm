@@ -400,6 +400,7 @@ impl ToyotermApplication {
             NativeAction::UserCommand(name) => self.execute_user_command(&name),
             NativeAction::Split(direction) => self.split_active_pane(direction),
             NativeAction::ActivatePane(direction) => self.focus_neighbor(direction),
+            NativeAction::ToggleZoom => self.dispatch_gui_command(Command::ToggleZoom),
         }
     }
 

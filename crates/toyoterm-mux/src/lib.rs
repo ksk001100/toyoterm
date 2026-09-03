@@ -126,6 +126,20 @@ struct Tab {
     window: WindowId,
     root: PaneNode,
     active_pane: PaneId,
+    zoomed_pane: Option<PaneId>,
+    zoomed_node: Option<PaneNode>,
+}
+
+impl Tab {
+    fn new(window: WindowId, pane: PaneId) -> Self {
+        Self {
+            window,
+            root: PaneNode::Leaf(pane),
+            active_pane: pane,
+            zoomed_pane: None,
+            zoomed_node: None,
+        }
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -248,7 +262,33 @@ impl Mux {
     }
 
     pub fn pane_tree(&self, tab: TabId) -> Option<&PaneNode> {
-        self.tabs.get(&tab).map(|tab| &tab.root)
+        self.tabs
+            .get(&tab)
+            .map(|tab| tab.zoomed_node.as_ref().unwrap_or(&tab.root))
+    }
+
+    pub fn is_zoomed(&self, tab: TabId) -> bool {
+        self.tabs
+            .get(&tab)
+            .is_some_and(|tab| tab.zoomed_pane.is_some())
+    }
+
+    pub fn zoomed_pane(&self, tab: TabId) -> Option<PaneId> {
+        self.tabs.get(&tab).and_then(|tab| tab.zoomed_pane)
+    }
+
+    pub fn toggle_zoom(&mut self, tab: TabId) -> Result<bool, MuxError> {
+        let state = self.tabs.get_mut(&tab).ok_or(MuxError::UnknownTab(tab))?;
+        if state.zoomed_pane.is_some() {
+            state.zoomed_pane = None;
+            state.zoomed_node = None;
+            Ok(false)
+        } else {
+            let active = state.active_pane;
+            state.zoomed_pane = Some(active);
+            state.zoomed_node = Some(PaneNode::Leaf(active));
+            Ok(true)
+        }
     }
 
     pub fn tabs(&self, window: WindowId) -> Option<&[TabId]> {
@@ -370,6 +410,13 @@ impl Mux {
                 self.events.push_back(Event::PaneFocused { pane });
                 Ok(CommandResult::Workspace(workspace))
             }
+            Command::ToggleZoom => {
+                let tab = self
+                    .current_tab()
+                    .ok_or(MuxError::UnknownWorkspace(self.current_workspace))?;
+                self.toggle_zoom(tab)?;
+                Ok(CommandResult::None)
+            }
         }
     }
 
@@ -483,14 +530,7 @@ impl Mux {
                 pending_input: Vec::new(),
             },
         );
-        self.tabs.insert(
-            tab,
-            Tab {
-                window,
-                root: PaneNode::Leaf(pane),
-                active_pane: pane,
-            },
-        );
+        self.tabs.insert(tab, Tab::new(window, pane));
         self.windows.insert(
             window,
             Window {
@@ -525,14 +565,7 @@ impl Mux {
                 pending_input: Vec::new(),
             },
         );
-        self.tabs.insert(
-            tab,
-            Tab {
-                window,
-                root: PaneNode::Leaf(pane),
-                active_pane: pane,
-            },
-        );
+        self.tabs.insert(tab, Tab::new(window, pane));
         self.windows.insert(
             window,
             Window {
@@ -624,14 +657,7 @@ impl Mux {
                 pending_input: Vec::new(),
             },
         );
-        self.tabs.insert(
-            tab,
-            Tab {
-                window,
-                root: PaneNode::Leaf(pane),
-                active_pane: pane,
-            },
-        );
+        self.tabs.insert(tab, Tab::new(window, pane));
         let state = self.windows.get_mut(&window).expect("active window exists");
         state.tabs.push(tab);
         state.active_tab = tab;
@@ -654,6 +680,8 @@ impl Mux {
             .tabs
             .get_mut(&tab)
             .expect("pane refers to an existing tab");
+        state.zoomed_pane = None;
+        state.zoomed_node = None;
         let split = state.root.split(pane, new_pane, direction);
         debug_assert!(split, "pane must occur in its tab tree");
         state.active_pane = new_pane;
@@ -676,10 +704,12 @@ impl Mux {
             .get(&pane)
             .ok_or(MuxError::UnknownPane(pane))?
             .tab;
-        self.tabs
-            .get_mut(&tab)
-            .expect("pane tab exists")
-            .active_pane = pane;
+        let state = self.tabs.get_mut(&tab).expect("pane tab exists");
+        if state.zoomed_pane.is_some() && state.active_pane != pane {
+            state.zoomed_pane = None;
+            state.zoomed_node = None;
+        }
+        state.active_pane = pane;
         self.focus_tab(tab);
         self.events.push_back(Event::PaneFocused { pane });
         Ok(())
@@ -735,6 +765,10 @@ impl Mux {
         debug_assert!(removed);
         state.root = new_root.expect("a split retains at least one pane");
         self.panes.remove(&pane);
+        if state.zoomed_pane == Some(pane) || matches!(state.root, PaneNode::Leaf(_)) {
+            state.zoomed_pane = None;
+            state.zoomed_node = None;
+        }
         if state.active_pane == pane {
             state.active_pane = state.root.panes()[0];
             self.events.push_back(Event::PaneFocused {
@@ -1201,5 +1235,47 @@ mod tests {
         mux.dispatch(Command::ClosePane(second)).unwrap();
         assert!(!mux.native_handles().contains(&NativeHandle::from(second)));
         assert!(mux.native_handles().contains(&NativeHandle::from(first)));
+    }
+
+    #[test]
+    fn toggle_zoom_maximizes_and_restores_pane() {
+        let mut mux = Mux::new();
+        let first = mux.current_pane().unwrap();
+        let tab = mux.current_tab().unwrap();
+        let CommandResult::Pane(second) = mux
+            .dispatch(Command::Split {
+                pane: first,
+                direction: SplitDirection::Right,
+            })
+            .unwrap()
+        else {
+            panic!("split did not return a pane");
+        };
+        assert_eq!(mux.current_pane(), Some(second));
+        assert!(!mux.is_zoomed(tab));
+        assert_eq!(mux.zoomed_pane(tab), None);
+
+        // Zoom active pane (second)
+        mux.dispatch(Command::ToggleZoom).unwrap();
+        assert!(mux.is_zoomed(tab));
+        assert_eq!(mux.zoomed_pane(tab), Some(second));
+        let tree = mux.pane_tree(tab).unwrap();
+        assert_eq!(tree, &PaneNode::Leaf(second));
+
+        // Unzoom
+        mux.dispatch(Command::ToggleZoom).unwrap();
+        assert!(!mux.is_zoomed(tab));
+        assert_eq!(mux.zoomed_pane(tab), None);
+        let tree = mux.pane_tree(tab).unwrap();
+        assert_eq!(tree.panes(), vec![first, second]);
+
+        // Zoom again, then close the zoomed pane -> unzooms automatically
+        mux.dispatch(Command::ToggleZoom).unwrap();
+        assert!(mux.is_zoomed(tab));
+        mux.dispatch(Command::ClosePane(second)).unwrap();
+        assert!(!mux.is_zoomed(tab));
+        assert_eq!(mux.current_pane(), Some(first));
+        let tree = mux.pane_tree(tab).unwrap();
+        assert_eq!(tree, &PaneNode::Leaf(first));
     }
 }

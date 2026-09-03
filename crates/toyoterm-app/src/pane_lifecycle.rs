@@ -651,3 +651,47 @@ impl ToyotermApplication {
         Ok(self.clipboard.as_mut().expect("clipboard was initialized"))
     }
 }
+
+fn spawn_pty_reader(
+    pane: PaneId,
+    mut reader: Box<dyn Read + Send>,
+    event_proxy: EventLoopProxy<AppEvent>,
+) -> Result<(), String> {
+    thread::Builder::new()
+        .name("toyoterm-pty-reader".into())
+        .spawn(move || {
+            let mut buffer = [0_u8; 8192];
+            loop {
+                match reader.read(&mut buffer) {
+                    Ok(0) => {
+                        let _ = event_proxy.send_event(AppEvent::Eof { pane });
+                        break;
+                    }
+                    Ok(count) => {
+                        if event_proxy
+                            .send_event(AppEvent::Output {
+                                pane,
+                                bytes: buffer[..count].to_vec(),
+                            })
+                            .is_err()
+                        {
+                            break;
+                        }
+                    }
+                    Err(error) if error.raw_os_error() == Some(5) => {
+                        let _ = event_proxy.send_event(AppEvent::Eof { pane });
+                        break;
+                    }
+                    Err(error) => {
+                        let _ = event_proxy.send_event(AppEvent::Error {
+                            pane,
+                            message: format!("read PTY output: {error}"),
+                        });
+                        break;
+                    }
+                }
+            }
+        })
+        .map(|_| ())
+        .map_err(|error| format!("start PTY reader: {error}"))
+}

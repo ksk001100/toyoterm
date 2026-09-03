@@ -197,7 +197,7 @@ Each helper returns a binding with one of these actions:
 | `split(direction)` | `:left`, `:right`, `:up`, or `:down` |
 | `new_tab`, `close_pane`, `close_tab`, `new_workspace` | None |
 | `reload_config`, `search` | None |
-| `maximize_window`, `toggle_maximize`, `minimize_window`, `toggle_fullscreen` | None |
+| `maximize_window`, `toggle_maximize`, `minimize_window`, `toggle_fullscreen`, `toggle_zoom` | None |
 | `next_tab`, `previous_tab`, `next_workspace`, `previous_workspace` | None |
 | `copy_selection`, `paste_clipboard` | None |
 | `start_visual_mode`, `toggle_visual_mode`, `start_visual_selection`, `select_visual_selection`, `end_visual_selection` | None |
@@ -206,8 +206,8 @@ Each helper returns a binding with one of these actions:
 | `command(name)` | Name registered with `Toyoterm.command` |
 
 Aliases are available for readability: `enter_visual_mode`,
-`toggle_visual_selection`, `select`, `exit_visual_mode`, `visual_move`, and
-`copy_visual_selection`.
+`toggle_visual_selection`, `select`, `exit_visual_mode`, `visual_move`,
+`copy_visual_selection`, and `toggle_pane_zoom`.
 
 Configure a leader with a positive timeout in milliseconds:
 

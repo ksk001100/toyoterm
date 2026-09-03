@@ -161,7 +161,8 @@ Toyoterm.configure do |config|
   config.scrollback_lines = 20_000
   config.leader key: "b", mods: "CTRL", timeout: 1000
 
-  # 必要な場合はシェルを明示できます。省略時はプラットフォーム標準です。
+  # 必要な場合はシェルを明示できます。省略時はプラットフォーム標準です
+  # （Windows環境では pwsh.exe -> powershell.exe -> %ComSpec% を自動検出）。
   # config.default_shell = "/bin/zsh"
 
   config.bind "CTRL+SHIFT+H" do |context|
@@ -171,6 +172,7 @@ Toyoterm.configure do |config|
   # 一般的な操作はNative Actionへcompileされ、キー入力時にmrubyを呼びません。
   config.keys do
     leader("v").split(:right)
+    leader("z").toggle_zoom
     ctrl_shift("e").split(:right)
     ctrl_shift("o").activate_pane(:right)
     ctrl_shift("t").new_tab
