@@ -13,6 +13,12 @@ portable-pty.workspace = true
 
 [target.'cfg(windows)'.dependencies]
 conpty-oxide = { version = "0.1.2", features = ["tracing"] }
+windows-sys = { workspace = true, features = [
+    "Win32_Foundation",
+    "Win32_System_JobObjects",
+    "Win32_System_Threading",
+    "Win32_Security",
+] }
 
 [dev-dependencies]
 toyoterm-terminal.workspace = true

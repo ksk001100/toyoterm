@@ -18,7 +18,7 @@ use toyoterm_api::{
 use toyoterm_config::home_directory;
 pub use toyoterm_config::{
     BehaviorConfig, ColorConfig, FontConfig, LeaderConfig, ToyotermConfig, UiConfig, WindowConfig,
-    default_config_path,
+    default_config_path, default_plugin_dir,
 };
 
 const SLOW_CALLBACK_THRESHOLD: Duration = Duration::from_millis(100);

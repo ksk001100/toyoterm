@@ -1845,17 +1845,22 @@ fn invalid_interactive_config_mutations_are_rolled_back() {
 fn resolves_config_paths_in_priority_order() {
     let explicit = Path::new("custom.rb");
     let environment = std::ffi::OsStr::new("environment.rb");
-    let home = Path::new("/users/toyo");
+    let default_path = PathBuf::from("/users/toyo/.config/toyoterm/config.rb");
     assert_eq!(
-        resolve_config_path(Some(explicit), Some(environment), Some(home)),
+        resolve_config_path(
+            Some(explicit),
+            Some(environment),
+            Some(default_path.clone())
+        ),
         Some(explicit.to_owned())
     );
     assert_eq!(
-        resolve_config_path(None, Some(environment), Some(home)),
+        resolve_config_path(None, Some(environment), Some(default_path.clone())),
         Some(PathBuf::from("environment.rb"))
     );
     assert_eq!(
-        resolve_config_path(None, None, Some(home)),
-        Some(home.join(".config/toyoterm/config.rb"))
+        resolve_config_path(None, None, Some(default_path.clone())),
+        Some(default_path)
     );
+    assert_eq!(resolve_config_path(None, None, None), None);
 }

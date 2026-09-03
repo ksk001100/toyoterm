@@ -110,7 +110,9 @@ cargo run -- ruby console
 
 1. `--config`で指定したパス
 2. `TOYOTERM_CONFIG_FILE`
-3. `~/.config/toyoterm/config.rb`
+3. プラットフォーム標準のデフォルトパス：
+   - Linux / Unix: `$XDG_CONFIG_HOME/toyoterm/config.rb`（未設定時は `~/.config/toyoterm/config.rb`）
+   - Windows: `%APPDATA%\toyoterm\config.rb`（存在しない場合は `%USERPROFILE%\.config\toyoterm\config.rb`）
 
 デフォルトパスのファイルは省略可能です。明示的に指定したファイルは存在し、正しいRubyである必要があります。
 
@@ -238,7 +240,7 @@ configはtrusted codeであり、MVPではこれらのAPIに制限を設けま�
 
 ### Local plugin
 
-起動時とconfig reload時に、`~/.config/toyoterm/plugins/`直下の`*.rb`をファイル名の辞書順で読み込みます。その後、configで指定したpluginを記述順に追加します。相対pathは宣言元のconfigまたはpluginファイルを基準に解決し、`~/`はhome directoryへ展開します。
+起動時とconfig reload時に、標準のpluginディレクトリ（Linux / Unix: `$XDG_CONFIG_HOME/toyoterm/plugins/` または `~/.config/toyoterm/plugins/`、Windows: `%APPDATA%\toyoterm\plugins`）直下の`*.rb`をファイル名の辞書順で読み込みます。その後、configで指定したpluginを記述順に追加します。相対pathは宣言元のconfigまたはpluginファイルを基準に解決し、`~/`はhome directoryへ展開します。
 
 ```ruby
 Toyoterm.plugin "plugins/project.rb"

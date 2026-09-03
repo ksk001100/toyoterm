@@ -14,7 +14,9 @@ toyoterm selects one configuration source in this order:
 
 1. The path passed with `--config`
 2. `TOYOTERM_CONFIG_FILE`
-3. `~/.config/toyoterm/config.rb`
+3. Platform default config path:
+   - Linux / Unix: `$XDG_CONFIG_HOME/toyoterm/config.rb` (falls back to `~/.config/toyoterm/config.rb` if unset)
+   - Windows: `%APPDATA%\toyoterm\config.rb` (falls back to `%USERPROFILE%\.config\toyoterm\config.rb` if it does not exist)
 
 The default path is optional. A path selected explicitly must exist and contain
 valid Ruby. Start toyoterm with a particular file using:
@@ -510,7 +512,7 @@ rendering.
 
 ## Plugins and themes
 
-toyoterm loads `*.rb` directly inside `~/.config/toyoterm/plugins/` in
+toyoterm loads `*.rb` directly inside the default plugins directory (`$XDG_CONFIG_HOME/toyoterm/plugins/` or `~/.config/toyoterm/plugins/` on Linux/Unix, `%APPDATA%\toyoterm\plugins` on Windows) in
 lexicographic filename order. Additional files can be requested with
 `Toyoterm.plugin(path)`. Relative paths resolve from the declaring file, `~/`
 expands to the home directory, and a canonical path is loaded only once.

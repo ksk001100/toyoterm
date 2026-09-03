@@ -244,11 +244,10 @@ impl ToyotermApplication {
     }
 
     pub(super) fn yank_selection(&mut self) -> Result<(), String> {
-        if !self
-            .visual_selection
-            .as_ref()
-            .is_some_and(|visual| visual.anchor.is_some())
-        {
+        let Some(visual) = &self.visual_selection else {
+            return Ok(());
+        };
+        if visual.anchor.is_none() {
             return Ok(());
         }
         self.copy_selection()?;

@@ -111,7 +111,9 @@ toyoterm looks for configuration in this order:
 
 1. The path passed with `--config`
 2. `TOYOTERM_CONFIG_FILE`
-3. `~/.config/toyoterm/config.rb`
+3. Platform default config path:
+   - Linux / Unix: `$XDG_CONFIG_HOME/toyoterm/config.rb` (falls back to `~/.config/toyoterm/config.rb` if unset)
+   - Windows: `%APPDATA%\toyoterm\config.rb` (falls back to `%USERPROFILE%\.config\toyoterm\config.rb` if it does not exist)
 
 The default path is optional. An explicitly selected file must exist and contain valid Ruby.
 
@@ -240,7 +242,7 @@ Configuration is trusted code and these APIs are intentionally unrestricted in t
 
 ### Local plugins
 
-At startup and on configuration reload, toyoterm loads `*.rb` files directly inside `~/.config/toyoterm/plugins/` in lexicographic filename order. The configuration can then append plugins in declaration order; relative paths are resolved from the declaring config or plugin file, and `~/` expands to the user's home directory:
+At startup and on configuration reload, toyoterm loads `*.rb` files directly inside the default plugins directory (`$XDG_CONFIG_HOME/toyoterm/plugins/` or `~/.config/toyoterm/plugins/` on Linux/Unix, `%APPDATA%\toyoterm\plugins` on Windows) in lexicographic filename order. The configuration can then append plugins in declaration order; relative paths are resolved from the declaring config or plugin file, and `~/` expands to the user's home directory:
 
 ```ruby
 Toyoterm.plugin "plugins/project.rb"

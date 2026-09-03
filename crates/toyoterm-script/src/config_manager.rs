@@ -104,13 +104,11 @@ impl ConfigManager {
         explicit_path: Option<&Path>,
     ) -> Result<(Self, Option<ScriptError>), ScriptError> {
         let env_path = std::env::var_os("TOYOTERM_CONFIG_FILE").filter(|path| !path.is_empty());
-        let home = home_directory();
+        let default_path = default_config_path();
         let mut manager = Self::new()?;
-        manager.plugin_dir = home
-            .as_deref()
-            .map(|home| home.join(".config").join("toyoterm").join("plugins"));
+        manager.plugin_dir = default_plugin_dir();
         manager.reload_named("", "(default config)")?;
-        let Some(path) = resolve_config_path(explicit_path, env_path.as_deref(), home.as_deref())
+        let Some(path) = resolve_config_path(explicit_path, env_path.as_deref(), default_path)
         else {
             return Ok((manager, None));
         };
@@ -647,12 +645,12 @@ pub(super) fn is_slow_callback(elapsed: Duration) -> bool {
 pub(super) fn resolve_config_path(
     explicit_path: Option<&Path>,
     env_path: Option<&std::ffi::OsStr>,
-    home: Option<&Path>,
+    default_path: Option<PathBuf>,
 ) -> Option<PathBuf> {
     explicit_path
         .map(Path::to_owned)
         .or_else(|| env_path.map(PathBuf::from))
-        .or_else(|| home.map(|home| home.join(".config").join("toyoterm").join("config.rb")))
+        .or(default_path)
 }
 
 pub(super) fn load_config(
