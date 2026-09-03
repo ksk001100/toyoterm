@@ -972,6 +972,9 @@ mod tests {
     #[test]
     fn custom_pane_launch_applies_argv_cwd_and_environment() {
         let cwd = std::env::temp_dir();
+        let expected_cwd = cwd
+            .canonicalize()
+            .expect("canonicalize temporary directory");
         let launch = PaneLaunchSpec {
             program: Some("/bin/sh".into()),
             args: vec![
@@ -992,7 +995,7 @@ mod tests {
 
         assert_eq!(status.code, 0);
         assert!(
-            output.contains(&format!("{}|works", cwd.display())),
+            output.contains(&format!("{}|works", expected_cwd.display())),
             "unexpected output: {output:?}"
         );
     }
