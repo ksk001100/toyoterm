@@ -15,6 +15,9 @@ use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop, EventLoopProxy}
 use winit::keyboard::{Key, KeyCode, ModifiersState, NamedKey, PhysicalKey};
 use winit::window::{Fullscreen, Window, WindowId};
 
+#[cfg(target_os = "linux")]
+use winit::platform::wayland::WindowAttributesExtWayland;
+
 use toyoterm_script::{
     RubyEvent, RubyObjectModel, RubyPane, RubyTab, RubyWindow, RubyWorkspace, ScriptCompletion,
     ScriptContext, ScriptInvocation, ScriptRequest, ScriptSnapshot, ScriptThread,
@@ -185,20 +188,35 @@ impl fmt::Display for AppError {
 
 impl std::error::Error for AppError {}
 
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct GuiOptions {
+    pub config_path: Option<PathBuf>,
+    pub initial_pane: Option<PaneLaunchSpec>,
+    pub title: Option<String>,
+    pub app_id: Option<String>,
+}
+
 pub fn run_gui() -> Result<(), AppError> {
-    run_gui_inner(None, false)
+    run_gui_with_options(GuiOptions::default())
 }
 
 pub fn run_gui_with_config_path(config_path: Option<&Path>) -> Result<(), AppError> {
-    run_gui_inner(config_path, false)
+    run_gui_with_options(GuiOptions {
+        config_path: config_path.map(Path::to_owned),
+        ..GuiOptions::default()
+    })
+}
+
+pub fn run_gui_with_options(options: GuiOptions) -> Result<(), AppError> {
+    run_gui_inner(options, false)
 }
 
 /// Starts the complete GUI stack and exits after successful initialization.
 pub fn run_gui_smoke_test() -> Result<(), AppError> {
-    run_gui_inner(None, true)
+    run_gui_inner(GuiOptions::default(), true)
 }
 
-fn run_gui_inner(config_path: Option<&Path>, exit_after_startup: bool) -> Result<(), AppError> {
+fn run_gui_inner(options: GuiOptions, exit_after_startup: bool) -> Result<(), AppError> {
     let event_loop = EventLoop::<AppEvent>::with_user_event()
         .build()
         .map_err(|error| AppError(error.to_string()))?;
@@ -206,14 +224,14 @@ fn run_gui_inner(config_path: Option<&Path>, exit_after_startup: bool) -> Result
     let event_proxy = event_loop.create_proxy();
     let completion_proxy = event_proxy.clone();
     let (script_thread, startup) =
-        ScriptThread::start(config_path.map(Path::to_owned), move |completion| {
+        ScriptThread::start(options.config_path.clone(), move |completion| {
             let _ = completion_proxy.send_event(AppEvent::ScriptCompleted(Box::new(completion)));
         })
         .map_err(|error| {
             tracing::error!(
                 target: "toyoterm::config",
                 operation = error.operation(),
-                config_path = ?config_path,
+                config_path = ?options.config_path,
                 %error,
                 "load startup config failed"
             );
@@ -223,7 +241,7 @@ fn run_gui_inner(config_path: Option<&Path>, exit_after_startup: bool) -> Result
         tracing::warn!(
             target: "toyoterm::config",
             operation = error.operation(),
-            config_path = ?config_path,
+            config_path = ?options.config_path,
             %error,
             "startup config rejected; using defaults"
         );
@@ -268,6 +286,7 @@ fn run_gui_inner(config_path: Option<&Path>, exit_after_startup: bool) -> Result
         render_style,
         startup_config_error,
         exit_after_startup,
+        options,
     )
     .map_err(AppError)?;
     app.submit_script(ScriptInvocation::DrainStartup)
@@ -374,6 +393,8 @@ struct ToyotermApplication {
     render_style: RenderStyle,
     fatal_error: Option<String>,
     exit_after_startup: bool,
+    window_title_override: Option<String>,
+    app_id: Option<String>,
 }
 
 fn ruby_event_from_terminal_event(pane: PaneId, event: TerminalEvent) -> Option<RubyEvent> {
@@ -412,7 +433,7 @@ impl ApplicationHandler<AppEvent> for ToyotermApplication {
             return;
         }
         let attributes = Window::default_attributes()
-            .with_title(&self.script_snapshot.config.window.title)
+            .with_title(self.base_window_title())
             .with_transparent(self.script_snapshot.config.window.opacity < 1.0)
             .with_inner_size(LogicalSize::new(
                 self.script_snapshot.config.window.width,
@@ -429,6 +450,11 @@ impl ApplicationHandler<AppEvent> for ToyotermApplication {
             } else {
                 winit::window::WindowLevel::Normal
             });
+        #[cfg(target_os = "linux")]
+        let attributes = match self.app_id.as_deref() {
+            Some(app_id) => attributes.with_name(app_id, app_id),
+            None => attributes,
+        };
         let window = match event_loop.create_window(attributes) {
             Ok(window) => Arc::new(window),
             Err(error) => {
@@ -873,8 +899,22 @@ impl ToyotermApplication {
         render_style: RenderStyle,
         startup_config_error: Option<String>,
         exit_after_startup: bool,
+        options: GuiOptions,
     ) -> Result<Self, String> {
+        let GuiOptions {
+            initial_pane,
+            title: window_title_override,
+            app_id,
+            ..
+        } = options;
         let mux = Mux::new();
+        let mut pending_pane_launches = HashMap::new();
+        if let Some(launch) = initial_pane {
+            let pane = mux
+                .current_pane()
+                .ok_or_else(|| "new mux has no current pane".to_owned())?;
+            pending_pane_launches.insert(pane, launch);
+        }
         let config = &script_snapshot.config;
         let font_scale = f64::from(config.font.size) / 14.0;
         let ipc_proxy = event_proxy.clone();
@@ -893,7 +933,7 @@ impl ToyotermApplication {
             window: None,
             renderer: None,
             pane_runtimes: HashMap::new(),
-            pending_pane_launches: HashMap::new(),
+            pending_pane_launches,
             pane_layout: PaneLayout::default(),
             tab_layout: TabStripLayout::default(),
             workspace_layout: WorkspaceStripLayout::default(),
@@ -940,7 +980,15 @@ impl ToyotermApplication {
             render_style,
             fatal_error: None,
             exit_after_startup,
+            window_title_override,
+            app_id,
         })
+    }
+
+    fn base_window_title(&self) -> &str {
+        self.window_title_override
+            .as_deref()
+            .unwrap_or(&self.script_snapshot.config.window.title)
     }
 
     fn fail(&mut self, event_loop: &ActiveEventLoop, error: String) {

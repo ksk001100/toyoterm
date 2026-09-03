@@ -9,3 +9,7 @@ Terminal=false
 Categories=System;TerminalEmulator;
 Keywords=terminal;shell;console;
 StartupNotify=true
+X-TerminalArgExec=-e
+X-TerminalArgTitle=--title=
+X-TerminalArgAppId=--app-id=
+X-TerminalArgDir=--working-directory=

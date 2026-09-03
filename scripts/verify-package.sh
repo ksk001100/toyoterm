@@ -135,6 +135,16 @@ if printf '%s' "$target" | grep -q -- '-linux-'; then
     echo "package verification: desktop entry still contains its placeholder" >&2
     exit 1
   fi
+  for terminal_argument in \
+    'X-TerminalArgExec=-e' \
+    'X-TerminalArgTitle=--title=' \
+    'X-TerminalArgAppId=--app-id=' \
+    'X-TerminalArgDir=--working-directory='; do
+    if ! grep -Fxq "$terminal_argument" "$install_prefix/share/applications/toyoterm.desktop"; then
+      echo "package verification: desktop entry is missing '$terminal_argument'" >&2
+      exit 1
+    fi
+  done
   if command -v desktop-file-validate >/dev/null 2>&1; then
     desktop-file-validate "$install_prefix/share/applications/toyoterm.desktop"
   fi

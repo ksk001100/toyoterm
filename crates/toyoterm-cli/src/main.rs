@@ -5,9 +5,9 @@ use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::path::PathBuf;
 use std::process::ExitCode;
 
-use toyoterm_api::{Command, PaneId, SplitDirection};
+use toyoterm_api::{Command, PaneId, PaneLaunchSpec, SplitDirection};
 use toyoterm_app::{
-    init_logging, install_panic_hook, run_gui, run_gui_smoke_test, run_gui_with_config_path,
+    GuiOptions, init_logging, install_panic_hook, run_gui, run_gui_smoke_test, run_gui_with_options,
 };
 use toyoterm_ipc::{IpcRequest, request_remote, run_console};
 use toyoterm_mux::Mux;
@@ -44,11 +44,7 @@ fn main() -> ExitCode {
 fn run(mut args: impl Iterator<Item = String>) -> Result<(), String> {
     match args.next().as_deref() {
         None => run_gui().map_err(|error| error.to_string()),
-        Some("--config") => {
-            let path = required_config_path(&mut args)?;
-            ensure_no_arguments(&mut args)?;
-            run_gui_with_config_path(Some(&path)).map_err(|error| error.to_string())
-        }
+        Some(argument) if is_gui_option(argument) => run_gui_options(argument, args),
         Some("version" | "--version" | "-V") => {
             println!("toyoterm {}", env!("CARGO_PKG_VERSION"));
             Ok(())
@@ -104,13 +100,9 @@ fn run(mut args: impl Iterator<Item = String>) -> Result<(), String> {
             }
             Some(argument) => Err(format!("unexpected ruby argument `{argument}`")),
         },
-        Some("gui") => match args.next().as_deref() {
+        Some("gui") => match args.next() {
             None => run_gui().map_err(|error| error.to_string()),
-            Some("--config") => {
-                let path = required_config_path(&mut args)?;
-                ensure_no_arguments(&mut args)?;
-                run_gui_with_config_path(Some(&path)).map_err(|error| error.to_string())
-            }
+            Some(argument) if is_gui_option(&argument) => run_gui_options(&argument, args),
             Some(argument) => Err(format!("unexpected GUI argument `{argument}`")),
         },
         Some("help" | "--help" | "-h") => {
@@ -119,6 +111,107 @@ fn run(mut args: impl Iterator<Item = String>) -> Result<(), String> {
         }
         Some(command) => Err(format!("unknown command `{command}`; try `toyoterm help`")),
     }
+}
+
+fn is_gui_option(argument: &str) -> bool {
+    matches!(
+        argument,
+        "--config"
+            | "--title"
+            | "--app-id"
+            | "--working-directory"
+            | "--dir"
+            | "-e"
+            | "--execute"
+            | "--"
+    ) || argument.starts_with("--config=")
+        || argument.starts_with("--title=")
+        || argument.starts_with("--app-id=")
+        || argument.starts_with("--working-directory=")
+        || argument.starts_with("--dir=")
+}
+
+fn run_gui_options(first: &str, remaining: impl Iterator<Item = String>) -> Result<(), String> {
+    let options = parse_gui_options(std::iter::once(first.to_owned()).chain(remaining))?;
+    run_gui_with_options(options).map_err(|error| error.to_string())
+}
+
+fn parse_gui_options(mut args: impl Iterator<Item = String>) -> Result<GuiOptions, String> {
+    let mut options = GuiOptions::default();
+    while let Some(argument) = args.next() {
+        match argument.as_str() {
+            "--config" => options.config_path = Some(required_config_path(&mut args)?),
+            "--title" => options.title = Some(required_option_value("--title", &mut args)?),
+            "--app-id" => options.app_id = Some(required_option_value("--app-id", &mut args)?),
+            "--working-directory" | "--dir" => {
+                let cwd = required_option_value(&argument, &mut args)?;
+                set_launch_cwd(&mut options, cwd);
+            }
+            "-e" | "--execute" | "--" => {
+                let command = args.collect::<Vec<_>>();
+                if command.is_empty() {
+                    return Err(format!("{argument} requires a command"));
+                }
+                let mut command = command.into_iter();
+                options.initial_pane = Some(PaneLaunchSpec {
+                    program: command.next(),
+                    args: command.collect(),
+                    cwd: options.initial_pane.and_then(|launch| launch.cwd),
+                    environment: Vec::new(),
+                });
+                return Ok(options);
+            }
+            _ if argument.starts_with("--config=") => {
+                options.config_path =
+                    Some(PathBuf::from(inline_option_value("--config", &argument)?));
+            }
+            _ if argument.starts_with("--title=") => {
+                options.title = Some(inline_option_value("--title", &argument)?.to_owned());
+            }
+            _ if argument.starts_with("--app-id=") => {
+                options.app_id = Some(inline_option_value("--app-id", &argument)?.to_owned());
+            }
+            _ if argument.starts_with("--working-directory=") => {
+                let cwd = inline_option_value("--working-directory", &argument)?.to_owned();
+                set_launch_cwd(&mut options, cwd);
+            }
+            _ if argument.starts_with("--dir=") => {
+                let cwd = inline_option_value("--dir", &argument)?.to_owned();
+                set_launch_cwd(&mut options, cwd);
+            }
+            _ => return Err(format!("unexpected GUI argument `{argument}`")),
+        }
+    }
+    Ok(options)
+}
+
+fn set_launch_cwd(options: &mut GuiOptions, cwd: String) {
+    options
+        .initial_pane
+        .get_or_insert_with(|| PaneLaunchSpec {
+            program: None,
+            args: Vec::new(),
+            cwd: None,
+            environment: Vec::new(),
+        })
+        .cwd = Some(cwd);
+}
+
+fn required_option_value(
+    option: &str,
+    args: &mut impl Iterator<Item = String>,
+) -> Result<String, String> {
+    args.next()
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| format!("{option} requires a value"))
+}
+
+fn inline_option_value<'a>(option: &str, argument: &'a str) -> Result<&'a str, String> {
+    argument
+        .split_once('=')
+        .map(|(_, value)| value)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| format!("{option} requires a value"))
 }
 
 fn required_config_path(args: &mut impl Iterator<Item = String>) -> Result<PathBuf, String> {
@@ -312,7 +405,65 @@ fn demo_input() -> &'static str {
 fn print_help() {
     println!(
         "toyoterm - a programmable terminal emulator powered by Rust and mruby\n\n\
-         Usage:\n  toyoterm [--config PATH]\n  toyoterm [COMMAND]\n\n\
+         Usage:\n  toyoterm [GUI-OPTIONS] [-e COMMAND [ARG...]]\n  toyoterm [COMMAND]\n\n\
+         GUI options:\n  --config PATH                    Use a specific Ruby configuration\n  --title TITLE                    Set the initial window title\n  --app-id APP-ID                  Set the Wayland app ID / X11 class on Linux\n  --working-directory DIR          Set the initial pane working directory\n  -e, --execute COMMAND [ARG...]   Run a command instead of the default shell\n\n\
          Commands:\n  gui                              Open the native GPU window (default)\n  ruby console                     Connect to the running GUI Ruby VM\n  list                             Show the running GUI mux state\n  reload                           Reload the running GUI configuration\n  cli list-panes                   List panes in the running GUI\n  cli send-text --pane ID TEXT     Send text to a pane\n  cli split [DIRECTION]            Split the active pane (default: right)\n  cli activate-workspace NAME      Activate or create a workspace\n  demo                             Exercise tabs and pane splitting\n  pty-demo                         Spawn a process in a native PTY\n  screen-demo                      Parse PTY output into a terminal snapshot\n  shell-integration SHELL         Print the integration script for a shell\n  version                          Print version\n  help                             Print this help\n\nEnvironment:\n  TOYOTERM_INSTANCE                Select a named running GUI instance"
     );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parses_xdg_terminal_launch_options() {
+        let options = parse_gui_options(
+            [
+                "--app-id=org.omarchy.terminal",
+                "--title=Omarchy",
+                "--working-directory=/tmp",
+                "-e",
+                "bash",
+                "-c",
+                "omarchy update",
+            ]
+            .into_iter()
+            .map(str::to_owned),
+        )
+        .unwrap();
+
+        assert_eq!(options.title.as_deref(), Some("Omarchy"));
+        assert_eq!(options.app_id.as_deref(), Some("org.omarchy.terminal"));
+        assert_eq!(
+            options.initial_pane,
+            Some(PaneLaunchSpec {
+                program: Some("bash".into()),
+                args: vec!["-c".into(), "omarchy update".into()],
+                cwd: Some("/tmp".into()),
+                environment: Vec::new(),
+            })
+        );
+    }
+
+    #[test]
+    fn command_arguments_are_not_parsed_as_gui_options() {
+        let options = parse_gui_options(
+            ["-e", "printf", "--title=child argument"]
+                .into_iter()
+                .map(str::to_owned),
+        )
+        .unwrap();
+
+        let launch = options.initial_pane.unwrap();
+        assert_eq!(launch.program.as_deref(), Some("printf"));
+        assert_eq!(launch.args, ["--title=child argument"]);
+    }
+
+    #[test]
+    fn rejects_execute_without_a_command() {
+        assert_eq!(
+            parse_gui_options(["-e"].into_iter().map(str::to_owned)).unwrap_err(),
+            "-e requires a command"
+        );
+    }
 }

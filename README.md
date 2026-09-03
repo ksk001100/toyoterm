@@ -396,8 +396,9 @@ OSC 52 clipboard access is disabled in v0.1. Terminal output may originate from 
 ## CLI
 
 ```text
-toyoterm [--config PATH]
-toyoterm gui [--config PATH]
+toyoterm [--config PATH] [--title TITLE] [--app-id APP-ID]
+         [--working-directory DIR] [-e COMMAND [ARG...]]
+toyoterm gui [same GUI options]
 toyoterm list
 toyoterm reload
 toyoterm ruby console
@@ -411,6 +412,11 @@ toyoterm screen-demo
 toyoterm version
 toyoterm help
 ```
+
+On Linux, the packaged desktop entry advertises these launch options to
+`xdg-terminal-exec`. This allows desktop integrations to set the window title,
+application ID, working directory, and command; for example, Omarchy can run
+its interactive updater when toyoterm is the default terminal.
 
 Except for the local `demo` commands, these commands connect to a running GUI over a Unix domain socket or Windows named pipe. `list` reports its live mux state; the `cli` mutations use the same native command model as Ruby. If multiple GUIs are running, the most recently started one is selected. Set the same `TOYOTERM_INSTANCE=name` when starting the GUI and invoking a client to address a stable named instance.
 

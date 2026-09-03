@@ -393,8 +393,9 @@ v0.1ではOSC 52によるクリップボードアクセスを無効にします�
 ## CLI
 
 ```text
-toyoterm [--config PATH]
-toyoterm gui [--config PATH]
+toyoterm [--config PATH] [--title TITLE] [--app-id APP-ID]
+         [--working-directory DIR] [-e COMMAND [ARG...]]
+toyoterm gui [同じGUI option]
 toyoterm list
 toyoterm reload
 toyoterm ruby console
@@ -408,6 +409,11 @@ toyoterm screen-demo
 toyoterm version
 toyoterm help
 ```
+
+Linuxでは、packageに含まれるdesktop entryがこれらの起動optionを
+`xdg-terminal-exec`へ公開します。desktop統合からwindow title、application ID、
+作業directory、commandを指定できるため、toyotermをデフォルトターミナルにした
+Omarchyでも対話的な更新を実行できます。
 
 ローカル実行の`demo`系コマンドを除き、Unix domain socketまたはWindows Named Pipeで起動中GUIへ接続します。`list`はGUIの最新Mux状態を表示し、`cli`の変更操作はRubyと同じNative Commandモデルを使います。複数GUIが動作している場合は最後に起動したinstanceを選びます。安定した名前で対象を指定する場合は、GUI起動時とclient実行時の両方で同じ`TOYOTERM_INSTANCE=name`を設定してください。
 

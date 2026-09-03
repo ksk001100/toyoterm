@@ -261,11 +261,11 @@ impl ToyotermApplication {
             return;
         };
         let Some(pane) = self.mux.current_pane() else {
-            window.set_title(&self.script_snapshot.config.window.title);
+            window.set_title(self.base_window_title());
             return;
         };
         let Some(runtime) = self.pane_runtimes.get(&pane) else {
-            window.set_title(&self.script_snapshot.config.window.title);
+            window.set_title(self.base_window_title());
             return;
         };
         let tab = self
@@ -290,7 +290,8 @@ impl ToyotermApplication {
             .unwrap_or_default();
         window.set_title(&format!(
             "{} — {workspace}{tab}{}{pid}{cwd}",
-            self.script_snapshot.config.window.title, runtime.title
+            self.base_window_title(),
+            runtime.title
         ));
     }
 }
