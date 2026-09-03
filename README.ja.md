@@ -58,6 +58,8 @@ toyotermは、Rustと組み込みmrubyで作る実験的なプログラマブル
 
 LinuxではWaylandまたはX11のデスクトップセッションが必要です。不足している場合は、利用中のディストリビューションからCビルドツール、`pkg-config`、Wayland/X11、xkbcommonの開発パッケージをインストールしてください。
 
+シェルプロンプトや各種ターミナルツールのアイコン・記号を正しく表示するため、Nerd Font系フォントの使用を推奨します。等幅版（例：`JetBrainsMono Nerd Font Mono`）を選び、インストール後のfamily名を`config.font.family`に指定してください。
+
 リポジトリをcloneした後、次のコマンドで起動します。
 
 ```sh
@@ -186,7 +188,7 @@ ToyotermはANSI 256色の前景色と背景色を描画します。`colors.ansi`
 xterm 6×6×6カラ―キューブ、232〜255はグレースケールです。`colors.ansi`配列
 全体を代入する場合は、`#RRGGBB`形式の文字列をちょうど16個指定してください。
 
-`font.fallback`は省略できます。CJK、emoji、記号などの不足グリフに対し、インストール済みのフォントを指定順で試した後、OS標準のfallbackを使います。存在しないフォント名はフォントシステムが読み飛ばします。
+`font.fallback`は省略できます。CJK、emoji、記号などの不足グリフに対し、インストール済みのフォントを指定順で試した後、OS標準のfallbackを使います。存在しないフォント名はフォントシステムが読み飛ばします。Nerd Font系を使う場合は、`font.family = "JetBrainsMono Nerd Font Mono"`のように、インストール後の正確なfamily名を指定してください。
 
 `config.window`では`opacity`、`width`、`height`、`min_width`、`min_height`、`decorations`、`resizable`、`always_on_top`、`title`を設定できます。初期サイズは起動時に、その他の変更可能な属性はreload時にも反映されます。
 

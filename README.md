@@ -58,6 +58,8 @@ The main features are implemented, but the initial release still requires intera
 
 On Linux, a working Wayland or X11 desktop session is required. Install your distribution's C build tools, `pkg-config`, Wayland/X11, and xkbcommon development packages if they are not already available.
 
+A Nerd Font is recommended for correctly displaying the icons and symbols used by many shell prompts and terminal tools. Prefer a monospaced variant (for example, `JetBrainsMono Nerd Font Mono`) and set its installed family name in `config.font.family`.
+
 After cloning the repository, run:
 
 ```sh
@@ -188,7 +190,7 @@ contains the themeable base colors at indexes 0 through 15; indexes 16 through
 grayscale ramp. Assigning the entire `colors.ansi` array requires exactly 16
 `#RRGGBB` strings.
 
-`font.fallback` is optional. Installed families are tried in the listed order for missing CJK, emoji, symbol, and other glyphs, followed by the platform defaults. Unknown families are skipped by the font system.
+`font.fallback` is optional. Installed families are tried in the listed order for missing CJK, emoji, symbol, and other glyphs, followed by the platform defaults. Unknown families are skipped by the font system. For a Nerd Font, use its exact installed family name, for example `font.family = "JetBrainsMono Nerd Font Mono"`.
 
 `config.window` exposes `opacity`, `width`, `height`, `min_width`, `min_height`, `decorations`, `resizable`, `always_on_top`, and `title`. Initial dimensions apply at startup; mutable window attributes also apply on reload.
 
