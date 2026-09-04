@@ -45,6 +45,10 @@ impl ToyotermApplication {
 
     pub(super) fn sync_active_renderer(&mut self, scale_factor: f64) {
         let active = self.mux.current_pane();
+        let zoomed = self
+            .mux
+            .current_tab()
+            .and_then(|tab| self.mux.zoomed_pane(tab));
         let snapshots = self
             .pane_layout
             .panes()
@@ -83,6 +87,7 @@ impl ToyotermApplication {
                     rect: *rect,
                     active: *active,
                     badge: badge.as_deref(),
+                    zoomed: zoomed == Some(*pane),
                 },
             )
             .collect::<Vec<_>>();

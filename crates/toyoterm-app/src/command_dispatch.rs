@@ -725,6 +725,7 @@ impl ToyotermApplication {
                 &config.colors.workspace_bar,
                 &config.colors.status_bar,
                 &config.colors.pane_border,
+                &config.colors.zoomed_pane_border,
                 &config.colors.search_match,
                 &config.colors.search_match_active,
             ],

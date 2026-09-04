@@ -233,6 +233,7 @@ fn loads_and_selects_a_theme_defined_by_a_plugin() {
                 theme.background = "#10131a"
                 theme.foreground = "#d8dee9"
                 theme.cursor = "#88c0d0"
+                theme.zoomed_pane_border = "#abcdef"
                 theme.ansi = [
                   "#000000", "#bf616a", "#a3be8c", "#ebcb8b",
                   "#81a1c1", "#b48ead", "#88c0d0", "#e5e9f0",
@@ -262,6 +263,7 @@ fn loads_and_selects_a_theme_defined_by_a_plugin() {
 
     assert_eq!(loaded.config.colors.background, "#10131a");
     assert_eq!(loaded.config.colors.foreground, "#d8dee9");
+    assert_eq!(loaded.config.colors.zoomed_pane_border, "#abcdef");
     assert_eq!(loaded.config.colors.cursor, "#ffffff");
     assert_eq!(loaded.config.colors.ansi[1], "#ff0000");
     assert_eq!(loaded.config.colors.ansi[2], "#a3be8c");
@@ -1887,4 +1889,52 @@ fn resolves_config_paths_in_priority_order() {
         Some(default_path)
     );
     assert_eq!(resolve_config_path(None, None, None), None);
+}
+
+#[test]
+fn zoomed_pane_border_supports_reload_and_atomic_runtime_updates() {
+    let mut manager = ConfigManager::new().unwrap();
+    assert_eq!(manager.config().colors.zoomed_pane_border, "#ffbe3a");
+    manager
+        .reload(r##"Toyoterm.configure { |c| c.colors.zoomed_pane_border = "#123456" }"##)
+        .unwrap();
+    assert_eq!(manager.config().colors.zoomed_pane_border, "#123456");
+    let result = run_script_request(
+        &mut manager,
+        &script_test_context(),
+        &ScriptInvocation::Eval(
+            r##"Toyoterm.configure { |c| c.colors.zoomed_pane_border = "#abcdef" }"##.into(),
+        ),
+    )
+    .unwrap();
+    assert_eq!(
+        result.snapshot.unwrap().config.colors.zoomed_pane_border,
+        "#abcdef"
+    );
+    for source in [
+        r#"Toyoterm.configure { |c| c.colors.zoomed_pane_border = "red" }"#,
+        r##"Toyoterm.configure { |c| c.colors.zoomed_pane_border = "#112233"; c.font.size = 0 }"##,
+    ] {
+        assert!(
+            run_script_request(
+                &mut manager,
+                &script_test_context(),
+                &ScriptInvocation::Eval(source.into())
+            )
+            .is_err()
+        );
+        assert_eq!(manager.config().colors.zoomed_pane_border, "#abcdef");
+        assert_eq!(
+            manager
+                .eval("Toyoterm.__config.colors.zoomed_pane_border")
+                .unwrap(),
+            "#abcdef"
+        );
+    }
+    assert!(
+        manager
+            .reload(r#"Toyoterm.configure { |c| c.colors.zoomed_pane_border = "invalid" }"#)
+            .is_err()
+    );
+    assert_eq!(manager.config().colors.zoomed_pane_border, "#abcdef");
 }

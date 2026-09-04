@@ -132,6 +132,7 @@ Toyoterm.configure do |config|
     colors.foreground = "#dce1e8"
     colors.cursor = "#f5f7fa"
     colors.selection = "#375891"
+    colors.zoomed_pane_border = "#ffbe3a"
     # ANSIインデックス0〜15はテーマに合わせて個別に変更できます。
     colors.ansi[1] = "#ff5f56"
   end
@@ -200,7 +201,9 @@ xterm 6×6×6カラ―キューブ、232〜255はグレースケールです。`
 
 `config.window`では`opacity`、`width`、`height`、`min_width`、`min_height`、`decorations`、`resizable`、`always_on_top`、`title`を設定できます。初期サイズは起動時に、その他の変更可能な属性はreload時にも反映されます。
 
-UI配色は`tab_bar`、`tab_active`、`tab_inactive`、`workspace_bar`、`status_bar`、`pane_border`、`search_match`、`search_match_active`を`config.colors`で指定できます。バーを隠すには`config.ui.tab_bar = false`または`workspace_bar = false`を使います。余白と境界幅には`0`も指定できます。
+zoom中のpaneは四辺の枠線に`config.colors.zoomed_pane_border`（既定値`#ffbe3a`）を使い、通常のアクティブpaneは`pane_border`を使います。どちらも太さは`ui.active_pane_border_width`で、`0`を指定すると表示されません。
+
+UI配色は`tab_bar`、`tab_active`、`tab_inactive`、`workspace_bar`、`status_bar`、`pane_border`、`zoomed_pane_border`、`search_match`、`search_match_active`を`config.colors`で指定できます。バーを隠すには`config.ui.tab_bar = false`または`workspace_bar = false`を使います。余白と境界幅には`0`も指定できます。
 
 ### キーバインド
 

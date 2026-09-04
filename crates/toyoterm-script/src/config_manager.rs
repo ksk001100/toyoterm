@@ -881,6 +881,7 @@ fn read_config(runtime: &mut MrubyRuntime) -> Result<ToyotermConfig, ScriptError
             workspace_bar: runtime.eval("Toyoterm.__config.colors.workspace_bar")?,
             status_bar: runtime.eval("Toyoterm.__config.colors.status_bar")?,
             pane_border: runtime.eval("Toyoterm.__config.colors.pane_border")?,
+            zoomed_pane_border: runtime.eval("Toyoterm.__config.colors.zoomed_pane_border")?,
             search_match: runtime.eval("Toyoterm.__config.colors.search_match")?,
             search_match_active: runtime.eval("Toyoterm.__config.colors.search_match_active")?,
         },
@@ -993,6 +994,7 @@ fn read_config(runtime: &mut MrubyRuntime) -> Result<ToyotermConfig, ScriptError
         ("workspace_bar", &config.colors.workspace_bar),
         ("status_bar", &config.colors.status_bar),
         ("pane_border", &config.colors.pane_border),
+        ("zoomed_pane_border", &config.colors.zoomed_pane_border),
         ("search_match", &config.colors.search_match),
         ("search_match_active", &config.colors.search_match_active),
     ] {

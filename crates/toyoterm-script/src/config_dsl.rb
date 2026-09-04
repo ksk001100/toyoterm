@@ -25,7 +25,7 @@ module Toyoterm
   class ColorConfig
     attr_accessor :background, :foreground, :cursor, :selection, :ansi,
                   :tab_bar, :tab_active, :tab_inactive, :workspace_bar,
-                  :status_bar, :pane_border, :search_match, :search_match_active
+                  :status_bar, :pane_border, :zoomed_pane_border, :search_match, :search_match_active
 
     def initialize
       @background = "#090b0e"
@@ -44,6 +44,7 @@ module Toyoterm
       @workspace_bar = "#0d1014"
       @status_bar = "#101419"
       @pane_border = "#375891"
+      @zoomed_pane_border = "#ffbe3a"
       @search_match = "#c4972f"
       @search_match_active = "#ffbe3a"
     end
@@ -64,7 +65,7 @@ module Toyoterm
         @background, @foreground, @cursor, @selection,
         @ansi.is_a?(Array) ? @ansi.dup : @ansi,
         @tab_bar, @tab_active, @tab_inactive, @workspace_bar, @status_bar,
-        @pane_border, @search_match, @search_match_active
+        @pane_border, @search_match, @search_match_active, @zoomed_pane_border
       ]
     end
 
@@ -82,6 +83,7 @@ module Toyoterm
       @pane_border = snapshot[10]
       @search_match = snapshot[11]
       @search_match_active = snapshot[12]
+      @zoomed_pane_border = snapshot[13]
       self
     end
 
@@ -493,7 +495,7 @@ module Toyoterm
         [@colors.background, @colors.foreground, @colors.cursor, @colors.selection,
          @colors.ansi.dup, @colors.tab_bar, @colors.tab_active, @colors.tab_inactive,
          @colors.workspace_bar, @colors.status_bar, @colors.pane_border,
-         @colors.search_match, @colors.search_match_active],
+         @colors.search_match, @colors.search_match_active, @colors.zoomed_pane_border],
         [@window.opacity, @window.width, @window.height, @window.min_width,
          @window.min_height, @window.decorations, @window.resizable,
          @window.always_on_top, @window.title, @default_shell, @scrollback_lines],
@@ -526,6 +528,7 @@ module Toyoterm
       @colors.pane_border = colors[10]
       @colors.search_match = colors[11]
       @colors.search_match_active = colors[12]
+      @colors.zoomed_pane_border = colors[13]
       @window.opacity = window[0]
       @window.width = window[1]
       @window.height = window[2]

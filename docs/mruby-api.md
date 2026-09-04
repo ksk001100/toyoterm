@@ -98,8 +98,17 @@ All colors use `#RRGGBB` strings.
 | `workspace_bar` | `#0d1014` |
 | `status_bar` | `#101419` |
 | `pane_border` | `#375891` |
+| `zoomed_pane_border` | `#ffbe3a` |
 | `search_match` | `#c4972f` |
 | `search_match_active` | `#ffbe3a` |
+
+`colors.zoomed_pane_border` returns the `#RRGGBB` string used for the active
+pane's border on all four sides while zoomed. Set it with
+`config.colors.zoomed_pane_border = "#ffbe3a"`; assignment returns the assigned
+value. Ordinary active panes use `pane_border`, including a single unzoomed
+pane. Both use `ui.active_pane_border_width` (zero hides the indicator).
+The setting supports themes, reload, and runtime configuration. Invalid colors
+reject the configuration transaction and preserve the previous settings.
 
 `colors.ansi` is an array of exactly 16 `#RRGGBB` strings for ANSI indexes
 0 through 15. Indexes 16 through 231 use the standard xterm 6x6x6 cube, and

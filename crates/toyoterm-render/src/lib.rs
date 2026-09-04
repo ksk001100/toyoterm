@@ -54,6 +54,7 @@ pub struct PaneRenderData<'a> {
     pub cursor_uses_grid: bool,
     pub rect: PaneRect,
     pub active: bool,
+    pub zoomed: bool,
     pub badge: Option<&'a str>,
 }
 
@@ -109,6 +110,7 @@ pub struct RenderStyle {
     pub workspace_bar: [u8; 3],
     pub status_bar: [u8; 3],
     pub pane_border: [u8; 3],
+    pub zoomed_pane_border: [u8; 3],
     pub search_match: [u8; 3],
     pub search_match_active: [u8; 3],
     pub ansi: [[u8; 3]; 16],
@@ -132,6 +134,7 @@ impl Default for RenderStyle {
             workspace_bar: [13, 16, 20],
             status_bar: [16, 20, 25],
             pane_border: [55, 88, 145],
+            zoomed_pane_border: [255, 190, 58],
             search_match: [196, 151, 47],
             search_match_active: [255, 190, 58],
             ansi: default_ansi_palette(),
@@ -198,7 +201,7 @@ impl RenderStyle {
         font_family: impl Into<String>,
         font_fallback: Vec<String>,
         font_weight: u16,
-        colors: [&str; 12],
+        colors: [&str; 13],
         ansi: &[String],
         opacity: f32,
         active_pane_border_width: f32,
@@ -214,6 +217,7 @@ impl RenderStyle {
             workspace_bar,
             status_bar,
             pane_border,
+            zoomed_pane_border,
             search_match,
             search_match_active,
         ] = colors;
@@ -231,6 +235,7 @@ impl RenderStyle {
         style.workspace_bar = parse_rgb(workspace_bar)?;
         style.status_bar = parse_rgb(status_bar)?;
         style.pane_border = parse_rgb(pane_border)?;
+        style.zoomed_pane_border = parse_rgb(zoomed_pane_border)?;
         style.search_match = parse_rgb(search_match)?;
         style.search_match_active = parse_rgb(search_match_active)?;
         style.active_pane_border_width = active_pane_border_width;

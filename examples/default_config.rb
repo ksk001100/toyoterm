@@ -16,7 +16,9 @@ Toyoterm.configure do |config|
     colors.tab_inactive = "#15191f"
     colors.workspace_bar = "#0d1014"
     colors.status_bar = "#101419"
+    # Four-sided active pane border (normal / zoomed).
     colors.pane_border = "#375891"
+    colors.zoomed_pane_border = "#ffbe3a"
     colors.search_match = "#c4972f"
     colors.search_match_active = "#ffbe3a"
   end

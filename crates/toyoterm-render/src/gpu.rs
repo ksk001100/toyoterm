@@ -132,6 +132,7 @@ struct PaneBuffers {
     cursor_x: f32,
     rect: PaneRect,
     active: bool,
+    zoomed: bool,
     backgrounds: Vec<(PaneRect, [u8; 3])>,
     selection_highlights: Vec<PaneRect>,
     search_highlights: Vec<(PaneRect, bool)>,
@@ -256,6 +257,7 @@ impl PaneBuffers {
             cursor_x: 0.0,
             rect: PaneRect::default(),
             active: false,
+            zoomed: false,
             backgrounds: Vec::new(),
             selection_highlights: Vec::new(),
             search_highlights: Vec::new(),
@@ -490,6 +492,7 @@ impl GpuRenderer {
             buffers.cursor = pane.cursor;
             buffers.rect = pane.rect;
             buffers.active = pane.active;
+            buffers.zoomed = pane.zoomed;
             buffers.backgrounds = terminal_backgrounds(
                 pane.snapshot,
                 pane.rect,
@@ -1218,13 +1221,22 @@ impl GpuRenderer {
                 * self.window.scale_factor())
             .round()
             .max(0.0) as u32;
-            push_ui_rect(
-                &mut vertices,
-                PaneRect::new(pane.rect.x, pane.rect.y, pane.rect.width, border_width),
-                rgba(self.style.pane_border, 0.95),
-                self.configuration.width,
-                self.configuration.height,
-            );
+            for rect in pane_border_rects(pane.rect, border_width) {
+                push_ui_rect(
+                    &mut vertices,
+                    rect,
+                    rgba(
+                        if pane.zoomed {
+                            self.style.zoomed_pane_border
+                        } else {
+                            self.style.pane_border
+                        },
+                        0.95,
+                    ),
+                    self.configuration.width,
+                    self.configuration.height,
+                );
+            }
         }
 
         if let Some(rect) = self.status_bar.rect {

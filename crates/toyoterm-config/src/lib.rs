@@ -31,6 +31,7 @@ pub struct ColorConfig {
     pub workspace_bar: String,
     pub status_bar: String,
     pub pane_border: String,
+    pub zoomed_pane_border: String,
     pub search_match: String,
     pub search_match_active: String,
 }
@@ -104,6 +105,7 @@ impl Default for ToyotermConfig {
                 workspace_bar: "#0d1014".into(),
                 status_bar: "#101419".into(),
                 pane_border: "#375891".into(),
+                zoomed_pane_border: "#ffbe3a".into(),
                 search_match: "#c4972f".into(),
                 search_match_active: "#ffbe3a".into(),
             },
