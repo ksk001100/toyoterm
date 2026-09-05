@@ -167,7 +167,6 @@ end
 | `workspace_bar_height` | `24` | Positive finite number. |
 | `workspace_width` | `160` | Positive finite number. |
 | `status_bar_height` | `24` | Positive finite number. |
-| `status_bar_width` | `80` | Positive finite number. |
 | `pane_divider_width` | `2` | Non-negative finite number. |
 | `active_pane_border_width` | `2` | Non-negative finite number. |
 
@@ -491,37 +490,40 @@ handler runs to completion and its commands are applied before the next event;
 callbacks are never entered recursively. If a handler raises, its queued
 commands are discarded.
 
-## Status callback
+## Window bars
 
-`Toyoterm.status(position: :bottom, interval: 1.0) { |context| ... }`
-configures an edge bar. `position` accepts `:top`, `:bottom`, `:left`, or
-`:right`; any other value raises `ArgumentError`. Omitting `position` preserves
-the original bottom status bar. One callback may be registered per edge;
-registering a duplicate raises `ArgumentError`. The finite numeric interval
-must be at least 0.1 seconds. Horizontal bars use `config.ui.status_bar_height`
-and vertical bars use `config.ui.status_bar_width`. Registration returns the
-callback `Proc`; omitting the block raises `ArgumentError`, and a non-numeric
-interval raises `TypeError` during validation.
+`config.window.bar(position, interval: 1.0) { |bar| ... }` configures a window
+bar. `position` accepts only `:top` or `:bottom`; any other value raises
+`ArgumentError`. One bar may be registered at each position, and registering a
+duplicate raises `ArgumentError`. The finite numeric interval must be at least
+0.1 seconds; other values fail configuration validation. Both bars use
+`config.ui.status_bar_height`. The method returns the configured
+`Toyoterm::BarConfig` object. Omitting the block raises `ArgumentError`.
 
-`Toyoterm::StatusContext` exposes `workspace`, `window`, `tab`, and `pane`. The
-result is converted to a string. Newlines can be used to stack text in a
-vertical bar.
+`bar.add(alignment, value = nil) { |context| ... }` appends a widget.
+`alignment` accepts `:left`, `:center`, or `:right`. Supply either a fixed value
+or a block, not both. `Toyoterm::BarContext` exposes `workspace`, `window`,
+`tab`, and `pane`; each widget result is converted to a string. Widgets with the
+same alignment are rendered in registration order, separated by one space.
+`add` returns the supplied value or block. Invalid alignments and supplying both
+a non-`nil` value and a block raise `ArgumentError`. Widget text containing NUL
+raises `ArgumentError` when rendered.
 
 ```ruby
-Toyoterm.status(interval: 1.0) do |context|
-  [context.workspace.name, context.pane.cwd].compact.join(" | ")
-end
-
-Toyoterm.status(position: :right, interval: 2.0) do |context|
-  [context.pane.title, context.pane.cwd].compact.join("\n")
+Toyoterm.configure do |config|
+  config.window.bar :bottom, interval: 1.0 do |bar|
+    bar.add(:left) { |context| context.workspace.name }
+    bar.add(:center, "toyoterm")
+    bar.add(:right) { |context| context.pane.cwd }
+  end
 end
 ```
 
-An edge is hidden when no callback is configured for it. Each callback keeps
-its own interval and is run serially on the script thread. Commands and pane
-badge changes queued by a status callback are always discarded. If a callback
-raises, its previous rendered text remains and that edge is retried after its
-configured interval.
+A position is hidden when no bar is configured for it. Each bar keeps its own
+interval and is run serially on the script thread. Commands and pane badge
+changes queued by widget callbacks are always discarded. If any widget raises,
+the bar keeps its previous rendered content and is retried after its configured
+interval.
 
 ## Platform, clipboard, environment, files, and processes
 
@@ -632,4 +634,4 @@ delays later Ruby work but does not stop PTY output parsing or frame scheduling.
 
 There is no forced callback timeout. Callbacks taking at least 100 ms are logged
 as slow under `toyoterm::script`. Avoid blocking or unbounded work in bindings,
-event handlers, commands, and status callbacks.
+event handlers, commands, and bar widgets.

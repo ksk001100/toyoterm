@@ -153,7 +153,6 @@ Toyoterm.configure do |config|
     ui.workspace_bar_height = 24
     ui.workspace_width = 160
     ui.status_bar_height = 24
-    ui.status_bar_width = 80
     ui.pane_divider_width = 2
     ui.active_pane_border_width = 2
   end
@@ -347,17 +346,17 @@ end
 
 native側の発生元はmrubyを直接呼ばず、すべてのイベントを単一のFIFO queueへ追加します。各callbackを最後まで実行し、queueされたcommandを反映してから次のイベントを配送します。そのcommandから発生したイベントはqueue末尾へ追加するため、callbackへ再入しません。自己生成イベントの無限loopを防ぐため、1 application turnあたり1,024件を上限とします。handler未登録のイベントはRuby VMを呼ぶ前に破棄します。
 
-optionalなedge barは`Toyoterm.status(position: :bottom, interval: 1.0)`で設定できます。`position`には`:top`、`:bottom`、`:left`、`:right`を指定でき、省略時は従来どおり下端です。各edgeに1つずつcallbackを登録できるため、複数のbarでpane領域を同時に囲めます。上下のbarは`ui.status_bar_height`、左右のbarは`ui.status_bar_width`を使います。
+optionalな上下barは`config.window.bar`で設定します。各barには`bar.add(:left)`、`bar.add(:center)`、`bar.add(:right)`で任意数のwidgetを配置できます。widgetには固定値、または現在の`workspace`、`window`、`tab`、`pane`を参照できるcontextを受け取るblockを指定します。
 
-callbackのcontextから現在の`workspace`、`window`、`tab`、`pane`を参照でき、戻り値を文字列として表示します。callback未登録のedgeは表示しません。100ms未満のintervalは拒否し、各callbackはscript workerで実行するため、遅いstatus生成がterminal描画をblockしません。status callbackがqueueしたcommandは破棄します。
+上下それぞれに1本のbarを登録できます。100ms未満のintervalは拒否し、callbackはscript workerで実行するため、遅いwidget生成がterminal描画をblockしません。bar widgetがqueueしたcommandは破棄します。
 
 ```ruby
-Toyoterm.status(interval: 1.0) do |context|
-  [context.workspace.name, context.pane.cwd].compact.join(" | ")
-end
-
-Toyoterm.status(position: :right, interval: 2.0) do |context|
-  [context.pane.title, context.pane.cwd].compact.join("\n")
+Toyoterm.configure do |config|
+  config.window.bar :bottom, interval: 1.0 do |bar|
+    bar.add(:left) { |context| context.workspace.name }
+    bar.add(:center, "toyoterm")
+    bar.add(:right) { |context| context.pane.cwd }
+  end
 end
 ```
 

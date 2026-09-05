@@ -106,6 +106,35 @@ module Toyoterm
     end
   end
 
+  class BarConfig
+    def initialize
+      @widgets = []
+    end
+
+    def add(position, value = nil, &block)
+      raise ArgumentError, "bar widget position must be :left, :center, or :right" unless position.is_a?(Symbol)
+      unless [:left, :center, :right].include?(position)
+        raise ArgumentError, "bar widget position must be :left, :center, or :right"
+      end
+      if block && !value.nil?
+        raise ArgumentError, "bar widget accepts either a value or a block, not both"
+      end
+      widget = block || value
+      @widgets << [position, widget]
+      widget
+    end
+
+    def __widgets
+      @widgets
+    end
+
+    def __copy
+      copy = BarConfig.new
+      @widgets.each { |widget| copy.__widgets << widget.dup }
+      copy
+    end
+  end
+
   class WindowConfig
     attr_reader :opacity
     attr_accessor :width, :height, :min_width, :min_height,
@@ -128,13 +157,17 @@ module Toyoterm
       @always_on_top = false
       @title = "toyoterm"
     end
+
+    def bar(position, interval: 1.0, &block)
+      Toyoterm.__register_window_bar(position, interval, &block)
+    end
   end
 
   class UiConfig
     attr_accessor :padding_x, :padding_y, :line_height,
                   :tab_bar, :tab_bar_height, :tab_width,
                   :workspace_bar, :workspace_bar_height, :workspace_width,
-                  :status_bar_height, :status_bar_width, :pane_divider_width,
+                  :status_bar_height, :pane_divider_width,
                   :active_pane_border_width
 
     def initialize
@@ -148,7 +181,6 @@ module Toyoterm
       @workspace_bar_height = 24
       @workspace_width = 160
       @status_bar_height = 24
-      @status_bar_width = 80
       @pane_divider_width = 2
       @active_pane_border_width = 2
     end
@@ -173,7 +205,7 @@ module Toyoterm
 
   CommandContext = KeyBindingContext
 
-  class StatusContext
+  class BarContext
     attr_reader :workspace, :window, :tab, :pane
 
     def initialize(workspace, window, tab, pane)
@@ -510,7 +542,7 @@ module Toyoterm
         [@ui.padding_x, @ui.padding_y, @ui.line_height, @ui.tab_bar,
          @ui.tab_bar_height, @ui.tab_width, @ui.workspace_bar,
          @ui.workspace_bar_height, @ui.workspace_width, @ui.status_bar_height,
-         @ui.pane_divider_width, @ui.active_pane_border_width, @ui.status_bar_width],
+         @ui.pane_divider_width, @ui.active_pane_border_width],
         [@behavior.scroll_lines, @behavior.copy_on_select],
         [@leader_key, @leader_timeout, @theme,
          @theme_color_checkpoint && @theme_color_checkpoint.map { |value| value.is_a?(Array) ? value.dup : value }]
@@ -560,7 +592,6 @@ module Toyoterm
       @ui.status_bar_height = ui[9]
       @ui.pane_divider_width = ui[10]
       @ui.active_pane_border_width = ui[11]
-      @ui.status_bar_width = ui[12]
       @behavior.scroll_lines = behavior[0]
       @behavior.copy_on_select = behavior[1]
       @leader_key = leader[0]
@@ -987,7 +1018,7 @@ module Toyoterm
   @current_command = nil
   @event_handlers = {}
   @user_commands = {}
-  @status_bars = {}
+  @window_bars = {}
   @live_handles = {
     workspace: [0],
     window: [0],
@@ -1245,7 +1276,9 @@ module Toyoterm
   # The host validates mutations made in the persistent VM after each
   # request. Keep a VM-side checkpoint so invalid changes can be rolled back.
   def self.__begin_config_transaction
-    @config_transaction = [@config.__checkpoint, @status_bars.dup, @pane_badges.dup]
+    bars = {}
+    @window_bars.each { |position, entry| bars[position] = [entry[0], entry[1].__copy] }
+    @config_transaction = [@config.__checkpoint, bars, @pane_badges.dup]
     nil
   end
 
@@ -1253,7 +1286,7 @@ module Toyoterm
     checkpoint = @config_transaction
     return nil unless checkpoint
     @config.__restore(checkpoint[0])
-    @status_bars = checkpoint[1]
+    @window_bars = checkpoint[1]
     @pane_badges = checkpoint[2]
     @config_transaction = nil
     nil
@@ -1281,42 +1314,52 @@ module Toyoterm
     block
   end
 
-  def self.status(position: :bottom, interval: 1.0, &block)
-    raise ArgumentError, "status callback requires a block" unless block
-    raise ArgumentError, "status position must be :top, :bottom, :left, or :right" unless position.respond_to?(:to_sym)
-    position = position.to_sym
-    unless [:top, :bottom, :left, :right].include?(position)
-      raise ArgumentError, "status position must be :top, :bottom, :left, or :right"
+  def self.__register_window_bar(position, interval, &block)
+    raise ArgumentError, "window bar requires a block" unless block
+    raise ArgumentError, "window bar position must be :top or :bottom" unless position.is_a?(Symbol)
+    unless [:top, :bottom].include?(position)
+      raise ArgumentError, "window bar position must be :top or :bottom"
     end
-    raise ArgumentError, "status callback is already configured for #{position}" if @status_bars.key?(position)
-    @status_bars[position] = [interval, block]
-    block
+    raise ArgumentError, "window bar is already configured for #{position}" if @window_bars.key?(position)
+    bar = BarConfig.new
+    block.call(bar)
+    @window_bars[position] = [interval, bar]
+    bar
   end
 
-  def self.__status_count
-    @status_bars.length
+  def self.__bar_count
+    @window_bars.length
   end
 
-  def self.__status_position(index)
-    @status_bars.keys[index]
+  def self.__bar_position(index)
+    @window_bars.keys[index]
   end
 
-  def self.__status_interval(index)
-    interval = @status_bars.values[index][0]
+  def self.__bar_interval(index)
+    interval = @window_bars.values[index][0]
     unless interval.is_a?(Numeric)
-      raise TypeError, "status interval must be numeric"
+      raise TypeError, "window bar interval must be numeric"
     end
     interval
   end
 
-  def self.__invoke_status(position)
-    entry = @status_bars[position.to_sym]
+  def self.__invoke_bar(position)
+    entry = @window_bars[position.to_sym]
     return nil unless entry
-    context = StatusContext.new(current_workspace, current_window, current_tab, current_pane)
+    context = BarContext.new(current_workspace, current_window, current_tab, current_pane)
     checkpoint = __command_checkpoint
     badge_checkpoint = __badge_checkpoint
     begin
-      entry[1].call(context).to_s
+      widgets = entry[1].__widgets.map do |widget|
+        value = widget[1].respond_to?(:call) ? widget[1].call(context) : widget[1]
+        text = value.nil? ? "" : value.to_s
+        raise ArgumentError, "bar widget text cannot contain NUL" if text.include?("\0")
+        [widget[0], text]
+      end
+      widgets.inject("#{widgets.length};") do |encoded, widget|
+        alignment = { left: "l", center: "c", right: "r" }[widget[0]]
+        encoded << alignment << "#{widget[1].bytesize}:" << widget[1]
+      end
     ensure
       __rollback_commands(checkpoint)
       __rollback_badges(badge_checkpoint)

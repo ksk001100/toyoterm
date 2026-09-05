@@ -225,18 +225,17 @@ impl ConfigManager {
         }
     }
 
-    pub fn render_status(&mut self, position: StatusBarPosition) -> Result<String, ScriptError> {
+    pub fn render_bar(&mut self, position: StatusBarPosition) -> Result<Vec<BarItem>, ScriptError> {
         let position = match position {
             StatusBarPosition::Top => "top",
             StatusBarPosition::Bottom => "bottom",
-            StatusBarPosition::Left => "left",
-            StatusBarPosition::Right => "right",
         };
-        self.eval_callback(
-            CallbackKind::Status,
+        let encoded = self.eval_callback(
+            CallbackKind::Bar,
             position,
-            &format!("Toyoterm.__invoke_status(:{position})"),
-        )
+            &format!("Toyoterm.__invoke_bar(:{position})"),
+        )?;
+        decode_bar_items(&encoded)
     }
 
     /// Updates the pane exposed by `Toyoterm.current_pane` for subsequent evaluations.
@@ -548,6 +547,55 @@ impl ConfigManager {
     }
 }
 
+fn decode_bar_items(encoded: &str) -> Result<Vec<BarItem>, ScriptError> {
+    let invalid = || ScriptError::new("render bar", "bar callback returned invalid widget data");
+    let bytes = encoded.as_bytes();
+    let separator = bytes
+        .iter()
+        .position(|byte| *byte == b';')
+        .ok_or_else(invalid)?;
+    let count = encoded[..separator]
+        .parse::<usize>()
+        .map_err(|_| invalid())?;
+    let mut cursor = separator + 1;
+    let mut items = Vec::with_capacity(count);
+    for _ in 0..count {
+        let alignment = match bytes.get(cursor) {
+            Some(b'l') => BarAlignment::Left,
+            Some(b'c') => BarAlignment::Center,
+            Some(b'r') => BarAlignment::Right,
+            _ => return Err(invalid()),
+        };
+        cursor += 1;
+        let colon = bytes[cursor..]
+            .iter()
+            .position(|byte| *byte == b':')
+            .map(|offset| cursor + offset)
+            .ok_or_else(invalid)?;
+        let length = encoded[cursor..colon]
+            .parse::<usize>()
+            .map_err(|_| invalid())?;
+        cursor = colon + 1;
+        let end = cursor.checked_add(length).ok_or_else(invalid)?;
+        let text = std::str::from_utf8(bytes.get(cursor..end).ok_or_else(invalid)?)
+            .map_err(|_| invalid())?
+            .to_owned();
+        cursor = end;
+        items.push(BarItem { alignment, text });
+    }
+    if cursor != bytes.len() {
+        return Err(invalid());
+    }
+    Ok(items)
+}
+
+#[derive(Default)]
+struct ScriptRequestOutput {
+    value: Option<String>,
+    bar: Option<Vec<BarItem>>,
+    snapshot: Option<ScriptSnapshot>,
+}
+
 pub(super) fn run_script_request(
     manager: &mut ConfigManager,
     context: &ScriptContext,
@@ -562,32 +610,43 @@ pub(super) fn run_script_request(
     } else {
         Some(manager.begin_config_transaction()?)
     };
-    let request_result: Result<(Option<String>, Option<ScriptSnapshot>), ScriptError> = (|| {
+    let request_result: Result<ScriptRequestOutput, ScriptError> = (|| {
         Ok(match invocation {
-            ScriptInvocation::DrainStartup => (None, None),
+            ScriptInvocation::DrainStartup => ScriptRequestOutput::default(),
             ScriptInvocation::KeyBinding { key, pane } => {
                 manager.trigger_keybinding(key, *pane)?;
-                (None, None)
+                ScriptRequestOutput::default()
             }
             ScriptInvocation::UserCommand { name, pane } => {
                 manager.trigger_user_command(name, *pane)?;
-                (None, None)
+                ScriptRequestOutput::default()
             }
             ScriptInvocation::Event(event) => {
                 manager.emit_native_event(event)?;
-                (None, None)
+                ScriptRequestOutput::default()
             }
-            ScriptInvocation::Eval(source) => (Some(manager.eval_inspect(source)?), None),
+            ScriptInvocation::Eval(source) => ScriptRequestOutput {
+                value: Some(manager.eval_inspect(source)?),
+                ..ScriptRequestOutput::default()
+            },
             ScriptInvocation::Reload => {
                 manager.reload_file()?;
-                (None, Some(manager.snapshot()))
+                ScriptRequestOutput {
+                    snapshot: Some(manager.snapshot()),
+                    ..ScriptRequestOutput::default()
+                }
             }
-            ScriptInvocation::Status { position } => {
-                (Some(manager.render_status(*position)?), None)
-            }
+            ScriptInvocation::Bar { position } => ScriptRequestOutput {
+                bar: Some(manager.render_bar(*position)?),
+                ..ScriptRequestOutput::default()
+            },
         })
     })();
-    let (value, mut snapshot) = match request_result {
+    let ScriptRequestOutput {
+        value,
+        bar,
+        mut snapshot,
+    } = match request_result {
         Ok(result) => result,
         Err(error) => {
             if let Some(checkpoint) = command_checkpoint.as_deref() {
@@ -617,6 +676,7 @@ pub(super) fn run_script_request(
     )?;
     Ok(ScriptResult {
         value,
+        bar,
         commands,
         snapshot,
     })
@@ -844,34 +904,29 @@ fn read_config(runtime: &mut MrubyRuntime) -> Result<ToyotermConfig, ScriptError
         })
     };
     let status_count = runtime
-        .eval("Toyoterm.__status_count")?
+        .eval("Toyoterm.__bar_count")?
         .parse::<usize>()
-        .map_err(|_| ScriptError::new("validate status", "status count is invalid"))?;
+        .map_err(|_| ScriptError::new("validate bar", "bar count is invalid"))?;
     let mut status_bars = Vec::with_capacity(status_count);
     for index in 0..status_count {
         let position = match runtime
-            .eval(&format!("Toyoterm.__status_position({index})"))?
+            .eval(&format!("Toyoterm.__bar_position({index})"))?
             .as_str()
         {
             "top" => StatusBarPosition::Top,
             "bottom" => StatusBarPosition::Bottom,
-            "left" => StatusBarPosition::Left,
-            "right" => StatusBarPosition::Right,
             _ => {
-                return Err(ScriptError::new(
-                    "validate status",
-                    "status position is invalid",
-                ));
+                return Err(ScriptError::new("validate bar", "bar position is invalid"));
             }
         };
-        let value = runtime.eval(&format!("Toyoterm.__status_interval({index})"))?;
+        let value = runtime.eval(&format!("Toyoterm.__bar_interval({index})"))?;
         let seconds = value
             .parse::<f64>()
-            .map_err(|_| ScriptError::new("validate status", "status interval must be numeric"))?;
+            .map_err(|_| ScriptError::new("validate bar", "bar interval must be numeric"))?;
         if !seconds.is_finite() || seconds < 0.1 {
             return Err(ScriptError::new(
-                "validate status",
-                "status interval must be at least 0.1 seconds",
+                "validate bar",
+                "bar interval must be at least 0.1 seconds",
             ));
         }
         status_bars.push(StatusBarConfig {
@@ -952,11 +1007,6 @@ fn read_config(runtime: &mut MrubyRuntime) -> Result<ToyotermConfig, ScriptError
                 runtime,
                 "ui.status_bar_height",
                 "Toyoterm.__config.ui.status_bar_height",
-            )?,
-            status_bar_width: number(
-                runtime,
-                "ui.status_bar_width",
-                "Toyoterm.__config.ui.status_bar_width",
             )?,
             pane_divider_width: nonnegative(
                 runtime,

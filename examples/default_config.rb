@@ -47,7 +47,6 @@ Toyoterm.configure do |config|
     ui.workspace_bar_height = 24
     ui.workspace_width = 160
     ui.status_bar_height = 24
-    ui.status_bar_width = 80
     ui.pane_divider_width = 2
     ui.active_pane_border_width = 2
   end
@@ -127,10 +126,12 @@ Toyoterm.configure do |config|
   end
 end
 
-# Optional edge bars can be registered independently for :top, :bottom,
-# :left, and :right. Newlines stack values in a vertical bar.
-# Toyoterm.status(position: :right, interval: 1.0) do |context|
-#   [context.pane.title, context.pane.cwd].compact.join("\n")
+# Optional top and bottom bars contain independently aligned widgets.
+# Toyoterm.configure do |config|
+#   config.window.bar :bottom, interval: 1.0 do |bar|
+#     bar.add(:left) { |context| context.workspace.name }
+#     bar.add(:right) { |context| context.pane.cwd }
+#   end
 # end
 
 # With shell integration enabled, show failed commands in the pane corner.

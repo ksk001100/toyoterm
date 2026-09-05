@@ -16,6 +16,10 @@ Toyoterm.configure do |config|
   end
 
   config.window.opacity = 1.0
+  config.window.bar :bottom, interval: 1.0 do |bar|
+    bar.add(:left) { |context| context.workspace.name }
+    bar.add(:right) { |context| context.pane.cwd }
+  end
   config.ui.padding_x = 8
   config.ui.padding_y = 8
   config.ui.line_height = 1.2857143
@@ -39,8 +43,4 @@ end
 
 Toyoterm.command :git_status do |context|
   context.pane.send_text("git status\n")
-end
-
-Toyoterm.status(interval: 1.0) do |context|
-  [context.workspace.name, context.pane.cwd].compact.join(" | ")
 end

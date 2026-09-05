@@ -74,14 +74,21 @@ fn classifies_callbacks_at_the_slow_threshold() {
 }
 
 #[test]
-fn status_dsl_uses_typed_context_and_discards_commands() {
+fn window_bar_uses_typed_context_and_discards_commands() {
     let mut manager = ConfigManager::new().unwrap();
     manager
         .reload(
             r#"
-                Toyoterm.status(interval: 0.25) do |ctx|
-                  ctx.pane.send_text("must not run")
-                  [ctx.workspace.name, ctx.tab.title, ctx.pane.title].join(" | ")
+                Toyoterm.configure do |config|
+                  config.window.bar(:bottom, interval: 0.25) do |bar|
+                    bar.add(:left) do |ctx|
+                      ctx.pane.send_text("must not run")
+                      [ctx.workspace.name, ctx.tab.title, ctx.pane.title].join(" | ")
+                    end
+                    bar.add(:left, "SECOND")
+                    bar.add(:center, "中央:表示")
+                    bar.add(:right) { |ctx| ctx.pane.cwd }
+                  end
                 end
                 "#,
         )
@@ -100,16 +107,37 @@ fn status_dsl_uses_typed_context_and_discards_commands() {
         }]
     );
     assert_eq!(
-        manager.render_status(StatusBarPosition::Bottom).unwrap(),
-        "Workspace 1 | Tab 3 | Pane 4"
+        manager.render_bar(StatusBarPosition::Bottom).unwrap(),
+        vec![
+            BarItem {
+                alignment: BarAlignment::Left,
+                text: "Workspace 1 | Tab 3 | Pane 4".into(),
+            },
+            BarItem {
+                alignment: BarAlignment::Left,
+                text: "SECOND".into(),
+            },
+            BarItem {
+                alignment: BarAlignment::Center,
+                text: "中央:表示".into(),
+            },
+            BarItem {
+                alignment: BarAlignment::Right,
+                text: String::new(),
+            },
+        ]
     );
     assert!(manager.drain_commands(PaneId(4)).unwrap().is_empty());
 }
 
 #[test]
-fn status_interval_defaults_to_one_second_and_rejects_values_below_100ms() {
+fn window_bar_interval_defaults_to_one_second_and_rejects_values_below_100ms() {
     let mut manager = ConfigManager::new().unwrap();
-    manager.reload("Toyoterm.status { 'ready' }").unwrap();
+    manager
+        .reload(
+            "Toyoterm.configure { |c| c.window.bar(:bottom) { |bar| bar.add(:left, 'ready') } }",
+        )
+        .unwrap();
     assert_eq!(
         manager.config().status_bars,
         vec![StatusBarConfig {
@@ -119,49 +147,62 @@ fn status_interval_defaults_to_one_second_and_rejects_values_below_100ms() {
     );
 
     let error = manager
-        .reload("Toyoterm.status(interval: 0.099) { 'too fast' }")
+        .reload("Toyoterm.configure { |c| c.window.bar(:bottom, interval: 0.099) { |bar| bar.add(:left, 'too fast') } }")
         .unwrap_err();
     assert!(error.message().contains("at least 0.1 seconds"));
     assert_eq!(
-        manager.render_status(StatusBarPosition::Bottom).unwrap(),
-        "ready"
+        manager.render_bar(StatusBarPosition::Bottom).unwrap(),
+        vec![BarItem {
+            alignment: BarAlignment::Left,
+            text: "ready".into(),
+        }]
     );
 }
 
 #[test]
-fn status_dsl_supports_one_callback_per_edge() {
+fn window_bar_supports_top_and_bottom_only() {
     let mut manager = ConfigManager::new().unwrap();
     manager
         .reload(
             r#"
-                Toyoterm.status(position: :top) { "TOP" }
-                Toyoterm.status(position: :right, interval: 2.0) { "RIGHT" }
+                Toyoterm.configure do |config|
+                  config.window.bar(:top) { |bar| bar.add(:left, "TOP") }
+                  config.window.bar(:bottom, interval: 2.0) { |bar| bar.add(:right, "BOTTOM") }
+                end
             "#,
         )
         .unwrap();
 
     assert_eq!(manager.config().status_bars.len(), 2);
     assert_eq!(
-        manager.render_status(StatusBarPosition::Top).unwrap(),
+        manager.render_bar(StatusBarPosition::Top).unwrap()[0].text,
         "TOP"
     );
     assert_eq!(
-        manager.render_status(StatusBarPosition::Right).unwrap(),
-        "RIGHT"
+        manager.render_bar(StatusBarPosition::Bottom).unwrap()[0].text,
+        "BOTTOM"
     );
 
     let error = manager
-        .reload("Toyoterm.status(position: :center) { 'invalid' }")
+        .reload("Toyoterm.configure { |c| c.window.bar(:right) { |_| } }")
         .unwrap_err();
-    assert!(error.message().contains("status position"));
+    assert!(error.message().contains("window bar position"));
     assert_eq!(manager.config().status_bars.len(), 2);
 
     let error = manager
-        .reload(
-            "Toyoterm.status(position: :top) { 'one' }; Toyoterm.status(position: :top) { 'two' }",
-        )
+        .reload("Toyoterm.configure { |c| c.window.bar(:top) { |_| }; c.window.bar(:top) { |_| } }")
         .unwrap_err();
     assert!(error.message().contains("already configured"));
+    assert_eq!(manager.config().status_bars.len(), 2);
+
+    let error = manager.reload("Toyoterm.status { 'removed' }").unwrap_err();
+    assert!(error.message().contains("undefined method"));
+    assert_eq!(manager.config().status_bars.len(), 2);
+
+    let error = manager
+        .reload("Toyoterm.configure { |c| c.window.bar(:top) { |bar| bar.add(:top, 'invalid') } }")
+        .unwrap_err();
+    assert!(error.message().contains("widget position"));
     assert_eq!(manager.config().status_bars.len(), 2);
 }
 

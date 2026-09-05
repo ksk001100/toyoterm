@@ -206,17 +206,34 @@ impl ToyotermApplication {
                 &self.script_snapshot.config,
                 scale_factor,
             );
+            let rendered_items = bar_rects
+                .iter()
+                .map(|(position, _)| {
+                    self.bar_items
+                        .get(position)
+                        .into_iter()
+                        .flatten()
+                        .map(|item| StatusBarRenderItem {
+                            alignment: match item.alignment {
+                                toyoterm_script::BarAlignment::Left => StatusBarAlignment::Left,
+                                toyoterm_script::BarAlignment::Center => StatusBarAlignment::Center,
+                                toyoterm_script::BarAlignment::Right => StatusBarAlignment::Right,
+                            },
+                            text: item.text.as_str(),
+                        })
+                        .collect::<Vec<_>>()
+                })
+                .collect::<Vec<_>>();
             let statuses = bar_rects
                 .iter()
-                .filter(|(_, rect)| rect.width > 0 && rect.height > 0)
-                .map(|(position, rect)| StatusBarRenderData {
+                .zip(&rendered_items)
+                .filter(|((_, rect), _)| rect.width > 0 && rect.height > 0)
+                .map(|((position, rect), items)| StatusBarRenderData {
                     rect: *rect,
-                    text: self.status_text.get(position).map_or("", String::as_str),
+                    items,
                     edge: match position {
                         StatusBarPosition::Top => StatusBarEdge::Top,
                         StatusBarPosition::Bottom => StatusBarEdge::Bottom,
-                        StatusBarPosition::Left => StatusBarEdge::Left,
-                        StatusBarPosition::Right => StatusBarEdge::Right,
                     },
                 })
                 .collect::<Vec<_>>();

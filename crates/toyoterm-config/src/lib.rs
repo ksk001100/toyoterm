@@ -48,7 +48,6 @@ pub struct UiConfig {
     pub workspace_bar_height: f32,
     pub workspace_width: f32,
     pub status_bar_height: f32,
-    pub status_bar_width: f32,
     pub pane_divider_width: f32,
     pub active_pane_border_width: f32,
 }
@@ -57,8 +56,6 @@ pub struct UiConfig {
 pub enum StatusBarPosition {
     Top,
     Bottom,
-    Left,
-    Right,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -135,7 +132,6 @@ impl Default for ToyotermConfig {
                 workspace_bar_height: 24.0,
                 workspace_width: 160.0,
                 status_bar_height: 24.0,
-                status_bar_width: 80.0,
                 pane_divider_width: 2.0,
                 active_pane_border_width: 2.0,
             },
@@ -367,7 +363,6 @@ mod tests {
         assert_eq!(config.scrollback_lines, 10_000);
         assert_eq!(config.leader, None);
         assert!(config.status_bars.is_empty());
-        assert_eq!(config.ui.status_bar_width, 80.0);
     }
 
     #[test]

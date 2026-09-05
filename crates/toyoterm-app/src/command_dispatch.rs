@@ -747,9 +747,9 @@ impl ToyotermApplication {
         }
         self.render_style = render_style.clone();
         self.script_snapshot = snapshot;
-        self.status_text.clear();
-        self.status_pending = None;
-        self.next_status_at = self
+        self.bar_items.clear();
+        self.bar_pending = None;
+        self.next_bar_at = self
             .script_snapshot
             .config
             .status_bars

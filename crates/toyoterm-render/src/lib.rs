@@ -83,16 +83,39 @@ pub struct SearchRenderData<'a> {
 #[derive(Clone, Copy, Debug)]
 pub struct StatusBarRenderData<'a> {
     pub rect: PaneRect,
-    pub text: &'a str,
+    pub items: &'a [StatusBarRenderItem<'a>],
     pub edge: StatusBarEdge,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub struct StatusBarRenderItem<'a> {
+    pub alignment: StatusBarAlignment,
+    pub text: &'a str,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum StatusBarAlignment {
+    Left,
+    Center,
+    Right,
+}
+
+fn status_bar_section_text(
+    items: &[StatusBarRenderItem<'_>],
+    alignment: StatusBarAlignment,
+) -> String {
+    items
+        .iter()
+        .filter(|item| item.alignment == alignment)
+        .map(|item| item.text)
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum StatusBarEdge {
     Top,
     Bottom,
-    Left,
-    Right,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -266,6 +289,37 @@ pub use gpu::{GpuRenderer, RenderError};
 mod tests {
     use super::*;
     use toyoterm_terminal::{AlacrittyTerminalBackend, SelectionSpan, TerminalBackend};
+
+    #[test]
+    fn window_bar_groups_widgets_by_alignment_in_registration_order() {
+        let items = [
+            StatusBarRenderItem {
+                alignment: StatusBarAlignment::Right,
+                text: "clock",
+            },
+            StatusBarRenderItem {
+                alignment: StatusBarAlignment::Left,
+                text: "cwd",
+            },
+            StatusBarRenderItem {
+                alignment: StatusBarAlignment::Left,
+                text: "branch",
+            },
+        ];
+
+        assert_eq!(
+            status_bar_section_text(&items, StatusBarAlignment::Left),
+            "cwd branch"
+        );
+        assert_eq!(
+            status_bar_section_text(&items, StatusBarAlignment::Center),
+            ""
+        );
+        assert_eq!(
+            status_bar_section_text(&items, StatusBarAlignment::Right),
+            "clock"
+        );
+    }
 
     #[test]
     fn render_plan_matches_snapshot() {

@@ -88,7 +88,7 @@ pub struct GpuRenderer {
     tabs: HashMap<TabId, TabBuffer>,
     workspaces: HashMap<WorkspaceId, TabBuffer>,
     search: OverlayBuffer,
-    status_bars: Vec<(StatusBarEdge, OverlayBuffer)>,
+    status_bars: Vec<StatusBarBuffer>,
     config_error: ConfigErrorBuffers,
     preedit: Buffer,
     has_preedit: bool,
@@ -104,6 +104,12 @@ struct TabBuffer {
 struct OverlayBuffer {
     text: Buffer,
     rect: Option<PaneRect>,
+}
+
+struct StatusBarBuffer {
+    edge: StatusBarEdge,
+    rect: PaneRect,
+    sections: Vec<Buffer>,
 }
 
 struct ConfigErrorBuffers {
@@ -776,29 +782,54 @@ impl GpuRenderer {
             (layout.line_height * 0.85).max(1.0),
         );
         while self.status_bars.len() < statuses.len() {
-            let mut text = Buffer::new(&mut self.font_system, metrics);
-            text.set_wrap(Wrap::None);
-            self.status_bars
-                .push((StatusBarEdge::Bottom, OverlayBuffer { text, rect: None }));
+            let mut sections = Vec::with_capacity(3);
+            for _ in 0..3 {
+                let mut text = Buffer::new(&mut self.font_system, metrics);
+                text.set_wrap(Wrap::None);
+                sections.push(text);
+            }
+            self.status_bars.push(StatusBarBuffer {
+                edge: StatusBarEdge::Bottom,
+                rect: PaneRect::default(),
+                sections,
+            });
         }
         self.status_bars.truncate(statuses.len());
-        for ((edge, buffer), status) in self.status_bars.iter_mut().zip(statuses) {
-            *edge = status.edge;
-            buffer.rect = Some(status.rect);
-            buffer.text.set_metrics_and_size(
-                metrics,
-                Some(status.rect.width.saturating_sub(16) as f32),
-                Some(status.rect.height as f32),
-            );
-            buffer.text.set_text(
-                status.text,
-                &Attrs::new()
-                    .family(resolve_font_family(&self.style.font_family))
-                    .weight(Weight(self.style.font_weight)),
-                Shaping::Advanced,
-                None,
-            );
-            buffer.text.shape_until_scroll(&mut self.font_system, false);
+        for (buffer, status) in self.status_bars.iter_mut().zip(statuses) {
+            buffer.edge = status.edge;
+            buffer.rect = status.rect;
+            for (index, alignment) in [
+                StatusBarAlignment::Left,
+                StatusBarAlignment::Center,
+                StatusBarAlignment::Right,
+            ]
+            .into_iter()
+            .enumerate()
+            {
+                let text = status_bar_section_text(status.items, alignment);
+                let section = &mut buffer.sections[index];
+                section.set_metrics_and_size(
+                    metrics,
+                    Some(status.rect.width.saturating_sub(16) as f32),
+                    Some(status.rect.height as f32),
+                );
+                section.set_text(
+                    &text,
+                    &Attrs::new()
+                        .family(resolve_font_family(&self.style.font_family))
+                        .weight(Weight(self.style.font_weight)),
+                    Shaping::Advanced,
+                    None,
+                );
+                if let Some(line) = section.lines.first_mut() {
+                    line.set_align(Some(match alignment {
+                        StatusBarAlignment::Left => Align::Left,
+                        StatusBarAlignment::Center => Align::Center,
+                        StatusBarAlignment::Right => Align::Right,
+                    }));
+                }
+                section.shape_until_scroll(&mut self.font_system, false);
+            }
         }
     }
 
@@ -973,19 +1004,18 @@ impl GpuRenderer {
                 custom_glyphs: &[],
             });
         }
-        for (_, status_bar) in &self.status_bars {
-            let Some(rect) = status_bar.rect else {
-                continue;
-            };
-            text_areas.push(TextArea {
-                buffer: &status_bar.text,
-                left: rect.x as f32 + 8.0,
-                top: rect.y as f32 + 2.0,
-                scale: 1.0,
-                bounds: pane_bounds(rect),
-                default_color: glyph_color(self.style.foreground, 190),
-                custom_glyphs: &[],
-            });
+        for status_bar in &self.status_bars {
+            for section in &status_bar.sections {
+                text_areas.push(TextArea {
+                    buffer: section,
+                    left: status_bar.rect.x as f32 + 8.0,
+                    top: status_bar.rect.y as f32 + 2.0,
+                    scale: 1.0,
+                    bounds: pane_bounds(status_bar.rect),
+                    default_color: glyph_color(self.style.foreground, 190),
+                    custom_glyphs: &[],
+                });
+            }
         }
         if let Some(layout) = self.config_error.layout {
             text_areas.push(TextArea {
@@ -1306,10 +1336,8 @@ impl GpuRenderer {
             }
         }
 
-        for (edge, status_bar) in &self.status_bars {
-            let Some(rect) = status_bar.rect else {
-                continue;
-            };
+        for status_bar in &self.status_bars {
+            let rect = status_bar.rect;
             push_ui_rect(
                 &mut vertices,
                 rect,
@@ -1317,7 +1345,7 @@ impl GpuRenderer {
                 self.configuration.width,
                 self.configuration.height,
             );
-            let separator = match edge {
+            let separator = match status_bar.edge {
                 StatusBarEdge::Top => PaneRect::new(
                     rect.x,
                     rect.y.saturating_add(rect.height.saturating_sub(1)),
@@ -1325,13 +1353,6 @@ impl GpuRenderer {
                     1,
                 ),
                 StatusBarEdge::Bottom => PaneRect::new(rect.x, rect.y, rect.width, 1),
-                StatusBarEdge::Left => PaneRect::new(
-                    rect.x.saturating_add(rect.width.saturating_sub(1)),
-                    rect.y,
-                    1,
-                    rect.height,
-                ),
-                StatusBarEdge::Right => PaneRect::new(rect.x, rect.y, 1, rect.height),
             };
             push_ui_rect(
                 &mut vertices,

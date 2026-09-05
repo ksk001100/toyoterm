@@ -19,8 +19,8 @@ use winit::window::{Fullscreen, Window, WindowId};
 use winit::platform::wayland::WindowAttributesExtWayland;
 
 use toyoterm_script::{
-    RubyEvent, RubyObjectModel, RubyPane, RubyTab, RubyWindow, RubyWorkspace, ScriptCompletion,
-    ScriptContext, ScriptInvocation, ScriptRequest, ScriptSnapshot, ScriptThread,
+    BarItem, RubyEvent, RubyObjectModel, RubyPane, RubyTab, RubyWindow, RubyWorkspace,
+    ScriptCompletion, ScriptContext, ScriptInvocation, ScriptRequest, ScriptSnapshot, ScriptThread,
 };
 
 mod command_dispatch;
@@ -49,8 +49,9 @@ pub use toyoterm_mux::Mux;
 pub use toyoterm_pty::{NativePty, Pty, PtyCommand, PtyError, PtyExitStatus, PtySession, PtySize};
 pub use toyoterm_render::{
     ConfigErrorLayout, ConfigErrorRenderData, GpuRenderer, PaneLayout, PaneRect, PaneRenderData,
-    RenderOutcome, RenderStyle, SearchRenderData, StatusBarEdge, StatusBarRenderData,
-    TabRenderData, TabStripLayout, TextLayout, WorkspaceRenderData, WorkspaceStripLayout,
+    RenderOutcome, RenderStyle, SearchRenderData, StatusBarAlignment, StatusBarEdge,
+    StatusBarRenderData, StatusBarRenderItem, TabRenderData, TabStripLayout, TextLayout,
+    WorkspaceRenderData, WorkspaceStripLayout,
 };
 pub use toyoterm_script::ConfigManager;
 pub use toyoterm_terminal::{
@@ -386,9 +387,9 @@ struct ToyotermApplication {
     cell_metrics: CellMetrics,
     script_thread: ScriptThread,
     script_snapshot: ScriptSnapshot,
-    status_text: HashMap<StatusBarPosition, String>,
-    status_pending: Option<StatusBarPosition>,
-    next_status_at: HashMap<StatusBarPosition, Instant>,
+    bar_items: HashMap<StatusBarPosition, Vec<BarItem>>,
+    bar_pending: Option<StatusBarPosition>,
+    next_bar_at: HashMap<StatusBarPosition, Instant>,
     terminal_render_pending: bool,
     mux: Mux,
     render_style: RenderStyle,
@@ -740,17 +741,17 @@ impl ApplicationHandler<AppEvent> for ToyotermApplication {
 
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
         if self.script_snapshot.config.status_bars.is_empty() {
-            self.next_status_at.clear();
+            self.next_bar_at.clear();
             event_loop.set_control_flow(ControlFlow::Wait);
             return;
         }
-        if self.status_pending.is_some() || self.window.is_none() {
+        if self.bar_pending.is_some() || self.window.is_none() {
             event_loop.set_control_flow(ControlFlow::Wait);
             return;
         }
         let now = Instant::now();
         for bar in &self.script_snapshot.config.status_bars {
-            self.next_status_at.entry(bar.position).or_insert(now);
+            self.next_bar_at.entry(bar.position).or_insert(now);
         }
         let Some((position, deadline, interval)) = self
             .script_snapshot
@@ -758,7 +759,7 @@ impl ApplicationHandler<AppEvent> for ToyotermApplication {
             .status_bars
             .iter()
             .filter_map(|bar| {
-                self.next_status_at
+                self.next_bar_at
                     .get(&bar.position)
                     .map(|deadline| (bar.position, *deadline, bar.interval))
             })
@@ -771,15 +772,15 @@ impl ApplicationHandler<AppEvent> for ToyotermApplication {
             event_loop.set_control_flow(ControlFlow::WaitUntil(deadline));
             return;
         }
-        match self.submit_script(ScriptInvocation::Status { position }) {
+        match self.submit_script(ScriptInvocation::Bar { position }) {
             Ok(_) => {
-                self.status_pending = Some(position);
-                self.next_status_at.remove(&position);
+                self.bar_pending = Some(position);
+                self.next_bar_at.remove(&position);
                 event_loop.set_control_flow(ControlFlow::Wait);
             }
             Err(error) => {
-                tracing::warn!(target: "toyoterm::script", %error, "submit status callback failed");
-                self.next_status_at.insert(position, now + interval);
+                tracing::warn!(target: "toyoterm::script", %error, "submit bar callback failed");
+                self.next_bar_at.insert(position, now + interval);
                 event_loop.set_control_flow(ControlFlow::WaitUntil(now + interval));
             }
         }
@@ -996,9 +997,9 @@ impl ToyotermApplication {
             },
             script_thread,
             script_snapshot,
-            status_text: HashMap::new(),
-            status_pending: None,
-            next_status_at: HashMap::new(),
+            bar_items: HashMap::new(),
+            bar_pending: None,
+            next_bar_at: HashMap::new(),
             terminal_render_pending: false,
             mux,
             render_style,
@@ -1375,31 +1376,24 @@ mod tests {
     }
 
     #[test]
-    fn edge_bars_surround_the_pane_area() {
+    fn window_bars_reserve_the_top_and_bottom_edges() {
         let config = ToyotermConfig {
-            status_bars: [
-                StatusBarPosition::Top,
-                StatusBarPosition::Bottom,
-                StatusBarPosition::Left,
-                StatusBarPosition::Right,
-            ]
-            .map(|position| toyoterm_config::StatusBarConfig {
-                position,
-                interval: Duration::from_secs(1),
-            })
-            .into(),
+            status_bars: [StatusBarPosition::Top, StatusBarPosition::Bottom]
+                .map(|position| toyoterm_config::StatusBarConfig {
+                    position,
+                    interval: Duration::from_secs(1),
+                })
+                .into(),
             ..ToyotermConfig::default()
         };
 
         let (pane, bars) = edge_bar_layout(PhysicalSize::new(960, 600), 54, &config, 1.0);
-        assert_eq!(pane, PaneRect::new(80, 78, 800, 498));
+        assert_eq!(pane, PaneRect::new(0, 78, 960, 498));
         assert_eq!(
             bars,
             vec![
                 (StatusBarPosition::Top, PaneRect::new(0, 54, 960, 24)),
                 (StatusBarPosition::Bottom, PaneRect::new(0, 576, 960, 24)),
-                (StatusBarPosition::Left, PaneRect::new(0, 78, 80, 498)),
-                (StatusBarPosition::Right, PaneRect::new(880, 78, 80, 498)),
             ]
         );
     }

@@ -176,7 +176,7 @@ enum CallbackKind {
     KeyBinding,
     Event,
     UserCommand,
-    Status,
+    Bar,
 }
 
 impl CallbackKind {
@@ -185,7 +185,7 @@ impl CallbackKind {
             Self::KeyBinding => "key_binding",
             Self::Event => "event",
             Self::UserCommand => "user_command",
-            Self::Status => "status",
+            Self::Bar => "bar",
         }
     }
 }

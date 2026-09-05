@@ -154,7 +154,6 @@ Toyoterm.configure do |config|
     ui.workspace_bar_height = 24
     ui.workspace_width = 160
     ui.status_bar_height = 24
-    ui.status_bar_width = 80
     ui.pane_divider_width = 2
     ui.active_pane_border_width = 2
   end
@@ -350,17 +349,17 @@ Each callback receives a current snapshot through `Toyoterm.current_workspace`, 
 
 Native producers append events to one FIFO queue and never call mruby directly. Each callback runs to completion, then its queued commands are applied before the next event. Events caused by those commands are appended to the queue, preventing recursive callback entry. Delivery is limited to 1,024 events per application turn to stop self-generating event loops. Events without registered handlers are discarded before any Ruby VM call.
 
-Optional edge bars can be configured with `Toyoterm.status(position: :bottom, interval: 1.0)`. `position` accepts `:top`, `:bottom`, `:left`, or `:right`; omitting it preserves the original bottom bar. One callback may be registered per edge, so multiple bars can surround the pane area at once. Horizontal bars use `ui.status_bar_height`, while vertical bars use `ui.status_bar_width`.
+Optional top and bottom bars are configured through `config.window.bar`. Each bar contains any number of widgets aligned with `bar.add(:left)`, `bar.add(:center)`, or `bar.add(:right)`. A widget accepts either a fixed value or a block whose context exposes the current `workspace`, `window`, `tab`, and `pane`.
 
-Each callback receives a context exposing the current `workspace`, `window`, `tab`, and `pane`, and its return value is converted to text. An edge is hidden when it has no callback. Intervals shorter than 100 ms are rejected, and callbacks run independently on the script worker so slow status generation does not block terminal rendering. Commands queued by a status callback are discarded.
+One bar may be registered at each edge. Intervals shorter than 100 ms are rejected, and callbacks run on the script worker so slow widget generation does not block terminal rendering. Commands queued by a bar widget are discarded.
 
 ```ruby
-Toyoterm.status(interval: 1.0) do |context|
-  [context.workspace.name, context.pane.cwd].compact.join(" | ")
-end
-
-Toyoterm.status(position: :right, interval: 2.0) do |context|
-  [context.pane.title, context.pane.cwd].compact.join("\n")
+Toyoterm.configure do |config|
+  config.window.bar :bottom, interval: 1.0 do |bar|
+    bar.add(:left) { |context| context.workspace.name }
+    bar.add(:center, "toyoterm")
+    bar.add(:right) { |context| context.pane.cwd }
+  end
 end
 ```
 

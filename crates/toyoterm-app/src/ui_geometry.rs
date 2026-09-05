@@ -33,14 +33,8 @@ pub(super) fn edge_bar_layout(
         window_size.height.saturating_sub(chrome_height),
     );
     let height = scaled_ui_size(config.ui.status_bar_height, scale_factor);
-    let width = scaled_ui_size(config.ui.status_bar_width, scale_factor);
     let mut bars = Vec::with_capacity(config.status_bars.len());
-    for position in [
-        StatusBarPosition::Top,
-        StatusBarPosition::Bottom,
-        StatusBarPosition::Left,
-        StatusBarPosition::Right,
-    ] {
+    for position in [StatusBarPosition::Top, StatusBarPosition::Bottom] {
         if !config
             .status_bars
             .iter()
@@ -64,23 +58,6 @@ pub(super) fn edge_bar_layout(
                     content.y.saturating_add(content.height),
                     content.width,
                     size,
-                )
-            }
-            StatusBarPosition::Left => {
-                let size = width.min(content.width);
-                let rect = PaneRect::new(content.x, content.y, size, content.height);
-                content.x = content.x.saturating_add(size);
-                content.width = content.width.saturating_sub(size);
-                rect
-            }
-            StatusBarPosition::Right => {
-                let size = width.min(content.width);
-                content.width = content.width.saturating_sub(size);
-                PaneRect::new(
-                    content.x.saturating_add(content.width),
-                    content.y,
-                    size,
-                    content.height,
                 )
             }
         };

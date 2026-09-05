@@ -90,7 +90,7 @@ pub enum ScriptInvocation {
     Event(RubyEvent),
     Eval(String),
     Reload,
-    Status { position: StatusBarPosition },
+    Bar { position: StatusBarPosition },
 }
 
 #[derive(Debug)]
@@ -110,8 +110,22 @@ pub struct ScriptCompletion {
 #[derive(Debug)]
 pub struct ScriptResult {
     pub value: Option<String>,
+    pub bar: Option<Vec<BarItem>>,
     pub commands: Vec<NativeCommand>,
     pub snapshot: Option<ScriptSnapshot>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum BarAlignment {
+    Left,
+    Center,
+    Right,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct BarItem {
+    pub alignment: BarAlignment,
+    pub text: String,
 }
 
 #[derive(Debug)]
