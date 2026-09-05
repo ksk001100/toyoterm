@@ -1,47 +1,6 @@
 use super::*;
 
 impl ToyotermApplication {
-    pub(super) fn replace_renderer(&mut self, style: RenderStyle) -> Result<(), String> {
-        let window = self
-            .window
-            .clone()
-            .ok_or_else(|| "recreate GPU renderer: window is unavailable".to_owned())?;
-        // Rebuild on platforms requiring a new surface when transparency
-        // changes. Windows keeps an alpha-capable surface at all opacities;
-        // macOS reconfigures the existing Metal layer.
-        self.renderer = None;
-        let mut renderer = pollster::block_on(GpuRenderer::new(window.clone(), style))
-            .map_err(|error| format!("recreate GPU renderer: {error}"))?;
-        renderer.resize(window.inner_size());
-        self.cell_metrics.width =
-            f64::from(renderer.terminal_cell_width(self.cell_metrics.font_size));
-        self.renderer = Some(renderer);
-        Ok(())
-    }
-
-    pub(super) fn recover_renderer(&mut self) -> Result<(), String> {
-        let window = self
-            .window
-            .clone()
-            .ok_or_else(|| "recover GPU renderer: window is unavailable".to_owned())?;
-        tracing::warn!(
-            target: "toyoterm::render",
-            width = window.inner_size().width,
-            height = window.inner_size().height,
-            scale_factor = window.scale_factor(),
-            "recreating renderer after GPU device loss"
-        );
-        let mut renderer =
-            pollster::block_on(GpuRenderer::new(window.clone(), self.render_style.clone()))
-                .map_err(|error| format!("recover GPU renderer: {error}"))?;
-        renderer.resize(window.inner_size());
-        self.renderer = Some(renderer);
-        self.sync_active_renderer(window.scale_factor());
-        window.request_redraw();
-        tracing::info!(target: "toyoterm::render", "GPU renderer recovery completed");
-        Ok(())
-    }
-
     pub(super) fn sync_active_renderer(&mut self, scale_factor: f64) {
         let active = self.mux.current_pane();
         let zoomed = self
@@ -53,7 +12,11 @@ impl ToyotermApplication {
             .panes()
             .iter()
             .filter_map(|placement| {
-                self.pane_runtimes.get(&placement.pane).map(|runtime| {
+                self.pane_runtimes.get_mut(&placement.pane).map(|runtime| {
+                    let snapshot = runtime
+                        .snapshot_cache
+                        .get_or_insert_with(|| Rc::new(runtime.terminal.snapshot()))
+                        .clone();
                     let is_active = active == Some(placement.pane);
                     let cursor_uses_grid = is_active && self.visual_selection.is_some();
                     let mut cursor = runtime.terminal.cursor();
@@ -65,7 +28,7 @@ impl ToyotermApplication {
                     }
                     (
                         placement.pane,
-                        runtime.terminal.snapshot(),
+                        snapshot,
                         cursor,
                         cursor_uses_grid,
                         placement.rect,
@@ -80,7 +43,7 @@ impl ToyotermApplication {
             .map(
                 |(pane, snapshot, cursor, cursor_uses_grid, rect, active, badge)| PaneRenderData {
                     pane: *pane,
-                    snapshot,
+                    snapshot: snapshot.as_ref(),
                     cursor: *cursor,
                     cursor_uses_grid: *cursor_uses_grid,
                     rect: *rect,
@@ -176,7 +139,7 @@ impl ToyotermApplication {
             )
         });
         if let Some(renderer) = self.renderer.as_mut() {
-            renderer.update_panes(&panes, layout);
+            renderer.update_panes(&panes, layout, scale_factor as f32);
             renderer.update_tabs(&tabs, layout);
             renderer.update_workspaces(&workspaces, layout);
             renderer.update_search(

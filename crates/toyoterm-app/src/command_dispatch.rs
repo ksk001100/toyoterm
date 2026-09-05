@@ -162,6 +162,7 @@ impl ToyotermApplication {
         if let Some(terminal) = self.active_terminal_mut() {
             terminal.clear_selection();
         }
+        self.invalidate_active_snapshot();
         self.visual_selection = Some(VisualSelection {
             anchor: None,
             current: position,
@@ -180,6 +181,7 @@ impl ToyotermApplication {
                 SelectionKind::Simple,
             );
         }
+        self.invalidate_active_snapshot();
         self.visual_selection = Some(visual);
     }
 
@@ -189,6 +191,7 @@ impl ToyotermApplication {
         {
             terminal.clear_selection();
         }
+        self.invalidate_active_snapshot();
     }
 
     pub(super) fn move_visual_selection(&mut self, motion: SelectionMotion) {
@@ -240,6 +243,7 @@ impl ToyotermApplication {
         {
             terminal.scroll_display(scroll);
         }
+        self.invalidate_active_snapshot();
         self.visual_selection = Some(selection);
     }
 
@@ -439,7 +443,7 @@ impl ToyotermApplication {
         let fullscreen = if window.fullscreen().is_some() {
             None
         } else {
-            Some(Fullscreen::Borderless(window.current_monitor()))
+            Some(Fullscreen::Borderless(()))
         };
         window.set_fullscreen(fullscreen);
         Ok(())
@@ -453,6 +457,7 @@ impl ToyotermApplication {
         if let Some(terminal) = self.active_terminal_mut() {
             terminal.clear_search();
         }
+        self.invalidate_active_snapshot();
         Ok(())
     }
 
@@ -484,6 +489,7 @@ impl ToyotermApplication {
             .ok_or_else(|| format!("pane {pane} has no terminal runtime"))?
             .terminal
             .search(&self.search_query, direction);
+        self.invalidate_active_snapshot();
         Ok(())
     }
 
@@ -494,6 +500,7 @@ impl ToyotermApplication {
         if let Some(terminal) = self.active_terminal_mut() {
             terminal.clear_search();
         }
+        self.invalidate_active_snapshot();
     }
 
     pub(super) fn refresh_search(&mut self, direction: SearchDirection) {
@@ -502,6 +509,7 @@ impl ToyotermApplication {
             .active_terminal_mut()
             .map(|terminal| terminal.search(&query, direction))
             .unwrap_or_default();
+        self.invalidate_active_snapshot();
     }
 
     pub(super) fn handle_search_key(&mut self, event: &KeyEvent, modifiers: ModifiersState) {
@@ -708,7 +716,16 @@ impl ToyotermApplication {
 
     pub(super) fn apply_script_snapshot(&mut self, snapshot: ScriptSnapshot) -> Result<(), String> {
         let config = snapshot.config.clone();
-        let previous_opacity = self.script_snapshot.config.window.opacity;
+        let previous = &self.script_snapshot.config.window;
+        if config.window.decorations != previous.decorations
+            || config.window.resizable != previous.resizable
+            || config.window.width != previous.width
+            || config.window.height != previous.height
+            || config.window.min_width != previous.min_width
+            || config.window.min_height != previous.min_height
+        {
+            tracing::info!(target: "toyoterm::config", "GPUI window creation settings will apply on the next launch");
+        }
         self.leader_deadline = None;
         let render_style = RenderStyle::from_hex_with_ui(
             &config.font.family,
@@ -757,29 +774,10 @@ impl ToyotermApplication {
             .map(|bar| (bar.position, Instant::now()))
             .collect();
         if let Some(window) = self.window.clone() {
-            #[cfg(not(target_os = "windows"))]
-            window.set_transparent(config.window.opacity < 1.0);
-            window.set_decorations(config.window.decorations);
-            window.set_resizable(config.window.resizable);
-            window.set_window_level(if config.window.always_on_top {
-                winit::window::WindowLevel::AlwaysOnTop
-            } else {
-                winit::window::WindowLevel::Normal
-            });
-            let transparency_mode_changed =
-                (previous_opacity < 1.0) != (config.window.opacity < 1.0);
-            // Metal supports changing alpha mode on the existing surface.
-            // Creating another surface adds a CAMetalLayer while the view
-            // retains the old one, whose opaque contents block transparency.
-            // Windows keeps the same transparent surface even at opacity 1.0.
-            // Replacing it at that boundary can lose compositor transparency.
-            if transparency_mode_changed && !cfg!(any(target_os = "macos", target_os = "windows")) {
-                self.replace_renderer(render_style.clone())?;
-            } else if let Some(renderer) = self.renderer.as_mut() {
+            if let Some(renderer) = self.renderer.as_mut() {
                 renderer.set_style(render_style);
-                self.cell_metrics.width =
-                    f64::from(renderer.terminal_cell_width(self.cell_metrics.font_size));
             }
+            window.font_changed.set(true);
             self.resize_panes(window.inner_size(), window.scale_factor())?;
             self.sync_active_renderer(window.scale_factor());
             window.request_redraw();

@@ -16,7 +16,7 @@ This is a personal project built for my own use and an experimental toy.
 ## Features
 
 - Native PTY and platform-default shell
-- GPU-rendered terminal window using `wgpu` and `glyphon`
+- GPU-rendered terminal window using GPUI 0.2.2
 - VT parsing backed by `alacritty_terminal`
 - UTF-8 input, terminal resize, scrollback, and mouse-wheel support
 - IME preedit rendering with commit and cancellation handling
@@ -54,7 +54,7 @@ The main features are implemented, but the initial release still requires intera
 
 - A recent stable Rust toolchain
 - A C compiler for the vendored mruby amalgamation
-- Platform development libraries required by `winit`/`wgpu`
+- Platform development libraries required by GPUI
 
 On Linux, a working Wayland or X11 desktop session is required. Install your distribution's C build tools, `pkg-config`, Wayland/X11, and xkbcommon development packages if they are not already available.
 
@@ -222,7 +222,7 @@ UI colors include `tab_bar`, `tab_active`, `tab_inactive`, `workspace_bar`, `sta
 
 Key names are case-insensitive. Modifiers use names such as `CTRL`, `SHIFT`, `ALT`, and `SUPER`. Named keys include `ENTER`, `TAB`, `SPACE`, arrow keys, navigation keys, and `F1` through `F12`.
 
-`config.keys` provides `key`, `ctrl`, `ctrl_shift`, `ctrl_alt`, `ctrl_super`, `primary`, `primary_shift`, `primary_alt`, `alt`, `super_key`, `leader`, and `physical` helpers. Static actions include pane and tab management, workspace and tab cycling, search, window state changes, reload, clipboard copy/paste, and visual selection (`start_visual_mode`, `toggle_visual_mode`, `start_visual_selection`, `select_visual_selection`, `end_visual_selection`, `move_visual_selection`, and `yank_selection`). `primary` resolves to `SUPER` on macOS and `CTRL` on Linux/Windows, so one configuration can follow each platform's conventions. Modifier names are portable: `ALT` is the Option key on macOS, while `SUPER` is Command on macOS and the Windows key on Windows. The `physical` helper distinguishes a hardware position from the logical character, for example `physical("KeyH", "CTRL")`. Physical bindings take priority over logical bindings. There are no built-in GUI key bindings; defining the same chord more than once is a configuration error.
+`config.keys` provides `key`, `ctrl`, `ctrl_shift`, `ctrl_alt`, `ctrl_super`, `primary`, `primary_shift`, `primary_alt`, `alt`, `super_key`, `leader` helpers. Static actions include pane and tab management, workspace and tab cycling, search, window state changes, reload, clipboard copy/paste, and visual selection (`start_visual_mode`, `toggle_visual_mode`, `start_visual_selection`, `select_visual_selection`, `end_visual_selection`, `move_visual_selection`, and `yank_selection`). `primary` resolves to `SUPER` on macOS and `CTRL` on Linux/Windows, so one configuration can follow each platform's conventions. Modifier names are portable: `ALT` is the Option key on macOS, while `SUPER` is Command on macOS and the Windows key on Windows. GPUI uses logical keys. `physical(...)` and raw `PHYSICAL:` bindings are rejected; use `ctrl("h")`, for example. Distinct application-keypad encoding is unavailable. There are no built-in GUI key bindings; defining the same chord more than once is a configuration error.
 
 `config.leader` defines a native leader prefix with a timeout in milliseconds. `leader("v")` bindings are resolved without invoking mruby. The leader prefix is discarded; an unmatched or expired suffix continues through normal key handling. Prefix repeat events are consumed without extending the original timeout, while IME activity, focus loss, and configuration reload clear leader state.
 
@@ -477,7 +477,7 @@ SHA-256 sidecars are written next to them. See the
 ## Architecture
 
 ```text
-winit events
+GPUI events
     ├─ native key binding resolver ─> mruby callback ─> native Command
     └─ terminal key encoder
                                       ↓
@@ -487,7 +487,7 @@ winit events
                                       ↓
                               alacritty_terminal
                                       ↓
-                                wgpu + glyphon
+                                GPUI scene + text
 ```
 
 The embedded mruby VM is single-threaded. Ruby callbacks enqueue native commands instead of mutating terminal or mux internals directly.
@@ -497,3 +497,16 @@ The embedded mruby VM is single-threaded. Ruby callbacks enqueue native commands
 toyoterm is distributed under the [MIT License](LICENSE).
 
 The repository vendors the official mruby 4.0.0 amalgamation under its MIT license. See [Third-Party Notices](THIRD_PARTY_NOTICES.md) and [the preserved mruby license](vendor/mruby/LICENSE) for details. Rust dependency licenses are checked with `cargo-deny` in CI.
+
+## GPUI migration
+
+The desktop GUI uses pinned GPUI 0.2.2 for windowing, input/IME and rendering.
+`window.always_on_top = true` is rejected with configuration rollback.
+Dimensions, minimum dimensions, decorations and resizability apply on the next
+launch; title, opacity, fonts, colors and key bindings still update at runtime.
+On Debian/Ubuntu, install `pkg-config clang cmake libfontconfig1-dev
+libfreetype6-dev libxkbcommon-dev libxkbcommon-x11-dev libwayland-dev libxcb1-dev
+libssl-dev libvulkan1 mesa-vulkan-drivers` before building. GPUI selects Wayland
+when `WAYLAND_DISPLAY` is set; use `env -u WAYLAND_DISPLAY` for X11.
+See [ADR 0007](docs/adr/0007-use-gpui.md) and the
+[platform checklist](docs/platform-validation.md).

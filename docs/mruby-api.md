@@ -124,13 +124,15 @@ be replaced with assignments such as `config.colors.ansi[1] = "#ff5f56"`.
 | `height` | `600` | Positive finite initial logical height. |
 | `min_width` | `320` | Positive finite minimum logical width. |
 | `min_height` | `180` | Positive finite minimum logical height. |
-| `decorations` | `true` | Boolean. |
-| `resizable` | `true` | Boolean. |
-| `always_on_top` | `false` | Boolean. |
+| `decorations` | `true` | Boolean, native titlebar creation option; restart required. |
+| `resizable` | `true` | Boolean, creation option; restart required. |
+| `always_on_top` | `false` | Only `false` is supported by the GPUI backend. `true` fails configuration validation. |
 | `title` | `"toyoterm"` | Non-empty string. |
 
-Initial dimensions apply when the window is created. Mutable window properties
-are also applied after a successful reload.
+Dimensions, minimum dimensions, decorations and resizability apply at window
+creation; changes take effect on the next launch. Title and opacity apply after
+a successful reload or runtime transaction. Unsupported settings fail validation
+and roll back the transaction (startup falls back to defaults with a notice).
 
 `config.window.opacity` returns the stored numeric value.
 `config.window.opacity=(value)` accepts a finite Numeric and stores and returns
@@ -213,11 +215,13 @@ end
 | `primary_shift(key)` | Primary+Shift |
 | `primary_alt(key)` | Primary+Alt |
 | `leader(key)` | The configured leader prefix |
-| `physical(key, mods = "")` | Physical position, such as `physical("KeyH", "CTRL")` |
+| `physical(key, mods = "")` | Unsupported compatibility entry point: raises `ArgumentError` with a GPUI migration message; returns no binding. Use `ctrl("h")`, for example. |
 
 Key and modifier names are case-insensitive. Named keys include `ENTER`, `TAB`,
-`SPACE`, `ESCAPE`, arrow and navigation keys, and `F1` through `F12`. Physical
-bindings take priority over logical bindings.
+`SPACE`, `ESCAPE`, arrow and navigation keys, and `F1` through `F12`. Bindings
+use GPUI logical keys. Raw `PHYSICAL:` bindings also fail configuration validation;
+failed configuration transactions roll back. GPUI does not expose distinct
+physical keypad positions, so application-keypad sequences are not generated.
 
 Each helper returns a binding with one of these actions:
 

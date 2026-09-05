@@ -2,22 +2,16 @@ use std::collections::{HashMap, HashSet, VecDeque};
 use std::fmt;
 use std::io::Read;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::rc::Rc;
 use std::sync::mpsc;
 use std::thread;
 use std::time::{Duration, Instant};
 
 use arboard::Clipboard;
-use winit::application::ApplicationHandler;
-use winit::dpi::{LogicalSize, PhysicalPosition, PhysicalSize};
-use winit::event::{ElementState, Ime, KeyEvent, MouseButton, MouseScrollDelta, WindowEvent};
-use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop, EventLoopProxy};
-use winit::keyboard::{Key, KeyCode, ModifiersState, NamedKey, PhysicalKey};
-use winit::window::{Fullscreen, Window, WindowId};
-
-#[cfg(target_os = "linux")]
-use winit::platform::wayland::WindowAttributesExtWayland;
-
+mod gpui_app;
+mod platform;
+pub use platform::PhysicalSize;
+use platform::*;
 use toyoterm_script::{
     BarItem, RubyEvent, RubyObjectModel, RubyPane, RubyTab, RubyWindow, RubyWorkspace,
     ScriptCompletion, ScriptContext, ScriptInvocation, ScriptRequest, ScriptSnapshot, ScriptThread,
@@ -48,16 +42,17 @@ pub use toyoterm_ipc::{IpcRequest, IpcResponse, IpcServer};
 pub use toyoterm_mux::Mux;
 pub use toyoterm_pty::{NativePty, Pty, PtyCommand, PtyError, PtyExitStatus, PtySession, PtySize};
 pub use toyoterm_render::{
-    ConfigErrorLayout, ConfigErrorRenderData, GpuRenderer, PaneLayout, PaneRect, PaneRenderData,
-    RenderOutcome, RenderStyle, SearchRenderData, StatusBarAlignment, StatusBarEdge,
-    StatusBarRenderData, StatusBarRenderItem, TabRenderData, TabStripLayout, TextLayout,
-    WorkspaceRenderData, WorkspaceStripLayout,
+    ConfigErrorLayout, ConfigErrorRenderData, GpuiRenderer, PaneLayout, PaneRect, PaneRenderData,
+    RenderStyle, SearchRenderData, StatusBarAlignment, StatusBarEdge, StatusBarRenderData,
+    StatusBarRenderItem, TabRenderData, TabStripLayout, TextLayout, WorkspaceRenderData,
+    WorkspaceStripLayout,
 };
 pub use toyoterm_script::ConfigManager;
 pub use toyoterm_terminal::{
     AlacrittyTerminalBackend, BindingKey, CursorShape, KeyChord, KeyModifiers, KeyPress, KeypadKey,
     MouseWheelDirection, SearchDirection, SearchResult, SelectionKind, TerminalBackend,
-    TerminalEvent, TerminalKey, TerminalMode, encode_key, encode_mouse_wheel, encode_paste,
+    TerminalEvent, TerminalKey, TerminalMode, TerminalSnapshot, encode_key, encode_mouse_wheel,
+    encode_paste,
 };
 
 const MULTI_CLICK_INTERVAL: Duration = Duration::from_millis(500);
@@ -218,11 +213,8 @@ pub fn run_gui_smoke_test() -> Result<(), AppError> {
 }
 
 fn run_gui_inner(options: GuiOptions, exit_after_startup: bool) -> Result<(), AppError> {
-    let event_loop = EventLoop::<AppEvent>::with_user_event()
-        .build()
-        .map_err(|error| AppError(error.to_string()))?;
-    event_loop.set_control_flow(ControlFlow::Wait);
-    let event_proxy = event_loop.create_proxy();
+    let (sender, receiver) = async_channel::unbounded();
+    let event_proxy = EventSender(sender);
     let completion_proxy = event_proxy.clone();
     let (script_thread, startup) =
         ScriptThread::start(options.config_path.clone(), move |completion| {
@@ -293,13 +285,7 @@ fn run_gui_inner(options: GuiOptions, exit_after_startup: bool) -> Result<(), Ap
     .map_err(AppError)?;
     app.submit_script(ScriptInvocation::DrainStartup)
         .map_err(AppError)?;
-    event_loop
-        .run_app(&mut app)
-        .map_err(|error| AppError(error.to_string()))?;
-    match app.fatal_error.take() {
-        Some(error) => Err(AppError(error)),
-        None => Ok(()),
-    }
+    gpui_app::run(app, receiver)
 }
 
 #[derive(Debug)]
@@ -328,6 +314,7 @@ enum EvalWaiter {
 
 struct PaneRuntime {
     terminal: AlacrittyTerminalBackend,
+    snapshot_cache: Option<Rc<TerminalSnapshot>>,
     pty_session: Option<Box<dyn PtySession>>,
     process_id: Option<u32>,
     title: String,
@@ -335,6 +322,12 @@ struct PaneRuntime {
     command_running: bool,
     last_exit_status: Option<i32>,
     exited: bool,
+}
+
+impl PaneRuntime {
+    fn invalidate_snapshot(&mut self) {
+        self.snapshot_cache = None;
+    }
 }
 
 impl PaneRuntime {
@@ -353,9 +346,9 @@ impl Drop for PaneRuntime {
 }
 
 struct ToyotermApplication {
-    event_proxy: EventLoopProxy<AppEvent>,
-    window: Option<Arc<Window>>,
-    renderer: Option<GpuRenderer>,
+    event_proxy: EventSender,
+    window: Option<Rc<Window>>,
+    renderer: Option<GpuiRenderer>,
     pane_runtimes: HashMap<PaneId, PaneRuntime>,
     pending_pane_launches: HashMap<PaneId, PaneLaunchSpec>,
     pane_layout: PaneLayout,
@@ -430,68 +423,14 @@ fn ruby_event_from_terminal_event(pane: PaneId, event: TerminalEvent) -> Option<
     Some(event)
 }
 
-impl ApplicationHandler<AppEvent> for ToyotermApplication {
-    fn resumed(&mut self, event_loop: &ActiveEventLoop) {
-        if self.window.is_some() {
-            return;
-        }
-        let attributes = Window::default_attributes()
-            .with_title(self.base_window_title())
-            // Windows transparency must be enabled at creation, including when
-            // starting opaque. Later opacity changes only update the GPU alpha.
-            .with_transparent(
-                cfg!(target_os = "windows") || self.script_snapshot.config.window.opacity < 1.0,
-            )
-            .with_inner_size(LogicalSize::new(
-                self.script_snapshot.config.window.width,
-                self.script_snapshot.config.window.height,
-            ))
-            .with_min_inner_size(LogicalSize::new(
-                self.script_snapshot.config.window.min_width,
-                self.script_snapshot.config.window.min_height,
-            ))
-            .with_decorations(self.script_snapshot.config.window.decorations)
-            .with_resizable(self.script_snapshot.config.window.resizable)
-            .with_window_level(if self.script_snapshot.config.window.always_on_top {
-                winit::window::WindowLevel::AlwaysOnTop
-            } else {
-                winit::window::WindowLevel::Normal
-            });
-        #[cfg(target_os = "linux")]
-        let attributes = match self.app_id.as_deref() {
-            Some(app_id) => attributes.with_name(app_id, app_id),
-            None => attributes,
-        };
-        let window = match event_loop.create_window(attributes) {
-            Ok(window) => Arc::new(window),
-            Err(error) => {
-                self.fail(event_loop, format!("create window: {error}"));
-                return;
-            }
-        };
-        let mut renderer =
-            match pollster::block_on(GpuRenderer::new(window.clone(), self.render_style.clone())) {
-                Ok(renderer) => renderer,
-                Err(error) => {
-                    tracing::error!(
-                        target: "toyoterm::render",
-                        operation = error.operation(),
-                        width = window.inner_size().width,
-                        height = window.inner_size().height,
-                        scale_factor = window.scale_factor(),
-                        %error,
-                        "initialize renderer failed"
-                    );
-                    self.fail(event_loop, error.to_string());
-                    return;
-                }
-            };
+impl ToyotermApplication {
+    fn initialize(&mut self, event_loop: &AppControl, window: Rc<Window>, native: &gpui::Window) {
+        let renderer = GpuiRenderer::new(self.render_style.clone());
         self.cell_metrics.width =
-            f64::from(renderer.terminal_cell_width(self.cell_metrics.font_size));
+            f64::from(renderer.terminal_cell_width(self.cell_metrics.font_size, native));
         let size = self
             .cell_metrics
             .terminal_size_at_scale(window.inner_size(), window.scale_factor());
-        window.set_ime_allowed(true);
         self.renderer = Some(renderer);
         self.window = Some(window);
         if let Err(error) = self.flush_script_clipboard_writes() {
@@ -521,30 +460,15 @@ impl ApplicationHandler<AppEvent> for ToyotermApplication {
             .as_ref()
             .expect("window was installed")
             .request_redraw();
-        if self.exit_after_startup {
-            event_loop.exit();
-        }
     }
 
-    fn window_event(
-        &mut self,
-        event_loop: &ActiveEventLoop,
-        window_id: WindowId,
-        event: WindowEvent,
-    ) {
+    fn window_event(&mut self, event_loop: &AppControl, event: WindowEvent) {
         let Some(window) = self.window.clone() else {
             return;
         };
-        if window.id() != window_id {
-            return;
-        }
 
         match event {
-            WindowEvent::CloseRequested => event_loop.exit(),
             WindowEvent::Resized(size) => {
-                if let Some(renderer) = self.renderer.as_mut() {
-                    renderer.resize(size);
-                }
                 if let Err(error) = self.resize_panes(size, window.scale_factor()) {
                     self.fail(event_loop, error);
                     return;
@@ -552,24 +476,12 @@ impl ApplicationHandler<AppEvent> for ToyotermApplication {
                 self.sync_active_renderer(window.scale_factor());
                 window.request_redraw();
             }
-            WindowEvent::ScaleFactorChanged { scale_factor, .. } => {
-                let size = window.inner_size();
-                if let Some(renderer) = self.renderer.as_mut() {
-                    renderer.resize(size);
-                }
-                if let Err(error) = self.resize_panes(size, scale_factor) {
-                    self.fail(event_loop, error);
-                    return;
-                }
-                self.sync_active_renderer(scale_factor);
-                window.request_redraw();
-            }
-            WindowEvent::ModifiersChanged(modifiers) => self.modifiers = modifiers.state(),
             WindowEvent::Focused(focused) => {
                 // A platform is not required to send key-release events after
                 // the window loses focus. Do not leave modifiers (especially
                 // AltGraph) stuck when focus returns.
                 if !focused {
+                    self.selecting = false;
                     clear_modifier_state(&mut self.modifiers, &mut self.alt_graph_active);
                     self.leader_deadline = None;
                     self.exit_visual_mode();
@@ -609,10 +521,6 @@ impl ApplicationHandler<AppEvent> for ToyotermApplication {
                 self.handle_mouse_wheel(event_loop, &window, delta);
             }
             WindowEvent::KeyboardInput { event, .. } => {
-                if matches!(event.logical_key, Key::Named(NamedKey::AltGraph)) {
-                    self.alt_graph_active = event.state == ElementState::Pressed;
-                    return;
-                }
                 if !should_handle_key_event(event.state, event.repeat) {
                     return;
                 }
@@ -660,7 +568,7 @@ impl ApplicationHandler<AppEvent> for ToyotermApplication {
                         return;
                     }
                 }
-                // Physical bindings are checked before logical bindings by the resolver.
+                // Resolve logical GPUI key bindings before terminal encoding.
                 match self.handle_keybinding(&event, modifiers) {
                     Ok(true) => return,
                     Ok(false) => {}
@@ -716,30 +624,11 @@ impl ApplicationHandler<AppEvent> for ToyotermApplication {
                     self.terminal_render_pending = false;
                     self.sync_active_renderer(window.scale_factor());
                 }
-                let render_result = self.renderer.as_mut().map(GpuRenderer::render);
-                match render_result {
-                    Some(Ok(RenderOutcome::DeviceLost)) => {
-                        if let Err(error) = self.recover_renderer() {
-                            self.fail(event_loop, error);
-                        }
-                    }
-                    Some(Err(error)) => {
-                        tracing::error!(
-                            target: "toyoterm::render",
-                            operation = error.operation(),
-                            %error,
-                            "render failed"
-                        );
-                        self.fail(event_loop, error.to_string());
-                    }
-                    Some(Ok(RenderOutcome::Presented | RenderOutcome::Skipped)) | None => {}
-                }
             }
-            _ => {}
         }
     }
 
-    fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
+    fn about_to_wait(&mut self, event_loop: &AppControl) {
         if self.script_snapshot.config.status_bars.is_empty() {
             self.next_bar_at.clear();
             event_loop.set_control_flow(ControlFlow::Wait);
@@ -786,16 +675,13 @@ impl ApplicationHandler<AppEvent> for ToyotermApplication {
         }
     }
 
-    fn exiting(&mut self, _event_loop: &ActiveEventLoop) {
-        self.shutdown();
-    }
-
-    fn user_event(&mut self, event_loop: &ActiveEventLoop, event: AppEvent) {
+    fn user_event(&mut self, event_loop: &AppControl, event: AppEvent) {
         match event {
             AppEvent::Output { pane, bytes } => {
                 let mut terminal_events = Vec::new();
                 if let Some(runtime) = self.pane_runtimes.get_mut(&pane) {
                     runtime.terminal.advance(&bytes);
+                    runtime.invalidate_snapshot();
                     terminal_events = runtime.terminal.drain_events();
                     for event in &terminal_events {
                         match event {
@@ -837,7 +723,7 @@ impl ApplicationHandler<AppEvent> for ToyotermApplication {
                     return;
                 }
                 if self.pane_layout.rect(pane).is_some() {
-                    // Winit coalesces redraw requests. Keep parsing PTY bytes
+                    // GPUI coalesces redraw requests. Keep parsing PTY bytes
                     // immediately to preserve ordering, but defer the costly
                     // full-grid snapshot and text shaping until the matching
                     // redraw. This prevents bursty alternate-screen output
@@ -906,9 +792,6 @@ impl ApplicationHandler<AppEvent> for ToyotermApplication {
 
 impl ToyotermApplication {
     fn shutdown(&mut self) {
-        if let Some(window) = self.window.as_ref() {
-            window.set_ime_allowed(false);
-        }
         for (_, mut runtime) in self.pane_runtimes.drain() {
             runtime.terminate();
         }
@@ -917,7 +800,7 @@ impl ToyotermApplication {
     }
 
     fn new(
-        event_proxy: EventLoopProxy<AppEvent>,
+        event_proxy: EventSender,
         script_thread: ScriptThread,
         script_snapshot: ScriptSnapshot,
         render_style: RenderStyle,
@@ -1017,7 +900,7 @@ impl ToyotermApplication {
             .unwrap_or(&self.script_snapshot.config.window.title)
     }
 
-    fn fail(&mut self, event_loop: &ActiveEventLoop, error: String) {
+    fn fail(&mut self, event_loop: &AppControl, error: String) {
         self.fatal_error = Some(error);
         event_loop.exit();
     }
@@ -1116,6 +999,7 @@ mod tests {
         {
             let _runtime = PaneRuntime {
                 terminal: AlacrittyTerminalBackend::new(80, 24),
+                snapshot_cache: None,
                 pty_session: Some(Box::new(KillTrackingSession(kills.clone()))),
                 process_id: Some(42),
                 title: "test".into(),
@@ -1231,21 +1115,6 @@ mod tests {
     }
 
     #[test]
-    fn physical_binding_candidates_take_priority_over_logical_keys() {
-        assert_eq!(
-            binding_candidates(
-                Some("KeyY".into()),
-                Some("Z".into()),
-                KeyModifiers {
-                    control: true,
-                    ..KeyModifiers::default()
-                },
-            ),
-            vec!["CTRL+PHYSICAL:KEYY", "CTRL+Z"]
-        );
-    }
-
-    #[test]
     fn alt_graph_is_not_treated_as_control_alt() {
         let modifiers = effective_modifiers(ModifiersState::CONTROL | ModifiersState::ALT, true);
         assert!(!modifiers.control_key());
@@ -1305,19 +1174,6 @@ mod tests {
 
         assert!(modifiers.is_empty());
         assert!(!alt_graph_active);
-    }
-
-    #[test]
-    fn maps_physical_numpad_keys_independently_of_layout() {
-        assert_eq!(
-            keypad_key(PhysicalKey::Code(KeyCode::Numpad7)),
-            Some(KeypadKey::Digit(7))
-        );
-        assert_eq!(
-            keypad_key(PhysicalKey::Code(KeyCode::NumpadEnter)),
-            Some(KeypadKey::Enter)
-        );
-        assert_eq!(keypad_key(PhysicalKey::Code(KeyCode::Digit7)), None);
     }
 
     #[test]

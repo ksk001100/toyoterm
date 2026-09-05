@@ -1,6 +1,6 @@
 # Local IPC design
 
-toyoterm exposes one versioned local endpoint per GUI process. Unix builds use a Unix domain socket; Windows builds use a byte-mode named pipe. The listener thread only parses frames and forwards typed requests to the winit event loop. Mux mutation remains on the GUI thread.
+toyoterm exposes one versioned local endpoint per GUI process. Unix builds use a Unix domain socket; Windows builds use a byte-mode named pipe. The listener thread only parses frames and forwards typed requests to the GPUI foreground task. Mux mutation remains on the GUI thread.
 
 ## Instance selection
 

@@ -72,6 +72,7 @@ impl ToyotermApplication {
                 size.rows,
                 self.script_snapshot.config.scrollback_lines,
             ),
+            snapshot_cache: None,
             pty_session: Some(session),
             process_id,
             title: format!("Pane {}", pane.0),
@@ -122,6 +123,7 @@ impl ToyotermApplication {
         for (pane, size) in sizes {
             if let Some(runtime) = self.pane_runtimes.get_mut(&pane) {
                 runtime.terminal.resize(size.columns, size.rows);
+                runtime.invalidate_snapshot();
                 if let Some(session) = runtime.pty_session.as_mut() {
                     session.resize(size).map_err(|error| {
                         tracing::error!(
@@ -339,6 +341,14 @@ impl ToyotermApplication {
             .map(|runtime| &mut runtime.terminal)
     }
 
+    pub(super) fn invalidate_active_snapshot(&mut self) {
+        if let Some(pane) = self.mux.current_pane()
+            && let Some(runtime) = self.pane_runtimes.get_mut(&pane)
+        {
+            runtime.invalidate_snapshot();
+        }
+    }
+
     pub(super) fn mark_pane_exited(&mut self, pane: PaneId, error: Option<String>) {
         if let Some(runtime) = self.pane_runtimes.get_mut(&pane) {
             runtime.pty_session = None;
@@ -358,7 +368,7 @@ impl ToyotermApplication {
 
     pub(super) fn close_exited_pane(
         &mut self,
-        event_loop: &ActiveEventLoop,
+        event_loop: &AppControl,
         pane: PaneId,
     ) -> Result<(), String> {
         // Closing a pane also closes its PTY reader, which can leave a stale
@@ -385,12 +395,12 @@ impl ToyotermApplication {
 
     pub(super) fn handle_mouse_wheel(
         &mut self,
-        event_loop: &ActiveEventLoop,
+        event_loop: &AppControl,
         window: &Window,
         delta: MouseScrollDelta,
     ) {
         let lines = match delta {
-            MouseScrollDelta::LineDelta(_, vertical) => f64::from(vertical),
+            MouseScrollDelta::LineDelta(vertical) => f64::from(vertical),
             MouseScrollDelta::PixelDelta(position) => {
                 position.y / (self.cell_metrics.height * window.scale_factor()).max(1.0)
             }
@@ -440,6 +450,11 @@ impl ToyotermApplication {
         } else {
             if let Some(terminal) = self.active_terminal_mut() {
                 terminal.scroll_display(steps);
+            }
+            if let Some(pane) = self.mux.current_pane()
+                && let Some(runtime) = self.pane_runtimes.get_mut(&pane)
+            {
+                runtime.invalidate_snapshot();
             }
             self.sync_active_renderer(window.scale_factor());
             window.request_redraw();
@@ -590,6 +605,11 @@ impl ToyotermApplication {
                 if let Some(terminal) = self.active_terminal_mut() {
                     terminal.update_selection(column, row);
                 }
+                if let Some(pane) = self.mux.current_pane()
+                    && let Some(runtime) = self.pane_runtimes.get_mut(&pane)
+                {
+                    runtime.invalidate_snapshot();
+                }
                 self.selecting = false;
                 if self.script_snapshot.config.behavior.copy_on_select
                     && let Err(error) = self.copy_selection()
@@ -641,7 +661,7 @@ impl ToyotermApplication {
 fn spawn_pty_reader(
     pane: PaneId,
     mut reader: Box<dyn Read + Send>,
-    event_proxy: EventLoopProxy<AppEvent>,
+    event_proxy: EventSender,
 ) -> Result<(), String> {
     thread::Builder::new()
         .name("toyoterm-pty-reader".into())

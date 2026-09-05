@@ -16,7 +16,7 @@ toyotermは、Rustと組み込みmrubyで作る実験的なプログラマブル
 ## 機能
 
 - ネイティブPTYとプラットフォーム標準シェル
-- `wgpu`と`glyphon`によるGPU描画ウィンドウ
+- GPUI 0.2.2によるGPU描画ウィンドウ
 - `alacritty_terminal`を利用したVTシーケンス解析
 - UTF-8入力、リサイズ、スクロールバック、マウスホイール
 - IME preedit描画とcommit・cancel処理
@@ -54,7 +54,7 @@ toyotermは、Rustと組み込みmrubyで作る実験的なプログラマブル
 
 - 新しい安定版Rustツールチェーン
 - 同梱mrubyをビルドするためのCコンパイラ
-- `winit`・`wgpu`が要求する各プラットフォームの開発ライブラリ
+- GPUIが要求する各プラットフォームの開発ライブラリ
 
 LinuxではWaylandまたはX11のデスクトップセッションが必要です。不足している場合は、利用中のディストリビューションからCビルドツール、`pkg-config`、Wayland/X11、xkbcommonの開発パッケージをインストールしてください。
 
@@ -219,7 +219,7 @@ UI配色は`tab_bar`、`tab_active`、`tab_inactive`、`workspace_bar`、`status
 
 キー名は大文字・小文字を区別しません。修飾キーには`CTRL`、`SHIFT`、`ALT`、`SUPER`などを使用します。名前付きキーは`ENTER`、`TAB`、`SPACE`、矢印キー、ナビゲーションキー、`F1`から`F12`に対応しています。
 
-`config.keys`では`key`、`ctrl`、`ctrl_shift`、`ctrl_alt`、`ctrl_super`、`primary`、`primary_shift`、`primary_alt`、`alt`、`super_key`、`leader`、`physical`ヘルパーを使用できます。Pane・Tab操作、Workspace／Tab切替、検索、window状態変更、reload、クリップボードのコピー／貼り付け、ビジュアル選択（`start_visual_mode`、`toggle_visual_mode`、`start_visual_selection`、`select_visual_selection`、`end_visual_selection`、`move_visual_selection`、`yank_selection`）などのstatic actionを登録できます。`primary`はmacOSで`SUPER`、Linux・Windowsで`CTRL`に展開されるため、1つの設定でOSごとの慣習に合わせられます。modifier名はOS間で共通で、macOSのOptionは`ALT`、macOSのCommandとWindowsキーは`SUPER`です。`physical("KeyH", "CTRL")`のように指定すると、論理文字ではなく物理キー位置へ割り当てられます。physical設定は論理設定より優先されます。組み込みGUIキーバインドはなく、同じchordの重複定義は設定エラーです。
+`config.keys`では`key`、`ctrl`、`ctrl_shift`、`ctrl_alt`、`ctrl_super`、`primary`、`primary_shift`、`primary_alt`、`alt`、`super_key`、`leader`ヘルパーを使用できます。Pane・Tab操作、Workspace／Tab切替、検索、window状態変更、reload、クリップボードのコピー／貼り付け、ビジュアル選択（`start_visual_mode`、`toggle_visual_mode`、`start_visual_selection`、`select_visual_selection`、`end_visual_selection`、`move_visual_selection`、`yank_selection`）などのstatic actionを登録できます。`primary`はmacOSで`SUPER`、Linux・Windowsで`CTRL`に展開されるため、1つの設定でOSごとの慣習に合わせられます。modifier名はOS間で共通で、macOSのOptionは`ALT`、macOSのCommandとWindowsキーは`SUPER`です。GPUIでは論理キーを使用します。`physical(...)`と`PHYSICAL:`指定は設定エラーになります。例えば`ctrl("h")`へ変更してください。テンキーを区別したapplication-keypadエンコードには対応しません。組み込みGUIキーバインドはなく、同じchordの重複定義は設定エラーです。
 
 `config.leader`では、ミリ秒単位のtimeout付きLeader prefixをネイティブ側へ設定できます。`leader("v")`の割り当てはmrubyを呼ばずに解決されます。Leader prefix自体は破棄し、不一致またはtimeout後の次キーは通常のキー処理へ戻します。Prefixのrepeatは元のtimeoutを延長せずに破棄し、IME入力、フォーカス喪失、設定reloadではLeader待機状態を解除します。
 
@@ -472,7 +472,7 @@ install・実行して検証し、SHA-256 sidecarも生成します。詳細は
 ## アーキテクチャ
 
 ```text
-winit events
+GPUI events
     ├─ native key binding resolver ─> mruby callback ─> native Command
     └─ terminal key encoder
                                       ↓
@@ -482,7 +482,7 @@ winit events
                                       ↓
                               alacritty_terminal
                                       ↓
-                                wgpu + glyphon
+                                GPUI scene + text
 ```
 
 組み込みmruby VMは単一スレッドで動作します。Ruby callbackはターミナルやMuxの内部状態を直接変更せず、ネイティブコマンドをキューへ追加します。
@@ -492,3 +492,17 @@ winit events
 toyotermは[MIT License](LICENSE)で配布します。
 
 リポジトリには公式mruby 4.0.0のamalgamationをMITライセンスのもとで同梱しています。詳細は[サードパーティー通知](THIRD_PARTY_NOTICES.md)と[保存しているmrubyのライセンス](vendor/mruby/LICENSE)を参照してください。Rust依存ライブラリのライセンスはCIで`cargo-deny`を使って検査します。
+
+## GPUIへの移行
+
+デスクトップGUIはGPUI 0.2.2を固定して使用し、ウィンドウ・入力／IME・描画を管理します。
+`window.always_on_top = true`は設定エラーとなり、設定トランザクションをロールバックします。
+ウィンドウの寸法・最小寸法・装飾・リサイズ可否の変更は次回起動時に適用されます。
+タイトル・不透明度・フォント・色・キーバインドは引き続き実行中に更新されます。
+Debian/Ubuntuではビルド前に`pkg-config clang cmake libfontconfig1-dev
+libfreetype6-dev libxkbcommon-dev libxkbcommon-x11-dev libwayland-dev libxcb1-dev
+libssl-dev libvulkan1 mesa-vulkan-drivers`をインストールしてください。
+GPUIは`WAYLAND_DISPLAY`が設定されていればWaylandを選択します。X11を使う場合は
+`env -u WAYLAND_DISPLAY`で起動してください。
+詳細は[ADR 0007](docs/adr/0007-use-gpui.md)と
+[プラットフォーム検証](docs/platform-validation.md)を参照してください。

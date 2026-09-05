@@ -23,6 +23,11 @@ jobs:
         with:
           components: rustfmt, clippy
       - uses: Swatinem/rust-cache@v2
+      - name: Install GPUI build dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y pkg-config clang cmake libfontconfig1-dev libfreetype6-dev libxkbcommon-dev libxkbcommon-x11-dev libwayland-dev libxcb1-dev libssl-dev libvulkan1 mesa-vulkan-drivers
       - name: Format
         run: cargo fmt --check
       - name: Check crate architecture
@@ -60,6 +65,8 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y \
+            pkg-config clang cmake libfontconfig1-dev libfreetype6-dev \
+            libxkbcommon-dev libxkbcommon-x11-dev libwayland-dev libxcb1-dev libssl-dev \
             libvulkan1 \
             libxkbcommon-x11-0 \
             mesa-vulkan-drivers \
@@ -67,7 +74,7 @@ jobs:
             xvfb
       - name: X11 GUI smoke test
         if: matrix.display == 'x11'
-        run: xvfb-run -a cargo run --locked -- gui-smoke-test
+        run: env -u WAYLAND_DISPLAY xvfb-run -a cargo run --locked -- gui-smoke-test
       - name: Wayland GUI smoke test
         if: matrix.display == 'wayland'
         run: sh scripts/wayland-smoke-test.sh

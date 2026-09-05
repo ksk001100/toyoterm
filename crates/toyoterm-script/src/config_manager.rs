@@ -749,7 +749,9 @@ pub(super) fn load_config(
         .map_err(|_| ScriptError::new("load key bindings", "binding count is invalid"))?;
     let mut keybindings = HashSet::with_capacity(binding_count);
     for index in 0..binding_count {
-        keybindings.insert(runtime.eval(&format!("Toyoterm.__config.__binding_key({index})"))?);
+        let key = runtime.eval(&format!("Toyoterm.__config.__binding_key({index})"))?;
+        validate_gpui_binding(&key)?;
+        keybindings.insert(key);
     }
 
     let static_count = runtime
@@ -759,6 +761,7 @@ pub(super) fn load_config(
     let mut native_actions = HashMap::with_capacity(static_count);
     for index in 0..static_count {
         let key = runtime.eval(&format!("Toyoterm.__config.__static_binding_key({index})"))?;
+        validate_gpui_binding(&key)?;
         let action = runtime.eval(&format!(
             "Toyoterm.__config.__static_binding_action({index})"
         ))?;
@@ -1071,6 +1074,12 @@ fn read_config(runtime: &mut MrubyRuntime) -> Result<ToyotermConfig, ScriptError
         leader,
         status_bars,
     };
+    if config.window.always_on_top {
+        return Err(ScriptError::new(
+            "validate window",
+            "window.always_on_top is unavailable with GPUI; use false",
+        ));
+    }
     validate_color("background", &config.colors.background)?;
     validate_color("foreground", &config.colors.foreground)?;
     validate_color("cursor", &config.colors.cursor)?;
@@ -1098,4 +1107,14 @@ fn read_config(runtime: &mut MrubyRuntime) -> Result<ToyotermConfig, ScriptError
         validate_color(&format!("ansi[{index}]"), color)?;
     }
     Ok(config)
+}
+
+fn validate_gpui_binding(key: &str) -> Result<(), ScriptError> {
+    if key.to_ascii_uppercase().contains("PHYSICAL:") {
+        return Err(ScriptError::new(
+            "load key bindings",
+            "physical key bindings are unavailable with GPUI; use logical key bindings",
+        ));
+    }
+    Ok(())
 }

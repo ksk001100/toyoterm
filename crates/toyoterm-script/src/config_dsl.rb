@@ -457,9 +457,7 @@ module Toyoterm
     end
 
     def physical(key, mods = "")
-      prefix = mods.to_s.upcase
-      prefix = "#{prefix}+" unless prefix.empty?
-      StaticBinding.new(@config, "#{prefix}PHYSICAL:#{key.to_s.upcase}")
+      raise ArgumentError, "physical key bindings are unavailable with GPUI; use logical key bindings"
     end
 
     private

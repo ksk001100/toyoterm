@@ -14,6 +14,8 @@ Accepted records:
 - [0005: Normalize control-plane mutations into native commands](0005-command-model.md)
 - [0006: Own one mruby runtime on a dedicated script thread](0006-single-script-runtime.md)
 
+- [0007: Use GPUI for the desktop GUI](0007-use-gpui.md) (supersedes 0003)
+
 New records use the next four-digit number. An accepted record is not edited to
 hide a later reversal: add a superseding ADR and link the two records instead.
 
