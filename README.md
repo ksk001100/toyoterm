@@ -213,6 +213,10 @@ using `config.window.opacity += 0.1` or `-= 0.1` stop at the limits and can
 immediately reverse direction. Non-numeric and non-finite values are rejected.
 On Windows, the window and renderer keep transparency support enabled at
 `1.0` so lowering opacity can make the background transparent again.
+Windows uses DirectX 12 with DirectComposition and premultiplied alpha for
+background transparency, including when moving between HDR and SDR displays.
+A DirectX 12-capable graphics device is required; other platforms retain their
+existing GPU backend selection.
 
 A zoomed pane uses `config.colors.zoomed_pane_border` (default `#ffbe3a`) for its border on all four sides; an ordinary active pane uses `pane_border`. Both use `ui.active_pane_border_width`; zero hides the indicator.
 

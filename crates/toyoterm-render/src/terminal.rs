@@ -522,7 +522,15 @@ pub(super) fn preferred_alpha_mode(
 ) -> CompositeAlphaMode {
     // Keep the Windows swapchain's alpha mode stable across opacity 1.0.
     // An alpha-capable swapchain also renders fully opaque when clear alpha is 1.
-    let preferences: &[CompositeAlphaMode] = if cfg!(target_os = "windows") || opacity < 1.0 {
+    let preferences: &[CompositeAlphaMode] = if cfg!(target_os = "windows") {
+        // DirectComposition consumes premultiplied pixels, matching the
+        // source-over output of our UI and glyph pipelines.
+        &[
+            CompositeAlphaMode::PreMultiplied,
+            CompositeAlphaMode::PostMultiplied,
+            CompositeAlphaMode::Inherit,
+        ]
+    } else if opacity < 1.0 {
         &[
             CompositeAlphaMode::PostMultiplied,
             CompositeAlphaMode::PreMultiplied,

@@ -17,6 +17,8 @@ use winit::window::{Fullscreen, Window, WindowId};
 
 #[cfg(target_os = "linux")]
 use winit::platform::wayland::WindowAttributesExtWayland;
+#[cfg(target_os = "windows")]
+use winit::platform::windows::WindowAttributesExtWindows;
 
 use toyoterm_script::{
     BarItem, RubyEvent, RubyObjectModel, RubyPane, RubyTab, RubyWindow, RubyWorkspace,
@@ -462,6 +464,10 @@ impl ApplicationHandler<AppEvent> for ToyotermApplication {
             Some(app_id) => attributes.with_name(app_id, app_id),
             None => attributes,
         };
+        // Match the renderer's DX12 DirectComposition visual. An HWND
+        // redirection bitmap would otherwise cover its per-pixel transparency.
+        #[cfg(target_os = "windows")]
+        let attributes = attributes.with_no_redirection_bitmap(true);
         let window = match event_loop.create_window(attributes) {
             Ok(window) => Arc::new(window),
             Err(error) => {

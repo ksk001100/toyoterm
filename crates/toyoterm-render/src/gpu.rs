@@ -285,7 +285,7 @@ impl GpuRenderer {
         let size = window.inner_size();
         let width = size.width.max(1);
         let height = size.height.max(1);
-        let instance = Instance::default();
+        let instance = Instance::new(renderer_instance_descriptor());
         let surface = instance
             .create_surface(window.clone())
             .map_err(|error| RenderError::new("create GPU surface", error))?;
@@ -1374,6 +1374,22 @@ impl GpuRenderer {
         self.surface.configure(&self.device, &self.configuration);
         Ok(())
     }
+}
+
+pub(super) fn renderer_instance_descriptor() -> wgpu::InstanceDescriptor {
+    let descriptor = wgpu::InstanceDescriptor::new_without_display_handle();
+    #[cfg(target_os = "windows")]
+    {
+        let mut descriptor = descriptor;
+        // The window uses WS_EX_NOREDIRECTIONBITMAP. Pair it exclusively with
+        // DirectComposition, not Vulkan WSI or DX12's opaque HWND swapchain.
+        descriptor.backends = wgpu::Backends::DX12;
+        descriptor.backend_options.dx12.presentation_system =
+            wgpu::Dx12SwapchainKind::DxgiFromVisual;
+        descriptor
+    }
+    #[cfg(not(target_os = "windows"))]
+    descriptor
 }
 
 pub(super) fn measure_cell_width(

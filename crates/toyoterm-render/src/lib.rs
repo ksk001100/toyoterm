@@ -291,6 +291,35 @@ mod tests {
     use toyoterm_terminal::{AlacrittyTerminalBackend, SelectionSpan, TerminalBackend};
 
     #[test]
+    #[cfg(target_os = "windows")]
+    fn windows_presentation_uses_direct_composition_and_premultiplied_alpha() {
+        let descriptor = renderer_instance_descriptor();
+        assert_eq!(descriptor.backends, wgpu::Backends::DX12);
+        assert_eq!(
+            descriptor.backend_options.dx12.presentation_system,
+            wgpu::Dx12SwapchainKind::DxgiFromVisual
+        );
+        let supported = [
+            CompositeAlphaMode::Opaque,
+            CompositeAlphaMode::PostMultiplied,
+            CompositeAlphaMode::PreMultiplied,
+        ];
+        for opacity in [1.0, 0.9, 0.5, 0.0, 0.8, 1.0] {
+            let mode = preferred_alpha_mode(&supported, opacity);
+            assert_eq!(mode, CompositeAlphaMode::PreMultiplied);
+            let style = RenderStyle {
+                background: [255, 128, 64],
+                opacity,
+                ..RenderStyle::default()
+            };
+            let clear = clear_color(&style, mode);
+            assert_eq!(clear.a, f64::from(opacity));
+            assert_eq!(clear.r, clear.a);
+            assert!(clear.g <= clear.a && clear.b <= clear.a);
+        }
+    }
+
+    #[test]
     fn window_bar_groups_widgets_by_alignment_in_registration_order() {
         let items = [
             StatusBarRenderItem {

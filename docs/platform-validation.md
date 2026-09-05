@@ -57,6 +57,18 @@ an X11 session. CI covers startup for both display protocols on every push.
   Repeatedly press beyond both limits, then reverse direction. Confirm the
   background opacity changes on the first reverse press and rendering continues
   across `1.0`, including after a resize.
+- Start on an HDR-enabled primary display, then drag the window onto an
+  SDR-only secondary display and back. Test equal DPI first (no resize or DPI
+  event is required), then mixed DPI, with opacity `0.0`, `0.5`, `0.9`, and
+  `1.0`. Compare background transparency, ANSI colors, and text with a fresh
+  launch on the destination display; allow for the displays' different physical
+  brightness and Windows SDR brightness settings. Repeat with an idle shell,
+  active output, and minimize/restore. On the SDR display, change opacity using
+  keybindings and confirm the desktop becomes more/less visible, rather than
+  only the terminal brightness changing. Verify `backend = Dx12` and
+  `alpha_mode = PreMultiplied` in the startup log. Windows uses a DirectComposition
+  visual paired with `WS_EX_NOREDIRECTIONBITMAP`; both are required for per-pixel
+  transparency. This physical HDR/SDR check is not covered by headless tests.
 - Exercise portable zip startup, the default per-user installer, upgrade, and
   uninstaller. Confirm the user PATH entry and Start Menu shortcut are both
   added and removed.

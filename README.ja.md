@@ -210,6 +210,9 @@ xterm 6×6×6カラ―キューブ、232〜255はグレースケールです。`
 すぐに逆方向へ変更できます。数値以外や非有限値はエラーになります。
 Windowsでは`1.0`でもウィンドウと描画処理の透過対応を維持し、値を下げると
 再び背景を透過できるようにしています。
+WindowsではHDR・SDRディスプレイ間の移動時も背景を透過できるよう、
+DirectX 12とDirectComposition、乗算済みアルファを使用します。
+DirectX 12対応のGPUが必要です。他のOSでは従来のGPUバックエンド選択を維持します。
 
 zoom中のpaneは四辺の枠線に`config.colors.zoomed_pane_border`（既定値`#ffbe3a`）を使い、通常のアクティブpaneは`pane_border`を使います。どちらも太さは`ui.active_pane_border_width`で、`0`を指定すると表示されません。
 
