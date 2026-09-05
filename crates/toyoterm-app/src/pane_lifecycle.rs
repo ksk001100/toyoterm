@@ -72,6 +72,7 @@ impl ToyotermApplication {
                 size.rows,
                 self.script_snapshot.config.scrollback_lines,
             ),
+            snapshot_cache: None,
             pty_session: Some(session),
             process_id,
             title: format!("Pane {}", pane.0),
@@ -122,6 +123,7 @@ impl ToyotermApplication {
         for (pane, size) in sizes {
             if let Some(runtime) = self.pane_runtimes.get_mut(&pane) {
                 runtime.terminal.resize(size.columns, size.rows);
+                runtime.invalidate_snapshot();
                 if let Some(session) = runtime.pty_session.as_mut() {
                     session.resize(size).map_err(|error| {
                         tracing::error!(
@@ -339,6 +341,14 @@ impl ToyotermApplication {
             .map(|runtime| &mut runtime.terminal)
     }
 
+    pub(super) fn invalidate_active_snapshot(&mut self) {
+        if let Some(pane) = self.mux.current_pane()
+            && let Some(runtime) = self.pane_runtimes.get_mut(&pane)
+        {
+            runtime.invalidate_snapshot();
+        }
+    }
+
     pub(super) fn mark_pane_exited(&mut self, pane: PaneId, error: Option<String>) {
         if let Some(runtime) = self.pane_runtimes.get_mut(&pane) {
             runtime.pty_session = None;
@@ -440,6 +450,11 @@ impl ToyotermApplication {
         } else {
             if let Some(terminal) = self.active_terminal_mut() {
                 terminal.scroll_display(steps);
+            }
+            if let Some(pane) = self.mux.current_pane()
+                && let Some(runtime) = self.pane_runtimes.get_mut(&pane)
+            {
+                runtime.invalidate_snapshot();
             }
             self.sync_active_renderer(window.scale_factor());
             window.request_redraw();
@@ -589,6 +604,11 @@ impl ToyotermApplication {
             ElementState::Released if self.selecting => {
                 if let Some(terminal) = self.active_terminal_mut() {
                     terminal.update_selection(column, row);
+                }
+                if let Some(pane) = self.mux.current_pane()
+                    && let Some(runtime) = self.pane_runtimes.get_mut(&pane)
+                {
+                    runtime.invalidate_snapshot();
                 }
                 self.selecting = false;
                 if self.script_snapshot.config.behavior.copy_on_select

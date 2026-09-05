@@ -1,7 +1,14 @@
 use super::*;
 use gpui::{
-    App, Bounds, ContentMask, FontWeight, Pixels, Point, TextRun, Window, fill, font, point, px,
-    size,
+    App, Bounds, ContentMask, FontWeight, Pixels, Point, ShapedLine, TextRun, Window, fill, font,
+    point, px, size,
+};
+use std::{
+    cell::RefCell,
+    collections::HashMap,
+    hash::{Hash, Hasher},
+    rc::Rc,
+    sync::Arc,
 };
 
 #[derive(Clone)]
@@ -23,13 +30,14 @@ struct Label {
     underline: bool,
     strike: bool,
     fixed: bool,
+    cells: u16,
 }
 /// Retained terminal scene. GPUI owns the native window, GPU and glyph caches.
 #[derive(Clone)]
 pub struct GpuiRenderer {
     style: RenderStyle,
-    panes: Vec<Quad>,
-    text: Vec<Label>,
+    panes: Arc<Vec<Quad>>,
+    text: Arc<Vec<Label>>,
     tabs: Vec<Quad>,
     tab_text: Vec<Label>,
     workspaces: Vec<Quad>,
@@ -42,13 +50,17 @@ pub struct GpuiRenderer {
     error_text: Vec<Label>,
     preedit: Option<Label>,
     cursor: Option<(f32, f32, PaneRect)>,
+    /// Shaping is substantially more expensive than painting. Keep shaped
+    /// lines across GPUI render passes; terminal output invalidates only the
+    /// scene labels that are rebuilt by `update_panes`.
+    shape_cache: Rc<RefCell<HashMap<u64, ShapedLine>>>,
 }
 impl GpuiRenderer {
     pub fn new(style: RenderStyle) -> Self {
         Self {
             style,
-            panes: vec![],
-            text: vec![],
+            panes: Arc::new(vec![]),
+            text: Arc::new(vec![]),
             tabs: vec![],
             tab_text: vec![],
             workspaces: vec![],
@@ -61,10 +73,12 @@ impl GpuiRenderer {
             error_text: vec![],
             preedit: None,
             cursor: None,
+            shape_cache: Rc::new(RefCell::new(HashMap::new())),
         }
     }
     pub fn set_style(&mut self, style: RenderStyle) {
         self.style = style;
+        self.shape_cache.borrow_mut().clear();
     }
     pub fn terminal_cell_width(&self, font_size: f32, window: &Window) -> f32 {
         let run = self.run("M", self.style.foreground, false, false, false, false);
@@ -114,8 +128,8 @@ impl GpuiRenderer {
         }
     }
     pub fn update_panes(&mut self, panes: &[PaneRenderData<'_>], layout: TextLayout, scale: f32) {
-        self.panes.clear();
-        self.text.clear();
+        Arc::make_mut(&mut self.panes).clear();
+        Arc::make_mut(&mut self.text).clear();
         self.cursor = None;
         for pane in panes {
             let rect = pane.rect;
@@ -127,14 +141,14 @@ impl GpuiRenderer {
                 self.style.foreground,
                 &self.style.ansi,
             ) {
-                self.panes.push(Quad {
+                Arc::make_mut(&mut self.panes).push(Quad {
                     rect,
                     color,
                     alpha: 1.0,
                 });
             }
             for (rect, active) in search_highlight_rects(pane.snapshot, rect, layout) {
-                self.panes.push(Quad {
+                Arc::make_mut(&mut self.panes).push(Quad {
                     rect,
                     color: if active {
                         self.style.search_match_active
@@ -145,7 +159,7 @@ impl GpuiRenderer {
                 });
             }
             for rect in selection_highlight_rects(pane.snapshot, rect, layout) {
-                self.panes.push(Quad {
+                Arc::make_mut(&mut self.panes).push(Quad {
                     rect,
                     color: self.style.selection,
                     alpha: 1.0,
@@ -165,7 +179,7 @@ impl GpuiRenderer {
                             (cx, cy + layout.line_height - 2.0, layout.cell_width, 2.0)
                         }
                     };
-                    self.panes.push(Quad {
+                    Arc::make_mut(&mut self.panes).push(Quad {
                         rect: PaneRect::new(
                             left.max(0.) as u32,
                             top.max(0.) as u32,
@@ -215,7 +229,7 @@ impl GpuiRenderer {
                     {
                         color = self.style.background;
                     }
-                    self.text.push(Label {
+                    let item = Label {
                         text: cell.text.replace(['\r', '\n'], ""),
                         x: x + f32::from(cell.column) * layout.cell_width,
                         y: y + row as f32 * layout.line_height,
@@ -227,7 +241,34 @@ impl GpuiRenderer {
                         underline: attrs.underline || cell.hyperlink.is_some(),
                         strike: attrs.strikethrough,
                         fixed: cell.width == 1 && cell.text.len() == 1 && cell.text.is_ascii(),
-                    });
+                        cells: u16::from(cell.width.max(1)),
+                    };
+                    let text = Arc::make_mut(&mut self.text);
+                    if item.fixed
+                        && let Some(previous) = text.last_mut()
+                        && previous.text.is_ascii()
+                        && previous.y == item.y
+                        && previous.clip == item.clip
+                        && previous.color == item.color
+                        && previous.bold == item.bold
+                        && previous.italic == item.italic
+                        && previous.underline == item.underline
+                        && previous.strike == item.strike
+                        && (previous.x + previous.layout.cell_width * f32::from(previous.cells)
+                            - item.x)
+                            .abs()
+                            < 0.01
+                        && previous.cells < 256
+                    {
+                        // Keep the run anchored at its first grid cell. The
+                        // natural advance is used for the run; forcing a
+                        // width on a multi-glyph line can distort glyphs.
+                        previous.text.push_str(&item.text);
+                        previous.fixed = false;
+                        previous.cells = previous.cells.saturating_add(item.cells);
+                    } else {
+                        text.push(item);
+                    }
                 }
             }
             if pane.active {
@@ -237,7 +278,7 @@ impl GpuiRenderer {
                         .round()
                         .max(0.) as u32,
                 ) {
-                    self.panes.push(Quad {
+                    Arc::make_mut(&mut self.panes).push(Quad {
                         rect,
                         color: if pane.zoomed {
                             self.style.zoomed_pane_border
@@ -252,7 +293,7 @@ impl GpuiRenderer {
                 let mut item = label(badge, rect, layout, self.style.foreground);
                 item.x = -2.0;
                 item.y = rect.y as f32 + layout.vertical_padding;
-                self.text.push(item);
+                Arc::make_mut(&mut self.text).push(item);
             }
         }
     }
@@ -415,25 +456,39 @@ impl GpuiRenderer {
                 ));
             }
         }
-        for (quads, texts) in [
-            (&self.panes, &self.text),
-            (&self.tabs, &self.tab_text),
-            (&self.workspaces, &self.workspace_text),
-            (&self.search, &self.search_text),
-            (&self.bars, &self.bar_text),
-            (&self.errors, &self.error_text),
-        ] {
-            for quad in quads {
-                window.paint_quad(fill(
-                    gpui_bounds(quad.rect, origin, scale),
-                    color_value(quad.color, quad.alpha),
-                ));
-            }
-            for text in texts {
-                self.paint_label(text, origin, scale, window, cx);
-            }
-        }
+        self.paint_group(&self.panes, &self.text, origin, scale, window, cx);
+        self.paint_group(&self.tabs, &self.tab_text, origin, scale, window, cx);
+        self.paint_group(
+            &self.workspaces,
+            &self.workspace_text,
+            origin,
+            scale,
+            window,
+            cx,
+        );
+        self.paint_group(&self.search, &self.search_text, origin, scale, window, cx);
+        self.paint_group(&self.bars, &self.bar_text, origin, scale, window, cx);
+        self.paint_group(&self.errors, &self.error_text, origin, scale, window, cx);
         if let Some(text) = &self.preedit {
+            self.paint_label(text, origin, scale, window, cx);
+        }
+    }
+    fn paint_group(
+        &self,
+        quads: &[Quad],
+        texts: &[Label],
+        origin: Point<Pixels>,
+        scale: f32,
+        window: &mut Window,
+        cx: &mut App,
+    ) {
+        for quad in quads {
+            window.paint_quad(fill(
+                gpui_bounds(quad.rect, origin, scale),
+                color_value(quad.color, quad.alpha),
+            ));
+        }
+        for text in texts {
             self.paint_label(text, origin, scale, window, cx);
         }
     }
@@ -456,12 +511,38 @@ impl GpuiRenderer {
             label.underline,
             label.strike,
         );
-        let line = window.text_system().shape_line(
-            label.text.clone().into(),
-            px(label.layout.font_size / scale),
-            &[run],
-            label.fixed.then(|| px(label.layout.cell_width / scale)),
-        );
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        label.text.hash(&mut hasher);
+        label.layout.font_size.to_bits().hash(&mut hasher);
+        label.layout.cell_width.to_bits().hash(&mut hasher);
+        scale.to_bits().hash(&mut hasher);
+        label.color.hash(&mut hasher);
+        label.bold.hash(&mut hasher);
+        label.italic.hash(&mut hasher);
+        label.underline.hash(&mut hasher);
+        label.strike.hash(&mut hasher);
+        label.fixed.hash(&mut hasher);
+        label.cells.hash(&mut hasher);
+        let cache_key = hasher.finish();
+        let line = if let Some(line) = self.shape_cache.borrow().get(&cache_key) {
+            line.clone()
+        } else {
+            let line = window.text_system().shape_line(
+                label.text.clone().into(),
+                px(label.layout.font_size / scale),
+                &[run],
+                label
+                    .fixed
+                    .then(|| px(label.layout.cell_width * f32::from(label.cells) / scale)),
+            );
+            if self.shape_cache.borrow().len() >= 8192 {
+                self.shape_cache.borrow_mut().clear();
+            }
+            self.shape_cache
+                .borrow_mut()
+                .insert(cache_key, line.clone());
+            line
+        };
         let width = f32::from(line.width) * scale;
         let x = if label.x == -1.0 {
             label.clip.x as f32 + (label.clip.width as f32 - width) / 2.0
@@ -470,21 +551,29 @@ impl GpuiRenderer {
         } else {
             label.x
         };
-        window.with_content_mask(
-            Some(ContentMask {
-                bounds: gpui_bounds(label.clip, origin, scale),
-            }),
-            |window| {
-                if let Err(error) = line.paint(
-                    origin + point(px(x / scale), px(label.y / scale)),
-                    px(label.layout.line_height / scale),
-                    window,
-                    cx,
-                ) {
-                    tracing::warn!(%error, "GPUI text paint failed");
-                }
-            },
-        );
+        let position = origin + point(px(x / scale), px(label.y / scale));
+        let line_height = px(label.layout.line_height / scale);
+        let mut paint = |window: &mut Window| {
+            if let Err(error) = line.paint(position, line_height, window, cx) {
+                tracing::warn!(%error, "GPUI text paint failed");
+            }
+        };
+        // Fixed-width ASCII cells cannot draw outside their own grid cell.
+        // Avoid installing a content mask for them; masks are relatively
+        // expensive when thousands of cells are painted per frame.
+        if label.text.is_ascii()
+            && x >= label.clip.x as f32
+            && x + width <= label.clip.x as f32 + label.clip.width as f32
+        {
+            paint(window);
+        } else {
+            window.with_content_mask(
+                Some(ContentMask {
+                    bounds: gpui_bounds(label.clip, origin, scale),
+                }),
+                paint,
+            );
+        }
     }
 }
 fn label(text: &str, rect: PaneRect, layout: TextLayout, color: [u8; 3]) -> Label {
@@ -500,6 +589,7 @@ fn label(text: &str, rect: PaneRect, layout: TextLayout, color: [u8; 3]) -> Labe
         underline: false,
         strike: false,
         fixed: false,
+        cells: 1,
     }
 }
 fn color_value(color: [u8; 3], alpha: f32) -> gpui::Hsla {

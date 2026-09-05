@@ -162,6 +162,7 @@ impl ToyotermApplication {
         if let Some(terminal) = self.active_terminal_mut() {
             terminal.clear_selection();
         }
+        self.invalidate_active_snapshot();
         self.visual_selection = Some(VisualSelection {
             anchor: None,
             current: position,
@@ -180,6 +181,7 @@ impl ToyotermApplication {
                 SelectionKind::Simple,
             );
         }
+        self.invalidate_active_snapshot();
         self.visual_selection = Some(visual);
     }
 
@@ -189,6 +191,7 @@ impl ToyotermApplication {
         {
             terminal.clear_selection();
         }
+        self.invalidate_active_snapshot();
     }
 
     pub(super) fn move_visual_selection(&mut self, motion: SelectionMotion) {
@@ -240,6 +243,7 @@ impl ToyotermApplication {
         {
             terminal.scroll_display(scroll);
         }
+        self.invalidate_active_snapshot();
         self.visual_selection = Some(selection);
     }
 
@@ -453,6 +457,7 @@ impl ToyotermApplication {
         if let Some(terminal) = self.active_terminal_mut() {
             terminal.clear_search();
         }
+        self.invalidate_active_snapshot();
         Ok(())
     }
 
@@ -484,6 +489,7 @@ impl ToyotermApplication {
             .ok_or_else(|| format!("pane {pane} has no terminal runtime"))?
             .terminal
             .search(&self.search_query, direction);
+        self.invalidate_active_snapshot();
         Ok(())
     }
 
@@ -494,6 +500,7 @@ impl ToyotermApplication {
         if let Some(terminal) = self.active_terminal_mut() {
             terminal.clear_search();
         }
+        self.invalidate_active_snapshot();
     }
 
     pub(super) fn refresh_search(&mut self, direction: SearchDirection) {
@@ -502,6 +509,7 @@ impl ToyotermApplication {
             .active_terminal_mut()
             .map(|terminal| terminal.search(&query, direction))
             .unwrap_or_default();
+        self.invalidate_active_snapshot();
     }
 
     pub(super) fn handle_search_key(&mut self, event: &KeyEvent, modifiers: ModifiersState) {

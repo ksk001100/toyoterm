@@ -51,7 +51,8 @@ pub use toyoterm_script::ConfigManager;
 pub use toyoterm_terminal::{
     AlacrittyTerminalBackend, BindingKey, CursorShape, KeyChord, KeyModifiers, KeyPress, KeypadKey,
     MouseWheelDirection, SearchDirection, SearchResult, SelectionKind, TerminalBackend,
-    TerminalEvent, TerminalKey, TerminalMode, encode_key, encode_mouse_wheel, encode_paste,
+    TerminalEvent, TerminalKey, TerminalMode, TerminalSnapshot, encode_key, encode_mouse_wheel,
+    encode_paste,
 };
 
 const MULTI_CLICK_INTERVAL: Duration = Duration::from_millis(500);
@@ -313,6 +314,7 @@ enum EvalWaiter {
 
 struct PaneRuntime {
     terminal: AlacrittyTerminalBackend,
+    snapshot_cache: Option<Rc<TerminalSnapshot>>,
     pty_session: Option<Box<dyn PtySession>>,
     process_id: Option<u32>,
     title: String,
@@ -320,6 +322,12 @@ struct PaneRuntime {
     command_running: bool,
     last_exit_status: Option<i32>,
     exited: bool,
+}
+
+impl PaneRuntime {
+    fn invalidate_snapshot(&mut self) {
+        self.snapshot_cache = None;
+    }
 }
 
 impl PaneRuntime {
@@ -673,6 +681,7 @@ impl ToyotermApplication {
                 let mut terminal_events = Vec::new();
                 if let Some(runtime) = self.pane_runtimes.get_mut(&pane) {
                     runtime.terminal.advance(&bytes);
+                    runtime.invalidate_snapshot();
                     terminal_events = runtime.terminal.drain_events();
                     for event in &terminal_events {
                         match event {
@@ -990,6 +999,7 @@ mod tests {
         {
             let _runtime = PaneRuntime {
                 terminal: AlacrittyTerminalBackend::new(80, 24),
+                snapshot_cache: None,
                 pty_session: Some(Box::new(KillTrackingSession(kills.clone()))),
                 process_id: Some(42),
                 title: "test".into(),

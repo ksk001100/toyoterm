@@ -12,7 +12,11 @@ impl ToyotermApplication {
             .panes()
             .iter()
             .filter_map(|placement| {
-                self.pane_runtimes.get(&placement.pane).map(|runtime| {
+                self.pane_runtimes.get_mut(&placement.pane).map(|runtime| {
+                    let snapshot = runtime
+                        .snapshot_cache
+                        .get_or_insert_with(|| Rc::new(runtime.terminal.snapshot()))
+                        .clone();
                     let is_active = active == Some(placement.pane);
                     let cursor_uses_grid = is_active && self.visual_selection.is_some();
                     let mut cursor = runtime.terminal.cursor();
@@ -24,7 +28,7 @@ impl ToyotermApplication {
                     }
                     (
                         placement.pane,
-                        runtime.terminal.snapshot(),
+                        snapshot,
                         cursor,
                         cursor_uses_grid,
                         placement.rect,
@@ -39,7 +43,7 @@ impl ToyotermApplication {
             .map(
                 |(pane, snapshot, cursor, cursor_uses_grid, rect, active, badge)| PaneRenderData {
                     pane: *pane,
-                    snapshot,
+                    snapshot: snapshot.as_ref(),
                     cursor: *cursor,
                     cursor_uses_grid: *cursor_uses_grid,
                     rect: *rect,
