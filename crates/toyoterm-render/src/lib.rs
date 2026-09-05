@@ -380,6 +380,91 @@ mod tests {
     }
 
     #[test]
+    fn split_separator_stays_in_the_same_column_with_diagnostic_symbols() {
+        let mut font_system = configured_font_system(&[]);
+        let cell_width = measure_cell_width(&mut font_system, "monospace", 400, 14.0);
+        for text in [
+            "plain",
+            "󰅚 error",
+            "⚠ warning",
+            "日本語",
+            "→ hint",
+            "e\u{301}",
+        ] {
+            let mut terminal = AlacrittyTerminalBackend::new(80, 2);
+            terminal.advance(text.as_bytes());
+            terminal.advance("\x1b[1;41H│ right pane".as_bytes());
+            let snapshot = terminal.snapshot();
+            let layout = TextLayout {
+                cell_width,
+                font_size: 14.0,
+                line_height: 18.0,
+                horizontal_padding: 0.0,
+                vertical_padding: 0.0,
+            };
+            let style = RenderStyle::default();
+            let mut separator_x = None;
+            for (_, cells) in terminal_cell_runs(&snapshot) {
+                let mut buffer = Buffer::new(&mut font_system, Metrics::new(14.0, 18.0));
+                update_terminal_cell_buffer(&mut buffer, &mut font_system, cells, layout, &style);
+                if cells.iter().any(|cell| cell.column == 40) {
+                    let glyph = buffer.layout_runs().next().unwrap().glyphs.first().unwrap();
+                    separator_x = Some(f32::from(cells[0].column) * cell_width + glyph.x);
+                }
+            }
+            let x = separator_x.expect("separator is rendered");
+            assert!(
+                (x - 40.0 * cell_width).abs() < 0.01,
+                "{text:?}: separator x {x}, expected {}",
+                40.0 * cell_width
+            );
+        }
+    }
+
+    #[test]
+    fn scrolled_cell_runs_keep_wide_and_combining_cells_at_grid_positions() {
+        let mut terminal = AlacrittyTerminalBackend::new(80, 4);
+        terminal.advance("\x1b[?1049h\x1b[1;3r".as_bytes());
+        for (row, text) in [(1, "󰅚 error"), (2, "日本語"), (3, "e\u{301} hint")] {
+            terminal.advance(format!("\x1b[{row};1H{text}\x1b[{row};41H│ right").as_bytes());
+        }
+        let mut font_system = configured_font_system(&[]);
+        let layout = TextLayout {
+            cell_width: 8.25,
+            font_size: 14.0,
+            line_height: 18.0,
+            horizontal_padding: 0.0,
+            vertical_padding: 0.0,
+        };
+        let style = RenderStyle::default();
+        let mut buffer = Buffer::new(&mut font_system, Metrics::new(14.0, 18.0));
+        for scrolls in 0..3 {
+            let snapshot = terminal.snapshot();
+            let mut separators = 0;
+            for (row, cells) in terminal_cell_runs(&snapshot) {
+                update_terminal_cell_buffer(&mut buffer, &mut font_system, cells, layout, &style);
+                let run = buffer.layout_runs().next().unwrap();
+                assert_eq!(run.line_i, 0, "each run uses its explicit terminal row");
+                if cells[0].text == "│" {
+                    assert_eq!(cells[0].column, 40);
+                    assert!(row < 3 - scrolls);
+                    assert_eq!(run.glyphs[0].x, 0.0);
+                    separators += 1;
+                }
+                if cells[0].text == "日" {
+                    assert_eq!(cells.len(), 1);
+                    assert_eq!(cells[0].width, 2);
+                }
+                if cells[0].text.starts_with('e') && cells[0].text.contains('\u{301}') {
+                    assert_eq!(cells.len(), 1, "combining marks stay with the base cell");
+                }
+            }
+            assert_eq!(separators, 3 - scrolls);
+            terminal.advance(b"\x1b[1;1H\x1b[M");
+        }
+    }
+
+    #[test]
     fn terminal_rich_text_coalesces_adjacent_cells_with_the_same_attributes() {
         let mut terminal = AlacrittyTerminalBackend::new(10, 2);
         terminal.advance(b"abcdefghij");

@@ -30,6 +30,11 @@ an X11 session. CI covers startup for both display protocols on every push.
 - Verify Command shortcuts, Option-modified input, dead keys, and Japanese IME.
 - Copy and paste to TextEdit; check rendering at 1x and Retina scale.
 - Repeat pane split, resize, reload, and shutdown checks.
+- With JetBrainsMono Nerd Font, open a synthetic TypeScript/React buffer in
+  LazyVim with vtsls diagnostics, split it vertically, and scroll both windows.
+  Check that diagnostic icons, split separators, and the right-hand text remain
+  in their columns, including at Retina scale. Repeat with the Mono variant
+  and with diagnostics disabled to distinguish font layout from redraw issues.
 - Open the DMG, drag the app to Applications, launch it, replace it with the same
   release once, and remove it. Confirm the `.tar.gz` contains the same version.
 

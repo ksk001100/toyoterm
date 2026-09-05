@@ -60,6 +60,8 @@ On Linux, a working Wayland or X11 desktop session is required. Install your dis
 
 A Nerd Font is recommended for correctly displaying the icons and symbols used by many shell prompts and terminal tools. Prefer a monospaced variant (for example, `JetBrainsMono Nerd Font Mono`) and set its installed family name in `config.font.family`.
 
+Terminal symbols, diagnostic icons, and wide characters are positioned at their terminal cell coordinates so their font advances do not shift split separators or following text.
+
 After cloning the repository, run:
 
 ```sh

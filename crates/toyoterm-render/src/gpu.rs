@@ -124,6 +124,7 @@ struct ConfigErrorRenderLayout {
 
 struct PaneBuffers {
     text: Buffer,
+    cell_runs: Vec<CellRunBuffer>,
     cursor_glyph: Buffer,
     badge: Buffer,
     has_badge: bool,
@@ -136,6 +137,12 @@ struct PaneBuffers {
     backgrounds: Vec<(PaneRect, [u8; 3])>,
     selection_highlights: Vec<PaneRect>,
     search_highlights: Vec<(PaneRect, bool)>,
+}
+
+struct CellRunBuffer {
+    text: Buffer,
+    column: u16,
+    row: u16,
 }
 
 #[repr(C)]
@@ -244,6 +251,7 @@ impl PaneBuffers {
         };
         Self {
             text: buffer(),
+            cell_runs: Vec::new(),
             cursor_glyph: buffer(),
             badge: buffer(),
             has_badge: false,
@@ -469,15 +477,28 @@ impl GpuRenderer {
         let background = self.style.background;
         let ansi = self.style.ansi;
         for pane in panes {
-            let rich_text = terminal_rich_text(
-                pane.snapshot,
-                Some(pane.cursor),
-                &font_family,
-                font_weight,
-                foreground,
-                background,
-                &ansi,
-            );
+            let use_cell_runs = pane
+                .snapshot
+                .cells
+                .iter()
+                .flatten()
+                .any(|cell| !cell.text.is_ascii());
+            let default_attrs = Attrs::new()
+                .family(resolve_font_family(&font_family))
+                .weight(Weight(font_weight));
+            let rich_text = if use_cell_runs {
+                Vec::new()
+            } else {
+                terminal_rich_text(
+                    pane.snapshot,
+                    Some(pane.cursor),
+                    &font_family,
+                    font_weight,
+                    foreground,
+                    background,
+                    &ansi,
+                )
+            };
             if !self.panes.contains_key(&pane.pane) {
                 self.panes.insert(
                     pane.pane,
@@ -504,55 +525,85 @@ impl GpuRenderer {
             buffers.selection_highlights =
                 selection_highlight_rects(pane.snapshot, pane.rect, layout);
             buffers.search_highlights = search_highlight_rects(pane.snapshot, pane.rect, layout);
-            let content_width = pane
-                .rect
-                .width
-                .saturating_sub((layout.horizontal_padding * 2.0) as u32)
-                as f32;
-            let content_height =
-                pane.rect
+            if !use_cell_runs {
+                let content_width = pane
+                    .rect
+                    .width
+                    .saturating_sub((layout.horizontal_padding * 2.0) as u32)
+                    as f32;
+                let content_height = pane
+                    .rect
                     .height
-                    .saturating_sub((layout.vertical_padding * 2.0) as u32) as f32;
-            // A terminal is a fixed grid even when the selected font (or a
-            // platform-specific fallback) reports a different advance.  In
-            // particular, Windows' generic monospace resolution and DPI
-            // scaling can otherwise accumulate enough fractional advance to
-            // visibly break columnar output such as `ls` and move the cursor
-            // away from its logical cell.
-            buffers.text.set_monospace_width(Some(layout.cell_width));
-            buffers
-                .text
-                .set_metrics_and_size(metrics, Some(content_width), Some(content_height));
-            let default_attrs = Attrs::new()
-                .family(resolve_font_family(&font_family))
-                .weight(Weight(font_weight));
-            if rich_text.is_empty() {
-                buffers.text.set_text(
-                    &pane.snapshot.lines.join("\n"),
-                    &default_attrs,
-                    Shaping::Advanced,
-                    None,
+                    .saturating_sub((layout.vertical_padding * 2.0) as u32)
+                    as f32;
+                // A terminal is a fixed grid even when the selected font (or a
+                // platform-specific fallback) reports a different advance.  In
+                // particular, Windows' generic monospace resolution and DPI
+                // scaling can otherwise accumulate enough fractional advance to
+                // visibly break columnar output such as `ls` and move the cursor
+                // away from its logical cell.
+                buffers.text.set_monospace_width(Some(layout.cell_width));
+                buffers.text.set_metrics_and_size(
+                    metrics,
+                    Some(content_width),
+                    Some(content_height),
                 );
-            } else {
-                buffers.text.set_rich_text(
-                    rich_text
-                        .iter()
-                        .map(|(text, attrs)| (text.as_str(), attrs.clone())),
-                    &default_attrs,
-                    Shaping::Advanced,
-                    None,
-                );
+                if rich_text.is_empty() {
+                    buffers.text.set_text(
+                        &pane.snapshot.lines.join("\n"),
+                        &default_attrs,
+                        Shaping::Advanced,
+                        None,
+                    );
+                } else {
+                    buffers.text.set_rich_text(
+                        rich_text
+                            .iter()
+                            .map(|(text, attrs)| (text.as_str(), attrs.clone())),
+                        &default_attrs,
+                        Shaping::Advanced,
+                        None,
+                    );
+                }
+                buffers
+                    .text
+                    .shape_until_scroll(&mut self.font_system, false);
             }
-            buffers
-                .text
-                .shape_until_scroll(&mut self.font_system, false);
             buffers.cursor_x = pane_cursor_x(
                 &buffers.text,
                 pane.snapshot,
                 pane.cursor,
                 layout.cell_width,
-                pane.cursor_uses_grid,
+                pane.cursor_uses_grid || use_cell_runs,
             );
+
+            let cell_runs = if use_cell_runs {
+                terminal_cell_runs(pane.snapshot)
+            } else {
+                Vec::new()
+            };
+            buffers.cell_runs.truncate(cell_runs.len());
+            for (index, (row, cells)) in cell_runs.into_iter().enumerate() {
+                if index == buffers.cell_runs.len() {
+                    let mut text = Buffer::new(&mut self.font_system, metrics);
+                    text.set_wrap(Wrap::None);
+                    buffers.cell_runs.push(CellRunBuffer {
+                        text,
+                        column: 0,
+                        row: 0,
+                    });
+                }
+                let run = &mut buffers.cell_runs[index];
+                run.column = cells[0].column;
+                run.row = row;
+                update_terminal_cell_buffer(
+                    &mut run.text,
+                    &mut self.font_system,
+                    cells,
+                    layout,
+                    &self.style,
+                );
+            }
 
             buffers
                 .cursor_glyph
@@ -971,15 +1022,29 @@ impl GpuRenderer {
         for pane in self.panes.values() {
             let placement = pane_text_placement(pane.rect, pane.layout, pane.cursor, pane.cursor_x);
             let bounds = pane_bounds(placement.bounds);
-            text_areas.push(TextArea {
-                buffer: &pane.text,
-                left: placement.text_left,
-                top: placement.text_top,
-                scale: 1.0,
-                bounds,
-                default_color: glyph_color(self.style.foreground, 255),
-                custom_glyphs: &[],
-            });
+            if pane.cell_runs.is_empty() {
+                text_areas.push(TextArea {
+                    buffer: &pane.text,
+                    left: placement.text_left,
+                    top: placement.text_top,
+                    scale: 1.0,
+                    bounds,
+                    default_color: glyph_color(self.style.foreground, 255),
+                    custom_glyphs: &[],
+                });
+            } else {
+                for run in &pane.cell_runs {
+                    text_areas.push(TextArea {
+                        buffer: &run.text,
+                        left: placement.text_left + f32::from(run.column) * pane.layout.cell_width,
+                        top: placement.text_top + f32::from(run.row) * pane.layout.line_height,
+                        scale: 1.0,
+                        bounds,
+                        default_color: glyph_color(self.style.foreground, 255),
+                        custom_glyphs: &[],
+                    });
+                }
+            }
             if pane.active && pane.cursor.visible {
                 text_areas.push(TextArea {
                     buffer: &pane.cursor_glyph,

@@ -1,5 +1,80 @@
 use super::*;
 
+/// Keep non-ASCII cells (including their combining marks) independent of the
+/// surrounding text. Font fallback advances need not match terminal widths.
+/// Contiguous ASCII cells can still share shaping work and rich attributes.
+pub(super) fn terminal_cell_runs(
+    snapshot: &TerminalSnapshot,
+) -> Vec<(u16, &[toyoterm_terminal::TerminalCell])> {
+    let mut runs = Vec::new();
+    for (row, cells) in snapshot
+        .cells
+        .iter()
+        .take(usize::from(snapshot.rows))
+        .enumerate()
+    {
+        let mut start = 0;
+        while start < cells.len() {
+            let mut end = start + 1;
+            let ascii_cell = |cell: &toyoterm_terminal::TerminalCell| {
+                cell.width == 1 && cell.text.len() == 1 && cell.text.is_ascii()
+            };
+            if ascii_cell(&cells[start]) {
+                while end < cells.len()
+                    && ascii_cell(&cells[end])
+                    && cells[end].column == cells[end - 1].column.saturating_add(1)
+                {
+                    end += 1;
+                }
+            }
+            runs.push((row as u16, &cells[start..end]));
+            start = end;
+        }
+    }
+    runs
+}
+
+pub(super) fn update_terminal_cell_buffer(
+    buffer: &mut Buffer,
+    font_system: &mut FontSystem,
+    cells: &[toyoterm_terminal::TerminalCell],
+    layout: TextLayout,
+    style: &RenderStyle,
+) {
+    buffer.set_wrap(Wrap::None);
+    buffer.set_monospace_width(Some(layout.cell_width));
+    buffer.set_metrics_and_size(
+        Metrics::new(layout.font_size.max(1.0), layout.line_height.max(1.0)),
+        None,
+        None,
+    );
+    buffer.set_rich_text(
+        cells.iter().map(|cell| {
+            let mut attributes = cell.attributes;
+            if cell.hyperlink.is_some() {
+                attributes.underline = true;
+            }
+            (
+                cell.text.as_str(),
+                glyph_attrs(
+                    attributes,
+                    &style.font_family,
+                    style.font_weight,
+                    style.foreground,
+                    style.background,
+                    &style.ansi,
+                ),
+            )
+        }),
+        &Attrs::new()
+            .family(resolve_font_family(&style.font_family))
+            .weight(Weight(style.font_weight)),
+        Shaping::Advanced,
+        None,
+    );
+    buffer.shape_until_scroll(font_system, false);
+}
+
 pub(super) fn pane_text_placement(
     rect: PaneRect,
     layout: TextLayout,
