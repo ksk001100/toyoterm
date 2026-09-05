@@ -148,7 +148,7 @@ module Toyoterm
       @workspace_bar_height = 24
       @workspace_width = 160
       @status_bar_height = 24
-      @status_bar_width = 160
+      @status_bar_width = 80
       @pane_divider_width = 2
       @active_pane_border_width = 2
     end

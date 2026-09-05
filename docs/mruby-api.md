@@ -167,7 +167,7 @@ end
 | `workspace_bar_height` | `24` | Positive finite number. |
 | `workspace_width` | `160` | Positive finite number. |
 | `status_bar_height` | `24` | Positive finite number. |
-| `status_bar_width` | `160` | Positive finite number. |
+| `status_bar_width` | `80` | Positive finite number. |
 | `pane_divider_width` | `2` | Non-negative finite number. |
 | `active_pane_border_width` | `2` | Non-negative finite number. |
 

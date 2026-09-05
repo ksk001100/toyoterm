@@ -153,7 +153,7 @@ Toyoterm.configure do |config|
     ui.workspace_bar_height = 24
     ui.workspace_width = 160
     ui.status_bar_height = 24
-    ui.status_bar_width = 160
+    ui.status_bar_width = 80
     ui.pane_divider_width = 2
     ui.active_pane_border_width = 2
   end

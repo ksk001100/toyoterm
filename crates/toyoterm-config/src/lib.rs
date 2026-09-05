@@ -135,7 +135,7 @@ impl Default for ToyotermConfig {
                 workspace_bar_height: 24.0,
                 workspace_width: 160.0,
                 status_bar_height: 24.0,
-                status_bar_width: 160.0,
+                status_bar_width: 80.0,
                 pane_divider_width: 2.0,
                 active_pane_border_width: 2.0,
             },
@@ -367,7 +367,7 @@ mod tests {
         assert_eq!(config.scrollback_lines, 10_000);
         assert_eq!(config.leader, None);
         assert!(config.status_bars.is_empty());
-        assert_eq!(config.ui.status_bar_width, 160.0);
+        assert_eq!(config.ui.status_bar_width, 80.0);
     }
 
     #[test]

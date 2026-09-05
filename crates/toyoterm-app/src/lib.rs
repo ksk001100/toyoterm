@@ -1392,14 +1392,14 @@ mod tests {
         };
 
         let (pane, bars) = edge_bar_layout(PhysicalSize::new(960, 600), 54, &config, 1.0);
-        assert_eq!(pane, PaneRect::new(160, 78, 640, 498));
+        assert_eq!(pane, PaneRect::new(80, 78, 800, 498));
         assert_eq!(
             bars,
             vec![
                 (StatusBarPosition::Top, PaneRect::new(0, 54, 960, 24)),
                 (StatusBarPosition::Bottom, PaneRect::new(0, 576, 960, 24)),
-                (StatusBarPosition::Left, PaneRect::new(0, 78, 160, 498)),
-                (StatusBarPosition::Right, PaneRect::new(800, 78, 160, 498)),
+                (StatusBarPosition::Left, PaneRect::new(0, 78, 80, 498)),
+                (StatusBarPosition::Right, PaneRect::new(880, 78, 80, 498)),
             ]
         );
     }
