@@ -70,12 +70,14 @@ jobs:
             libvulkan1 \
             libxkbcommon-x11-0 \
             mesa-vulkan-drivers \
+            openbox \
             weston \
-            xvfb
+            xvfb \
+            x11-utils
       - name: X11 GUI smoke test
         if: matrix.display == 'x11'
         timeout-minutes: 10
-        run: env -u WAYLAND_DISPLAY xvfb-run -a cargo run --locked -- gui-smoke-test
+        run: xvfb-run -a -s "-screen 0 1280x800x24 +extension RANDR" sh scripts/x11-smoke-test.sh
       - name: Wayland GUI smoke test
         if: matrix.display == 'wayland'
         timeout-minutes: 10
