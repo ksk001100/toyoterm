@@ -3,46 +3,16 @@ use super::*;
 pub(super) fn key_press(
     event: &KeyEvent,
     modifiers: ModifiersState,
-    mode: crate::TerminalMode,
+    _mode: crate::TerminalMode,
 ) -> Option<KeyPress> {
-    let key = if mode.application_keypad
-        && let Some(key) = keypad_key(event.physical_key)
-    {
-        TerminalKey::Keypad(key)
-    } else {
-        match &event.logical_key {
-            Key::Named(named) => named_key(named)?,
-            Key::Character(text) => {
-                TerminalKey::Text(event.text.as_deref().unwrap_or(text.as_str()).to_owned())
-            }
-            _ => return None,
+    let key = match &event.logical_key {
+        Key::Named(named) => named_key(named)?,
+        Key::Character(text) => {
+            TerminalKey::Text(event.text.as_deref().unwrap_or(text.as_str()).to_owned())
         }
+        Key::Unidentified => return None,
     };
     Some(KeyPress::new(key, key_modifiers(modifiers)))
-}
-
-pub(super) fn keypad_key(physical_key: PhysicalKey) -> Option<KeypadKey> {
-    Some(match physical_key {
-        PhysicalKey::Code(KeyCode::Numpad0) => KeypadKey::Digit(0),
-        PhysicalKey::Code(KeyCode::Numpad1) => KeypadKey::Digit(1),
-        PhysicalKey::Code(KeyCode::Numpad2) => KeypadKey::Digit(2),
-        PhysicalKey::Code(KeyCode::Numpad3) => KeypadKey::Digit(3),
-        PhysicalKey::Code(KeyCode::Numpad4) => KeypadKey::Digit(4),
-        PhysicalKey::Code(KeyCode::Numpad5) => KeypadKey::Digit(5),
-        PhysicalKey::Code(KeyCode::Numpad6) => KeypadKey::Digit(6),
-        PhysicalKey::Code(KeyCode::Numpad7) => KeypadKey::Digit(7),
-        PhysicalKey::Code(KeyCode::Numpad8) => KeypadKey::Digit(8),
-        PhysicalKey::Code(KeyCode::Numpad9) => KeypadKey::Digit(9),
-        PhysicalKey::Code(KeyCode::NumpadAdd) => KeypadKey::Add,
-        PhysicalKey::Code(KeyCode::NumpadSubtract) => KeypadKey::Subtract,
-        PhysicalKey::Code(KeyCode::NumpadMultiply) => KeypadKey::Multiply,
-        PhysicalKey::Code(KeyCode::NumpadDivide) => KeypadKey::Divide,
-        PhysicalKey::Code(KeyCode::NumpadDecimal) => KeypadKey::Decimal,
-        PhysicalKey::Code(KeyCode::NumpadComma) => KeypadKey::Comma,
-        PhysicalKey::Code(KeyCode::NumpadEqual) => KeypadKey::Equal,
-        PhysicalKey::Code(KeyCode::NumpadEnter) => KeypadKey::Enter,
-        _ => return None,
-    })
 }
 
 pub(super) fn should_handle_key_event(state: ElementState, _repeat: bool) -> bool {
@@ -69,24 +39,9 @@ pub(super) fn effective_modifiers(
 
 pub(super) fn keybinding_names(event: &KeyEvent, modifiers: ModifiersState) -> Vec<String> {
     let modifiers = key_modifiers(modifiers);
-    let physical = match event.physical_key {
-        PhysicalKey::Code(code) => Some(format!("{code:?}")),
-        PhysicalKey::Unidentified(_) => None,
-    };
-    binding_candidates(physical, logical_binding_key(&event.logical_key), modifiers)
-}
-
-pub(super) fn binding_candidates(
-    physical: Option<String>,
-    logical: Option<String>,
-    modifiers: KeyModifiers,
-) -> Vec<String> {
-    physical
-        .map(|key| KeyChord::new(BindingKey::Physical(key), modifiers).canonical_name())
+    logical_binding_key(&event.logical_key)
+        .map(|key| KeyChord::new(BindingKey::Logical(key), modifiers).canonical_name())
         .into_iter()
-        .chain(
-            logical.map(|key| KeyChord::new(BindingKey::Logical(key), modifiers).canonical_name()),
-        )
         .collect()
 }
 
@@ -133,7 +88,6 @@ pub(super) fn keybinding_named_key(key: &NamedKey) -> Option<&'static str> {
         NamedKey::F10 => "F10",
         NamedKey::F11 => "F11",
         NamedKey::F12 => "F12",
-        _ => return None,
     })
 }
 
@@ -257,6 +211,5 @@ pub(super) fn named_key(key: &NamedKey) -> Option<TerminalKey> {
         NamedKey::F10 => TerminalKey::Function(10),
         NamedKey::F11 => TerminalKey::Function(11),
         NamedKey::F12 => TerminalKey::Function(12),
-        _ => return None,
     })
 }

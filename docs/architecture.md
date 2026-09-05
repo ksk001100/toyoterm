@@ -9,7 +9,7 @@ toyoterm is a Cargo workspace. Each crate owns one runtime responsibility:
 - `toyoterm-mux`: workspaces, windows, tabs, panes, and split trees
 - `toyoterm-terminal`: VT state, snapshots, selection, and input encoding
 - `toyoterm-pty`: process spawning, PTY I/O, resize, and child lifecycle
-- `toyoterm-render`: layout plus GPU and text rendering
+- `toyoterm-render`: layout and retained terminal scenes painted by GPUI
 - `toyoterm-config`: configuration values and path discovery
 - `toyoterm-script`: mruby ownership, DSL evaluation, callbacks, and typed API conversion
 - `toyoterm-ipc`: the internal local transport shared by the app and CLI
@@ -43,3 +43,11 @@ dependency allowlist, the small allowlist of test-only dependencies, and cycle
 freedom. CI runs this check on Linux, macOS, and Windows. When adding a crate or
 dependency, update the script and this document in the same change so the new
 direction is an explicit design decision.
+
+## GUI backend
+
+The app and render crates depend on the pinned GPUI 0.2.2 release. GPUI owns
+windowing, foreground scheduling, text shaping and GPU presentation. The app
+owns its root entity and native terminal state; render owns scene construction.
+No production dependency on winit, wgpu or glyphon is retained. The internal
+crate edges are unchanged. See [ADR 0007](adr/0007-use-gpui.md).

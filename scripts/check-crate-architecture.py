@@ -123,6 +123,8 @@ def main() -> int:
         production_graph[crate]
         for dependency in package["dependencies"]:
             dependency_name = dependency["name"]
+            if crate in {"toyoterm-app", "toyoterm-render"} and dependency_name in {"winit", "wgpu", "glyphon"}:
+                errors.append(f"legacy GUI dependency forbidden by ADR 0007: {crate} -> {dependency_name}")
             if dependency_name not in workspace_crates:
                 continue
 

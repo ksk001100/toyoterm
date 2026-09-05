@@ -4,7 +4,7 @@ The CI matrix validates every push on Linux, macOS, and Windows. It builds,
 lints, runs all tests, exercises the native PTY and terminal parser, and creates
 the platform release archive. Linux additionally starts the complete GUI under
 both X11 (Xvfb) and Wayland (headless Weston). The GUI smoke command exits only
-after creating the window, renderer, IME context, and initial shell session.
+after creating the window, GPUI renderer, IME handler, and initial shell session, and painting a frame.
 
 Before publishing a release candidate, run the following interactive checks on
 physical machines. Record the OS version, display scale, keyboard layout, and
@@ -21,7 +21,7 @@ result in the release issue.
   the same release again, then run the packaged uninstaller. Confirm no installed
   files remain and the user configuration is preserved.
 
-Run the list once in a Wayland session and once with `WINIT_UNIX_BACKEND=x11` in
+Run the list once in a Wayland session and once with `env -u WAYLAND_DISPLAY` in
 an X11 session. CI covers startup for both display protocols on every push.
 
 ## macOS
@@ -52,8 +52,8 @@ an X11 session. CI covers startup for both display protocols on every push.
 - Bind `CTRL+[` / `CTRL+]` to subtract/add `0.1` from `config.window.opacity`.
   Start at `0.9`, press `CTRL+]` once, then `CTRL+[` once; the background must
   become opaque and then transparent again. Repeat starting at `1.0` and via
-  Ruby Console updates and config reloads. Windows should retain its transparent
-  window and surface alpha mode throughout, without recreating the renderer.
+  Ruby Console updates and config reloads. GPUI should retain its transparent
+  window throughout, without replacing the root view.
   Repeatedly press beyond both limits, then reverse direction. Confirm the
   background opacity changes on the first reverse press and rendering continues
   across `1.0`, including after a resize.
@@ -65,3 +65,15 @@ Windows PTY code is confined to `crates/toyoterm-pty/src/windows.rs`; the Unix b
 behind `cfg(unix)` in `crates/toyoterm-pty/src/lib.rs`. The rest of the application uses `Pty`,
 `PtySession`, `PtyCommand`, and `PtySize`, preventing ConPTY details from leaking
 into mux, terminal, renderer, or scripting code.
+
+## GPUI migration checks
+
+- Confirm `physical(...)`, raw `PHYSICAL:` bindings and `always_on_top = true`
+  produce a visible configuration error and preserve the last valid config.
+- Confirm decoration, resizability and minimum-size changes apply on restart;
+  title, opacity, fonts and color changes apply immediately after reload.
+- Test logical non-US key bindings, dead keys, surrogate pairs in IME preedit,
+  Enter/Tab/navigation, modifier shortcuts, search input and visual selection.
+- Compare wide CJK, combining marks and Nerd Font symbols at fixed cell origins.
+- Exercise copy/paste, IPC split/send-text, workspace/tab switching, status bars,
+  config-error dismissal, child exit and window close with running shells.

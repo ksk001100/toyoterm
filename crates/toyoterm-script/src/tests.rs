@@ -233,7 +233,7 @@ fn loads_the_configuration_dsl() {
                   config.window.opacity = 0.92
                   config.window.title = "my terminal"
                   config.window.width = 1200
-                  config.window.always_on_top = true
+                  config.window.always_on_top = false
                   config.ui.padding_x = 12
                   config.ui.line_height = 1.4
                   config.ui.tab_bar = false
@@ -259,7 +259,7 @@ fn loads_the_configuration_dsl() {
     assert_eq!(config.window.opacity, 0.92);
     assert_eq!(config.window.title, "my terminal");
     assert_eq!(config.window.width, 1200.0);
-    assert!(config.window.always_on_top);
+    assert!(!config.window.always_on_top);
     assert_eq!(config.ui.padding_x, 12.0);
     assert_eq!(config.ui.line_height, 1.4);
     assert!(!config.ui.tab_bar);
@@ -1525,7 +1525,7 @@ fn compiles_static_key_dsl_to_native_actions() {
                     primary("p").close_pane
                     primary_shift("o").reload_config
                     ctrl_shift("r").reload_config
-                    physical("KeyH", "CTRL").activate_pane(:left)
+                    ctrl("h").activate_pane(:left)
                     key("v").toggle_visual_selection
                     key("ESCAPE").end_visual_selection
                     key("h").move_visual_selection(:left)
@@ -1547,7 +1547,7 @@ fn compiles_static_key_dsl_to_native_actions() {
         Some(NativeAction::ActivatePane(SplitDirection::Down))
     );
     assert_eq!(
-        manager.native_action("CTRL+PHYSICAL:KEYH"),
+        manager.native_action("CTRL+H"),
         Some(NativeAction::ActivatePane(SplitDirection::Left))
     );
     assert_eq!(
@@ -2139,4 +2139,19 @@ fn zoomed_pane_border_supports_reload_and_atomic_runtime_updates() {
             .is_err()
     );
     assert_eq!(manager.config().colors.zoomed_pane_border, "#abcdef");
+}
+
+#[test]
+fn gpui_rejects_unsupported_settings_and_rolls_back() {
+    let mut manager = ConfigManager::new().unwrap();
+    let original = manager.config().clone();
+    for source in [
+        "Toyoterm.configure { |c| c.window.always_on_top = true }",
+        "Toyoterm.configure { |c| c.keys { physical('KeyH', 'CTRL').new_tab } }",
+        "Toyoterm.configure { |c| c.keys { key('CTRL+PHYSICAL:KEYH').new_tab } }",
+    ] {
+        let error = manager.reload(source).unwrap_err();
+        assert!(error.to_string().contains("GPUI"), "{error}");
+        assert_eq!(manager.config(), &original);
+    }
 }

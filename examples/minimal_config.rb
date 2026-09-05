@@ -1,3 +1,5 @@
+# GPUI uses logical key bindings; physical bindings and always_on_top = true are unsupported.
+# Window dimensions, decorations and resizability take effect on the next launch.
 Toyoterm.configure do |config|
   config.font do |font|
     font.family = "monospace"

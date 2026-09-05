@@ -1,7 +1,0 @@
-background_rgba=(0.007222,0.025635,0.107930,0.500000)
-glyph_origin=(14.0,26.0)
-cursor_origin=(41.0,62.0)
-clip=(10,20,320,180)
-selection_rects=[PaneRect { x: 32, y: 26, width: 27, height: 18 }, PaneRect { x: 14, y: 44, width: 18, height: 18 }]
-resize_minimized=Suspend
-resize_restored=Configure { width: 640, height: 360 }

@@ -9,7 +9,7 @@ main thread         --ScriptRequest--------------> toyoterm-script
 toyoterm-script     --ScriptCompletion-----------> main thread
 ```
 
-The main thread owns the winit event loop, terminal backends, mux, renderer, and
+The main thread owns the GPUI application and root entity, terminal backends, mux, renderer, and
 PTY session handles. Each PTY reader owns only its blocking reader. The named
 `toyoterm-script` thread constructs, calls, reloads, and drops the single mruby
 VM. `MrubyRuntime` remains `!Send + !Sync`, so the C API cannot cross the owner
@@ -20,6 +20,12 @@ snapshot. Script completions carry only inspected values and `NativeCommand`s.
 The main thread serializes requests, applies returned commands, reconciles PTY
 runtimes, then submits the next request. This preserves event and re-entrant
 command ordering without allowing Ruby to mutate native state directly.
+
+PTY, IPC and script completions enter a FIFO async channel. A GPUI foreground
+task consumes at most 128 events per batch, updates native state, and requests
+a coalesced render. Status deadlines are checked at 25 ms intervals without
+requesting frames when idle. The window snapshot and queued native operations
+use main-thread-only `Rc`/`Cell` ownership. No GPUI entity crosses worker threads.
 
 Ruby evaluation is asynchronous from the GUI's point of view. A slow or stuck
 callback delays later script requests, but it does not prevent PTY output from
