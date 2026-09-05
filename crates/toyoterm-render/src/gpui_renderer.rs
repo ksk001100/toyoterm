@@ -128,8 +128,8 @@ impl GpuiRenderer {
         }
     }
     pub fn update_panes(&mut self, panes: &[PaneRenderData<'_>], layout: TextLayout, scale: f32) {
-        Arc::make_mut(&mut self.panes).clear();
-        Arc::make_mut(&mut self.text).clear();
+        let mut pane_quads = reusable_scene(&mut self.panes);
+        let mut text = reusable_scene(&mut self.text);
         self.cursor = None;
         for pane in panes {
             let rect = pane.rect;
@@ -141,14 +141,14 @@ impl GpuiRenderer {
                 self.style.foreground,
                 &self.style.ansi,
             ) {
-                Arc::make_mut(&mut self.panes).push(Quad {
+                pane_quads.push(Quad {
                     rect,
                     color,
                     alpha: 1.0,
                 });
             }
             for (rect, active) in search_highlight_rects(pane.snapshot, rect, layout) {
-                Arc::make_mut(&mut self.panes).push(Quad {
+                pane_quads.push(Quad {
                     rect,
                     color: if active {
                         self.style.search_match_active
@@ -159,7 +159,7 @@ impl GpuiRenderer {
                 });
             }
             for rect in selection_highlight_rects(pane.snapshot, rect, layout) {
-                Arc::make_mut(&mut self.panes).push(Quad {
+                pane_quads.push(Quad {
                     rect,
                     color: self.style.selection,
                     alpha: 1.0,
@@ -179,7 +179,7 @@ impl GpuiRenderer {
                             (cx, cy + layout.line_height - 2.0, layout.cell_width, 2.0)
                         }
                     };
-                    Arc::make_mut(&mut self.panes).push(Quad {
+                    pane_quads.push(Quad {
                         rect: PaneRect::new(
                             left.max(0.) as u32,
                             top.max(0.) as u32,
@@ -243,7 +243,6 @@ impl GpuiRenderer {
                         fixed: cell.width == 1 && cell.text.len() == 1 && cell.text.is_ascii(),
                         cells: u16::from(cell.width.max(1)),
                     };
-                    let text = Arc::make_mut(&mut self.text);
                     if item.fixed
                         && let Some(previous) = text.last_mut()
                         && previous.text.is_ascii()
@@ -278,7 +277,7 @@ impl GpuiRenderer {
                         .round()
                         .max(0.) as u32,
                 ) {
-                    Arc::make_mut(&mut self.panes).push(Quad {
+                    pane_quads.push(Quad {
                         rect,
                         color: if pane.zoomed {
                             self.style.zoomed_pane_border
@@ -293,9 +292,11 @@ impl GpuiRenderer {
                 let mut item = label(badge, rect, layout, self.style.foreground);
                 item.x = -2.0;
                 item.y = rect.y as f32 + layout.vertical_padding;
-                Arc::make_mut(&mut self.text).push(item);
+                text.push(item);
             }
         }
+        self.panes = Arc::new(pane_quads);
+        self.text = Arc::new(text);
     }
     pub fn update_tabs(&mut self, tabs: &[TabRenderData<'_>], layout: TextLayout) {
         self.tabs.clear();
@@ -611,6 +612,17 @@ fn gpui_bounds(rect: PaneRect, origin: Point<Pixels>, scale: f32) -> Bounds<Pixe
     )
 }
 
+fn reusable_scene<T>(scene: &mut Arc<Vec<T>>) -> Vec<T> {
+    let capacity = scene.len();
+    if let Some(scene) = Arc::get_mut(scene) {
+        let mut reused = std::mem::take(scene);
+        reused.clear();
+        reused
+    } else {
+        Vec::with_capacity(capacity)
+    }
+}
+
 fn resolved_family(family: &str) -> String {
     if family.eq_ignore_ascii_case("monospace") {
         if cfg!(target_os = "windows") {
@@ -626,6 +638,7 @@ fn resolved_family(family: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
     use toyoterm_terminal::{AlacrittyTerminalBackend, TerminalBackend};
     fn layout() -> TextLayout {
         TextLayout {
@@ -773,5 +786,30 @@ mod tests {
             logical,
             Bounds::new(point(px(10.), px(20.)), size(px(100.), px(50.)))
         );
+    }
+    #[test]
+    fn rebuilding_a_retained_scene_does_not_clone_the_previous_frame() {
+        #[derive(Debug)]
+        struct CloneCounter(Arc<AtomicUsize>);
+        impl Clone for CloneCounter {
+            fn clone(&self) -> Self {
+                self.0.fetch_add(1, Ordering::Relaxed);
+                Self(self.0.clone())
+            }
+        }
+
+        let clones = Arc::new(AtomicUsize::new(0));
+        let mut scene = Arc::new(vec![
+            CloneCounter(clones.clone()),
+            CloneCounter(clones.clone()),
+        ]);
+        let retained_frame = scene.clone();
+
+        let next_frame = reusable_scene(&mut scene);
+
+        assert_eq!(clones.load(Ordering::Relaxed), 0);
+        assert!(next_frame.is_empty());
+        assert!(next_frame.capacity() >= retained_frame.len());
+        assert_eq!(retained_frame.len(), 2);
     }
 }

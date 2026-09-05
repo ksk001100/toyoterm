@@ -52,6 +52,7 @@ struct TerminalView {
     focus: FocusHandle,
     failure: Rc<RefCell<Option<String>>>,
     marked_selection: Range<usize>,
+    timer_deadline: Option<Instant>,
 }
 impl TerminalView {
     fn new(
@@ -110,37 +111,7 @@ impl TerminalView {
                                 break;
                             }
                         }
-                        this.app.about_to_wait(&this.control);
                         this.finish(window, cx);
-                    })
-                    .is_err()
-                {
-                    break;
-                }
-                cx.background_executor()
-                    .timer(Duration::from_millis(1))
-                    .await;
-            }
-        })
-        .detach();
-        // Only status timers are polled; PTY and script events wake the foreground task directly.
-        cx.spawn_in(window, async move |this, cx| {
-            loop {
-                cx.background_executor()
-                    .timer(Duration::from_millis(25))
-                    .await;
-                if this
-                    .update_in(cx, |this, window, cx| {
-                        if this.control.exiting.get()
-                            || this
-                                .control
-                                .deadline
-                                .get()
-                                .is_none_or(|deadline| Instant::now() >= deadline)
-                        {
-                            this.app.about_to_wait(&this.control);
-                            this.finish(window, cx);
-                        }
                     })
                     .is_err()
                 {
@@ -155,6 +126,7 @@ impl TerminalView {
             focus,
             failure,
             marked_selection: 0..0,
+            timer_deadline: None,
         };
         this.finish(window, cx);
         this
@@ -179,6 +151,25 @@ impl TerminalView {
             self.app.shutdown();
             cx.quit();
             return;
+        }
+        self.app.about_to_wait(&self.control);
+        let deadline = self.control.deadline.get();
+        if deadline != self.timer_deadline {
+            self.timer_deadline = deadline;
+            if let Some(deadline) = deadline {
+                cx.spawn_in(window, async move |this, cx| {
+                    cx.background_executor()
+                        .timer(deadline.saturating_duration_since(Instant::now()))
+                        .await;
+                    let _ = this.update_in(cx, move |this, window, cx| {
+                        if this.timer_deadline == Some(deadline) {
+                            this.timer_deadline = None;
+                            this.finish(window, cx);
+                        }
+                    });
+                })
+                .detach();
+            }
         }
         let Some(state) = self.app.window.clone() else {
             return;
