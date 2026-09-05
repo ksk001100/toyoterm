@@ -326,6 +326,17 @@ struct PaneRuntime {
 }
 
 impl PaneRuntime {
+    fn start_mouse_selection(&mut self, column: u16, row: u16, kind: SelectionKind) {
+        self.terminal.clear_selection();
+        self.terminal.start_selection(column, row, kind);
+        self.invalidate_snapshot();
+    }
+
+    fn update_mouse_selection(&mut self, column: u16, row: u16) {
+        self.terminal.update_selection(column, row);
+        self.invalidate_snapshot();
+    }
+
     fn invalidate_snapshot(&mut self) {
         self.snapshot_dirty = true;
     }
@@ -527,8 +538,10 @@ impl ToyotermApplication {
                 self.mouse_position = position;
                 if self.selecting {
                     let (column, row) = self.mouse_cell(window.scale_factor());
-                    if let Some(terminal) = self.active_terminal_mut() {
-                        terminal.update_selection(column, row);
+                    if let Some(pane) = self.mux.current_pane()
+                        && let Some(runtime) = self.pane_runtimes.get_mut(&pane)
+                    {
+                        runtime.update_mouse_selection(column, row);
                     }
                     self.sync_active_renderer(window.scale_factor());
                     window.request_redraw();
@@ -1063,6 +1076,47 @@ mod tests {
         runtime.terminal.advance(b"x");
         runtime.invalidate_snapshot();
         assert!(runtime.render_snapshot().1);
+    }
+
+    #[test]
+    fn mouse_selection_refreshes_cached_snapshots_without_pty_output() {
+        let mut runtime = PaneRuntime {
+            terminal: AlacrittyTerminalBackend::new(20, 2),
+            snapshot_cache: None,
+            snapshot_dirty: true,
+            pty_session: None,
+            process_id: None,
+            title: "test".into(),
+            cwd: None,
+            command_running: false,
+            last_exit_status: None,
+            exited: false,
+        };
+        runtime.terminal.advance(b"hello world");
+        let (original, _) = runtime.render_snapshot();
+        assert!(original.selection.is_empty());
+
+        runtime.start_mouse_selection(1, 0, SelectionKind::Simple);
+        let (started, changed) = runtime.render_snapshot();
+        assert!(changed);
+        assert_eq!(*started, runtime.terminal.snapshot());
+        assert_eq!(started.selection[0].start_column, 1);
+        assert_eq!(started.selection[0].end_column, 1);
+
+        runtime.update_mouse_selection(4, 0);
+        let (dragged, changed) = runtime.render_snapshot();
+        assert!(changed);
+        assert_eq!(*dragged, runtime.terminal.snapshot());
+        assert_eq!(dragged.selection[0].end_column, 4);
+        assert_eq!(started.selection[0].end_column, 1);
+
+        runtime.start_mouse_selection(7, 0, SelectionKind::Word);
+        let (restarted, changed) = runtime.render_snapshot();
+        assert!(changed);
+        assert_eq!(*restarted, runtime.terminal.snapshot());
+        assert_eq!(restarted.selection[0].start_column, 6);
+        assert_eq!(restarted.selection[0].end_column, 10);
+        assert!(!runtime.render_snapshot().1);
     }
 
     #[test]

@@ -596,20 +596,16 @@ impl ToyotermApplication {
                     3 => SelectionKind::Line,
                     _ => SelectionKind::Simple,
                 };
-                if let Some(terminal) = self.active_terminal_mut() {
-                    terminal.clear_selection();
-                    terminal.start_selection(column, row, kind);
+                if let Some(runtime) = self.pane_runtimes.get_mut(&pane) {
+                    runtime.start_mouse_selection(column, row, kind);
                 }
                 self.selecting = true;
             }
             ElementState::Released if self.selecting => {
-                if let Some(terminal) = self.active_terminal_mut() {
-                    terminal.update_selection(column, row);
-                }
                 if let Some(pane) = self.mux.current_pane()
                     && let Some(runtime) = self.pane_runtimes.get_mut(&pane)
                 {
-                    runtime.invalidate_snapshot();
+                    runtime.update_mouse_selection(column, row);
                 }
                 self.selecting = false;
                 if self.script_snapshot.config.behavior.copy_on_select
