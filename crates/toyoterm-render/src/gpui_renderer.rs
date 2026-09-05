@@ -40,6 +40,7 @@ struct Label {
     layout: TextLayout,
     runs: Vec<LabelRun>,
     fixed: bool,
+    wide: bool,
     cells: u16,
 }
 /// Retained terminal scene. GPUI owns the native window, GPU and glyph caches.
@@ -277,9 +278,9 @@ impl GpuiRenderer {
                             color = color.map(|c| (f32::from(c) * 0.66) as u8);
                         }
                         let item = cell_label(cell, row, rect, layout, color);
-                        if item.fixed
-                            && let Some(previous) = text.last_mut()
-                            && previous.text.is_ascii()
+                        if let Some(previous) = text.last_mut()
+                            && ((item.fixed && previous.text.is_ascii())
+                                || (item.wide && previous.wide))
                             && previous.y == item.y
                             && previous.clip == item.clip
                             && (previous.x + previous.layout.cell_width * f32::from(previous.cells)
@@ -293,6 +294,7 @@ impl GpuiRenderer {
                             // width on a multi-glyph line can distort glyphs.
                             previous.text.push_str(&item.text);
                             previous.fixed = false;
+                            previous.wide = previous.wide && item.wide;
                             previous.cells = previous.cells.saturating_add(item.cells);
                             let item_run = &item.runs[0];
                             if let Some(previous_run) = previous.runs.last_mut()
@@ -555,6 +557,7 @@ impl GpuiRenderer {
         scale.to_bits().hash(&mut hasher);
         label.runs.hash(&mut hasher);
         label.fixed.hash(&mut hasher);
+        label.wide.hash(&mut hasher);
         label.cells.hash(&mut hasher);
         let cache_key = hasher.finish();
         let line = if let Some(line) = self.shape_cache.borrow().get(&cache_key) {
@@ -632,6 +635,7 @@ fn label(text: &str, rect: PaneRect, layout: TextLayout, color: [u8; 3]) -> Labe
             },
         }],
         fixed: false,
+        wide: false,
         cells: 1,
     }
 }
@@ -661,6 +665,7 @@ fn cell_label(
         clip: rect,
         layout,
         fixed: cell.width == 1 && cell.text.len() == 1 && cell.text.is_ascii(),
+        wide: cell.width > 1,
         cells: u16::from(cell.width.max(1)),
     }
 }
@@ -770,6 +775,22 @@ mod tests {
             renderer.cursor,
             Some((63., 24., PaneRect::new(10, 20, 200, 100)))
         );
+    }
+    #[test]
+    fn adjacent_wide_cells_share_one_shaped_line() {
+        let mut terminal = AlacrittyTerminalBackend::new(20, 3);
+        terminal.advance("日本語".as_bytes());
+        let mut renderer = GpuiRenderer::new(RenderStyle::default());
+        update(&mut renderer, &terminal);
+
+        let labels = renderer
+            .text
+            .iter()
+            .filter(|label| !label.text.trim().is_empty())
+            .collect::<Vec<_>>();
+        assert_eq!(labels.len(), 1);
+        assert_eq!(labels[0].text, "日本語");
+        assert_eq!(labels[0].cells, 6);
     }
     #[test]
     fn ansi_attributes_and_selection_survive_scene_construction() {
