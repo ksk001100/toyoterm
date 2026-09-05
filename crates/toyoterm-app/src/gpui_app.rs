@@ -380,7 +380,7 @@ impl Render for TerminalView {
                         if let Some(renderer) = renderer {
                             renderer.paint(bounds.origin, bounds, window, cx);
                             if smoke {
-                                cx.quit();
+                                cx.defer(|cx| cx.quit());
                             }
                         }
                     },
