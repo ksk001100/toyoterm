@@ -53,6 +53,7 @@ struct TerminalView {
     failure: Rc<RefCell<Option<String>>>,
     marked_selection: Range<usize>,
     timer_deadline: Option<Instant>,
+    redraw_scheduled: bool,
 }
 impl TerminalView {
     fn new(
@@ -131,6 +132,7 @@ impl TerminalView {
             failure,
             marked_selection: 0..0,
             timer_deadline: None,
+            redraw_scheduled: false,
         };
         this.finish(window, cx);
         this
@@ -210,8 +212,17 @@ impl TerminalView {
         }
         state.maximized.set(window.is_maximized());
         state.fullscreen.set(window.is_fullscreen());
-        if state.redraw.replace(false) {
+        if state.redraw.get() && !self.redraw_scheduled {
+            state.redraw.set(false);
+            self.redraw_scheduled = true;
             cx.notify();
+            let entity = cx.entity();
+            window.on_next_frame(move |window, cx| {
+                entity.update(cx, |this, cx| {
+                    this.redraw_scheduled = false;
+                    this.finish(window, cx);
+                });
+            });
         }
     }
     fn key(
