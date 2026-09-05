@@ -50,6 +50,7 @@ pub struct TextLayout {
 pub struct PaneRenderData<'a> {
     pub pane: PaneId,
     pub snapshot: &'a TerminalSnapshot,
+    pub content_changed: bool,
     pub cursor: CursorState,
     pub cursor_uses_grid: bool,
     pub rect: PaneRect,

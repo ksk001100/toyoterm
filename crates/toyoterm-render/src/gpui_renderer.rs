@@ -10,6 +10,7 @@ use std::{
     rc::Rc,
     sync::Arc,
 };
+use toyoterm_terminal::TerminalCell;
 
 #[derive(Clone)]
 struct Quad {
@@ -47,6 +48,9 @@ pub struct GpuiRenderer {
     style: RenderStyle,
     panes: Arc<Vec<Quad>>,
     text: Arc<Vec<Label>>,
+    pane_overlays: Vec<Quad>,
+    pane_text_overlays: Vec<Label>,
+    pane_scene_layout: Option<(Vec<(PaneId, PaneRect)>, TextLayout)>,
     tabs: Vec<Quad>,
     tab_text: Vec<Label>,
     workspaces: Vec<Quad>,
@@ -70,6 +74,9 @@ impl GpuiRenderer {
             style,
             panes: Arc::new(vec![]),
             text: Arc::new(vec![]),
+            pane_overlays: vec![],
+            pane_text_overlays: vec![],
+            pane_scene_layout: None,
             tabs: vec![],
             tab_text: vec![],
             workspaces: vec![],
@@ -87,6 +94,7 @@ impl GpuiRenderer {
     }
     pub fn set_style(&mut self, style: RenderStyle) {
         self.style = style;
+        self.pane_scene_layout = None;
         self.shape_cache.borrow_mut().clear();
     }
     pub fn terminal_cell_width(&self, font_size: f32, window: &Window) -> f32 {
@@ -138,42 +146,55 @@ impl GpuiRenderer {
         }
     }
     pub fn update_panes(&mut self, panes: &[PaneRenderData<'_>], layout: TextLayout, scale: f32) {
-        let mut pane_quads = reusable_scene(&mut self.panes);
-        let mut text = reusable_scene(&mut self.text);
+        let scene_layout = (
+            panes
+                .iter()
+                .map(|pane| (pane.pane, pane.rect))
+                .collect::<Vec<_>>(),
+            layout,
+        );
+        let rebuild_content = panes.iter().any(|pane| pane.content_changed)
+            || self.pane_scene_layout.as_ref() != Some(&scene_layout);
+        let mut pane_quads = rebuild_content.then(|| reusable_scene(&mut self.panes));
+        let mut text = rebuild_content.then(|| reusable_scene(&mut self.text));
+        self.pane_overlays.clear();
+        self.pane_text_overlays.clear();
         self.cursor = None;
         for pane in panes {
             let rect = pane.rect;
-            for (rect, color) in terminal_backgrounds(
-                pane.snapshot,
-                rect,
-                layout,
-                self.style.background,
-                self.style.foreground,
-                &self.style.ansi,
-            ) {
-                pane_quads.push(Quad {
+            if let Some(pane_quads) = pane_quads.as_mut() {
+                for (rect, color) in terminal_backgrounds(
+                    pane.snapshot,
                     rect,
-                    color,
-                    alpha: 1.0,
-                });
-            }
-            for (rect, active) in search_highlight_rects(pane.snapshot, rect, layout) {
-                pane_quads.push(Quad {
-                    rect,
-                    color: if active {
-                        self.style.search_match_active
-                    } else {
-                        self.style.search_match
-                    },
-                    alpha: 1.0,
-                });
-            }
-            for rect in selection_highlight_rects(pane.snapshot, rect, layout) {
-                pane_quads.push(Quad {
-                    rect,
-                    color: self.style.selection,
-                    alpha: 1.0,
-                });
+                    layout,
+                    self.style.background,
+                    self.style.foreground,
+                    &self.style.ansi,
+                ) {
+                    pane_quads.push(Quad {
+                        rect,
+                        color,
+                        alpha: 1.0,
+                    });
+                }
+                for (rect, active) in search_highlight_rects(pane.snapshot, rect, layout) {
+                    pane_quads.push(Quad {
+                        rect,
+                        color: if active {
+                            self.style.search_match_active
+                        } else {
+                            self.style.search_match
+                        },
+                        alpha: 1.0,
+                    });
+                }
+                for rect in selection_highlight_rects(pane.snapshot, rect, layout) {
+                    pane_quads.push(Quad {
+                        rect,
+                        color: self.style.selection,
+                        alpha: 1.0,
+                    });
+                }
             }
             let x = rect.x as f32 + layout.horizontal_padding;
             let y = rect.y as f32 + layout.vertical_padding;
@@ -189,7 +210,7 @@ impl GpuiRenderer {
                             (cx, cy + layout.line_height - 2.0, layout.cell_width, 2.0)
                         }
                     };
-                    pane_quads.push(Quad {
+                    self.pane_overlays.push(Quad {
                         rect: PaneRect::new(
                             left.max(0.) as u32,
                             top.max(0.) as u32,
@@ -199,94 +220,91 @@ impl GpuiRenderer {
                         color: self.style.cursor,
                         alpha: 1.0,
                     });
+                    if pane.cursor.shape == CursorShape::Block
+                        && let Some(cell) = pane
+                            .snapshot
+                            .cells
+                            .get(usize::from(pane.cursor.row))
+                            .and_then(|cells| {
+                                cells.iter().find(|cell| {
+                                    pane.cursor.column >= cell.column
+                                        && pane.cursor.column
+                                            < cell
+                                                .column
+                                                .saturating_add(u16::from(cell.width.max(1)))
+                                })
+                            })
+                        && !cell.attributes.hidden
+                        && !cell.text.is_empty()
+                    {
+                        self.pane_text_overlays.push(cell_label(
+                            cell,
+                            usize::from(pane.cursor.row),
+                            rect,
+                            layout,
+                            self.style.background,
+                        ));
+                    }
                 }
             }
-            for (row, cells) in pane
-                .snapshot
-                .cells
-                .iter()
-                .take(usize::from(pane.snapshot.rows))
-                .enumerate()
-            {
-                for cell in cells {
-                    let attrs = cell.attributes;
-                    if attrs.hidden || cell.text.is_empty() {
-                        continue;
-                    }
-                    let mut color = if attrs.inverse {
-                        resolve_cell_color(
-                            attrs.background,
-                            self.style.background,
-                            &self.style.ansi,
-                        )
-                    } else {
-                        resolve_cell_color(
-                            attrs.foreground,
-                            self.style.foreground,
-                            &self.style.ansi,
-                        )
-                    };
-                    if attrs.dim {
-                        color = color.map(|c| (f32::from(c) * 0.66) as u8);
-                    }
-                    if pane.active
-                        && pane.cursor.visible
-                        && pane.cursor.shape == CursorShape::Block
-                        && pane.cursor.row as usize == row
-                        && pane.cursor.column >= cell.column
-                        && pane.cursor.column
-                            < cell.column.saturating_add(u16::from(cell.width.max(1)))
-                    {
-                        color = self.style.background;
-                    }
-                    let text_value = cell.text.replace(['\r', '\n'], "");
-                    let style = LabelStyle {
-                        color,
-                        bold: attrs.bold,
-                        italic: attrs.italic,
-                        underline: attrs.underline || cell.hyperlink.is_some(),
-                        strike: attrs.strikethrough,
-                    };
-                    let item = Label {
-                        runs: vec![LabelRun {
-                            len: text_value.len(),
-                            style,
-                        }],
-                        text: text_value,
-                        x: x + f32::from(cell.column) * layout.cell_width,
-                        y: y + row as f32 * layout.line_height,
-                        clip: rect,
-                        layout,
-                        fixed: cell.width == 1 && cell.text.len() == 1 && cell.text.is_ascii(),
-                        cells: u16::from(cell.width.max(1)),
-                    };
-                    if item.fixed
-                        && let Some(previous) = text.last_mut()
-                        && previous.text.is_ascii()
-                        && previous.y == item.y
-                        && previous.clip == item.clip
-                        && (previous.x + previous.layout.cell_width * f32::from(previous.cells)
-                            - item.x)
-                            .abs()
-                            < 0.01
-                        && previous.cells < 256
-                    {
-                        // Keep the run anchored at its first grid cell. The
-                        // natural advance is used for the run; forcing a
-                        // width on a multi-glyph line can distort glyphs.
-                        previous.text.push_str(&item.text);
-                        previous.fixed = false;
-                        previous.cells = previous.cells.saturating_add(item.cells);
-                        let item_run = &item.runs[0];
-                        if let Some(previous_run) = previous.runs.last_mut()
-                            && previous_run.style == item_run.style
-                        {
-                            previous_run.len += item_run.len;
-                        } else {
-                            previous.runs.push(item_run.clone());
+            if let Some(text) = text.as_mut() {
+                for (row, cells) in pane
+                    .snapshot
+                    .cells
+                    .iter()
+                    .take(usize::from(pane.snapshot.rows))
+                    .enumerate()
+                {
+                    for cell in cells {
+                        let attrs = cell.attributes;
+                        if attrs.hidden || cell.text.is_empty() {
+                            continue;
                         }
-                    } else {
-                        text.push(item);
+                        let mut color = if attrs.inverse {
+                            resolve_cell_color(
+                                attrs.background,
+                                self.style.background,
+                                &self.style.ansi,
+                            )
+                        } else {
+                            resolve_cell_color(
+                                attrs.foreground,
+                                self.style.foreground,
+                                &self.style.ansi,
+                            )
+                        };
+                        if attrs.dim {
+                            color = color.map(|c| (f32::from(c) * 0.66) as u8);
+                        }
+                        let item = cell_label(cell, row, rect, layout, color);
+                        if item.fixed
+                            && let Some(previous) = text.last_mut()
+                            && previous.text.is_ascii()
+                            && previous.y == item.y
+                            && previous.clip == item.clip
+                            && (previous.x + previous.layout.cell_width * f32::from(previous.cells)
+                                - item.x)
+                                .abs()
+                                < 0.01
+                            && previous.cells < 256
+                        {
+                            // Keep the run anchored at its first grid cell. The
+                            // natural advance is used for the run; forcing a
+                            // width on a multi-glyph line can distort glyphs.
+                            previous.text.push_str(&item.text);
+                            previous.fixed = false;
+                            previous.cells = previous.cells.saturating_add(item.cells);
+                            let item_run = &item.runs[0];
+                            if let Some(previous_run) = previous.runs.last_mut()
+                                && previous_run.style == item_run.style
+                            {
+                                previous_run.len += item_run.len;
+                            } else {
+                                previous.runs.push(item_run.clone());
+                            }
+                        } else {
+                            text.push(item);
+                        }
                     }
                 }
             }
@@ -297,7 +315,7 @@ impl GpuiRenderer {
                         .round()
                         .max(0.) as u32,
                 ) {
-                    pane_quads.push(Quad {
+                    self.pane_overlays.push(Quad {
                         rect,
                         color: if pane.zoomed {
                             self.style.zoomed_pane_border
@@ -312,11 +330,14 @@ impl GpuiRenderer {
                 let mut item = label(badge, rect, layout, self.style.foreground);
                 item.x = -2.0;
                 item.y = rect.y as f32 + layout.vertical_padding;
-                text.push(item);
+                self.pane_text_overlays.push(item);
             }
         }
-        self.panes = Arc::new(pane_quads);
-        self.text = Arc::new(text);
+        if let (Some(pane_quads), Some(text)) = (pane_quads, text) {
+            self.panes = Arc::new(pane_quads);
+            self.text = Arc::new(text);
+            self.pane_scene_layout = Some(scene_layout);
+        }
     }
     pub fn update_tabs(&mut self, tabs: &[TabRenderData<'_>], layout: TextLayout) {
         self.tabs.clear();
@@ -477,7 +498,10 @@ impl GpuiRenderer {
                 ));
             }
         }
-        self.paint_group(&self.panes, &self.text, origin, scale, window, cx);
+        self.paint_group(&self.panes, &[], origin, scale, window, cx);
+        self.paint_group(&self.pane_overlays, &[], origin, scale, window, cx);
+        self.paint_group(&[], &self.text, origin, scale, window, cx);
+        self.paint_group(&[], &self.pane_text_overlays, origin, scale, window, cx);
         self.paint_group(&self.tabs, &self.tab_text, origin, scale, window, cx);
         self.paint_group(
             &self.workspaces,
@@ -611,6 +635,36 @@ fn label(text: &str, rect: PaneRect, layout: TextLayout, color: [u8; 3]) -> Labe
         cells: 1,
     }
 }
+
+fn cell_label(
+    cell: &TerminalCell,
+    row: usize,
+    rect: PaneRect,
+    layout: TextLayout,
+    color: [u8; 3],
+) -> Label {
+    let text = cell.text.replace(['\r', '\n'], "");
+    Label {
+        runs: vec![LabelRun {
+            len: text.len(),
+            style: LabelStyle {
+                color,
+                bold: cell.attributes.bold,
+                italic: cell.attributes.italic,
+                underline: cell.attributes.underline || cell.hyperlink.is_some(),
+                strike: cell.attributes.strikethrough,
+            },
+        }],
+        text,
+        x: rect.x as f32 + layout.horizontal_padding + f32::from(cell.column) * layout.cell_width,
+        y: rect.y as f32 + layout.vertical_padding + row as f32 * layout.line_height,
+        clip: rect,
+        layout,
+        fixed: cell.width == 1 && cell.text.len() == 1 && cell.text.is_ascii(),
+        cells: u16::from(cell.width.max(1)),
+    }
+}
+
 fn color_value(color: [u8; 3], alpha: f32) -> gpui::Hsla {
     gpui::Rgba {
         r: f32::from(color[0]) / 255.,
@@ -668,10 +722,18 @@ mod tests {
         }
     }
     fn update(renderer: &mut GpuiRenderer, terminal: &AlacrittyTerminalBackend) {
+        update_with_content_changed(renderer, terminal, true);
+    }
+    fn update_with_content_changed(
+        renderer: &mut GpuiRenderer,
+        terminal: &AlacrittyTerminalBackend,
+        content_changed: bool,
+    ) {
         renderer.update_panes(
             &[PaneRenderData {
                 pane: PaneId(1),
                 snapshot: &terminal.snapshot(),
+                content_changed,
                 cursor: terminal.cursor(),
                 cursor_uses_grid: true,
                 rect: PaneRect::new(10, 20, 200, 100),
@@ -741,7 +803,11 @@ mod tests {
         renderer.update_panes(&[], layout(), 1.0);
         renderer.update_preedit(None, layout());
         assert!(
-            renderer.panes.is_empty() && renderer.text.is_empty() && renderer.preedit.is_none()
+            renderer.panes.is_empty()
+                && renderer.text.is_empty()
+                && renderer.pane_overlays.is_empty()
+                && renderer.pane_text_overlays.is_empty()
+                && renderer.preedit.is_none()
         );
         assert!(renderer.cursor.is_none());
         renderer.update_search(
@@ -836,5 +902,19 @@ mod tests {
         assert!(next_frame.is_empty());
         assert!(next_frame.capacity() >= retained_frame.len());
         assert_eq!(retained_frame.len(), 2);
+    }
+    #[test]
+    fn cursor_only_updates_reuse_the_terminal_scene() {
+        let mut terminal = AlacrittyTerminalBackend::new(20, 3);
+        terminal.advance(b"unchanged terminal content");
+        let mut renderer = GpuiRenderer::new(RenderStyle::default());
+        update(&mut renderer, &terminal);
+        let retained_text = renderer.text.clone();
+        let retained_quads = renderer.panes.clone();
+
+        update_with_content_changed(&mut renderer, &terminal, false);
+
+        assert!(Arc::ptr_eq(&renderer.text, &retained_text));
+        assert!(Arc::ptr_eq(&renderer.panes, &retained_quads));
     }
 }

@@ -315,6 +315,7 @@ enum EvalWaiter {
 struct PaneRuntime {
     terminal: AlacrittyTerminalBackend,
     snapshot_cache: Option<Rc<TerminalSnapshot>>,
+    snapshot_dirty: bool,
     pty_session: Option<Box<dyn PtySession>>,
     process_id: Option<u32>,
     title: String,
@@ -326,7 +327,29 @@ struct PaneRuntime {
 
 impl PaneRuntime {
     fn invalidate_snapshot(&mut self) {
-        self.snapshot_cache = None;
+        self.snapshot_dirty = true;
+    }
+
+    fn render_snapshot(&mut self) -> (Rc<TerminalSnapshot>, bool) {
+        if !self.snapshot_dirty
+            && let Some(snapshot) = &self.snapshot_cache
+        {
+            return (snapshot.clone(), false);
+        }
+
+        let snapshot = self.terminal.snapshot();
+        let changed = self.snapshot_cache.as_deref() != Some(&snapshot);
+        if changed {
+            self.snapshot_cache = Some(Rc::new(snapshot));
+        }
+        self.snapshot_dirty = false;
+        (
+            self.snapshot_cache
+                .as_ref()
+                .expect("dirty snapshot was initialized")
+                .clone(),
+            changed,
+        )
     }
 }
 
@@ -1002,6 +1025,7 @@ mod tests {
             let _runtime = PaneRuntime {
                 terminal: AlacrittyTerminalBackend::new(80, 24),
                 snapshot_cache: None,
+                snapshot_dirty: true,
                 pty_session: Some(Box::new(KillTrackingSession(kills.clone()))),
                 process_id: Some(42),
                 title: "test".into(),
@@ -1013,6 +1037,31 @@ mod tests {
         }
 
         assert_eq!(kills.load(std::sync::atomic::Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn pane_snapshot_distinguishes_cursor_motion_from_content_changes() {
+        let mut runtime = PaneRuntime {
+            terminal: AlacrittyTerminalBackend::new(80, 24),
+            snapshot_cache: None,
+            snapshot_dirty: true,
+            pty_session: None,
+            process_id: None,
+            title: "test".into(),
+            cwd: None,
+            command_running: false,
+            last_exit_status: None,
+            exited: false,
+        };
+        assert!(runtime.render_snapshot().1);
+
+        runtime.terminal.advance(b"\x1b[2;2H");
+        runtime.invalidate_snapshot();
+        assert!(!runtime.render_snapshot().1);
+
+        runtime.terminal.advance(b"x");
+        runtime.invalidate_snapshot();
+        assert!(runtime.render_snapshot().1);
     }
 
     #[test]

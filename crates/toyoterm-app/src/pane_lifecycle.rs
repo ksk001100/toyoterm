@@ -73,6 +73,7 @@ impl ToyotermApplication {
                 self.script_snapshot.config.scrollback_lines,
             ),
             snapshot_cache: None,
+            snapshot_dirty: true,
             pty_session: Some(session),
             process_id,
             title: format!("Pane {}", pane.0),
