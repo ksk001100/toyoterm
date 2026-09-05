@@ -1,13 +1,16 @@
 #!/bin/sh
 set -eu
 
+: "${DISPLAY:?Wayland smoke test requires an X11 display for nested Weston}"
+
 runtime_directory=$(mktemp -d)
 chmod 700 "$runtime_directory"
 export XDG_RUNTIME_DIR=$runtime_directory
 export WAYLAND_DISPLAY=wayland-toyoterm-ci
-unset DISPLAY
 
-weston --backend=headless-backend.so --socket="$WAYLAND_DISPLAY" --idle-time=0 \
+# GPUI requires a wl_seat, which Weston's headless backend does not advertise.
+# Nest Weston under Xvfb so the Wayland client still has a virtual input seat.
+weston --backend=x11-backend.so --socket="$WAYLAND_DISPLAY" --idle-time=0 \
   >"$runtime_directory/weston.log" 2>&1 &
 weston_pid=$!
 cleanup() {

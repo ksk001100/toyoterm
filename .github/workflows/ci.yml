@@ -77,4 +77,4 @@ jobs:
         run: env -u WAYLAND_DISPLAY xvfb-run -a cargo run --locked -- gui-smoke-test
       - name: Wayland GUI smoke test
         if: matrix.display == 'wayland'
-        run: sh scripts/wayland-smoke-test.sh
+        run: xvfb-run -a sh scripts/wayland-smoke-test.sh

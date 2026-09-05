@@ -3,8 +3,9 @@
 The CI matrix validates every push on Linux, macOS, and Windows. It builds,
 lints, runs all tests, exercises the native PTY and terminal parser, and creates
 the platform release archive. Linux additionally starts the complete GUI under
-both X11 (Xvfb) and Wayland (headless Weston). The GUI smoke command exits only
-after creating the window, GPUI renderer, IME handler, and initial shell session, and painting a frame.
+both X11 (Xvfb) and Wayland (Weston nested under Xvfb). The GUI smoke command
+exits only after creating the window, GPUI renderer, IME handler, and initial
+shell session, and painting a frame.
 
 Before publishing a release candidate, run the following interactive checks on
 physical machines. Record the OS version, display scale, keyboard layout, and
