@@ -6,7 +6,9 @@ use alacritty_terminal::grid::{Dimensions, Scroll};
 use alacritty_terminal::index::{Column, Line, Point, Side};
 use alacritty_terminal::selection::{Selection, SelectionType};
 use alacritty_terminal::term::cell::{Cell, Flags};
-use alacritty_terminal::term::{Config, MIN_COLUMNS, MIN_SCREEN_LINES, Osc52, TermMode};
+use alacritty_terminal::term::{
+    Config, MIN_COLUMNS, MIN_SCREEN_LINES, Osc52, TermDamage, TermMode,
+};
 use alacritty_terminal::vte::ansi::{
     Color, CursorShape as AlacrittyCursorShape, NamedColor, Processor,
 };
@@ -242,6 +244,160 @@ impl AlacrittyTerminalBackend {
         let row = i32::from(row).min(grid.screen_lines().saturating_sub(1) as i32);
         Point::new(Line(row - grid.display_offset() as i32), Column(column))
     }
+
+    pub fn snapshot_and_reset_damage(&mut self) -> TerminalSnapshot {
+        let snapshot = self.snapshot();
+        self.terminal.reset_damage();
+        snapshot
+    }
+
+    pub fn update_snapshot(&mut self, snapshot: &mut TerminalSnapshot) -> bool {
+        let damaged_rows = match self.terminal.damage() {
+            TermDamage::Full => None,
+            TermDamage::Partial(lines) => Some(lines.map(|line| line.line).collect::<Vec<_>>()),
+        };
+        let (columns, rows) = self.dimensions();
+        if damaged_rows.is_none() || snapshot.columns != columns || snapshot.rows != rows {
+            let replacement = self.snapshot();
+            let changed = *snapshot != replacement;
+            *snapshot = replacement;
+            self.terminal.reset_damage();
+            return changed;
+        }
+
+        let display_offset = self.terminal.grid().display_offset() as i32;
+        let mut changed = false;
+        for row in damaged_rows.expect("partial damage has row bounds") {
+            if row >= usize::from(rows) {
+                continue;
+            }
+            let (line, mut cells) = self.snapshot_row(row as u16, columns, display_offset);
+            detect_plain_urls(
+                std::slice::from_ref(&line),
+                std::slice::from_mut(&mut cells),
+            );
+            if snapshot.lines[row] != line {
+                snapshot.lines[row] = line;
+                changed = true;
+            }
+            if snapshot.cells[row] != cells {
+                snapshot.cells[row] = cells;
+                changed = true;
+            }
+        }
+
+        let selection = self.snapshot_selection(columns, rows, display_offset);
+        if snapshot.selection != selection {
+            snapshot.selection = selection;
+            changed = true;
+        }
+        let search_matches = self.snapshot_search_matches(rows, display_offset);
+        if snapshot.search_matches != search_matches {
+            snapshot.search_matches = search_matches;
+            changed = true;
+        }
+        self.terminal.reset_damage();
+        changed
+    }
+
+    fn snapshot_row(
+        &self,
+        viewport_row: u16,
+        columns: u16,
+        display_offset: i32,
+    ) -> (String, Vec<TerminalCell>) {
+        let grid = self.terminal.grid();
+        let line = Line(i32::from(viewport_row) - display_offset);
+        let rendered_columns = (0..columns)
+            .rev()
+            .find(|column| {
+                let cell = &grid[line][Column(usize::from(*column))];
+                !cell
+                    .flags
+                    .intersects(Flags::WIDE_CHAR_SPACER | Flags::LEADING_WIDE_CHAR_SPACER)
+                    && !is_default_blank_grid_cell(cell)
+            })
+            .map_or(0, |column| column + 1);
+        let mut text = String::with_capacity(rendered_columns as usize);
+        let mut cells = Vec::with_capacity(rendered_columns as usize);
+        for column in 0..rendered_columns {
+            let cell = &grid[line][Column(column as usize)];
+            if cell
+                .flags
+                .intersects(Flags::WIDE_CHAR_SPACER | Flags::LEADING_WIDE_CHAR_SPACER)
+            {
+                continue;
+            }
+            text.push(cell.c);
+            let mut cell_text = cell.c.to_string();
+            if let Some(zerowidth) = cell.zerowidth() {
+                text.extend(zerowidth);
+                cell_text.extend(zerowidth);
+            }
+            cells.push(TerminalCell {
+                column,
+                text: cell_text,
+                width: if cell.flags.contains(Flags::WIDE_CHAR) {
+                    2
+                } else {
+                    1
+                },
+                attributes: cell_attributes(cell.fg, cell.bg, cell.flags),
+                hyperlink: cell.hyperlink().map(|link| link.uri().to_owned()),
+            });
+        }
+        (text.trim_end().to_owned(), cells)
+    }
+
+    fn snapshot_selection(
+        &self,
+        columns: u16,
+        rows: u16,
+        display_offset: i32,
+    ) -> Vec<SelectionSpan> {
+        let selection_range = self
+            .terminal
+            .selection
+            .as_ref()
+            .and_then(|selection| selection.to_range(&self.terminal));
+        let Some(range) = selection_range else {
+            return Vec::new();
+        };
+        let mut selection = Vec::new();
+        for viewport_row in 0..rows {
+            let line = Line(i32::from(viewport_row) - display_offset);
+            let mut selected_columns = (0..columns)
+                .filter(|column| range.contains(Point::new(line, Column(usize::from(*column)))));
+            if let Some(start_column) = selected_columns.next() {
+                let end_column = selected_columns.next_back().unwrap_or(start_column);
+                selection.push(SelectionSpan {
+                    row: viewport_row,
+                    start_column,
+                    end_column,
+                });
+            }
+        }
+        selection
+    }
+
+    fn snapshot_search_matches(&self, rows: u16, display_offset: i32) -> Vec<SearchMatchSpan> {
+        self.search
+            .matches
+            .iter()
+            .enumerate()
+            .filter_map(|(index, found)| {
+                let viewport_row = found.line.0 + display_offset;
+                (0..i32::from(rows))
+                    .contains(&viewport_row)
+                    .then_some(SearchMatchSpan {
+                        row: viewport_row as u16,
+                        start_column: found.start_column,
+                        end_column: found.end_column,
+                        active: self.search.current == Some(index),
+                    })
+            })
+            .collect()
+    }
 }
 
 fn terminal_config(scrollback_lines: usize) -> Config {
@@ -283,100 +439,26 @@ impl TerminalBackend for AlacrittyTerminalBackend {
     }
 
     fn snapshot(&self) -> TerminalSnapshot {
-        let grid = self.terminal.grid();
         let (columns, rows) = self.dimensions();
-        let display_offset = grid.display_offset() as i32;
+        let display_offset = self.terminal.grid().display_offset() as i32;
         let mut lines = Vec::with_capacity(rows as usize);
         let mut rows_of_cells = Vec::with_capacity(rows as usize);
-        let selection_range = self
-            .terminal
-            .selection
-            .as_ref()
-            .and_then(|selection| selection.to_range(&self.terminal));
-        let mut selection = Vec::new();
 
         for viewport_row in 0..rows {
-            let line = Line(viewport_row as i32 - display_offset);
-            // The grid is normally dominated by untouched cells. Find the
-            // useful suffix once so we do not allocate a String and a
-            // TerminalCell for every trailing blank only to pop them below.
-            let rendered_columns = (0..columns)
-                .rev()
-                .find(|column| {
-                    let cell = &grid[line][Column(usize::from(*column))];
-                    !cell
-                        .flags
-                        .intersects(Flags::WIDE_CHAR_SPACER | Flags::LEADING_WIDE_CHAR_SPACER)
-                        && !is_default_blank_grid_cell(cell)
-                })
-                .map_or(0, |column| column + 1);
-            let mut text = String::with_capacity(rendered_columns as usize);
-            let mut cells = Vec::with_capacity(rendered_columns as usize);
-            for column in 0..rendered_columns {
-                let cell = &grid[line][Column(column as usize)];
-                if cell
-                    .flags
-                    .intersects(Flags::WIDE_CHAR_SPACER | Flags::LEADING_WIDE_CHAR_SPACER)
-                {
-                    continue;
-                }
-                text.push(cell.c);
-                let mut cell_text = cell.c.to_string();
-                if let Some(zerowidth) = cell.zerowidth() {
-                    text.extend(zerowidth);
-                    cell_text.extend(zerowidth);
-                }
-                cells.push(TerminalCell {
-                    column,
-                    text: cell_text,
-                    width: if cell.flags.contains(Flags::WIDE_CHAR) {
-                        2
-                    } else {
-                        1
-                    },
-                    attributes: cell_attributes(cell.fg, cell.bg, cell.flags),
-                    hyperlink: cell.hyperlink().map(|link| link.uri().to_owned()),
-                });
-            }
-            lines.push(text.trim_end().to_owned());
+            let (text, cells) = self.snapshot_row(viewport_row, columns, display_offset);
+            lines.push(text);
             rows_of_cells.push(cells);
-            if let Some(range) = selection_range {
-                let mut selected_columns = (0..columns).filter(|column| {
-                    range.contains(Point::new(line, Column(usize::from(*column))))
-                });
-                if let Some(start_column) = selected_columns.next() {
-                    let end_column = selected_columns.next_back().unwrap_or(start_column);
-                    selection.push(SelectionSpan {
-                        row: viewport_row,
-                        start_column,
-                        end_column,
-                    });
-                }
-            }
         }
 
         detect_plain_urls(&lines, &mut rows_of_cells);
-
-        let mut search_matches = Vec::new();
-        for (index, found) in self.search.matches.iter().enumerate() {
-            let viewport_row = found.line.0 + display_offset;
-            if (0..i32::from(rows)).contains(&viewport_row) {
-                search_matches.push(SearchMatchSpan {
-                    row: viewport_row as u16,
-                    start_column: found.start_column,
-                    end_column: found.end_column,
-                    active: self.search.current == Some(index),
-                });
-            }
-        }
 
         TerminalSnapshot {
             columns,
             rows,
             lines,
             cells: rows_of_cells,
-            selection,
-            search_matches,
+            selection: self.snapshot_selection(columns, rows, display_offset),
+            search_matches: self.snapshot_search_matches(rows, display_offset),
         }
     }
 
@@ -800,6 +882,35 @@ mod tests {
         assert_eq!(
             plain.hyperlink.as_deref(),
             Some("http://localhost:3000/test")
+        );
+    }
+
+    #[test]
+    fn incrementally_updates_only_damaged_snapshot_content() {
+        let mut backend = AlacrittyTerminalBackend::new(20, 3);
+        backend.advance(b"first\r\nsecond");
+        let mut snapshot = backend.snapshot_and_reset_damage();
+
+        backend.advance(b"\x1b[1;1Hchanged");
+        assert!(backend.update_snapshot(&mut snapshot));
+        assert_eq!(snapshot, backend.snapshot());
+
+        backend.advance(b"\x1b[3;3H");
+        assert!(!backend.update_snapshot(&mut snapshot));
+        assert_eq!(snapshot, backend.snapshot());
+    }
+
+    #[test]
+    fn incremental_snapshot_refreshes_plain_urls_on_damaged_rows() {
+        let mut backend = AlacrittyTerminalBackend::new(40, 2);
+        backend.advance(b"not a link");
+        let mut snapshot = backend.snapshot_and_reset_damage();
+
+        backend.advance(b"\r\x1b[2Khttps://example.com");
+        assert!(backend.update_snapshot(&mut snapshot));
+        assert_eq!(
+            snapshot.cells[0][0].hyperlink.as_deref(),
+            Some("https://example.com")
         );
     }
 

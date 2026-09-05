@@ -337,11 +337,12 @@ impl PaneRuntime {
             return (snapshot.clone(), false);
         }
 
-        let snapshot = self.terminal.snapshot();
-        let changed = self.snapshot_cache.as_deref() != Some(&snapshot);
-        if changed {
-            self.snapshot_cache = Some(Rc::new(snapshot));
-        }
+        let changed = if let Some(snapshot) = self.snapshot_cache.as_mut() {
+            self.terminal.update_snapshot(Rc::make_mut(snapshot))
+        } else {
+            self.snapshot_cache = Some(Rc::new(self.terminal.snapshot_and_reset_damage()));
+            true
+        };
         self.snapshot_dirty = false;
         (
             self.snapshot_cache
