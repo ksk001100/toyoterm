@@ -119,7 +119,7 @@ be replaced with assignments such as `config.colors.ansi[1] = "#ff5f56"`.
 
 | Setting | Default | Validation or behavior |
 | --- | --- | --- |
-| `opacity` | `1.0` | Finite number from 0 through 1. |
+| `opacity` | `1.0` | Finite number from 0 (transparent) through 1 (opaque), applied to the default terminal background. Text, UI chrome, and explicit terminal background colors retain their own opacity. |
 | `width` | `960` | Positive finite initial logical width. |
 | `height` | `600` | Positive finite initial logical height. |
 | `min_width` | `320` | Positive finite minimum logical width. |

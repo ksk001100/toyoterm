@@ -763,6 +763,33 @@ mod tests {
     }
 
     #[test]
+    fn metal_opacity_transitions_update_alpha_mode_and_clear_color() {
+        let supported = [
+            CompositeAlphaMode::Opaque,
+            CompositeAlphaMode::PostMultiplied,
+        ];
+        let mut style = RenderStyle::default();
+        for opacity in [1.0, 0.8, 0.0, 0.5, 1.0] {
+            style.opacity = opacity;
+            let mode = preferred_alpha_mode(&supported, opacity);
+            assert_eq!(
+                mode,
+                if opacity < 1.0 {
+                    CompositeAlphaMode::PostMultiplied
+                } else {
+                    CompositeAlphaMode::Opaque
+                }
+            );
+            let clear = clear_color(&style, mode);
+            assert_eq!(clear.a, f64::from(opacity));
+            assert_eq!(
+                clear.r,
+                f64::from(srgb_channel_to_linear(style.background[0]))
+            );
+        }
+    }
+
+    #[test]
     fn converts_configured_srgb_colors_to_linear_gpu_values() {
         let converted = rgba([0x1a, 0x1b, 0x26], 1.0);
         assert!((converted[0] - 0.0103298).abs() < 0.000001);

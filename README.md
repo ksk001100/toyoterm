@@ -205,6 +205,10 @@ grayscale ramp. Assigning the entire `colors.ansi` array requires exactly 16
 
 `config.window` exposes `opacity`, `width`, `height`, `min_width`, `min_height`, `decorations`, `resizable`, `always_on_top`, and `title`. Initial dimensions apply at startup; mutable window attributes also apply on reload.
 
+`window.opacity` controls the default terminal background (`0.0` transparent,
+`1.0` opaque). Text, UI chrome, and explicit terminal background colors retain
+their own opacity.
+
 A zoomed pane uses `config.colors.zoomed_pane_border` (default `#ffbe3a`) for its border on all four sides; an ordinary active pane uses `pane_border`. Both use `ui.active_pane_border_width`; zero hides the indicator.
 
 UI colors include `tab_bar`, `tab_active`, `tab_inactive`, `workspace_bar`, `status_bar`, `pane_border`, `zoomed_pane_border`, `search_match`, and `search_match_active`. Set `config.ui.tab_bar = false` or `workspace_bar = false` to hide a strip. Padding and border widths accept zero.

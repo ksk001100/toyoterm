@@ -764,7 +764,10 @@ impl ToyotermApplication {
             });
             let transparency_mode_changed =
                 (previous_opacity < 1.0) != (config.window.opacity < 1.0);
-            if transparency_mode_changed {
+            // Metal supports changing alpha mode on the existing surface.
+            // Creating another surface adds a CAMetalLayer while the view
+            // retains the old one, whose opaque contents block transparency.
+            if transparency_mode_changed && !cfg!(target_os = "macos") {
                 self.replace_renderer(render_style.clone())?;
             } else if let Some(renderer) = self.renderer.as_mut() {
                 renderer.set_style(render_style);

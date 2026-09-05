@@ -30,6 +30,11 @@ an X11 session. CI covers startup for both display protocols on every push.
 - Verify Command shortcuts, Option-modified input, dead keys, and Japanese IME.
 - Copy and paste to TextEdit; check rendering at 1x and Retina scale.
 - Repeat pane split, resize, reload, and shutdown checks.
+- Start with `config.window.opacity = 0.8` and confirm the desktop is visible
+  through the default terminal background. Reload through `1.0`, `0.8`, `0.0`,
+  `0.5`, and `1.0`; repeat using `Toyoterm.configure` in the Ruby Console.
+  Confirm each change takes effect without stale terminal contents behind the
+  transparent background, including after resizing and at Retina scale.
 - With JetBrainsMono Nerd Font, open a synthetic TypeScript/React buffer in
   LazyVim with vtsls diagnostics, split it vertically, and scroll both windows.
   Check that diagnostic icons, split separators, and the right-hand text remain

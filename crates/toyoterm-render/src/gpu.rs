@@ -332,6 +332,9 @@ impl GpuRenderer {
             height,
             format = ?configuration.format,
             alpha_modes = ?supported_alpha_modes,
+            alpha_mode = ?configuration.alpha_mode,
+            opacity = style.opacity,
+            backend = ?adapter.get_info().backend,
             "GPU renderer initialized"
         );
 
@@ -413,6 +416,12 @@ impl GpuRenderer {
         if alpha_mode_changed && !self.suspended {
             self.surface.configure(&self.device, &self.configuration);
         }
+        tracing::debug!(
+            target: "toyoterm::render",
+            alpha_mode = ?self.configuration.alpha_mode,
+            opacity = self.style.opacity,
+            "renderer style updated"
+        );
     }
 
     /// Returns the logical advance of one cell for the active terminal font.
