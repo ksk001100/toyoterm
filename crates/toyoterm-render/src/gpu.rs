@@ -84,6 +84,7 @@ pub struct GpuRenderer {
     text_atlas: TextAtlas,
     text_renderer: TextRenderer,
     ui_pipeline: RenderPipeline,
+    background: Option<background::GpuBackground>,
     panes: HashMap<PaneId, PaneBuffers>,
     tabs: HashMap<TabId, TabBuffer>,
     workspaces: HashMap<WorkspaceId, TabBuffer>,
@@ -372,6 +373,9 @@ impl GpuRenderer {
             dismiss: config_error_buffer(),
             layout: None,
         };
+        let background = style.background_image.as_ref().map(|image| {
+            background::GpuBackground::new(&device, &queue, configuration.format, image)
+        });
         let initial_alpha_mode = configuration.alpha_mode;
         Ok(Self {
             instance,
@@ -390,6 +394,7 @@ impl GpuRenderer {
             text_atlas,
             text_renderer,
             ui_pipeline,
+            background,
             panes: HashMap::new(),
             tabs: HashMap::new(),
             workspaces: HashMap::new(),
@@ -406,6 +411,25 @@ impl GpuRenderer {
     }
 
     pub fn set_style(&mut self, style: RenderStyle) {
+        let same_image = match (&self.style.background_image, &style.background_image) {
+            (Some(old), Some(new)) => {
+                old.width == new.width
+                    && old.height == new.height
+                    && Arc::ptr_eq(&old.rgba, &new.rgba)
+            }
+            (None, None) => true,
+            _ => false,
+        };
+        if !same_image {
+            self.background = style.background_image.as_ref().map(|image| {
+                background::GpuBackground::new(
+                    &self.device,
+                    &self.queue,
+                    self.configuration.format,
+                    image,
+                )
+            });
+        }
         if self.style.font_fallback != style.font_fallback {
             self.reset_font_system(&style.font_fallback);
         }
@@ -526,6 +550,7 @@ impl GpuRenderer {
                 background,
                 foreground,
                 &ansi,
+                self.style.background_image.is_some(),
             );
             buffers.selection_highlights =
                 selection_highlight_rects(pane.snapshot, pane.rect, layout);
@@ -1153,6 +1178,9 @@ impl GpuRenderer {
             .create_command_encoder(&CommandEncoderDescriptor {
                 label: Some("toyoterm frame encoder"),
             });
+        if let Some(background) = &self.background {
+            background.update(&self.queue, &self.style, &self.configuration);
+        }
         let ui_vertices = self.ui_vertices();
         let ui_buffer = (!ui_vertices.is_empty()).then(|| {
             self.device
@@ -1177,6 +1205,9 @@ impl GpuRenderer {
                 color_attachments: &color_attachments,
                 ..Default::default()
             });
+            if let Some(background) = &self.background {
+                background.draw(&mut pass);
+            }
             if let Some(ui_buffer) = ui_buffer.as_ref() {
                 pass.set_pipeline(&self.ui_pipeline);
                 pass.set_vertex_buffer(0, ui_buffer.slice(..));

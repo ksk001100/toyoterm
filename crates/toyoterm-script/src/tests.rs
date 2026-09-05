@@ -1964,6 +1964,85 @@ fn opacity_bindings_saturate_and_reverse_at_both_limits() {
 }
 
 #[test]
+fn background_images_reload_cache_clear_and_rollback() {
+    let directory = temporary_test_directory("background-image");
+    let image_path = directory.join("wallpaper.png");
+    std::fs::write(
+        &image_path,
+        include_bytes!("../tests/fixtures/background.png"),
+    )
+    .unwrap();
+    let config_path = directory.join("config.rb");
+    std::fs::write(&config_path, "Toyoterm.configure { |c| c.window.background_image = 'wallpaper.png'; c.window.background_image_opacity = 0.4 }").unwrap();
+    let mut manager = ConfigManager::load_startup(Some(&config_path)).unwrap();
+    let original = manager.config().window.background_image.clone().unwrap();
+    assert_eq!(original.path, image_path);
+    assert_eq!((original.width, original.height), (2, 1));
+    assert_eq!(&*original.rgba, &[255, 0, 0, 255, 0, 0, 255, 128]);
+    assert_eq!(manager.config().window.background_image_opacity, 0.4);
+
+    // Unrelated live settings reuse pixels, even if the file has been removed.
+    std::fs::remove_file(&image_path).unwrap();
+    let eval = |manager: &mut ConfigManager, source: &str| {
+        run_script_request(
+            manager,
+            &script_test_context(),
+            &ScriptInvocation::Eval(source.into()),
+        )
+    };
+    eval(
+        &mut manager,
+        "Toyoterm.configure { |c| c.window.opacity = 0.7 }",
+    )
+    .unwrap();
+    assert!(std::sync::Arc::ptr_eq(
+        &original,
+        manager.config().window.background_image.as_ref().unwrap()
+    ));
+    // File reload always rereads the image and preserves the active config on failure.
+    assert!(manager.reload_file().is_err());
+    assert_eq!(manager.config().window.opacity, 0.7);
+    for source in [
+        "Toyoterm.configure { |c| c.window.background_image = 'missing.png' }",
+        "Toyoterm.configure { |c| c.window.background_image = '' }",
+        "Toyoterm.configure { |c| c.window.background_image = 123 }",
+        "Toyoterm.configure { |c| c.window.background_image = \"a\\0b\" }",
+        "Toyoterm.configure { |c| c.window.background_image_opacity = -0.1 }",
+        "Toyoterm.configure { |c| c.window.background_image_opacity = 1.1 }",
+        "Toyoterm.configure { |c| c.window.background_image_opacity = 0.0/0.0 }",
+        "Toyoterm.configure { |c| c.window.background_image_opacity = '0.5' }",
+        "Toyoterm.configure { |c| c.window.background_image = nil; c.window.background_image_opacity = 0; c.font.size = 0 }",
+    ] {
+        assert!(eval(&mut manager, source).is_err(), "{source}");
+        assert_eq!(
+            manager.config().window.background_image.as_ref().unwrap(),
+            &original
+        );
+        assert_eq!(manager.config().window.background_image_opacity, 0.4);
+        assert_eq!(
+            manager
+                .eval("Toyoterm.__config.window.background_image")
+                .unwrap(),
+            "wallpaper.png"
+        );
+    }
+    eval(
+        &mut manager,
+        "Toyoterm.configure { |c| c.window.background_image = nil }",
+    )
+    .unwrap();
+    assert!(manager.config().window.background_image.is_none());
+    std::fs::write(
+        &image_path,
+        include_bytes!("../tests/fixtures/background.png"),
+    )
+    .unwrap();
+    manager.reload_file().unwrap();
+    assert!(manager.config().window.background_image.is_some());
+    std::fs::remove_dir_all(directory).unwrap();
+}
+
+#[test]
 fn opacity_validation_preserves_transactions() {
     let mut manager = ConfigManager::new().unwrap();
     for (value, expected) in [("2", 1.0), ("-1", 0.0), ("0.8", 0.8)] {

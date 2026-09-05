@@ -136,9 +136,27 @@ module Toyoterm
   end
 
   class WindowConfig
-    attr_reader :opacity
+    attr_reader :opacity, :background_image, :background_image_opacity
     attr_accessor :width, :height, :min_width, :min_height,
                   :decorations, :resizable, :always_on_top, :title
+
+    def background_image=(value)
+      unless value.nil? || value.is_a?(String)
+        raise TypeError, "background image must be a path String or nil"
+      end
+      if value && (value.empty? || value.include?("\0"))
+        raise ArgumentError, "background image path must be non-empty and contain no NUL"
+      end
+      @background_image = value && value.dup.freeze
+    end
+
+    def background_image_opacity=(value)
+      raise TypeError, "background image opacity must be a number" unless value.is_a?(Numeric)
+      unless value.to_f.finite? && value >= 0 && value <= 1
+        raise ArgumentError, "background image opacity must be between 0 and 1"
+      end
+      @background_image_opacity = value
+    end
 
     def opacity=(value)
       raise TypeError, "window opacity must be a number" unless value.is_a?(Numeric)
@@ -148,6 +166,8 @@ module Toyoterm
 
     def initialize
       @opacity = 1.0
+      @background_image = nil
+      @background_image_opacity = 1.0
       @width = 960
       @height = 600
       @min_width = 320
@@ -538,7 +558,8 @@ module Toyoterm
          @colors.search_match, @colors.search_match_active, @colors.zoomed_pane_border],
         [@window.opacity, @window.width, @window.height, @window.min_width,
          @window.min_height, @window.decorations, @window.resizable,
-         @window.always_on_top, @window.title, @default_shell, @scrollback_lines],
+         @window.always_on_top, @window.title, @default_shell, @scrollback_lines,
+         @window.background_image, @window.background_image_opacity],
         [@ui.padding_x, @ui.padding_y, @ui.line_height, @ui.tab_bar,
          @ui.tab_bar_height, @ui.tab_width, @ui.workspace_bar,
          @ui.workspace_bar_height, @ui.workspace_width, @ui.status_bar_height,
@@ -580,6 +601,8 @@ module Toyoterm
       @window.title = window[8]
       @default_shell = window[9]
       @scrollback_lines = window[10]
+      @window.background_image = window[11]
+      @window.background_image_opacity = window[12]
       @ui.padding_x = ui[0]
       @ui.padding_y = ui[1]
       @ui.line_height = ui[2]

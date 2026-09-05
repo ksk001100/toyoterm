@@ -73,7 +73,11 @@ impl ConfigManager {
     pub(super) fn refresh_config_snapshot(
         &mut self,
     ) -> Result<Option<ScriptSnapshot>, ScriptError> {
-        let config = read_config(&mut self.runtime)?;
+        let config = read_config(
+            &mut self.runtime,
+            self.source_path.as_deref().and_then(Path::parent),
+            Some(&self.config),
+        )?;
         if config == self.config {
             return Ok(None);
         }
@@ -742,7 +746,7 @@ pub(super) fn load_config(
     runtime.eval_with_filename(source, filename)?;
     let plugins = load_plugins(&mut runtime, plugin_paths, source_dir);
 
-    let config = read_config(&mut runtime)?;
+    let config = read_config(&mut runtime, source_dir, None)?;
     let binding_count = runtime
         .eval("Toyoterm.__config.__binding_count")?
         .parse::<usize>()
@@ -797,7 +801,52 @@ pub(super) fn load_config(
     })
 }
 
-fn read_config(runtime: &mut MrubyRuntime) -> Result<ToyotermConfig, ScriptError> {
+fn read_config(
+    runtime: &mut MrubyRuntime,
+    source_dir: Option<&Path>,
+    previous: Option<&ToyotermConfig>,
+) -> Result<ToyotermConfig, ScriptError> {
+    let image_path = runtime.eval("Toyoterm.__config.window.background_image")?;
+    let background_image = if image_path.is_empty() {
+        None
+    } else {
+        let path = if let Some(relative) = image_path.strip_prefix("~/") {
+            home_directory()
+                .ok_or_else(|| {
+                    ScriptError::new("load background image", "home directory unavailable")
+                })?
+                .join(relative)
+        } else {
+            source_dir
+                .unwrap_or_else(|| Path::new("."))
+                .join(&image_path)
+        };
+        if let Some(cached) = previous
+            .and_then(|c| c.window.background_image.as_ref())
+            .filter(|image| image.path == path)
+        {
+            Some(cached.clone())
+        } else {
+            Some(std::sync::Arc::new(
+                toyoterm_config::BackgroundImage::load(&path).map_err(|error| {
+                    ScriptError::new(
+                        "load background image",
+                        format!("{}: {error}", path.display()),
+                    )
+                })?,
+            ))
+        }
+    };
+    let background_image_opacity = parse_f32(
+        "background image opacity",
+        &runtime.eval("Toyoterm.__config.window.background_image_opacity")?,
+    )?;
+    if !(0.0..=1.0).contains(&background_image_opacity) {
+        return Err(ScriptError::new(
+            "validate config",
+            "background image opacity must be between 0 and 1",
+        ));
+    }
     runtime.eval("Toyoterm.__validate_theme!")?;
     let defaults = ToyotermConfig::default();
     let family = runtime.eval("Toyoterm.__config.font.family")?;
@@ -1020,6 +1069,8 @@ fn read_config(runtime: &mut MrubyRuntime) -> Result<ToyotermConfig, ScriptError
             )?,
         },
         window: WindowConfig {
+            background_image,
+            background_image_opacity,
             opacity,
             width: number(runtime, "window.width", "Toyoterm.__config.window.width")?,
             height: number(runtime, "window.height", "Toyoterm.__config.window.height")?,

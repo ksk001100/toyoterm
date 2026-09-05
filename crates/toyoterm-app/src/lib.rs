@@ -251,7 +251,7 @@ fn run_gui_inner(options: GuiOptions, exit_after_startup: bool) -> Result<(), Ap
         error.to_string()
     });
     let config = &startup.snapshot.config;
-    let render_style = RenderStyle::from_hex_with_ui(
+    let mut render_style = RenderStyle::from_hex_with_ui(
         &config.font.family,
         config.font.fallback.clone(),
         config.font.weight,
@@ -283,6 +283,17 @@ fn run_gui_inner(options: GuiOptions, exit_after_startup: bool) -> Result<(), Ap
         );
         AppError(error.to_string())
     })?;
+    render_style.background_image =
+        config
+            .window
+            .background_image
+            .as_ref()
+            .map(|image| toyoterm_render::BackgroundImage {
+                width: image.width,
+                height: image.height,
+                rgba: image.rgba.clone(),
+            });
+    render_style.background_image_opacity = config.window.background_image_opacity;
     let mut app = ToyotermApplication::new(
         event_proxy,
         script_thread,

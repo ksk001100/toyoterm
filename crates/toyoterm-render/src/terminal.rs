@@ -223,6 +223,7 @@ pub(super) fn terminal_backgrounds(
     default_background: [u8; 3],
     default_foreground: [u8; 3],
     ansi: &[[u8; 3]; 16],
+    has_background_image: bool,
 ) -> Vec<(PaneRect, [u8; 3])> {
     let pane_right = pane.x.saturating_add(pane.width);
     let pane_bottom = pane.y.saturating_add(pane.height);
@@ -246,7 +247,9 @@ pub(super) fn terminal_backgrounds(
             } else {
                 resolve_cell_color(cell.attributes.background, default_background, ansi)
             };
-            if color == default_background {
+            let default_cell =
+                !cell.attributes.inverse && cell.attributes.background == CellColor::Default;
+            if default_cell || (!has_background_image && color == default_background) {
                 continue;
             }
             let left = (origin_x + f32::from(cell.column) * layout.cell_width)

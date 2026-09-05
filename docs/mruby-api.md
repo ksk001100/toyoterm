@@ -129,6 +129,40 @@ be replaced with assignments such as `config.colors.ansi[1] = "#ff5f56"`.
 | `always_on_top` | `false` | Boolean. |
 | `title` | `"toyoterm"` | Non-empty string. |
 
+`window.background_image` / `background_image=(path)` reads or sets a PNG/JPEG
+path String, or `nil` (the default) to disable the image. Assignment returns the
+assigned value; the getter returns a frozen copy of the path or `nil`. Non-String
+values raise `TypeError`; empty paths and NUL bytes raise `ArgumentError`.
+Relative paths resolve from the main config file's directory (the process working
+directory when no config file is selected); `~/` expands to the home directory.
+Windows paths can use forward slashes, for example `"C:/Pictures/wallpaper.jpg"`.
+
+`window.background_image_opacity` / `background_image_opacity=(value)` reads or
+sets the image's blend strength over `colors.background`: a finite number from
+0 through 1, default `1.0`. Assignment returns the assigned value. Non-numbers
+raise `TypeError`; non-finite or out-of-range values raise `ArgumentError`.
+
+The image covers the whole window, centered and cropped with its aspect ratio
+preserved, behind text, UI chrome, and explicit terminal cell backgrounds.
+PNG alpha blends with the background color. `window.opacity` applies to the
+combined color/image background; text and UI chrome retain their own opacity.
+Images are limited to 8192 pixels per axis with a 256 MiB decoder allocation
+budget. Unsupported, unreadable, corrupt, or oversized images reject the config
+transaction and preserve the previous settings and image.
+
+Images are decoded on the script thread and shared as immutable pixels with the
+renderer. Reload rereads the file, including changes at the same path. Live
+configuration supports changing or clearing the path and changing blend strength;
+unchanged paths reuse the loaded pixels, so use reload to refresh an edited file.
+Callback failures roll back both image settings together with other changes.
+
+```ruby
+Toyoterm.configure do |config|
+  config.window.background_image = "images/wallpaper.jpg"
+  config.window.background_image_opacity = 0.25
+end
+```
+
 Initial dimensions apply when the window is created. Mutable window properties
 are also applied after a successful reload.
 

@@ -26,6 +26,8 @@ use winit::window::Window;
 use toyoterm_api::{PaneId, TabId, WorkspaceId};
 use toyoterm_terminal::{CellAttributes, CellColor, CursorShape, CursorState, TerminalSnapshot};
 
+mod background;
+pub use background::BackgroundImage;
 mod layout;
 mod terminal;
 mod ui;
@@ -129,6 +131,8 @@ pub struct ConfigErrorRenderData<'a> {
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct RenderStyle {
+    pub background_image: Option<BackgroundImage>,
+    pub background_image_opacity: f32,
     pub font_family: String,
     pub font_fallback: Vec<String>,
     pub font_weight: u16,
@@ -153,6 +157,8 @@ pub struct RenderStyle {
 impl Default for RenderStyle {
     fn default() -> Self {
         Self {
+            background_image: None,
+            background_image_opacity: 1.0,
             font_family: "monospace".into(),
             font_fallback: Vec::new(),
             font_weight: 400,
@@ -736,6 +742,7 @@ mod tests {
             [9, 11, 14],
             [220, 225, 232],
             &ansi,
+            false,
         );
         assert_eq!(
             backgrounds,
@@ -744,6 +751,30 @@ mod tests {
                 (PaneRect::new(23, 23, 9, 18), [0, 0, 255]),
             ]
         );
+    }
+
+    #[test]
+    fn explicit_background_matching_default_still_covers_wallpaper() {
+        let mut terminal = AlacrittyTerminalBackend::new(4, 1);
+        terminal.advance(b"a\x1b[48;2;9;11;14mb\x1b[0mc");
+        let snapshot = terminal.snapshot();
+        let rectangles = terminal_backgrounds(
+            &snapshot,
+            PaneRect::new(0, 0, 100, 40),
+            TextLayout {
+                font_size: 14.0,
+                line_height: 18.0,
+                cell_width: 9.0,
+                horizontal_padding: 0.0,
+                vertical_padding: 0.0,
+            },
+            [9, 11, 14],
+            [220, 225, 232],
+            &default_ansi_palette(),
+            true,
+        );
+        assert_eq!(rectangles.len(), 1);
+        assert_eq!(rectangles[0].1, [9, 11, 14]);
     }
 
     #[test]

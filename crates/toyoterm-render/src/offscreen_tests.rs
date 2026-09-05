@@ -107,6 +107,7 @@ fn render_fixture(
         style.background,
         style.foreground,
         &style.ansi,
+        false,
     ) {
         image.fill_rect(rect, color, 255);
     }

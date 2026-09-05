@@ -710,7 +710,7 @@ impl ToyotermApplication {
         let config = snapshot.config.clone();
         let previous_opacity = self.script_snapshot.config.window.opacity;
         self.leader_deadline = None;
-        let render_style = RenderStyle::from_hex_with_ui(
+        let mut render_style = RenderStyle::from_hex_with_ui(
             &config.font.family,
             config.font.fallback.clone(),
             config.font.weight,
@@ -734,6 +734,17 @@ impl ToyotermApplication {
             config.ui.active_pane_border_width,
         )
         .map_err(|error| error.to_string())?;
+        render_style.background_image =
+            config
+                .window
+                .background_image
+                .as_ref()
+                .map(|image| toyoterm_render::BackgroundImage {
+                    width: image.width,
+                    height: image.height,
+                    rgba: image.rgba.clone(),
+                });
+        render_style.background_image_opacity = config.window.background_image_opacity;
         let font_scale = f64::from(config.font.size) / 14.0;
         self.cell_metrics.width = 9.0 * font_scale;
         self.cell_metrics.height = f64::from(config.font.size * config.ui.line_height);

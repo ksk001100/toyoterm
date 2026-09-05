@@ -203,6 +203,23 @@ xterm 6×6×6カラ―キューブ、232〜255はグレースケールです。`
 
 `config.window`では`opacity`、`width`、`height`、`min_width`、`min_height`、`decorations`、`resizable`、`always_on_top`、`title`を設定できます。初期サイズは起動時に、その他の変更可能な属性はreload時にも反映されます。
 
+`window.background_image`でPNG/JPEGの背景画像を指定できます（`nil`で解除）。
+`window.background_image_opacity`で`colors.background`に重ねる画像の濃さを
+0〜1で調整します（既定値は1）。画像は縦横比を維持し、中央を基準に切り抜いて
+ウィンドウ全体を覆います。相対パスは設定ファイルのディレクトリが基準です。
+`~/`や`C:/Pictures/wallpaper.jpg`などの絶対パスも使えます。PNGのアルファに
+対応し、`window.opacity`は背景色と画像を合成した背景全体に適用されます。
+reloadで画像ファイルを再読み込みし、実行中の設定変更でも画像の変更・解除が
+できます。画像が不正な場合は以前の設定を維持します。各辺8192ピクセルまで、
+デコーダーのメモリ割り当て上限は256 MiBです。
+
+```ruby
+Toyoterm.configure do |config|
+  config.window.background_image = "images/wallpaper.jpg"
+  config.window.background_image_opacity = 0.25
+end
+```
+
 `window.opacity`はターミナルの既定の背景の不透明度を指定します（`0.0`で透明、
 `1.0`で不透明）。文字、UI、端末アプリが明示した背景色はそれぞれの不透明度を維持します。
 範囲外の有限値は`0.0`または`1.0`に補正されます。キー設定で

@@ -205,6 +205,23 @@ grayscale ramp. Assigning the entire `colors.ansi` array requires exactly 16
 
 `config.window` exposes `opacity`, `width`, `height`, `min_width`, `min_height`, `decorations`, `resizable`, `always_on_top`, and `title`. Initial dimensions apply at startup; mutable window attributes also apply on reload.
 
+Set a PNG/JPEG wallpaper with `window.background_image` (`nil` disables it), and
+adjust its blend strength over `colors.background` with
+`window.background_image_opacity` (0–1, default 1). The image fills the window
+with centered cropping and no distortion. Paths are relative to the config file;
+`~/` and absolute paths such as `C:/Pictures/wallpaper.jpg` also work. PNG alpha
+is supported, and `window.opacity` controls the combined background opacity.
+Reload rereads the image; live configuration can replace or clear it. Invalid
+images preserve the previous config. Images may be at most 8192 pixels per axis,
+with a 256 MiB decoder allocation budget.
+
+```ruby
+Toyoterm.configure do |config|
+  config.window.background_image = "images/wallpaper.jpg"
+  config.window.background_image_opacity = 0.25
+end
+```
+
 `window.opacity` controls the default terminal background (`0.0` transparent,
 `1.0` opaque). Text, UI chrome, and explicit terminal background colors retain
 their own opacity.

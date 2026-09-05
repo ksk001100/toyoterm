@@ -2,6 +2,9 @@ use std::ffi::OsString;
 use std::path::PathBuf;
 use std::time::Duration;
 
+mod background;
+pub use background::BackgroundImage;
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct FontConfig {
     pub family: String,
@@ -66,6 +69,8 @@ pub struct StatusBarConfig {
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct WindowConfig {
+    pub background_image: Option<std::sync::Arc<BackgroundImage>>,
+    pub background_image_opacity: f32,
     pub opacity: f32,
     pub width: f32,
     pub height: f32,
@@ -136,6 +141,8 @@ impl Default for ToyotermConfig {
                 active_pane_border_width: 2.0,
             },
             window: WindowConfig {
+                background_image: None,
+                background_image_opacity: 1.0,
                 opacity: 1.0,
                 width: 960.0,
                 height: 600.0,

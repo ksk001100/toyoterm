@@ -26,6 +26,10 @@ Toyoterm.configure do |config|
   config.window do |window|
     # Finite opacity values are clamped to 0.0..1.0, including runtime += / -=.
     window.opacity = 1.0
+    # PNG/JPEG, relative to this config file; nil disables the wallpaper.
+    # window.background_image = "images/wallpaper.jpg"
+    window.background_image = nil
+    window.background_image_opacity = 0.25
     window.width = 960
     window.height = 600
     window.min_width = 320

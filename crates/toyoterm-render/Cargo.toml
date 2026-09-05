@@ -16,3 +16,6 @@ unicode-script.workspace = true
 wgpu.workspace = true
 winit.workspace = true
 tracing.workspace = true
+
+[dev-dependencies]
+pollster.workspace = true
