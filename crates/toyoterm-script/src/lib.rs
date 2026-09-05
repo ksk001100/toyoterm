@@ -249,6 +249,7 @@ unsafe extern "C" {
         title_length: usize,
         panes: *const u64,
         pane_count: usize,
+        zoomed: i32,
         error_output: *mut *mut c_char,
     ) -> i32;
     fn toyoterm_mruby_add_pane(
@@ -266,6 +267,7 @@ unsafe extern "C" {
         last_exit_status_available: i32,
         screen_text: *const c_char,
         screen_text_length: usize,
+        zoomed: i32,
         error_output: *mut *mut c_char,
     ) -> i32;
     fn toyoterm_mruby_emit_event(

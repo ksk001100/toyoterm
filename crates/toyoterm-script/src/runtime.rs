@@ -151,6 +151,7 @@ impl MrubyRuntime {
                     tab.title.len(),
                     panes.as_ptr(),
                     panes.len(),
+                    i32::from(tab.zoomed),
                     &mut error,
                 )
             };
@@ -179,6 +180,7 @@ impl MrubyRuntime {
                     i32::from(pane.last_exit_status.is_some()),
                     pane.screen_text.as_ptr().cast(),
                     pane.screen_text.len(),
+                    i32::from(pane.zoomed),
                     &mut error,
                 )
             };

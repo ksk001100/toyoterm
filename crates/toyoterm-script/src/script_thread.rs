@@ -30,6 +30,7 @@ pub struct RubyTab {
     pub id: TabId,
     pub title: String,
     pub panes: Vec<PaneId>,
+    pub zoomed: bool,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -41,6 +42,7 @@ pub struct RubyPane {
     pub command_running: bool,
     pub last_exit_status: Option<i32>,
     pub screen_text: String,
+    pub zoomed: bool,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]

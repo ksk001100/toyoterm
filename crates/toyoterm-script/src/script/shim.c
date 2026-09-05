@@ -279,17 +279,19 @@ int toyoterm_mruby_add_window(void *state, uint64_t window_id,
 
 int toyoterm_mruby_add_tab(void *state, uint64_t tab_id, const char *title,
                            size_t title_length, const uint64_t *panes,
-                           size_t pane_count, char **error_output) {
+                           size_t pane_count, int zoomed,
+                           char **error_output) {
   mrb_state *mrb = (mrb_state *)state;
   *error_output = NULL;
   mrb->exc = NULL;
-  mrb_value arguments[3] = {
+  mrb_value arguments[4] = {
       mrb_int_value(mrb, (mrb_int)tab_id),
       mrb_str_new(mrb, title, (mrb_int)title_length),
       integer_array(mrb, panes, pane_count),
+      mrb_bool_value(zoomed != 0),
   };
   mrb_funcall_argv(mrb, toyoterm_module(mrb),
-                   mrb_intern_lit(mrb, "__add_tab"), 3, arguments);
+                   mrb_intern_lit(mrb, "__add_tab"), 4, arguments);
   return finish_typed_call(mrb, error_output);
 }
 
@@ -300,11 +302,11 @@ int toyoterm_mruby_add_pane(void *state, uint64_t pane_id, const char *title,
                             int32_t last_exit_status,
                             int last_exit_status_available,
                             const char *screen_text, size_t screen_text_length,
-                            char **error_output) {
+                            int zoomed, char **error_output) {
   mrb_state *mrb = (mrb_state *)state;
   *error_output = NULL;
   mrb->exc = NULL;
-  mrb_value arguments[7] = {
+  mrb_value arguments[8] = {
       mrb_int_value(mrb, (mrb_int)pane_id),
       mrb_str_new(mrb, title, (mrb_int)title_length),
       cwd_available ? mrb_str_new(mrb, cwd, (mrb_int)cwd_length)
@@ -315,9 +317,10 @@ int toyoterm_mruby_add_pane(void *state, uint64_t pane_id, const char *title,
           ? mrb_int_value(mrb, (mrb_int)last_exit_status)
           : mrb_nil_value(),
       mrb_str_new(mrb, screen_text, (mrb_int)screen_text_length),
+      mrb_bool_value(zoomed != 0),
   };
   mrb_funcall_argv(mrb, toyoterm_module(mrb),
-                   mrb_intern_lit(mrb, "__add_pane"), 7, arguments);
+                   mrb_intern_lit(mrb, "__add_pane"), 8, arguments);
   return finish_typed_call(mrb, error_output);
 }
 

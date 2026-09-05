@@ -19,6 +19,7 @@ fn script_test_context() -> ScriptContext {
                 id: TabId(3),
                 title: "Tab 3".into(),
                 panes: vec![PaneId(4)],
+                zoomed: false,
             }],
             panes: vec![RubyPane {
                 id: PaneId(4),
@@ -28,6 +29,7 @@ fn script_test_context() -> ScriptContext {
                 command_running: false,
                 last_exit_status: None,
                 screen_text: "prompt>".into(),
+                zoomed: false,
             }],
         },
         handles: vec![
@@ -817,6 +819,7 @@ fn exposes_the_synced_ruby_object_model() {
                 id: TabId(30),
                 title: "server".into(),
                 panes: vec![PaneId(40)],
+                zoomed: true,
             }],
             panes: vec![RubyPane {
                 id: PaneId(40),
@@ -826,6 +829,7 @@ fn exposes_the_synced_ruby_object_model() {
                 command_running: true,
                 last_exit_status: Some(17),
                 screen_text: "build started\ncompiling toyoterm".into(),
+                zoomed: true,
             }],
         })
         .unwrap();
@@ -852,6 +856,10 @@ fn exposes_the_synced_ruby_object_model() {
         "server"
     );
     assert_eq!(
+        manager.eval("Toyoterm.current_tab.zoomed?").unwrap(),
+        "true"
+    );
+    assert_eq!(
         manager.eval("Toyoterm.current_tab.panes[0].title").unwrap(),
         "shell"
     );
@@ -860,6 +868,10 @@ fn exposes_the_synced_ruby_object_model() {
         "/srv/app"
     );
     assert_eq!(manager.eval("Toyoterm.current_pane.pid").unwrap(), "1234");
+    assert_eq!(
+        manager.eval("Toyoterm.current_pane.zoomed?").unwrap(),
+        "true"
+    );
     assert_eq!(
         manager
             .eval("Toyoterm.current_pane.command_running?")

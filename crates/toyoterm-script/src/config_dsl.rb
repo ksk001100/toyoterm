@@ -807,6 +807,11 @@ module Toyoterm
       Toyoterm.__object_data(:tab, @id)[1].map { |id| Pane.new(id) }
     end
 
+    def zoomed?
+      validate!
+      Toyoterm.__object_data(:tab, @id)[2]
+    end
+
     def close
       validate!
       Toyoterm.__queue_command(:close_tab, @id, nil)
@@ -855,6 +860,11 @@ module Toyoterm
     def screen_text
       validate!
       Toyoterm.__object_data(:pane, @id)[5].dup
+    end
+
+    def zoomed?
+      validate!
+      Toyoterm.__object_data(:pane, @id)[6]
     end
 
     def split(direction, command: nil, cwd: nil, env: nil)
@@ -1451,12 +1461,12 @@ module Toyoterm
     @object_data[:window][id] = [tabs]
   end
 
-  def self.__add_tab(id, title, panes)
-    @object_data[:tab][id] = [title, panes]
+  def self.__add_tab(id, title, panes, zoomed)
+    @object_data[:tab][id] = [title, panes, zoomed]
   end
 
-  def self.__add_pane(id, title, cwd, pid, command_running, last_exit_status, screen_text)
-    @object_data[:pane][id] = [title, cwd, pid, command_running, last_exit_status, screen_text]
+  def self.__add_pane(id, title, cwd, pid, command_running, last_exit_status, screen_text, zoomed)
+    @object_data[:pane][id] = [title, cwd, pid, command_running, last_exit_status, screen_text, zoomed]
   end
 
   def self.__object_data(kind, id)

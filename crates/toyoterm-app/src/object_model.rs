@@ -67,7 +67,9 @@ pub(super) fn ruby_object_model(
                     id: tab_id,
                     title: format!("Tab {tab_number}"),
                     panes: pane_ids.clone(),
+                    zoomed: mux.is_zoomed(tab_id),
                 });
+                let zoomed_pane = mux.zoomed_pane(tab_id);
                 for pane_id in pane_ids {
                     let runtime = pane_runtimes.and_then(|runtimes| runtimes.get(&pane_id));
                     panes.push(RubyPane {
@@ -84,6 +86,7 @@ pub(super) fn ruby_object_model(
                         screen_text: runtime
                             .map(|runtime| runtime.terminal.visible_text())
                             .unwrap_or_default(),
+                        zoomed: zoomed_pane == Some(pane_id),
                     });
                 }
             }
@@ -148,4 +151,65 @@ pub(super) fn dispatch_script_commands(
         }
     }
     Ok(effects)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn snapshots_tab_and_target_pane_zoom_state() {
+        let mut mux = Mux::new();
+        let tab = mux.current_tab().unwrap();
+        let original_pane = mux.current_pane().unwrap();
+        let zoomed_pane = match mux
+            .dispatch(Command::Split {
+                pane: original_pane,
+                direction: SplitDirection::Right,
+            })
+            .unwrap()
+        {
+            CommandResult::Pane(pane) => pane,
+            result => panic!("expected a pane, got {result:?}"),
+        };
+
+        let unzoomed = ruby_object_model(&mux, None).unwrap();
+        assert!(
+            !unzoomed
+                .tabs
+                .iter()
+                .find(|item| item.id == tab)
+                .unwrap()
+                .zoomed
+        );
+        assert!(unzoomed.panes.iter().all(|pane| !pane.zoomed));
+
+        mux.dispatch(Command::ToggleZoom).unwrap();
+        let zoomed = ruby_object_model(&mux, None).unwrap();
+
+        assert!(
+            zoomed
+                .tabs
+                .iter()
+                .find(|item| item.id == tab)
+                .unwrap()
+                .zoomed
+        );
+        assert!(
+            zoomed
+                .panes
+                .iter()
+                .find(|pane| pane.id == zoomed_pane)
+                .unwrap()
+                .zoomed
+        );
+        assert!(
+            !zoomed
+                .panes
+                .iter()
+                .find(|pane| pane.id == original_pane)
+                .unwrap()
+                .zoomed
+        );
+    }
 }

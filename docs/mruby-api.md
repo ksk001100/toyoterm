@@ -357,6 +357,7 @@ end
 | --- | --- |
 | `title` | Current title. |
 | `panes` | Child `Pane` handles. |
+| `zoomed?` | Whether this tab is currently zoomed. |
 | `close` | Queues closing this tab and returns `self`. |
 | `focus` / `activate` | Queues activation and returns `self`. |
 
@@ -370,6 +371,7 @@ end
 | `command_running?` | Whether shell integration reports an active command. |
 | `last_exit_status` | Last reported exit status or `nil`. |
 | `screen_text` | Visible terminal rows joined with newlines. |
+| `zoomed?` | Whether this pane is the tab's current zoom target. |
 | `split(direction, command: nil, cwd: nil, env: nil)` | Queues `:left`, `:right`, `:up`, or `:down`; returns `self`. |
 | `close` | Queues closing the pane and returns `self`. |
 | `focus` | Queues activation and returns `self`. |
@@ -425,6 +427,11 @@ scrollback. Changing the returned String does not affect the terminal or later
 reads. As with other handle reads, a stale Pane raises
 `Toyoterm::InvalidHandleError`. Capturing is proportional to the visible grids
 across all panes, so avoid high-frequency polling when many panes are open.
+
+`Tab#zoomed?` and `Pane#zoomed?` return Boolean values from the callback's
+object-model snapshot. The tab method is true when that tab has a zoom target;
+the pane method is true only for that target pane. A one-pane tab is not
+implicitly zoomed.
 
 ```ruby
 Toyoterm.command :copy_screen do |context|
