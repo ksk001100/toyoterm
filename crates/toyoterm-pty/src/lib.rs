@@ -416,13 +416,29 @@ mod tests {
             .resize(PtySize::new(100, 30))
             .expect("resize ConPTY");
         let mut reader = session.take_reader().expect("take ConPTY reader");
+        let (ready_sender, ready_receiver) = std::sync::mpsc::sync_channel(1);
         let (output_sender, output_receiver) = std::sync::mpsc::channel();
         let reader_thread = std::thread::spawn(move || {
-            let mut output = String::new();
-            let result = reader.read_to_string(&mut output).map(|_| output);
+            let mut output = Vec::new();
+            let mut buffer = [0_u8; 4096];
+            let result = loop {
+                match reader.read(&mut buffer) {
+                    Ok(0) => break String::from_utf8(output).map_err(std::io::Error::other),
+                    Ok(read) => {
+                        output.extend_from_slice(&buffer[..read]);
+                        if output.len() == read {
+                            let _ = ready_sender.send(());
+                        }
+                    }
+                    Err(error) => break Err(error),
+                }
+            };
             output_sender.send(result).expect("send ConPTY output");
         });
 
+        ready_receiver
+            .recv_timeout(std::time::Duration::from_secs(30))
+            .expect("default shell did not produce its initial prompt");
         session
             .write(b"echo toyoterm-default-shell-ok\r\nexit\r\n")
             .expect("write VT input to default shell");
