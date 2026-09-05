@@ -1814,6 +1814,109 @@ fn interactive_evaluation_returns_inspect_output() {
 }
 
 #[test]
+fn opacity_bindings_saturate_and_reverse_at_both_limits() {
+    let mut manager = ConfigManager::new().unwrap();
+    manager
+        .reload(
+            r#"
+            Toyoterm.configure do |config|
+              config.window.opacity = 0.9
+              config.bind "CTRL+[" do
+                config.window.opacity -= 0.1
+              end
+              config.bind "CTRL+]" do
+                config.window.opacity += 0.1
+              end
+            end
+            "#,
+        )
+        .unwrap();
+    let context = script_test_context();
+    // Repeated overshoots must not accumulate in the captured Ruby config.
+    for (key, count, expected) in [
+        ("CTRL+]", 1, 1.0),
+        ("CTRL+[", 1, 0.9),
+        ("CTRL+]", 20, 1.0),
+        ("CTRL+[", 1, 0.9),
+        ("CTRL+[", 20, 0.0),
+        ("CTRL+]", 1, 0.1),
+        ("CTRL+]", 20, 1.0),
+        ("CTRL+[", 1, 0.9),
+    ] {
+        for _ in 0..count {
+            run_script_request(
+                &mut manager,
+                &context,
+                &ScriptInvocation::KeyBinding {
+                    key: key.into(),
+                    pane: context.model.current_pane,
+                },
+            )
+            .unwrap();
+        }
+        assert!((manager.config().window.opacity - expected).abs() < 0.00001);
+        let ruby_opacity: f32 = manager
+            .eval("Toyoterm.__config.window.opacity")
+            .unwrap()
+            .parse()
+            .unwrap();
+        assert!((ruby_opacity - expected).abs() < 0.00001);
+    }
+}
+
+#[test]
+fn opacity_validation_preserves_transactions() {
+    let mut manager = ConfigManager::new().unwrap();
+    for (value, expected) in [("2", 1.0), ("-1", 0.0), ("0.8", 0.8)] {
+        manager
+            .reload(&format!(
+                "Toyoterm.configure {{ |config| config.window.opacity = {value} }}"
+            ))
+            .unwrap();
+        assert_eq!(manager.config().window.opacity, expected);
+    }
+    for value in [
+        "nil",
+        "'0.5'",
+        "true",
+        "0.0 / 0.0",
+        "1.0 / 0.0",
+        "-1.0 / 0.0",
+    ] {
+        assert!(
+            run_script_request(
+                &mut manager,
+                &script_test_context(),
+                &ScriptInvocation::Eval(format!(
+                    "Toyoterm.configure {{ |c| c.window.opacity = 0.5; c.window.opacity = {value} }}"
+                )),
+            )
+            .is_err()
+        );
+        assert_eq!(manager.config().window.opacity, 0.8);
+        assert_eq!(
+            manager.eval("Toyoterm.__config.window.opacity").unwrap(),
+            "0.8"
+        );
+    }
+    assert!(
+        run_script_request(
+            &mut manager,
+            &script_test_context(),
+            &ScriptInvocation::Eval(
+                "Toyoterm.configure { |c| c.window.opacity = 2; c.font.size = 0 }".into()
+            ),
+        )
+        .is_err()
+    );
+    assert_eq!(manager.config().window.opacity, 0.8);
+    assert_eq!(
+        manager.eval("Toyoterm.__config.window.opacity").unwrap(),
+        "0.8"
+    );
+}
+
+#[test]
 fn interactive_config_mutations_return_a_new_native_snapshot() {
     let mut manager = ConfigManager::new().unwrap();
     manager

@@ -436,7 +436,11 @@ impl ApplicationHandler<AppEvent> for ToyotermApplication {
         }
         let attributes = Window::default_attributes()
             .with_title(self.base_window_title())
-            .with_transparent(self.script_snapshot.config.window.opacity < 1.0)
+            // Windows transparency must be enabled at creation, including when
+            // starting opaque. Later opacity changes only update the GPU alpha.
+            .with_transparent(
+                cfg!(target_os = "windows") || self.script_snapshot.config.window.opacity < 1.0,
+            )
             .with_inner_size(LogicalSize::new(
                 self.script_snapshot.config.window.width,
                 self.script_snapshot.config.window.height,

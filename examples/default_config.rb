@@ -24,6 +24,7 @@ Toyoterm.configure do |config|
   end
 
   config.window do |window|
+    # Finite opacity values are clamped to 0.0..1.0, including runtime += / -=.
     window.opacity = 1.0
     window.width = 960
     window.height = 600

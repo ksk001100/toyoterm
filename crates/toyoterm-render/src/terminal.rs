@@ -520,7 +520,9 @@ pub(super) fn preferred_alpha_mode(
     supported: &[CompositeAlphaMode],
     opacity: f32,
 ) -> CompositeAlphaMode {
-    let preferences: &[CompositeAlphaMode] = if opacity < 1.0 {
+    // Keep the Windows swapchain's alpha mode stable across opacity 1.0.
+    // An alpha-capable swapchain also renders fully opaque when clear alpha is 1.
+    let preferences: &[CompositeAlphaMode] = if cfg!(target_os = "windows") || opacity < 1.0 {
         &[
             CompositeAlphaMode::PostMultiplied,
             CompositeAlphaMode::PreMultiplied,

@@ -208,6 +208,11 @@ grayscale ramp. Assigning the entire `colors.ansi` array requires exactly 16
 `window.opacity` controls the default terminal background (`0.0` transparent,
 `1.0` opaque). Text, UI chrome, and explicit terminal background colors retain
 their own opacity.
+Finite values outside this range are clamped to `0.0` or `1.0`, so bindings
+using `config.window.opacity += 0.1` or `-= 0.1` stop at the limits and can
+immediately reverse direction. Non-numeric and non-finite values are rejected.
+On Windows, the window and renderer keep transparency support enabled at
+`1.0` so lowering opacity can make the background transparent again.
 
 A zoomed pane uses `config.colors.zoomed_pane_border` (default `#ffbe3a`) for its border on all four sides; an ordinary active pane uses `pane_border`. Both use `ui.active_pane_border_width`; zero hides the indicator.
 

@@ -6,10 +6,9 @@ impl ToyotermApplication {
             .window
             .clone()
             .ok_or_else(|| "recreate GPU renderer: window is unavailable".to_owned())?;
-        // A surface's supported alpha modes can change after it is configured
-        // (notably on Windows/DXGI). Rebuild the renderer when switching
-        // between opaque and transparent swapchains instead of reconfiguring
-        // an already-configured surface with a stale alpha mode.
+        // Rebuild on platforms requiring a new surface when transparency
+        // changes. Windows keeps an alpha-capable surface at all opacities;
+        // macOS reconfigures the existing Metal layer.
         self.renderer = None;
         let mut renderer = pollster::block_on(GpuRenderer::new(window.clone(), style))
             .map_err(|error| format!("recreate GPU renderer: {error}"))?;

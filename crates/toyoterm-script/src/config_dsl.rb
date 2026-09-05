@@ -107,8 +107,15 @@ module Toyoterm
   end
 
   class WindowConfig
-    attr_accessor :opacity, :width, :height, :min_width, :min_height,
+    attr_reader :opacity
+    attr_accessor :width, :height, :min_width, :min_height,
                   :decorations, :resizable, :always_on_top, :title
+
+    def opacity=(value)
+      raise TypeError, "window opacity must be a number" unless value.is_a?(Numeric)
+      raise ArgumentError, "window opacity must be finite" unless value.to_f.finite?
+      @opacity = [[value, 0.0].max, 1.0].min
+    end
 
     def initialize
       @opacity = 1.0

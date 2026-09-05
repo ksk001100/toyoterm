@@ -49,6 +49,14 @@ an X11 session. CI covers startup for both display protocols on every push.
 - Verify Ctrl shortcuts, AltGr, dead keys, and a Windows IME.
 - Copy and paste to Notepad; check 100%, 150%, and 200% DPI.
 - Repeat pane split, reload, and shutdown checks.
+- Bind `CTRL+[` / `CTRL+]` to subtract/add `0.1` from `config.window.opacity`.
+  Start at `0.9`, press `CTRL+]` once, then `CTRL+[` once; the background must
+  become opaque and then transparent again. Repeat starting at `1.0` and via
+  Ruby Console updates and config reloads. Windows should retain its transparent
+  window and surface alpha mode throughout, without recreating the renderer.
+  Repeatedly press beyond both limits, then reverse direction. Confirm the
+  background opacity changes on the first reverse press and rendering continues
+  across `1.0`, including after a resize.
 - Exercise portable zip startup, the default per-user installer, upgrade, and
   uninstaller. Confirm the user PATH entry and Start Menu shortcut are both
   added and removed.

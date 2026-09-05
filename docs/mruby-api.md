@@ -119,7 +119,7 @@ be replaced with assignments such as `config.colors.ansi[1] = "#ff5f56"`.
 
 | Setting | Default | Validation or behavior |
 | --- | --- | --- |
-| `opacity` | `1.0` | Finite number from 0 (transparent) through 1 (opaque), applied to the default terminal background. Text, UI chrome, and explicit terminal background colors retain their own opacity. |
+| `opacity` | `1.0` | Finite number, clamped to 0 (transparent) through 1 (opaque), applied to the default terminal background. Text, UI chrome, and explicit terminal background colors retain their own opacity. |
 | `width` | `960` | Positive finite initial logical width. |
 | `height` | `600` | Positive finite initial logical height. |
 | `min_width` | `320` | Positive finite minimum logical width. |
@@ -131,6 +131,27 @@ be replaced with assignments such as `config.colors.ansi[1] = "#ff5f56"`.
 
 Initial dimensions apply when the window is created. Mutable window properties
 are also applied after a successful reload.
+
+`config.window.opacity` returns the stored numeric value.
+`config.window.opacity=(value)` accepts a finite Numeric and stores and returns
+its value clamped to `0.0..1.0`. Ruby assignment expressions themselves return
+the original right-hand value. Non-numeric values raise `TypeError`; NaN and
+infinity raise `ArgumentError`, leaving the stored value unchanged. Clamping
+applies during startup, reload, and callbacks. Runtime changes reach the native
+window only after the request succeeds and the complete configuration passes
+validation; a failed transaction restores the previous opacity as well.
+
+These bindings stop at each limit, even with repeated presses, and immediately
+respond to a press in the opposite direction:
+
+```ruby
+config.bind "CTRL+[" do
+  config.window.opacity -= 0.1
+end
+config.bind "CTRL+]" do
+  config.window.opacity += 0.1
+end
+```
 
 ### `config.ui`
 

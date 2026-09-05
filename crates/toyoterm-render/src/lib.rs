@@ -754,7 +754,11 @@ mod tests {
         );
         assert_eq!(
             preferred_alpha_mode(&supported, 1.0),
-            CompositeAlphaMode::Opaque
+            if cfg!(target_os = "windows") {
+                CompositeAlphaMode::PreMultiplied
+            } else {
+                CompositeAlphaMode::Opaque
+            }
         );
         assert_eq!(
             preferred_alpha_mode(&[CompositeAlphaMode::Opaque], 0.8),
@@ -763,7 +767,7 @@ mod tests {
     }
 
     #[test]
-    fn metal_opacity_transitions_update_alpha_mode_and_clear_color() {
+    fn opacity_transitions_update_alpha_mode_and_clear_color() {
         let supported = [
             CompositeAlphaMode::Opaque,
             CompositeAlphaMode::PostMultiplied,
@@ -774,7 +778,7 @@ mod tests {
             let mode = preferred_alpha_mode(&supported, opacity);
             assert_eq!(
                 mode,
-                if opacity < 1.0 {
+                if cfg!(target_os = "windows") || opacity < 1.0 {
                     CompositeAlphaMode::PostMultiplied
                 } else {
                     CompositeAlphaMode::Opaque
@@ -786,6 +790,47 @@ mod tests {
                 clear.r,
                 f64::from(srgb_channel_to_linear(style.background[0]))
             );
+        }
+    }
+
+    #[test]
+    #[cfg(target_os = "windows")]
+    fn windows_opacity_rounding_keeps_the_same_compositor_mode() {
+        // Ruby arithmetic uses f64, then native configuration narrows to f32.
+        let rounded_one = (0.9_f64 + 0.1) as f32;
+        let just_below_one = f32::from_bits(1.0_f32.to_bits() - 1);
+        for supported in [
+            vec![
+                CompositeAlphaMode::Opaque,
+                CompositeAlphaMode::PreMultiplied,
+            ],
+            vec![
+                CompositeAlphaMode::Opaque,
+                CompositeAlphaMode::PostMultiplied,
+            ],
+            vec![CompositeAlphaMode::Opaque, CompositeAlphaMode::Inherit],
+            vec![CompositeAlphaMode::Opaque],
+        ] {
+            let initial_mode = preferred_alpha_mode(&supported, 0.9);
+            for opacity in [0.9, rounded_one, 0.9, just_below_one, 1.0, 0.8, 0.0, 1.0] {
+                let mode = preferred_alpha_mode(&supported, opacity);
+                assert_eq!(mode, initial_mode);
+                let style = RenderStyle {
+                    opacity,
+                    ..RenderStyle::default()
+                };
+                let clear = clear_color(&style, mode);
+                assert_eq!(clear.a, f64::from(opacity));
+                let background = f64::from(srgb_channel_to_linear(style.background[0]));
+                assert_eq!(
+                    clear.r,
+                    if mode == CompositeAlphaMode::PreMultiplied {
+                        background * f64::from(opacity)
+                    } else {
+                        background
+                    }
+                );
+            }
         }
     }
 

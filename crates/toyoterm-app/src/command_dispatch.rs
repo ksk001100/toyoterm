@@ -754,6 +754,7 @@ impl ToyotermApplication {
             .status_interval
             .map(|_| Instant::now());
         if let Some(window) = self.window.clone() {
+            #[cfg(not(target_os = "windows"))]
             window.set_transparent(config.window.opacity < 1.0);
             window.set_decorations(config.window.decorations);
             window.set_resizable(config.window.resizable);
@@ -767,7 +768,9 @@ impl ToyotermApplication {
             // Metal supports changing alpha mode on the existing surface.
             // Creating another surface adds a CAMetalLayer while the view
             // retains the old one, whose opaque contents block transparency.
-            if transparency_mode_changed && !cfg!(target_os = "macos") {
+            // Windows keeps the same transparent surface even at opacity 1.0.
+            // Replacing it at that boundary can lose compositor transparency.
+            if transparency_mode_changed && !cfg!(any(target_os = "macos", target_os = "windows")) {
                 self.replace_renderer(render_style.clone())?;
             } else if let Some(renderer) = self.renderer.as_mut() {
                 renderer.set_style(render_style);
