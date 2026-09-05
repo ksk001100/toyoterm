@@ -11,6 +11,9 @@ use std::sync::mpsc;
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
+#[cfg(windows)]
+use std::os::windows::process::CommandExt;
+
 use toyoterm_api::{
     Command, HandleKind, NativeAction, NativeCommand, NativeHandle, PaneId, PaneLaunchSpec,
     PaneSearchDirection, SplitDirection, TabId, WindowId, WorkspaceId,
@@ -22,6 +25,8 @@ pub use toyoterm_config::{
 };
 
 const SLOW_CALLBACK_THRESHOLD: Duration = Duration::from_millis(100);
+#[cfg(windows)]
+const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 pub const PLUGIN_API_VERSION: &str = "0.1.0";
 
 fn return_host_bytes(bytes: Vec<u8>, output: *mut *mut u8, length: *mut usize) {
@@ -127,7 +132,11 @@ pub unsafe extern "C" fn toyoterm_host_spawn(
     let Some((program, arguments)) = decoded.split_first() else {
         return return_host_error("program cannot be empty".to_owned(), error);
     };
-    match ProcessCommand::new(program).args(arguments).output() {
+    let mut command = ProcessCommand::new(program);
+    command.args(arguments);
+    #[cfg(windows)]
+    command.creation_flags(CREATE_NO_WINDOW);
+    match command.output() {
         Ok(output) => {
             return_host_bytes(output.stdout, stdout_output, stdout_length);
             return_host_bytes(output.stderr, stderr_output, stderr_length);
