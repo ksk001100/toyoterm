@@ -18,4 +18,4 @@ toyoterm-pty.workspace = true
 toyoterm-terminal.workspace = true
 
 [build-dependencies]
-embed-resource = "2.5"
+embed-resource = "3.0.11"

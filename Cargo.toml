@@ -21,8 +21,8 @@ toyoterm-script = { path = "crates/toyoterm-script" }
 toyoterm-terminal = { path = "crates/toyoterm-terminal" }
 alacritty_terminal = "0.26.0"
 arboard = { version = "3.6.1", default-features = false, features = ["wayland-data-control"] }
-bytemuck = { version = "1.24.0", features = ["derive"] }
-cc = "1.2.56"
+bytemuck = { version = "1.25.2", features = ["derive"] }
+cc = "1.4.5"
 glyphon = "0.12.0"
 portable-pty = "0.9.0"
 pollster = "1.0.1"
