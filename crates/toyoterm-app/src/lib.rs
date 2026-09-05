@@ -596,7 +596,7 @@ impl ToyotermApplication {
             }
             WindowEvent::Ime(Ime::Commit(text)) => {
                 self.leader_deadline = None;
-                self.ime_preedit = None;
+                let had_preedit = self.ime_preedit.take().is_some();
                 if self.visual_selection.is_some() {
                     return;
                 }
@@ -610,8 +610,10 @@ impl ToyotermApplication {
                 if let Err(error) = self.write_pty(text.as_bytes()) {
                     self.fail(event_loop, error);
                 }
-                self.sync_active_renderer(window.scale_factor());
-                window.request_redraw();
+                if had_preedit {
+                    self.sync_active_renderer(window.scale_factor());
+                    window.request_redraw();
+                }
             }
             WindowEvent::Ime(Ime::Disabled) => {
                 self.leader_deadline = None;

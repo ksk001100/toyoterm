@@ -96,10 +96,11 @@ impl TerminalView {
         });
         cx.spawn_in(window, async move |this, cx| {
             while let Ok(event) = receiver.recv().await {
-                let mut batch = vec![event];
-                while batch.len() < 128 {
+                let mut batch = Vec::with_capacity(128);
+                push_batched_event(&mut batch, event);
+                for _ in 1..128 {
                     match receiver.try_recv() {
-                        Ok(event) => batch.push(event),
+                        Ok(event) => push_batched_event(&mut batch, event),
                         Err(_) => break,
                     }
                 }
@@ -117,6 +118,9 @@ impl TerminalView {
                 {
                     break;
                 }
+                // Yield between bounded batches so sustained TUI output cannot
+                // starve keyboard and window events on GPUI's foreground loop.
+                cx.background_executor().timer(Duration::ZERO).await;
             }
         })
         .detach();
@@ -226,7 +230,7 @@ impl TerminalView {
             repeat: event.is_held,
         };
         // Text goes through GPUI's input handler, including IME and dead-key composition.
-        if matches!(
+        let needs_finish = if matches!(
             key.logical_key,
             Key::Character(_) | Key::Named(NamedKey::Space)
         ) && !modifiers.control_key()
@@ -251,19 +255,26 @@ impl TerminalView {
                     }
                 });
             match handled {
-                Ok(true) => cx.stop_propagation(),
-                Ok(false) => {}
+                Ok(true) => {
+                    cx.stop_propagation();
+                    true
+                }
+                Ok(false) => false,
                 Err(error) => {
                     tracing::warn!(%error,"key binding failed");
                     cx.stop_propagation();
+                    true
                 }
             }
         } else {
             self.app
                 .window_event(&self.control, WindowEvent::KeyboardInput { event: key });
             cx.stop_propagation();
+            true
+        };
+        if needs_finish {
+            self.finish(window, cx);
         }
-        self.finish(window, cx);
     }
 }
 impl Render for TerminalView {
@@ -489,6 +500,24 @@ fn physical_size(window: &gpui::Window) -> PhysicalSize<u32> {
         (f32::from(size.height) * scale).round().max(0.) as u32,
     )
 }
+
+fn push_batched_event(batch: &mut Vec<AppEvent>, event: AppEvent) {
+    if let AppEvent::Output { pane, bytes } = event {
+        if let Some(AppEvent::Output {
+            pane: previous_pane,
+            bytes: previous_bytes,
+        }) = batch.last_mut()
+            && *previous_pane == pane
+        {
+            previous_bytes.extend_from_slice(&bytes);
+        } else {
+            batch.push(AppEvent::Output { pane, bytes });
+        }
+    } else {
+        batch.push(event);
+    }
+}
+
 fn logical_key(key: &str) -> Key {
     let named = match key {
         "enter" => NamedKey::Enter,
@@ -567,5 +596,44 @@ mod tests {
                 .send_event(AppEvent::Eof { pane: PaneId(1) })
                 .is_err()
         );
+    }
+    #[test]
+    fn adjacent_pty_output_is_coalesced_without_crossing_event_boundaries() {
+        let mut batch = Vec::new();
+        push_batched_event(
+            &mut batch,
+            AppEvent::Output {
+                pane: PaneId(1),
+                bytes: b"one".to_vec(),
+            },
+        );
+        push_batched_event(
+            &mut batch,
+            AppEvent::Output {
+                pane: PaneId(1),
+                bytes: b"two".to_vec(),
+            },
+        );
+        push_batched_event(&mut batch, AppEvent::Eof { pane: PaneId(2) });
+        push_batched_event(
+            &mut batch,
+            AppEvent::Output {
+                pane: PaneId(1),
+                bytes: b"three".to_vec(),
+            },
+        );
+
+        assert_eq!(batch.len(), 3);
+        assert!(matches!(
+                &batch[0],
+                AppEvent::Output { pane, bytes }
+                    if *pane == PaneId(1) && bytes == b"onetwo"
+        ));
+        assert!(matches!(batch[1], AppEvent::Eof { pane: PaneId(2) }));
+        assert!(matches!(
+                &batch[2],
+                AppEvent::Output { pane, bytes }
+                    if *pane == PaneId(1) && bytes == b"three"
+        ));
     }
 }

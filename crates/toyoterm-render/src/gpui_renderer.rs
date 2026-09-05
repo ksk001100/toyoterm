@@ -17,6 +17,19 @@ struct Quad {
     color: [u8; 3],
     alpha: f32,
 }
+#[derive(Clone, Copy, Hash, Eq, PartialEq)]
+struct LabelStyle {
+    color: [u8; 3],
+    bold: bool,
+    italic: bool,
+    underline: bool,
+    strike: bool,
+}
+#[derive(Clone, Hash)]
+struct LabelRun {
+    len: usize,
+    style: LabelStyle,
+}
 #[derive(Clone)]
 struct Label {
     text: String,
@@ -24,11 +37,7 @@ struct Label {
     y: f32,
     clip: PaneRect,
     layout: TextLayout,
-    color: [u8; 3],
-    bold: bool,
-    italic: bool,
-    underline: bool,
-    strike: bool,
+    runs: Vec<LabelRun>,
     fixed: bool,
     cells: u16,
 }
@@ -81,7 +90,16 @@ impl GpuiRenderer {
         self.shape_cache.borrow_mut().clear();
     }
     pub fn terminal_cell_width(&self, font_size: f32, window: &Window) -> f32 {
-        let run = self.run("M", self.style.foreground, false, false, false, false);
+        let run = self.run(
+            1,
+            LabelStyle {
+                color: self.style.foreground,
+                bold: false,
+                italic: false,
+                underline: false,
+                strike: false,
+            },
+        );
         f32::from(
             window
                 .text_system()
@@ -90,38 +108,30 @@ impl GpuiRenderer {
         )
         .max(1.0)
     }
-    fn run(
-        &self,
-        text: &str,
-        color: [u8; 3],
-        bold: bool,
-        italic: bool,
-        underline: bool,
-        strike: bool,
-    ) -> TextRun {
+    fn run(&self, len: usize, style: LabelStyle) -> TextRun {
         let mut face = font(resolved_family(&self.style.font_family));
-        face.weight = FontWeight(if bold {
+        face.weight = FontWeight(if style.bold {
             700.0
         } else {
             f32::from(self.style.font_weight)
         });
-        if italic {
+        if style.italic {
             face = face.italic();
         }
         face.fallbacks = Some(gpui::FontFallbacks::from_fonts(
             self.style.font_fallback.clone(),
         ));
         TextRun {
-            len: text.len(),
+            len,
             font: face,
-            color: color_value(color, 1.0),
+            color: color_value(style.color, 1.0),
             background_color: None,
-            underline: underline.then(|| gpui::UnderlineStyle {
+            underline: style.underline.then(|| gpui::UnderlineStyle {
                 thickness: px(1.0),
                 color: None,
                 wavy: false,
             }),
-            strikethrough: strike.then(|| gpui::StrikethroughStyle {
+            strikethrough: style.strike.then(|| gpui::StrikethroughStyle {
                 thickness: px(1.0),
                 color: None,
             }),
@@ -229,17 +239,24 @@ impl GpuiRenderer {
                     {
                         color = self.style.background;
                     }
-                    let item = Label {
-                        text: cell.text.replace(['\r', '\n'], ""),
-                        x: x + f32::from(cell.column) * layout.cell_width,
-                        y: y + row as f32 * layout.line_height,
-                        clip: rect,
-                        layout,
+                    let text_value = cell.text.replace(['\r', '\n'], "");
+                    let style = LabelStyle {
                         color,
                         bold: attrs.bold,
                         italic: attrs.italic,
                         underline: attrs.underline || cell.hyperlink.is_some(),
                         strike: attrs.strikethrough,
+                    };
+                    let item = Label {
+                        runs: vec![LabelRun {
+                            len: text_value.len(),
+                            style,
+                        }],
+                        text: text_value,
+                        x: x + f32::from(cell.column) * layout.cell_width,
+                        y: y + row as f32 * layout.line_height,
+                        clip: rect,
+                        layout,
                         fixed: cell.width == 1 && cell.text.len() == 1 && cell.text.is_ascii(),
                         cells: u16::from(cell.width.max(1)),
                     };
@@ -248,11 +265,6 @@ impl GpuiRenderer {
                         && previous.text.is_ascii()
                         && previous.y == item.y
                         && previous.clip == item.clip
-                        && previous.color == item.color
-                        && previous.bold == item.bold
-                        && previous.italic == item.italic
-                        && previous.underline == item.underline
-                        && previous.strike == item.strike
                         && (previous.x + previous.layout.cell_width * f32::from(previous.cells)
                             - item.x)
                             .abs()
@@ -265,6 +277,14 @@ impl GpuiRenderer {
                         previous.text.push_str(&item.text);
                         previous.fixed = false;
                         previous.cells = previous.cells.saturating_add(item.cells);
+                        let item_run = &item.runs[0];
+                        if let Some(previous_run) = previous.runs.last_mut()
+                            && previous_run.style == item_run.style
+                        {
+                            previous_run.len += item_run.len;
+                        } else {
+                            previous.runs.push(item_run.clone());
+                        }
                     } else {
                         text.push(item);
                     }
@@ -427,7 +447,7 @@ impl GpuiRenderer {
             let mut item = label(text, clip, layout, self.style.foreground);
             item.x = x;
             item.y = y;
-            item.underline = true;
+            item.runs[0].style.underline = true;
             item
         });
     }
@@ -504,34 +524,27 @@ impl GpuiRenderer {
         if label.text.is_empty() {
             return;
         }
-        let run = self.run(
-            &label.text,
-            label.color,
-            label.bold,
-            label.italic,
-            label.underline,
-            label.strike,
-        );
         let mut hasher = std::collections::hash_map::DefaultHasher::new();
         label.text.hash(&mut hasher);
         label.layout.font_size.to_bits().hash(&mut hasher);
         label.layout.cell_width.to_bits().hash(&mut hasher);
         scale.to_bits().hash(&mut hasher);
-        label.color.hash(&mut hasher);
-        label.bold.hash(&mut hasher);
-        label.italic.hash(&mut hasher);
-        label.underline.hash(&mut hasher);
-        label.strike.hash(&mut hasher);
+        label.runs.hash(&mut hasher);
         label.fixed.hash(&mut hasher);
         label.cells.hash(&mut hasher);
         let cache_key = hasher.finish();
         let line = if let Some(line) = self.shape_cache.borrow().get(&cache_key) {
             line.clone()
         } else {
+            let runs = label
+                .runs
+                .iter()
+                .map(|run| self.run(run.len, run.style))
+                .collect::<Vec<_>>();
             let line = window.text_system().shape_line(
                 label.text.clone().into(),
                 px(label.layout.font_size / scale),
-                &[run],
+                &runs,
                 label
                     .fixed
                     .then(|| px(label.layout.cell_width * f32::from(label.cells) / scale)),
@@ -584,11 +597,16 @@ fn label(text: &str, rect: PaneRect, layout: TextLayout, color: [u8; 3]) -> Labe
         y: rect.y as f32 + (rect.height as f32 - layout.line_height).max(0.) / 2.0,
         clip: rect,
         layout,
-        color,
-        bold: false,
-        italic: false,
-        underline: false,
-        strike: false,
+        runs: vec![LabelRun {
+            len: text.len(),
+            style: LabelStyle {
+                color,
+                bold: false,
+                italic: false,
+                underline: false,
+                strike: false,
+            },
+        }],
         fixed: false,
         cells: 1,
     }
@@ -700,9 +718,16 @@ mod tests {
         let style = RenderStyle::default();
         let mut renderer = GpuiRenderer::new(style.clone());
         update(&mut renderer, &terminal);
-        let label = renderer.text.iter().find(|l| l.text == "A").unwrap();
-        assert!(label.bold && label.italic && label.underline && label.strike);
-        assert_eq!(label.color, style.ansi[1]);
+        let label = renderer
+            .text
+            .iter()
+            .find(|label| label.text.starts_with('A'))
+            .unwrap();
+        let first_run = label.runs[0].style;
+        assert!(first_run.bold && first_run.italic && first_run.underline && first_run.strike);
+        assert_eq!(first_run.color, style.ansi[1]);
+        assert_eq!(label.text, "AB");
+        assert_eq!(label.runs.len(), 2);
         assert!(renderer.panes.iter().any(|q| q.color == style.ansi[4]));
         assert!(renderer.panes.iter().any(|q| q.color == style.selection));
     }
@@ -750,7 +775,7 @@ mod tests {
         renderer.update_preedit(Some("候補"), layout());
         let preedit = renderer.preedit.as_ref().unwrap();
         assert_eq!((preedit.x, preedit.y), (18., 24.));
-        assert!(preedit.underline);
+        assert!(preedit.runs[0].style.underline);
     }
     #[test]
     fn chrome_alignment_and_background_opacity_are_independent() {
