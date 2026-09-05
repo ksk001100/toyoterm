@@ -134,7 +134,7 @@ module Toyoterm
     attr_accessor :padding_x, :padding_y, :line_height,
                   :tab_bar, :tab_bar_height, :tab_width,
                   :workspace_bar, :workspace_bar_height, :workspace_width,
-                  :status_bar_height, :pane_divider_width,
+                  :status_bar_height, :status_bar_width, :pane_divider_width,
                   :active_pane_border_width
 
     def initialize
@@ -148,6 +148,7 @@ module Toyoterm
       @workspace_bar_height = 24
       @workspace_width = 160
       @status_bar_height = 24
+      @status_bar_width = 160
       @pane_divider_width = 2
       @active_pane_border_width = 2
     end
@@ -509,7 +510,7 @@ module Toyoterm
         [@ui.padding_x, @ui.padding_y, @ui.line_height, @ui.tab_bar,
          @ui.tab_bar_height, @ui.tab_width, @ui.workspace_bar,
          @ui.workspace_bar_height, @ui.workspace_width, @ui.status_bar_height,
-         @ui.pane_divider_width, @ui.active_pane_border_width],
+         @ui.pane_divider_width, @ui.active_pane_border_width, @ui.status_bar_width],
         [@behavior.scroll_lines, @behavior.copy_on_select],
         [@leader_key, @leader_timeout, @theme,
          @theme_color_checkpoint && @theme_color_checkpoint.map { |value| value.is_a?(Array) ? value.dup : value }]
@@ -559,6 +560,7 @@ module Toyoterm
       @ui.status_bar_height = ui[9]
       @ui.pane_divider_width = ui[10]
       @ui.active_pane_border_width = ui[11]
+      @ui.status_bar_width = ui[12]
       @behavior.scroll_lines = behavior[0]
       @behavior.copy_on_select = behavior[1]
       @leader_key = leader[0]
@@ -985,8 +987,7 @@ module Toyoterm
   @current_command = nil
   @event_handlers = {}
   @user_commands = {}
-  @status_callback = nil
-  @status_interval = nil
+  @status_bars = {}
   @live_handles = {
     workspace: [0],
     window: [0],
@@ -1244,7 +1245,7 @@ module Toyoterm
   # The host validates mutations made in the persistent VM after each
   # request. Keep a VM-side checkpoint so invalid changes can be rolled back.
   def self.__begin_config_transaction
-    @config_transaction = [@config.__checkpoint, @status_interval, @status_callback, @pane_badges.dup]
+    @config_transaction = [@config.__checkpoint, @status_bars.dup, @pane_badges.dup]
     nil
   end
 
@@ -1252,9 +1253,8 @@ module Toyoterm
     checkpoint = @config_transaction
     return nil unless checkpoint
     @config.__restore(checkpoint[0])
-    @status_interval = checkpoint[1]
-    @status_callback = checkpoint[2]
-    @pane_badges = checkpoint[3]
+    @status_bars = checkpoint[1]
+    @pane_badges = checkpoint[2]
     @config_transaction = nil
     nil
   end
@@ -1281,28 +1281,42 @@ module Toyoterm
     block
   end
 
-  def self.status(interval: 1.0, &block)
+  def self.status(position: :bottom, interval: 1.0, &block)
     raise ArgumentError, "status callback requires a block" unless block
-    raise ArgumentError, "status callback is already configured" if @status_callback
-    @status_interval = interval
-    @status_callback = block
+    raise ArgumentError, "status position must be :top, :bottom, :left, or :right" unless position.respond_to?(:to_sym)
+    position = position.to_sym
+    unless [:top, :bottom, :left, :right].include?(position)
+      raise ArgumentError, "status position must be :top, :bottom, :left, or :right"
+    end
+    raise ArgumentError, "status callback is already configured for #{position}" if @status_bars.key?(position)
+    @status_bars[position] = [interval, block]
     block
   end
 
-  def self.__status_interval
-    unless @status_interval.nil? || @status_interval.is_a?(Numeric)
-      raise TypeError, "status interval must be numeric"
-    end
-    @status_interval
+  def self.__status_count
+    @status_bars.length
   end
 
-  def self.__invoke_status
-    return nil unless @status_callback
+  def self.__status_position(index)
+    @status_bars.keys[index]
+  end
+
+  def self.__status_interval(index)
+    interval = @status_bars.values[index][0]
+    unless interval.is_a?(Numeric)
+      raise TypeError, "status interval must be numeric"
+    end
+    interval
+  end
+
+  def self.__invoke_status(position)
+    entry = @status_bars[position.to_sym]
+    return nil unless entry
     context = StatusContext.new(current_workspace, current_window, current_tab, current_pane)
     checkpoint = __command_checkpoint
     badge_checkpoint = __badge_checkpoint
     begin
-      @status_callback.call(context).to_s
+      entry[1].call(context).to_s
     ensure
       __rollback_commands(checkpoint)
       __rollback_badges(badge_checkpoint)

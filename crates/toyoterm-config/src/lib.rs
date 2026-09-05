@@ -48,8 +48,23 @@ pub struct UiConfig {
     pub workspace_bar_height: f32,
     pub workspace_width: f32,
     pub status_bar_height: f32,
+    pub status_bar_width: f32,
     pub pane_divider_width: f32,
     pub active_pane_border_width: f32,
+}
+
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub enum StatusBarPosition {
+    Top,
+    Bottom,
+    Left,
+    Right,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct StatusBarConfig {
+    pub position: StatusBarPosition,
+    pub interval: Duration,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -81,7 +96,7 @@ pub struct ToyotermConfig {
     pub default_shell: Option<String>,
     pub scrollback_lines: usize,
     pub leader: Option<LeaderConfig>,
-    pub status_interval: Option<Duration>,
+    pub status_bars: Vec<StatusBarConfig>,
 }
 
 impl Default for ToyotermConfig {
@@ -120,6 +135,7 @@ impl Default for ToyotermConfig {
                 workspace_bar_height: 24.0,
                 workspace_width: 160.0,
                 status_bar_height: 24.0,
+                status_bar_width: 160.0,
                 pane_divider_width: 2.0,
                 active_pane_border_width: 2.0,
             },
@@ -141,7 +157,7 @@ impl Default for ToyotermConfig {
             default_shell: None,
             scrollback_lines: 10_000,
             leader: None,
-            status_interval: None,
+            status_bars: Vec::new(),
         }
     }
 }
@@ -350,7 +366,8 @@ mod tests {
         assert_eq!(config.default_shell, None);
         assert_eq!(config.scrollback_lines, 10_000);
         assert_eq!(config.leader, None);
-        assert_eq!(config.status_interval, None);
+        assert!(config.status_bars.is_empty());
+        assert_eq!(config.ui.status_bar_width, 160.0);
     }
 
     #[test]

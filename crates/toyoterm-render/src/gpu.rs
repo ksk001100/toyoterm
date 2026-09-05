@@ -88,7 +88,7 @@ pub struct GpuRenderer {
     tabs: HashMap<TabId, TabBuffer>,
     workspaces: HashMap<WorkspaceId, TabBuffer>,
     search: OverlayBuffer,
-    status_bar: OverlayBuffer,
+    status_bars: Vec<(StatusBarEdge, OverlayBuffer)>,
     config_error: ConfigErrorBuffers,
     preedit: Buffer,
     has_preedit: bool,
@@ -354,8 +354,6 @@ impl GpuRenderer {
         preedit.set_wrap(Wrap::None);
         let mut search_text = Buffer::new(&mut font_system, Metrics::new(14.0, 18.0));
         search_text.set_wrap(Wrap::None);
-        let mut status_text = Buffer::new(&mut font_system, Metrics::new(12.0, 15.0));
-        status_text.set_wrap(Wrap::None);
         let mut config_error_buffer = || {
             let mut buffer = Buffer::new(&mut font_system, Metrics::new(14.0, 18.0));
             buffer.set_wrap(Wrap::None);
@@ -393,10 +391,7 @@ impl GpuRenderer {
                 text: search_text,
                 rect: None,
             },
-            status_bar: OverlayBuffer {
-                text: status_text,
-                rect: None,
-            },
+            status_bars: Vec::new(),
             config_error,
             preedit,
             has_preedit: false,
@@ -455,12 +450,7 @@ impl GpuRenderer {
             text: search_text,
             rect: None,
         };
-        let mut status_text = Buffer::new(&mut self.font_system, Metrics::new(12.0, 15.0));
-        status_text.set_wrap(Wrap::None);
-        self.status_bar = OverlayBuffer {
-            text: status_text,
-            rect: None,
-        };
+        self.status_bars.clear();
 
         let mut buffer = || {
             let mut buffer = Buffer::new(&mut self.font_system, Metrics::new(14.0, 18.0));
@@ -780,36 +770,36 @@ impl GpuRenderer {
             .shape_until_scroll(&mut self.font_system, false);
     }
 
-    pub fn update_status_bar(
-        &mut self,
-        status: Option<StatusBarRenderData<'_>>,
-        layout: TextLayout,
-    ) {
-        let Some(status) = status else {
-            self.status_bar.rect = None;
-            return;
-        };
-        self.status_bar.rect = Some(status.rect);
+    pub fn update_status_bars(&mut self, statuses: &[StatusBarRenderData<'_>], layout: TextLayout) {
         let metrics = Metrics::new(
             (layout.font_size * 0.85).max(1.0),
             (layout.line_height * 0.85).max(1.0),
         );
-        self.status_bar.text.set_metrics_and_size(
-            metrics,
-            Some(status.rect.width.saturating_sub(16) as f32),
-            Some(status.rect.height as f32),
-        );
-        self.status_bar.text.set_text(
-            status.text,
-            &Attrs::new()
-                .family(resolve_font_family(&self.style.font_family))
-                .weight(Weight(self.style.font_weight)),
-            Shaping::Advanced,
-            None,
-        );
-        self.status_bar
-            .text
-            .shape_until_scroll(&mut self.font_system, false);
+        while self.status_bars.len() < statuses.len() {
+            let mut text = Buffer::new(&mut self.font_system, metrics);
+            text.set_wrap(Wrap::None);
+            self.status_bars
+                .push((StatusBarEdge::Bottom, OverlayBuffer { text, rect: None }));
+        }
+        self.status_bars.truncate(statuses.len());
+        for ((edge, buffer), status) in self.status_bars.iter_mut().zip(statuses) {
+            *edge = status.edge;
+            buffer.rect = Some(status.rect);
+            buffer.text.set_metrics_and_size(
+                metrics,
+                Some(status.rect.width.saturating_sub(16) as f32),
+                Some(status.rect.height as f32),
+            );
+            buffer.text.set_text(
+                status.text,
+                &Attrs::new()
+                    .family(resolve_font_family(&self.style.font_family))
+                    .weight(Weight(self.style.font_weight)),
+                Shaping::Advanced,
+                None,
+            );
+            buffer.text.shape_until_scroll(&mut self.font_system, false);
+        }
     }
 
     pub fn update_config_error(
@@ -983,9 +973,12 @@ impl GpuRenderer {
                 custom_glyphs: &[],
             });
         }
-        if let Some(rect) = self.status_bar.rect {
+        for (_, status_bar) in &self.status_bars {
+            let Some(rect) = status_bar.rect else {
+                continue;
+            };
             text_areas.push(TextArea {
-                buffer: &self.status_bar.text,
+                buffer: &status_bar.text,
                 left: rect.x as f32 + 8.0,
                 top: rect.y as f32 + 2.0,
                 scale: 1.0,
@@ -1313,7 +1306,10 @@ impl GpuRenderer {
             }
         }
 
-        if let Some(rect) = self.status_bar.rect {
+        for (edge, status_bar) in &self.status_bars {
+            let Some(rect) = status_bar.rect else {
+                continue;
+            };
             push_ui_rect(
                 &mut vertices,
                 rect,
@@ -1321,9 +1317,25 @@ impl GpuRenderer {
                 self.configuration.width,
                 self.configuration.height,
             );
+            let separator = match edge {
+                StatusBarEdge::Top => PaneRect::new(
+                    rect.x,
+                    rect.y.saturating_add(rect.height.saturating_sub(1)),
+                    rect.width,
+                    1,
+                ),
+                StatusBarEdge::Bottom => PaneRect::new(rect.x, rect.y, rect.width, 1),
+                StatusBarEdge::Left => PaneRect::new(
+                    rect.x.saturating_add(rect.width.saturating_sub(1)),
+                    rect.y,
+                    1,
+                    rect.height,
+                ),
+                StatusBarEdge::Right => PaneRect::new(rect.x, rect.y, 1, rect.height),
+            };
             push_ui_rect(
                 &mut vertices,
-                PaneRect::new(rect.x, rect.y, rect.width, 1),
+                separator,
                 rgba(self.style.foreground, 0.14),
                 self.configuration.width,
                 self.configuration.height,

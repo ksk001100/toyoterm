@@ -225,8 +225,18 @@ impl ConfigManager {
         }
     }
 
-    pub fn render_status(&mut self) -> Result<String, ScriptError> {
-        self.eval_callback(CallbackKind::Status, "status", "Toyoterm.__invoke_status")
+    pub fn render_status(&mut self, position: StatusBarPosition) -> Result<String, ScriptError> {
+        let position = match position {
+            StatusBarPosition::Top => "top",
+            StatusBarPosition::Bottom => "bottom",
+            StatusBarPosition::Left => "left",
+            StatusBarPosition::Right => "right",
+        };
+        self.eval_callback(
+            CallbackKind::Status,
+            position,
+            &format!("Toyoterm.__invoke_status(:{position})"),
+        )
     }
 
     /// Updates the pane exposed by `Toyoterm.current_pane` for subsequent evaluations.
@@ -572,7 +582,9 @@ pub(super) fn run_script_request(
                 manager.reload_file()?;
                 (None, Some(manager.snapshot()))
             }
-            ScriptInvocation::Status => (Some(manager.render_status()?), None),
+            ScriptInvocation::Status { position } => {
+                (Some(manager.render_status(*position)?), None)
+            }
         })
     })();
     let (value, mut snapshot) = match request_result {
@@ -831,21 +843,42 @@ fn read_config(runtime: &mut MrubyRuntime) -> Result<ToyotermConfig, ScriptError
             timeout_ms,
         })
     };
-    let status_interval = match runtime.eval("Toyoterm.__status_interval")?.as_str() {
-        "" => None,
-        value => {
-            let seconds = value.parse::<f64>().map_err(|_| {
-                ScriptError::new("validate status", "status interval must be numeric")
-            })?;
-            if !seconds.is_finite() || seconds < 0.1 {
+    let status_count = runtime
+        .eval("Toyoterm.__status_count")?
+        .parse::<usize>()
+        .map_err(|_| ScriptError::new("validate status", "status count is invalid"))?;
+    let mut status_bars = Vec::with_capacity(status_count);
+    for index in 0..status_count {
+        let position = match runtime
+            .eval(&format!("Toyoterm.__status_position({index})"))?
+            .as_str()
+        {
+            "top" => StatusBarPosition::Top,
+            "bottom" => StatusBarPosition::Bottom,
+            "left" => StatusBarPosition::Left,
+            "right" => StatusBarPosition::Right,
+            _ => {
                 return Err(ScriptError::new(
                     "validate status",
-                    "status interval must be at least 0.1 seconds",
+                    "status position is invalid",
                 ));
             }
-            Some(Duration::from_secs_f64(seconds))
+        };
+        let value = runtime.eval(&format!("Toyoterm.__status_interval({index})"))?;
+        let seconds = value
+            .parse::<f64>()
+            .map_err(|_| ScriptError::new("validate status", "status interval must be numeric"))?;
+        if !seconds.is_finite() || seconds < 0.1 {
+            return Err(ScriptError::new(
+                "validate status",
+                "status interval must be at least 0.1 seconds",
+            ));
         }
-    };
+        status_bars.push(StatusBarConfig {
+            position,
+            interval: Duration::from_secs_f64(seconds),
+        });
+    }
 
     let ansi_count = runtime
         .eval("Toyoterm.__config.colors.__ansi_count")?
@@ -920,6 +953,11 @@ fn read_config(runtime: &mut MrubyRuntime) -> Result<ToyotermConfig, ScriptError
                 "ui.status_bar_height",
                 "Toyoterm.__config.ui.status_bar_height",
             )?,
+            status_bar_width: number(
+                runtime,
+                "ui.status_bar_width",
+                "Toyoterm.__config.ui.status_bar_width",
+            )?,
             pane_divider_width: nonnegative(
                 runtime,
                 "ui.pane_divider_width",
@@ -981,7 +1019,7 @@ fn read_config(runtime: &mut MrubyRuntime) -> Result<ToyotermConfig, ScriptError
         },
         scrollback_lines,
         leader,
-        status_interval,
+        status_bars,
     };
     validate_color("background", &config.colors.background)?;
     validate_color("foreground", &config.colors.foreground)?;

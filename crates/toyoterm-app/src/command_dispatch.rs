@@ -748,11 +748,14 @@ impl ToyotermApplication {
         self.render_style = render_style.clone();
         self.script_snapshot = snapshot;
         self.status_text.clear();
+        self.status_pending = None;
         self.next_status_at = self
             .script_snapshot
             .config
-            .status_interval
-            .map(|_| Instant::now());
+            .status_bars
+            .iter()
+            .map(|bar| (bar.position, Instant::now()))
+            .collect();
         if let Some(window) = self.window.clone() {
             #[cfg(not(target_os = "windows"))]
             window.set_transparent(config.window.opacity < 1.0);

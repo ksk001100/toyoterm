@@ -90,7 +90,7 @@ pub enum ScriptInvocation {
     Event(RubyEvent),
     Eval(String),
     Reload,
-    Status,
+    Status { position: StatusBarPosition },
 }
 
 #[derive(Debug)]

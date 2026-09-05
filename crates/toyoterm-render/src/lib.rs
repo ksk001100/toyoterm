@@ -84,6 +84,15 @@ pub struct SearchRenderData<'a> {
 pub struct StatusBarRenderData<'a> {
     pub rect: PaneRect,
     pub text: &'a str,
+    pub edge: StatusBarEdge,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum StatusBarEdge {
+    Top,
+    Bottom,
+    Left,
+    Right,
 }
 
 #[derive(Clone, Copy, Debug)]

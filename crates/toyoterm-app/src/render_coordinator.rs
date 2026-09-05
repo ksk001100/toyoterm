@@ -186,25 +186,41 @@ impl ToyotermApplication {
                 }),
                 layout,
             );
-            renderer.update_status_bar(
-                self.script_snapshot
-                    .config
-                    .status_interval
-                    .map(|_| StatusBarRenderData {
-                        rect: status_bar_rect(
-                            self.window
-                                .as_ref()
-                                .map(|window| window.inner_size())
-                                .unwrap_or_default(),
-                            scaled_ui_size(
-                                self.script_snapshot.config.ui.status_bar_height,
-                                scale_factor,
-                            ),
-                        ),
-                        text: &self.status_text,
-                    }),
-                layout,
+            let window_size = self
+                .window
+                .as_ref()
+                .map(|window| window.inner_size())
+                .unwrap_or_default();
+            let notification_height = self
+                .config_error_notice
+                .as_ref()
+                .map(|notice| config_error_height(scale_factor, notice.log_expanded))
+                .unwrap_or(0);
+            let chrome_height = workspace_bar_height(&self.script_snapshot.config, scale_factor)
+                .saturating_add(tab_bar_height(&self.script_snapshot.config, scale_factor))
+                .saturating_add(notification_height)
+                .min(window_size.height);
+            let (_, bar_rects) = edge_bar_layout(
+                window_size,
+                chrome_height,
+                &self.script_snapshot.config,
+                scale_factor,
             );
+            let statuses = bar_rects
+                .iter()
+                .filter(|(_, rect)| rect.width > 0 && rect.height > 0)
+                .map(|(position, rect)| StatusBarRenderData {
+                    rect: *rect,
+                    text: self.status_text.get(position).map_or("", String::as_str),
+                    edge: match position {
+                        StatusBarPosition::Top => StatusBarEdge::Top,
+                        StatusBarPosition::Bottom => StatusBarEdge::Bottom,
+                        StatusBarPosition::Left => StatusBarEdge::Left,
+                        StatusBarPosition::Right => StatusBarEdge::Right,
+                    },
+                })
+                .collect::<Vec<_>>();
+            renderer.update_status_bars(&statuses, layout);
             renderer.update_config_error(config_error, layout);
             renderer.update_preedit(self.ime_preedit.as_deref(), layout);
         }

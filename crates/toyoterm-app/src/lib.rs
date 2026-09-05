@@ -43,14 +43,14 @@ pub use toyoterm_api::{
     Command, CommandResult, Event as MuxEvent, NativeAction, NativeCommand, PaneId, PaneLaunchSpec,
     PaneSearchDirection, SelectionMotion, SplitDirection,
 };
-pub use toyoterm_config::ToyotermConfig;
+pub use toyoterm_config::{StatusBarPosition, ToyotermConfig};
 pub use toyoterm_ipc::{IpcRequest, IpcResponse, IpcServer};
 pub use toyoterm_mux::Mux;
 pub use toyoterm_pty::{NativePty, Pty, PtyCommand, PtyError, PtyExitStatus, PtySession, PtySize};
 pub use toyoterm_render::{
     ConfigErrorLayout, ConfigErrorRenderData, GpuRenderer, PaneLayout, PaneRect, PaneRenderData,
-    RenderOutcome, RenderStyle, SearchRenderData, StatusBarRenderData, TabRenderData,
-    TabStripLayout, TextLayout, WorkspaceRenderData, WorkspaceStripLayout,
+    RenderOutcome, RenderStyle, SearchRenderData, StatusBarEdge, StatusBarRenderData,
+    TabRenderData, TabStripLayout, TextLayout, WorkspaceRenderData, WorkspaceStripLayout,
 };
 pub use toyoterm_script::ConfigManager;
 pub use toyoterm_terminal::{
@@ -386,9 +386,9 @@ struct ToyotermApplication {
     cell_metrics: CellMetrics,
     script_thread: ScriptThread,
     script_snapshot: ScriptSnapshot,
-    status_text: String,
-    status_pending: bool,
-    next_status_at: Option<Instant>,
+    status_text: HashMap<StatusBarPosition, String>,
+    status_pending: Option<StatusBarPosition>,
+    next_status_at: HashMap<StatusBarPosition, Instant>,
     terminal_render_pending: bool,
     mux: Mux,
     render_style: RenderStyle,
@@ -739,30 +739,47 @@ impl ApplicationHandler<AppEvent> for ToyotermApplication {
     }
 
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
-        let Some(interval) = self.script_snapshot.config.status_interval else {
-            self.next_status_at = None;
+        if self.script_snapshot.config.status_bars.is_empty() {
+            self.next_status_at.clear();
             event_loop.set_control_flow(ControlFlow::Wait);
             return;
-        };
-        if self.status_pending || self.window.is_none() {
+        }
+        if self.status_pending.is_some() || self.window.is_none() {
             event_loop.set_control_flow(ControlFlow::Wait);
             return;
         }
         let now = Instant::now();
-        let deadline = *self.next_status_at.get_or_insert(now);
+        for bar in &self.script_snapshot.config.status_bars {
+            self.next_status_at.entry(bar.position).or_insert(now);
+        }
+        let Some((position, deadline, interval)) = self
+            .script_snapshot
+            .config
+            .status_bars
+            .iter()
+            .filter_map(|bar| {
+                self.next_status_at
+                    .get(&bar.position)
+                    .map(|deadline| (bar.position, *deadline, bar.interval))
+            })
+            .min_by_key(|(_, deadline, _)| *deadline)
+        else {
+            event_loop.set_control_flow(ControlFlow::Wait);
+            return;
+        };
         if now < deadline {
             event_loop.set_control_flow(ControlFlow::WaitUntil(deadline));
             return;
         }
-        match self.submit_script(ScriptInvocation::Status) {
+        match self.submit_script(ScriptInvocation::Status { position }) {
             Ok(_) => {
-                self.status_pending = true;
-                self.next_status_at = None;
+                self.status_pending = Some(position);
+                self.next_status_at.remove(&position);
                 event_loop.set_control_flow(ControlFlow::Wait);
             }
             Err(error) => {
                 tracing::warn!(target: "toyoterm::script", %error, "submit status callback failed");
-                self.next_status_at = Some(now + interval);
+                self.next_status_at.insert(position, now + interval);
                 event_loop.set_control_flow(ControlFlow::WaitUntil(now + interval));
             }
         }
@@ -979,9 +996,9 @@ impl ToyotermApplication {
             },
             script_thread,
             script_snapshot,
-            status_text: String::new(),
-            status_pending: false,
-            next_status_at: None,
+            status_text: HashMap::new(),
+            status_pending: None,
+            next_status_at: HashMap::new(),
             terminal_render_pending: false,
             mux,
             render_style,
@@ -1358,14 +1375,32 @@ mod tests {
     }
 
     #[test]
-    fn status_bar_occupies_the_scaled_bottom_edge() {
+    fn edge_bars_surround_the_pane_area() {
+        let config = ToyotermConfig {
+            status_bars: [
+                StatusBarPosition::Top,
+                StatusBarPosition::Bottom,
+                StatusBarPosition::Left,
+                StatusBarPosition::Right,
+            ]
+            .map(|position| toyoterm_config::StatusBarConfig {
+                position,
+                interval: Duration::from_secs(1),
+            })
+            .into(),
+            ..ToyotermConfig::default()
+        };
+
+        let (pane, bars) = edge_bar_layout(PhysicalSize::new(960, 600), 54, &config, 1.0);
+        assert_eq!(pane, PaneRect::new(160, 78, 640, 498));
         assert_eq!(
-            status_bar_rect(PhysicalSize::new(960, 600), 24),
-            PaneRect::new(0, 576, 960, 24)
-        );
-        assert_eq!(
-            status_bar_rect(PhysicalSize::new(1200, 750), 36),
-            PaneRect::new(0, 714, 1200, 36)
+            bars,
+            vec![
+                (StatusBarPosition::Top, PaneRect::new(0, 54, 960, 24)),
+                (StatusBarPosition::Bottom, PaneRect::new(0, 576, 960, 24)),
+                (StatusBarPosition::Left, PaneRect::new(0, 78, 160, 498)),
+                (StatusBarPosition::Right, PaneRect::new(800, 78, 160, 498)),
+            ]
         );
     }
 

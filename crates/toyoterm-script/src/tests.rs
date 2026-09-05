@@ -93,11 +93,14 @@ fn status_dsl_uses_typed_context_and_discards_commands() {
     manager.set_object_model(&context.model).unwrap();
 
     assert_eq!(
-        manager.config().status_interval,
-        Some(Duration::from_millis(250))
+        manager.config().status_bars,
+        vec![StatusBarConfig {
+            position: StatusBarPosition::Bottom,
+            interval: Duration::from_millis(250),
+        }]
     );
     assert_eq!(
-        manager.render_status().unwrap(),
+        manager.render_status(StatusBarPosition::Bottom).unwrap(),
         "Workspace 1 | Tab 3 | Pane 4"
     );
     assert!(manager.drain_commands(PaneId(4)).unwrap().is_empty());
@@ -108,15 +111,58 @@ fn status_interval_defaults_to_one_second_and_rejects_values_below_100ms() {
     let mut manager = ConfigManager::new().unwrap();
     manager.reload("Toyoterm.status { 'ready' }").unwrap();
     assert_eq!(
-        manager.config().status_interval,
-        Some(Duration::from_secs(1))
+        manager.config().status_bars,
+        vec![StatusBarConfig {
+            position: StatusBarPosition::Bottom,
+            interval: Duration::from_secs(1),
+        }]
     );
 
     let error = manager
         .reload("Toyoterm.status(interval: 0.099) { 'too fast' }")
         .unwrap_err();
     assert!(error.message().contains("at least 0.1 seconds"));
-    assert_eq!(manager.render_status().unwrap(), "ready");
+    assert_eq!(
+        manager.render_status(StatusBarPosition::Bottom).unwrap(),
+        "ready"
+    );
+}
+
+#[test]
+fn status_dsl_supports_one_callback_per_edge() {
+    let mut manager = ConfigManager::new().unwrap();
+    manager
+        .reload(
+            r#"
+                Toyoterm.status(position: :top) { "TOP" }
+                Toyoterm.status(position: :right, interval: 2.0) { "RIGHT" }
+            "#,
+        )
+        .unwrap();
+
+    assert_eq!(manager.config().status_bars.len(), 2);
+    assert_eq!(
+        manager.render_status(StatusBarPosition::Top).unwrap(),
+        "TOP"
+    );
+    assert_eq!(
+        manager.render_status(StatusBarPosition::Right).unwrap(),
+        "RIGHT"
+    );
+
+    let error = manager
+        .reload("Toyoterm.status(position: :center) { 'invalid' }")
+        .unwrap_err();
+    assert!(error.message().contains("status position"));
+    assert_eq!(manager.config().status_bars.len(), 2);
+
+    let error = manager
+        .reload(
+            "Toyoterm.status(position: :top) { 'one' }; Toyoterm.status(position: :top) { 'two' }",
+        )
+        .unwrap_err();
+    assert!(error.message().contains("already configured"));
+    assert_eq!(manager.config().status_bars.len(), 2);
 }
 
 #[test]

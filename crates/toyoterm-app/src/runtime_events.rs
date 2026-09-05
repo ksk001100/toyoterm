@@ -50,7 +50,10 @@ impl ToyotermApplication {
     ) -> Result<(), String> {
         let waiter = self.eval_waiters.remove(&completion.id);
         let is_reload = matches!(completion.invocation, ScriptInvocation::Reload);
-        let is_status = matches!(completion.invocation, ScriptInvocation::Status);
+        let status_position = match &completion.invocation {
+            ScriptInvocation::Status { position } => Some(*position),
+            _ => None,
+        };
         let mut result = match completion.result {
             Ok(result) => result,
             Err(error) => {
@@ -68,27 +71,40 @@ impl ToyotermApplication {
                         log_expanded: false,
                     });
                 }
-                if is_status {
-                    self.status_pending = false;
-                    self.next_status_at = self
+                if let Some(position) = status_position {
+                    self.status_pending = None;
+                    if let Some(interval) = self
                         .script_snapshot
                         .config
-                        .status_interval
-                        .map(|interval| Instant::now() + interval);
+                        .status_bars
+                        .iter()
+                        .find(|bar| bar.position == position)
+                        .map(|bar| bar.interval)
+                    {
+                        self.next_status_at
+                            .insert(position, Instant::now() + interval);
+                    }
                 }
                 self.finish_eval(waiter, Err(message));
                 return Ok(());
             }
         };
 
-        if is_status {
-            self.status_pending = false;
-            self.status_text = result.value.take().unwrap_or_default();
-            self.next_status_at = self
+        if let Some(position) = status_position {
+            self.status_pending = None;
+            self.status_text
+                .insert(position, result.value.take().unwrap_or_default());
+            if let Some(interval) = self
                 .script_snapshot
                 .config
-                .status_interval
-                .map(|interval| Instant::now() + interval);
+                .status_bars
+                .iter()
+                .find(|bar| bar.position == position)
+                .map(|bar| bar.interval)
+            {
+                self.next_status_at
+                    .insert(position, Instant::now() + interval);
+            }
         }
         let value = result.value.unwrap_or_default();
         let apply_result: Result<(), String> = (|| {

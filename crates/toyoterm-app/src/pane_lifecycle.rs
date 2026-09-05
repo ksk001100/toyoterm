@@ -277,29 +277,15 @@ impl ToyotermApplication {
             .saturating_add(tab_bar_height(&self.script_snapshot.config, scale_factor))
             .saturating_add(notification_height)
             .min(window_size.height);
-        let status_height = self
-            .script_snapshot
-            .config
-            .status_interval
-            .map(|_| {
-                scaled_ui_size(
-                    self.script_snapshot.config.ui.status_bar_height,
-                    scale_factor,
-                )
-            })
-            .unwrap_or(0)
-            .min(window_size.height.saturating_sub(chrome_height));
+        let (pane_rect, _) = edge_bar_layout(
+            window_size,
+            chrome_height,
+            &self.script_snapshot.config,
+            scale_factor,
+        );
         PaneLayout::calculate(
             root,
-            PaneRect::new(
-                0,
-                chrome_height,
-                window_size.width,
-                window_size
-                    .height
-                    .saturating_sub(chrome_height)
-                    .saturating_sub(status_height),
-            ),
+            pane_rect,
             scaled_ui_size(
                 self.script_snapshot.config.ui.pane_divider_width,
                 scale_factor,

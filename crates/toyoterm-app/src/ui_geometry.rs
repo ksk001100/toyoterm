@@ -20,14 +20,73 @@ pub(super) fn workspace_bar_height(config: &ToyotermConfig, scale_factor: f64) -
     }
 }
 
-pub(super) fn status_bar_rect(window_size: PhysicalSize<u32>, height: u32) -> PaneRect {
-    let height = height.min(window_size.height);
-    PaneRect::new(
+pub(super) fn edge_bar_layout(
+    window_size: PhysicalSize<u32>,
+    chrome_height: u32,
+    config: &ToyotermConfig,
+    scale_factor: f64,
+) -> (PaneRect, Vec<(StatusBarPosition, PaneRect)>) {
+    let mut content = PaneRect::new(
         0,
-        window_size.height.saturating_sub(height),
+        chrome_height.min(window_size.height),
         window_size.width,
-        height,
-    )
+        window_size.height.saturating_sub(chrome_height),
+    );
+    let height = scaled_ui_size(config.ui.status_bar_height, scale_factor);
+    let width = scaled_ui_size(config.ui.status_bar_width, scale_factor);
+    let mut bars = Vec::with_capacity(config.status_bars.len());
+    for position in [
+        StatusBarPosition::Top,
+        StatusBarPosition::Bottom,
+        StatusBarPosition::Left,
+        StatusBarPosition::Right,
+    ] {
+        if !config
+            .status_bars
+            .iter()
+            .any(|bar| bar.position == position)
+        {
+            continue;
+        }
+        let rect = match position {
+            StatusBarPosition::Top => {
+                let size = height.min(content.height);
+                let rect = PaneRect::new(content.x, content.y, content.width, size);
+                content.y = content.y.saturating_add(size);
+                content.height = content.height.saturating_sub(size);
+                rect
+            }
+            StatusBarPosition::Bottom => {
+                let size = height.min(content.height);
+                content.height = content.height.saturating_sub(size);
+                PaneRect::new(
+                    content.x,
+                    content.y.saturating_add(content.height),
+                    content.width,
+                    size,
+                )
+            }
+            StatusBarPosition::Left => {
+                let size = width.min(content.width);
+                let rect = PaneRect::new(content.x, content.y, size, content.height);
+                content.x = content.x.saturating_add(size);
+                content.width = content.width.saturating_sub(size);
+                rect
+            }
+            StatusBarPosition::Right => {
+                let size = width.min(content.width);
+                content.width = content.width.saturating_sub(size);
+                PaneRect::new(
+                    content.x.saturating_add(content.width),
+                    content.y,
+                    size,
+                    content.height,
+                )
+            }
+        };
+        bars.push((position, rect));
+    }
+    (content, bars)
 }
 
 pub(super) fn config_error_height(scale_factor: f64, log_expanded: bool) -> u32 {
