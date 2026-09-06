@@ -108,6 +108,18 @@ cargo run -- ruby console
 プラグイン API の一覧は、[mruby 設定 DSL / API リファレンス](docs/mruby-api.md)
 を参照してください。
 
+ネイティブアクション（`ctrl("t").new_tab`）もRubyコールバック
+（`ctrl("h").run { |context| ... }`）も、`config.keys`で設定できます。
+`toggle_zoom`を含め、組み込みアクションはキー設定と
+`Toyoterm.action`で共通です。キー・コマンド・バーのコンテキストは
+`workspace`・`window`・`tab`・`pane`を公開します。
+ハンドルの選択は`activate`、ウィンドウ作成は`workspace.new_window`に揃えます。
+リリース前のため互換用の旧名は削除し、上記の形式に統一しています。
+テーマ設定には`config.theme = name`を使います。
+設定セクションのブロックと`Toyoterm.configure`は設定オブジェクトを返すため、
+従来ブロック末尾の式を戻り値として利用していた場合は、その値を明示的に保存してください。
+詳しくはリファレンスの移行方針を参照してください。
+
 設定ファイルは次の優先順位で読み込まれます。
 
 1. `--config`で指定したパス
@@ -168,7 +180,7 @@ Toyoterm.configure do |config|
   # （Windows環境では pwsh.exe -> powershell.exe -> %ComSpec% を自動検出）。
   # config.default_shell = "/bin/zsh"
 
-  config.bind "CTRL+SHIFT+H" do |context|
+  config.keys.key("CTRL+SHIFT+H").run do |context|
     context.pane.send_text("echo hello from mruby\n")
   end
 
@@ -203,8 +215,8 @@ xterm 6×6×6カラ―キューブ、232〜255はグレースケールです。`
 
 `config.window`では`opacity`、`width`、`height`、`min_width`、`min_height`、`decorations`、`resizable`、`always_on_top`、`title`を設定できます。初期サイズは起動時に、その他の変更可能な属性はreload時にも反映されます。
 
-`window.background_image`でPNG/JPEGの背景画像を指定できます（`nil`で解除）。
-`window.background_image_opacity`で`colors.background`に重ねる画像の濃さを
+`window.image.path`でPNG/JPEGの背景画像を指定できます（`nil`で解除）。
+`window.image.opacity`で`colors.background`に重ねる画像の濃さを
 0〜1で調整します（既定値は1）。画像は縦横比を維持し、中央を基準に切り抜いて
 ウィンドウ全体を覆います。相対パスは設定ファイルのディレクトリが基準です。
 `~/`や`C:/Pictures/wallpaper.jpg`などの絶対パスも使えます。PNGのアルファに
@@ -215,8 +227,10 @@ reloadで画像ファイルを再読み込みし、実行中の設定変更で�
 
 ```ruby
 Toyoterm.configure do |config|
-  config.window.background_image = "images/wallpaper.jpg"
-  config.window.background_image_opacity = 0.25
+  config.window.image do |image|
+    image.path = "images/wallpaper.jpg"
+    image.opacity = 0.25
+  end
 end
 ```
 
@@ -250,11 +264,11 @@ Vim風にする場合は、`leader("v").toggle_visual_mode`、`key("SPACE").sele
 Ruby callbackからは`Toyoterm.clipboard.read`と`Toyoterm.clipboard.write(text)`でホストのテキストクリップボードを操作できます。動的キーバインドまたはイベントcallbackの実行直前に、クリップボードのsnapshotを更新します。プラットフォームのクリップボードを利用できない場合、`read`は`RuntimeError`を発生させます。書込みはcallbackが正常終了した後だけ反映するため、例外時は他のqueue済みcommandと一緒にロールバックされます。
 
 ```ruby
-config.bind "CTRL+SHIFT+Y" do
+config.keys.key("CTRL+SHIFT+Y").run do
   Toyoterm.clipboard.write("pane #{Toyoterm.current_pane.id}")
 end
 
-config.bind "CTRL+SHIFT+P" do |context|
+config.keys.key("CTRL+SHIFT+P").run do |context|
   context.pane.send_text(Toyoterm.clipboard.read)
 end
 ```
@@ -297,7 +311,7 @@ Toyoterm::Plugin.define "git-tools" do |plugin|
     event.pane.badge = "bell"
   end
 
-  plugin.bind "CTRL+G" do |context|
+  plugin.keys.key("CTRL+G").run do |context|
     context.pane.send_text("git status\n")
   end
 
@@ -307,7 +321,7 @@ Toyoterm::Plugin.define "git-tools" do |plugin|
 end
 ```
 
-`plugin.command`、`plugin.on`、`plugin.bind`、`plugin.keys`は、main configと同じcommand、event、dynamic binding、native binding APIを使用します。同じcanonical pathの重複読込は無視します。plugin nameや登録の重複、不正なmetadata、API version非互換、読込不能なファイル、Ruby例外が発生した場合は、そのpluginによる登録をすべてrollbackして無効化し、残りのpluginの読込を続け、`toyoterm::script`へwarningを記録します。config自体のエラーは、従来どおり候補VM全体をatomicに拒否します。
+`plugin.command`、`plugin.on`、`plugin.keys`は、main configと同じcommand、event、dynamic binding、native binding APIを使用します。同じcanonical pathの重複読込は無視します。plugin nameや登録の重複、不正なmetadata、API version非互換、読込不能なファイル、Ruby例外が発生した場合は、そのpluginによる登録をすべてrollbackして無効化し、残りのpluginの読込を続け、`toyoterm::script`へwarningを記録します。config自体のエラーは、従来どおり候補VM全体をatomicに拒否します。
 
 プラグインは名前付きテーマも提供できます。テーマは`config.colors`と同じ全項目を持ち、省略した項目にはtoyotermの既定色が使われます。
 
@@ -346,7 +360,7 @@ end
 
 ### Rubyオブジェクトモデル
 
-各callbackでは、`Toyoterm.current_workspace`、`current_window`、`current_tab`、`current_pane`から最新のsnapshotを参照できます。`Toyoterm.workspaces`、`windows`、`workspace(name)`で検索でき、Workspace・Window・Tabから子要素を取得できます。`tab.zoomed?`はTabがzoom中か、`pane.zoomed?`はそのzoom対象かを返します。Paneのメタデータには`title`、`cwd`、`pid`、`command_running?`、`last_exit_status`と、表示中のviewportを返す`screen_text`も含まれます。command関連フィールドは[Shell integration](docs/shell-integration.md)を有効にすると更新されます。`split`、`close`、`focus`／`activate`、`new_tab`、`create_window`などの変更操作はNative Commandをqueueし、callbackが正常終了した後に反映します。保存したオブジェクトのnative実体が削除済みの場合は`Toyoterm::InvalidHandleError`を発生させます。
+各callbackでは、`Toyoterm.current_workspace`、`current_window`、`current_tab`、`current_pane`から最新のsnapshotを参照できます。`Toyoterm.workspaces`、`windows`、`workspace(name)`で検索でき、Workspace・Window・Tabから子要素を取得できます。`tab.zoomed?`はTabがzoom中か、`pane.zoomed?`はそのzoom対象かを返します。Paneのメタデータには`title`、`cwd`、`pid`、`command_running?`、`last_exit_status`と、表示中のviewportを返す`screen_text`も含まれます。command関連フィールドは[Shell integration](docs/shell-integration.md)を有効にすると更新されます。`split`、`close`、`activate`、`new_tab`、`new_window`などの変更操作はNative Commandをqueueし、callbackが正常終了した後に反映します。保存したオブジェクトのnative実体が削除済みの場合は`Toyoterm::InvalidHandleError`を発生させます。
 
 `pane.screen_text`はcallback snapshotに含まれる表示行を改行で連結して返し、現在のviewport外にあるscrollbackは含みません。戻り値は独立したStringで、変更しても端末内容には影響しません。
 
@@ -354,7 +368,7 @@ end
 
 `Toyoterm.action(name, argument = nil)`は静的keybindingと同じ組み込み操作をqueueし、commandやevent handlerからfullscreen切替、検索開始、visual selection操作、Tab／Workspace移動などを実行できるようにします。方向付きactionの引数は静的bindingと共通です。適用時点でactiveなUI objectを対象とし、user command actionは対象外です。
 
-`pane.split`、`window.new_tab`、`workspace.create_window`には`command:`、`cwd:`、`env:`の起動optionを指定できます。commandはprogram文字列またはargv配列で、shellによる解釈を挟まず直接実行します。環境変数の値に`nil`を指定すると子processからその変数を除去します。`command`を省略すると設定済みまたはplatform既定のshellを使うため、`pane.cwd`を引き継ぎつつ一部の環境変数だけを上書きしたshellも開けます。
+`pane.split`、`window.new_tab`、`workspace.new_window`には`command:`、`cwd:`、`env:`の起動optionを指定できます。commandはprogram文字列またはargv配列で、shellによる解釈を挟まず直接実行します。環境変数の値に`nil`を指定すると子processからその変数を除去します。`command`を省略すると設定済みまたはplatform既定のshellを使うため、`pane.cwd`を引き継ぎつつ一部の環境変数だけを上書きしたshellも開けます。
 
 `pane.badge`はPane右上に描画するcallback用テキストです。`nil`を代入すると消去します。badge変更はcallbackが正常終了した後だけ反映し、例外時は他のqueue済み変更と一緒に破棄します。`pane.chdir`は提供しません。作業ディレクトリはshellが所有するため、設定から変更する場合は対象shell向けに適切にescapeした`pane.send_text("cd ...\n")`を使用します。
 

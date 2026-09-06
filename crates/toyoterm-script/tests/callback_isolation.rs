@@ -19,7 +19,7 @@ fn ruby_callback_exception_does_not_terminate_the_pty_child() {
         .reload(
             r#"
                 Toyoterm.configure do |config|
-                  config.bind "CTRL+E" do |context|
+                  config.keys.key("CTRL+E").run do |context|
                     context.pane.send_text("must not reach the PTY\n")
                     raise "intentional callback failure"
                   end

@@ -59,7 +59,7 @@ fn run_case(operation: Operation) {
         }
         Operation::ActivatePane => {
             split_current_pane(&mut mux);
-            format!("Toyoterm::Pane.new({}).focus", original_pane.0)
+            format!("Toyoterm::Pane.new({}).activate", original_pane.0)
         }
         Operation::NewTab => format!("Toyoterm::Window.new({}).new_tab", original_window.0),
         Operation::CloseTab => {
@@ -68,10 +68,10 @@ fn run_case(operation: Operation) {
         }
         Operation::ActivateTab => {
             new_tab(&mut mux);
-            format!("Toyoterm::Tab.new({}).focus", original_tab.0)
+            format!("Toyoterm::Tab.new({}).activate", original_tab.0)
         }
         Operation::CreateWindow => format!(
-            "Toyoterm::Workspace.new({}).create_window",
+            "Toyoterm::Workspace.new({}).new_window",
             original_workspace.0
         ),
         Operation::CloseWindow => {
@@ -80,7 +80,7 @@ fn run_case(operation: Operation) {
         }
         Operation::ActivateWindow => {
             create_window(&mut mux, original_workspace);
-            format!("Toyoterm::Window.new({}).focus", original_window.0)
+            format!("Toyoterm::Window.new({}).activate", original_window.0)
         }
         Operation::ActivateWorkspace => {
             mux.dispatch(Command::SwitchWorkspace("second".into()))

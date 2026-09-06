@@ -135,27 +135,42 @@ module Toyoterm
     end
   end
 
-  class WindowConfig
-    attr_reader :opacity, :background_image, :background_image_opacity
-    attr_accessor :width, :height, :min_width, :min_height,
-                  :decorations, :resizable, :always_on_top, :title
+  class ImageConfig
+    attr_reader :path, :opacity
 
-    def background_image=(value)
+    def initialize
+      @path = nil
+      @opacity = 1.0
+    end
+
+    def path=(value)
       unless value.nil? || value.is_a?(String)
         raise TypeError, "background image must be a path String or nil"
       end
       if value && (value.empty? || value.include?("\0"))
         raise ArgumentError, "background image path must be non-empty and contain no NUL"
       end
-      @background_image = value && value.dup.freeze
+      @path = value && value.dup.freeze
     end
 
-    def background_image_opacity=(value)
+    def opacity=(value)
       raise TypeError, "background image opacity must be a number" unless value.is_a?(Numeric)
       unless value.to_f.finite? && value >= 0 && value <= 1
         raise ArgumentError, "background image opacity must be between 0 and 1"
       end
-      @background_image_opacity = value
+      @opacity = value
+    end
+
+  end
+
+  class WindowConfig
+    attr_reader :opacity
+    attr_accessor :width, :height, :min_width, :min_height,
+                  :decorations, :resizable, :always_on_top, :title
+
+    def image(&block)
+      block.call(@image) if block
+      @image
     end
 
     def opacity=(value)
@@ -166,8 +181,7 @@ module Toyoterm
 
     def initialize
       @opacity = 1.0
-      @background_image = nil
-      @background_image_opacity = 1.0
+      @image = ImageConfig.new
       @width = 960
       @height = 600
       @min_width = 320
@@ -216,9 +230,12 @@ module Toyoterm
   end
 
   class KeyBindingContext
-    attr_reader :pane
+    attr_reader :workspace, :window, :tab, :pane
 
     def initialize(pane)
+      @workspace = Toyoterm.current_workspace
+      @window = Toyoterm.current_window
+      @tab = Toyoterm.current_tab
       @pane = pane
     end
   end
@@ -257,166 +274,38 @@ module Toyoterm
       @key = key
     end
 
-    def activate_pane(direction)
-      @config.__register_static(@key, :activate_pane, direction)
-      self
-    end
-
-    def split(direction)
-      @config.__register_static(@key, :split, direction)
-      self
-    end
-
-    def new_tab
-      @config.__register_static(@key, :new_tab, nil)
-      self
-    end
-
-    def close_pane
-      @config.__register_static(@key, :close_pane, nil)
-      self
-    end
-
-    def close_tab
-      @config.__register_static(@key, :close_tab, nil)
-      self
-    end
-
-    def new_workspace
-      @config.__register_static(@key, :new_workspace, nil)
-      self
-    end
-
-    def reload_config
-      @config.__register_static(@key, :reload_config, nil)
-      self
-    end
-
-    def search
-      @config.__register_static(@key, :search, nil)
-      self
-    end
-
-    def maximize_window
-      @config.__register_static(@key, :maximize_window, nil)
-      self
-    end
-
-    def toggle_maximize
-      @config.__register_static(@key, :toggle_maximize, nil)
-      self
-    end
-
-    def minimize_window
-      @config.__register_static(@key, :minimize_window, nil)
-      self
-    end
-
-    def toggle_fullscreen
-      @config.__register_static(@key, :toggle_fullscreen, nil)
-      self
-    end
-
-    def toggle_zoom
-      @config.__register_static(@key, :toggle_zoom, nil)
-      self
-    end
-
-    def toggle_pane_zoom
-      toggle_zoom
-    end
-
-    def next_tab
-      @config.__register_static(@key, :next_tab, nil)
-      self
-    end
-
-    def previous_tab
-      @config.__register_static(@key, :previous_tab, nil)
-      self
-    end
-
-    def next_workspace
-      @config.__register_static(@key, :next_workspace, nil)
-      self
-    end
-
-    def previous_workspace
-      @config.__register_static(@key, :previous_workspace, nil)
-      self
-    end
-
-    def copy_selection
-      @config.__register_static(@key, :copy_selection, nil)
-      self
-    end
-
-    def paste_clipboard
-      @config.__register_static(@key, :paste_clipboard, nil)
-      self
-    end
-
-    def start_visual_selection
-      @config.__register_static(@key, :start_visual_selection, nil)
-      self
-    end
-
-    def start_visual_mode
-      @config.__register_static(@key, :start_visual_mode, nil)
-      self
-    end
-
-    def enter_visual_mode
-      start_visual_mode
-    end
-
-    def toggle_visual_mode
-      @config.__register_static(@key, :toggle_visual_mode, nil)
-      self
-    end
-
-    def toggle_visual_selection
-      toggle_visual_mode
-    end
-
-    def select_visual_selection
-      @config.__register_static(@key, :select_visual_selection, nil)
-      self
-    end
-
-    def select
-      select_visual_selection
-    end
-
-    def end_visual_selection
-      @config.__register_static(@key, :end_visual_selection, nil)
-      self
-    end
-
-    def exit_visual_mode
-      end_visual_selection
-    end
-
-    def move_visual_selection(direction)
-      direction = direction.to_s.downcase
-      unless ["left", "right", "up", "down", "line_start", "line_end"].include?(direction)
-        raise ArgumentError, "visual selection direction must be left, right, up, down, line_start, or line_end"
+    # Shared by the binding DSL and Toyoterm.action. Use this table so
+    # adding an action cannot silently omit one of the two entry points.
+    ACTIONS = {
+      new_tab: nil, close_pane: nil, close_tab: nil, new_workspace: nil,
+      reload_config: nil, search: nil, maximize_window: nil,
+      toggle_maximize: nil, minimize_window: nil, toggle_fullscreen: nil,
+      toggle_zoom: nil, next_tab: nil, previous_tab: nil,
+      next_workspace: nil, previous_workspace: nil, copy_selection: nil,
+      paste_clipboard: nil, start_visual_mode: nil, toggle_visual_mode: nil,
+      start_visual_selection: nil, select_visual_selection: nil,
+      end_visual_selection: nil, yank_selection: nil,
+      split: [:left, :right, :up, :down],
+      activate_pane: [:left, :right, :up, :down],
+      move_visual_selection: [:left, :right, :up, :down, :line_start, :line_end]
+    }.freeze
+    ACTIONS.each do |name, arguments|
+      if arguments
+        define_method(name) { |argument| action(name, argument) }
+      else
+        define_method(name) { action(name) }
       end
-      @config.__register_static(@key, :move_visual_selection, direction)
+    end
+
+    def action(name, argument = nil)
+      name, argument = Toyoterm.__normalize_action(name, argument)
+      @config.__register_static(@key, name, argument)
       self
     end
 
-    def visual_move(direction)
-      move_visual_selection(direction)
-    end
-
-    def yank_selection
-      @config.__register_static(@key, :yank_selection, nil)
+    def run(&block)
+      @config.__register_dynamic(@key, &block)
       self
-    end
-
-    def copy_visual_selection
-      yank_selection
     end
 
     def command(name)
@@ -509,16 +398,17 @@ module Toyoterm
     end
 
     def font(&block)
-      block ? block.call(@font) : @font
+      block.call(@font) if block
+      @font
     end
 
     def colors(&block)
-      block ? block.call(@colors) : @colors
+      block.call(@colors) if block
+      @colors
     end
 
-    def theme(name = nil)
-      return @theme if name.nil?
-      self.theme = name
+    def theme
+      @theme
     end
 
     def theme=(name)
@@ -538,15 +428,18 @@ module Toyoterm
     end
 
     def window(&block)
-      block ? block.call(@window) : @window
+      block.call(@window) if block
+      @window
     end
 
     def ui(&block)
-      block ? block.call(@ui) : @ui
+      block.call(@ui) if block
+      @ui
     end
 
     def behavior(&block)
-      block ? block.call(@behavior) : @behavior
+      block.call(@behavior) if block
+      @behavior
     end
 
     def __checkpoint
@@ -559,7 +452,7 @@ module Toyoterm
         [@window.opacity, @window.width, @window.height, @window.min_width,
          @window.min_height, @window.decorations, @window.resizable,
          @window.always_on_top, @window.title, @default_shell, @scrollback_lines,
-         @window.background_image, @window.background_image_opacity],
+         @window.image.path, @window.image.opacity],
         [@ui.padding_x, @ui.padding_y, @ui.line_height, @ui.tab_bar,
          @ui.tab_bar_height, @ui.tab_width, @ui.workspace_bar,
          @ui.workspace_bar_height, @ui.workspace_width, @ui.status_bar_height,
@@ -601,8 +494,8 @@ module Toyoterm
       @window.title = window[8]
       @default_shell = window[9]
       @scrollback_lines = window[10]
-      @window.background_image = window[11]
-      @window.background_image_opacity = window[12]
+      @window.image.path = window[11]
+      @window.image.opacity = window[12]
       @ui.padding_x = ui[0]
       @ui.padding_y = ui[1]
       @ui.line_height = ui[2]
@@ -624,7 +517,7 @@ module Toyoterm
       nil
     end
 
-    def bind(key, &block)
+    def __register_dynamic(key, &block)
       raise ArgumentError, "key binding requires a block" unless block
       key = key.to_s.upcase
       raise ArgumentError, "key binding cannot be empty" if key.empty?
@@ -779,12 +672,13 @@ module Toyoterm
       self
     end
 
-    def create_window(command: nil, cwd: nil, env: nil)
+    def new_window(command: nil, cwd: nil, env: nil)
       validate!
       launch = Toyoterm.__normalize_launch(command, cwd, env)
       Toyoterm.__queue_command(launch ? :create_window_with_launch : :create_window, @id, nil, launch)
       self
     end
+
 
     private
     def __native_kind; :workspace; end
@@ -809,11 +703,12 @@ module Toyoterm
       self
     end
 
-    def focus
+    def activate
       validate!
       Toyoterm.__queue_command(:activate_window, @id, nil)
       self
     end
+
 
     private
     def __native_kind; :window; end
@@ -841,13 +736,12 @@ module Toyoterm
       self
     end
 
-    def focus
+    def activate
       validate!
       Toyoterm.__queue_command(:activate_tab, @id, nil)
       self
     end
 
-    alias activate focus
 
     private
     def __native_kind; :tab; end
@@ -907,7 +801,7 @@ module Toyoterm
       self
     end
 
-    def focus
+    def activate
       validate!
       Toyoterm.__queue_command(:activate_pane, @id, nil)
       self
@@ -945,6 +839,7 @@ module Toyoterm
       Toyoterm.__queue_command(:search_pane, @id, query, direction)
       self
     end
+
 
     private
     def __native_kind; :pane; end
@@ -1005,10 +900,6 @@ module Toyoterm
         Toyoterm.on(name, &block)
       end
 
-      def bind(key, &block)
-        Toyoterm.__config.bind(key, &block)
-      end
-
       def keys(&block)
         Toyoterm.__config.keys(&block)
       end
@@ -1066,7 +957,9 @@ module Toyoterm
   @current_plugin_path = nil
 
   def self.configure(&block)
+    raise ArgumentError, "configuration requires a block" unless block
     block.call(@config)
+    @config
   end
 
   def self.__config
@@ -1111,40 +1004,28 @@ module Toyoterm
   end
 
   def self.action(name, argument = nil)
+    name, argument = __normalize_action(name, argument)
+    __queue_command(:invoke_action, 0, name, argument)
+    nil
+  end
+
+  def self.__normalize_action(name, argument)
     name = name.to_s.downcase
     raise ArgumentError, "action name cannot be empty" if name.empty?
-
-    no_argument = [
-      "new_tab", "close_pane", "close_tab", "new_workspace",
-      "reload_config", "search", "maximize_window", "toggle_maximize",
-      "minimize_window", "toggle_fullscreen", "next_tab", "previous_tab",
-      "next_workspace", "previous_workspace", "copy_selection",
-      "paste_clipboard", "start_visual_mode", "toggle_visual_mode",
-      "start_visual_selection", "select_visual_selection",
-      "end_visual_selection", "yank_selection"
-    ]
-    pane_directions = ["left", "right", "up", "down"]
-    visual_motions = pane_directions + ["line_start", "line_end"]
-
-    if no_argument.include?(name)
-      raise ArgumentError, "action #{name} does not accept an argument" unless argument.nil?
-      normalized_argument = nil
-    elsif ["split", "activate_pane"].include?(name)
-      normalized_argument = argument.to_s.downcase
-      unless pane_directions.include?(normalized_argument)
-        raise ArgumentError, "action #{name} requires left, right, up, or down"
-      end
-    elsif name == "move_visual_selection"
-      normalized_argument = argument.to_s.downcase
-      unless visual_motions.include?(normalized_argument)
-        raise ArgumentError, "move_visual_selection requires left, right, up, down, line_start, or line_end"
-      end
-    else
+    name = name.to_sym
+    unless StaticBinding::ACTIONS.key?(name)
       raise ArgumentError, "unsupported action: #{name}"
     end
-
-    __queue_command(:invoke_action, 0, name, normalized_argument)
-    nil
+    choices = StaticBinding::ACTIONS[name]
+    if choices
+      argument = argument.to_s.downcase
+      unless choices.include?(argument.to_sym)
+        raise ArgumentError, "action #{name} requires #{choices[0...-1].join(', ')}, or #{choices[-1]}"
+      end
+    else
+      raise ArgumentError, "action #{name} does not accept an argument" unless argument.nil?
+    end
+    [name.to_s, argument]
   end
 
   def self.clipboard

@@ -109,6 +109,16 @@ See the [mruby configuration DSL and API reference](docs/mruby-api.md) for the
 complete list of settings, key actions, callbacks, object methods, events, and
 plugin APIs.
 
+Use `config.keys` for both native actions (`ctrl("t").new_tab`) and Ruby
+callbacks (`ctrl("h").run { |context| ... }`). Built-in actions work
+identically in bindings and `Toyoterm.action`, including `toggle_zoom`.
+Key, command, and bar contexts expose `workspace`, `window`, `tab`, and `pane`.
+Use `activate` on every native handle and `workspace.new_window` to create a
+window. Pre-release compatibility aliases have been removed; use these canonical
+methods and `config.theme = name` for theme selection. Configuration section blocks and `Toyoterm.configure` return
+their configuration object; capture the block's last expression explicitly if
+you previously relied on its return value. See the reference's migration notes.
+
 toyoterm looks for configuration in this order:
 
 1. The path passed with `--config`
@@ -169,7 +179,7 @@ Toyoterm.configure do |config|
   # (on Windows: pwsh.exe -> powershell.exe -> %ComSpec%).
   # config.default_shell = "/bin/zsh"
 
-  config.bind "CTRL+SHIFT+H" do |context|
+  config.keys.key("CTRL+SHIFT+H").run do |context|
     context.pane.send_text("echo hello from mruby\n")
   end
 
@@ -205,9 +215,9 @@ grayscale ramp. Assigning the entire `colors.ansi` array requires exactly 16
 
 `config.window` exposes `opacity`, `width`, `height`, `min_width`, `min_height`, `decorations`, `resizable`, `always_on_top`, and `title`. Initial dimensions apply at startup; mutable window attributes also apply on reload.
 
-Set a PNG/JPEG wallpaper with `window.background_image` (`nil` disables it), and
+Set a PNG/JPEG wallpaper with `window.image.path` (`nil` disables it), and
 adjust its blend strength over `colors.background` with
-`window.background_image_opacity` (0–1, default 1). The image fills the window
+`window.image.opacity` (0–1, default 1). The image fills the window
 with centered cropping and no distortion. Paths are relative to the config file;
 `~/` and absolute paths such as `C:/Pictures/wallpaper.jpg` also work. PNG alpha
 is supported, and `window.opacity` controls the combined background opacity.
@@ -217,8 +227,10 @@ with a 256 MiB decoder allocation budget.
 
 ```ruby
 Toyoterm.configure do |config|
-  config.window.background_image = "images/wallpaper.jpg"
-  config.window.background_image_opacity = 0.25
+  config.window.image do |image|
+    image.path = "images/wallpaper.jpg"
+    image.opacity = 0.25
+  end
 end
 ```
 
@@ -254,11 +266,11 @@ For example, a visual selection can be configured with `leader("v").toggle_visua
 Ruby callbacks can access the host text clipboard through `Toyoterm.clipboard.read` and `Toyoterm.clipboard.write(text)`. The clipboard snapshot is refreshed immediately before each dynamic key-binding or event callback. `read` raises `RuntimeError` when the platform clipboard is unavailable. Writes are applied only after the callback completes successfully, so a callback exception rolls them back together with its other queued commands.
 
 ```ruby
-config.bind "CTRL+SHIFT+Y" do
+config.keys.key("CTRL+SHIFT+Y").run do
   Toyoterm.clipboard.write("pane #{Toyoterm.current_pane.id}")
 end
 
-config.bind "CTRL+SHIFT+P" do |context|
+config.keys.key("CTRL+SHIFT+P").run do |context|
   context.pane.send_text(Toyoterm.clipboard.read)
 end
 ```
@@ -301,7 +313,7 @@ Toyoterm::Plugin.define "git-tools" do |plugin|
     event.pane.badge = "bell"
   end
 
-  plugin.bind "CTRL+G" do |context|
+  plugin.keys.key("CTRL+G").run do |context|
     context.pane.send_text("git status\n")
   end
 
@@ -311,7 +323,7 @@ Toyoterm::Plugin.define "git-tools" do |plugin|
 end
 ```
 
-`plugin.command`, `plugin.on`, `plugin.bind`, and `plugin.keys` use the same command, event, dynamic-binding, and native-binding APIs as the main configuration. Loading the same canonical path twice is ignored. Duplicate plugin names or registrations, invalid metadata, incompatible API requirements, unreadable files, and Ruby exceptions disable only that plugin: all registrations made by the failed plugin are rolled back, remaining plugins continue loading, and a warning is written to `toyoterm::script`. A config error still rejects the complete candidate VM atomically.
+`plugin.command`, `plugin.on`, and `plugin.keys` use the same command, event, dynamic-binding, and native-binding APIs as the main configuration. Loading the same canonical path twice is ignored. Duplicate plugin names or registrations, invalid metadata, incompatible API requirements, unreadable files, and Ruby exceptions disable only that plugin: all registrations made by the failed plugin are rolled back, remaining plugins continue loading, and a warning is written to `toyoterm::script`. A config error still rejects the complete candidate VM atomically.
 
 Plugins can also provide named themes. A theme exposes every field available on `config.colors`; fields it does not set retain toyoterm's default colors.
 
@@ -350,7 +362,7 @@ end
 
 ### Ruby object model
 
-Each callback receives a current snapshot through `Toyoterm.current_workspace`, `current_window`, `current_tab`, and `current_pane`. `Toyoterm.workspaces`, `windows`, and `workspace(name)` provide lookup; workspace, window, and tab objects expose their children. `tab.zoomed?` reports whether a tab is zoomed, while `pane.zoomed?` identifies its zoom target. Pane metadata also includes `title`, `cwd`, `pid`, `command_running?`, `last_exit_status`, and the visible viewport as `screen_text`. The command fields are populated when [shell integration](docs/shell-integration.md) is enabled. Mutating methods such as `split`, `close`, `focus`/`activate`, `new_tab`, and `create_window` enqueue native commands and take effect after the callback returns successfully. A saved object raises `Toyoterm::InvalidHandleError` after its native object is deleted.
+Each callback receives a current snapshot through `Toyoterm.current_workspace`, `current_window`, `current_tab`, and `current_pane`. `Toyoterm.workspaces`, `windows`, and `workspace(name)` provide lookup; workspace, window, and tab objects expose their children. `tab.zoomed?` reports whether a tab is zoomed, while `pane.zoomed?` identifies its zoom target. Pane metadata also includes `title`, `cwd`, `pid`, `command_running?`, `last_exit_status`, and the visible viewport as `screen_text`. The command fields are populated when [shell integration](docs/shell-integration.md) is enabled. Mutating methods such as `split`, `close`, `activate`, `new_tab`, and `new_window` enqueue native commands and take effect after the callback returns successfully. A saved object raises `Toyoterm::InvalidHandleError` after its native object is deleted.
 
 `pane.screen_text` returns the callback snapshot's visible rows joined by newlines; it intentionally excludes scrollback outside the current viewport. The returned String is an isolated copy and cannot change terminal contents.
 
@@ -358,7 +370,7 @@ Each callback receives a current snapshot through `Toyoterm.current_workspace`, 
 
 `Toyoterm.action(name, argument = nil)` queues the same built-in operations available to static key bindings, allowing commands and event handlers to toggle fullscreen, open search, manage visual selection, cycle tabs or workspaces, and perform other native UI actions. Directional actions accept the same arguments as their static-binding counterparts. Actions operate on the active UI objects when applied; the user-command action is excluded.
 
-`pane.split`, `window.new_tab`, and `workspace.create_window` accept `command:`, `cwd:`, and `env:` launch options. A command can be a program String or an argv Array and is executed directly without shell parsing. A `nil` environment value removes that variable from the child. Omitting `command` uses the configured or platform default shell, which is useful for opening a shell in `pane.cwd` with selected environment overrides.
+`pane.split`, `window.new_tab`, and `workspace.new_window` accept `command:`, `cwd:`, and `env:` launch options. A command can be a program String or an argv Array and is executed directly without shell parsing. A `nil` environment value removes that variable from the child. Omitting `command` uses the configured or platform default shell, which is useful for opening a shell in `pane.cwd` with selected environment overrides.
 
 `pane.badge` is callback-owned display text rendered in the pane's upper-right corner. Assign `nil` to clear it. Badge changes are applied only after a successful callback and are discarded together with other queued mutations when the callback raises. `pane.chdir` is not provided: the shell owns its working directory, so configurations that want shell-specific directory changes should use `pane.send_text("cd ...\n")` with appropriate shell escaping.
 

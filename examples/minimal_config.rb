@@ -27,11 +27,10 @@ Toyoterm.configure do |config|
   config.scrollback_lines = 10_000
   config.leader key: "b", mods: "CTRL", timeout: 1000
 
-  config.bind "CTRL+SHIFT+H" do |context|
-    context.pane.send_text("echo hello from toyoterm\n")
-  end
-
   config.keys do
+    ctrl_shift("h").run do |context|
+      context.pane.send_text("echo hello from toyoterm\n")
+    end
     leader("v").split(:right)
     ctrl_shift("e").split(:right)
     ctrl_shift("o").activate_pane(:right)

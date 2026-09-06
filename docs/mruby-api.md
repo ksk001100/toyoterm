@@ -50,6 +50,48 @@ a fresh VM; if it fails, the previous configuration remains active. Run
 
 ## Configuration DSL
 
+### Design conventions and migration
+
+- Settings use property getters and `=` setters. Section blocks receive an
+  explicit object; `config.keys` additionally supports the concise block form.
+- Configure both native actions and Ruby callbacks under `config.keys`:
+  `keys.ctrl("t").new_tab` or `keys.ctrl("h").run { |context| ... }`.
+- Built-in action names and argument validation are identical in
+  bindings and `Toyoterm.action`. Native bindings still bypass Ruby on key press.
+- Use `activate` on any workspace, window, tab, or pane. Use `new_window` and
+  `new_tab` to create children, and `split` to create a pane.
+- Key, command, and bar contexts all expose `workspace`, `window`, `tab`, and
+  `pane`. Events retain their event-specific fields; absent fields remain `nil`.
+
+The API is pre-release and does not retain compatibility aliases. Replace
+`config.bind(chord)` / `plugin.bind(chord)` with `config.keys.key(chord).run` /
+`plugin.keys.key(chord).run`, `focus` with `activate`, and `create_window` with
+`new_window`. Set themes with `config.theme = name`; `config.theme` is a getter
+only and passing an argument raises `ArgumentError`.
+
+Removed action names map to the following canonical names:
+
+| Removed name | Canonical name |
+| --- | --- |
+| `toggle_pane_zoom` | `toggle_zoom` |
+| `enter_visual_mode` | `start_visual_mode` |
+| `toggle_visual_selection` | `toggle_visual_mode` |
+| `select` | `select_visual_selection` |
+| `exit_visual_mode` | `end_visual_selection` |
+| `visual_move` | `move_visual_selection` |
+| `copy_visual_selection` | `yank_selection` |
+
+Removed methods raise `NoMethodError`; removed action names passed to `action`
+raise `ArgumentError` before registering or queuing anything. Exceptions follow
+the normal configuration and callback rollback rules.
+
+`Toyoterm.configure` and the `font`, `colors`, `window`, `ui`, and `behavior`
+section methods now return their configuration object instead of the last block
+expression. Code that used that expression as the result should capture it
+explicitly. `configure` requires a block and raises `ArgumentError` without one;
+section getters may omit it. Blocks retain their caller's `self`. Exceptions
+propagate and normal configuration/callback transaction rules apply.
+
 `Toyoterm.configure { |config| ... }` yields a `Toyoterm::Config`. Nested
 sections work either with a block or as an object:
 
@@ -129,7 +171,13 @@ be replaced with assignments such as `config.colors.ansi[1] = "#ff5f56"`.
 | `always_on_top` | `false` | Boolean. |
 | `title` | `"toyoterm"` | Non-empty string. |
 
-`window.background_image` / `background_image=(path)` reads or sets a PNG/JPEG
+`window.image` returns a `Toyoterm::ImageConfig`. With a block,
+`window.image { |image| ... }` yields that same object and returns it regardless
+of the block's last expression. The block keeps its caller's `self`; exceptions
+propagate through the normal configuration/callback transaction boundary.
+The image object cannot be replaced with `window.image = ...`.
+
+`window.image.path` / `path=(path)` reads or sets a PNG/JPEG
 path String, or `nil` (the default) to disable the image. Assignment returns the
 assigned value; the getter returns a frozen copy of the path or `nil`. Non-String
 values raise `TypeError`; empty paths and NUL bytes raise `ArgumentError`.
@@ -137,7 +185,7 @@ Relative paths resolve from the main config file's directory (the process workin
 directory when no config file is selected); `~/` expands to the home directory.
 Windows paths can use forward slashes, for example `"C:/Pictures/wallpaper.jpg"`.
 
-`window.background_image_opacity` / `background_image_opacity=(value)` reads or
+`window.image.opacity` / `opacity=(value)` reads or
 sets the image's blend strength over `colors.background`: a finite number from
 0 through 1, default `1.0`. Assignment returns the assigned value. Non-numbers
 raise `TypeError`; non-finite or out-of-range values raise `ArgumentError`.
@@ -158,10 +206,23 @@ Callback failures roll back both image settings together with other changes.
 
 ```ruby
 Toyoterm.configure do |config|
-  config.window.background_image = "images/wallpaper.jpg"
-  config.window.background_image_opacity = 0.25
+  config.window.image.path = "images/wallpaper.jpg"
+  config.window.image.opacity = 0.25
 end
 ```
+
+The equivalent section form is:
+
+```ruby
+config.window.image do |image|
+  image.path = "images/wallpaper.jpg"
+  image.opacity = 0.25
+end
+```
+
+The former `window.background_image` and `window.background_image_opacity`
+getters/setters have been removed; use `window.image.path` and
+`window.image.opacity` respectively. Old calls raise `NoMethodError`.
 
 Initial dimensions apply when the window is created. Mutable window properties
 are also applied after a successful reload.
@@ -179,10 +240,10 @@ These bindings stop at each limit, even with repeated presses, and immediately
 respond to a press in the opposite direction:
 
 ```ruby
-config.bind "CTRL+[" do
+config.keys.key("CTRL+[").run do
   config.window.opacity -= 0.1
 end
-config.bind "CTRL+]" do
+config.keys.key("CTRL+]").run do
   config.window.opacity += 0.1
 end
 ```
@@ -269,10 +330,6 @@ Each helper returns a binding with one of these actions:
 | `yank_selection` | None |
 | `command(name)` | Name registered with `Toyoterm.command` |
 
-Aliases are available for readability: `enter_visual_mode`,
-`toggle_visual_selection`, `select`, `exit_visual_mode`, `visual_move`,
-`copy_visual_selection`, and `toggle_pane_zoom`.
-
 Configure a leader with a positive timeout in milliseconds:
 
 ```ruby
@@ -286,12 +343,29 @@ leader state.
 
 ### Dynamic bindings
 
-`config.bind(chord) { |context| ... }` invokes Ruby with a
+`config.keys.key(chord).run { |context| ... }` invokes Ruby with a
 `Toyoterm::KeyBindingContext`. `Toyoterm::CommandContext` is an alias of the same
-class. Both expose `context.pane`.
+class. Both expose `context.workspace`, `context.window`, `context.tab`, and
+`context.pane`, captured when the callback starts. The first three identify the
+current objects in the request snapshot; `pane` is the callback's target pane.
+They are snapshot handles, not live mutable native objects.
+
+Every key helper supports `run`, including `primary`, `leader`, and `physical`.
+`run { |context| ... }` registers the block and returns the binding object;
+omitting the block raises `ArgumentError`. Static and dynamic bindings share
+duplicate detection: registering the same chord more than once raises
+`ArgumentError`. Callback failures discard their queued commands and clipboard
+writes. `plugin.keys` supports the same syntax and plugin registration rollback.
+
+`binding.action(name, argument = nil)` registers a static built-in action and
+returns the binding object. It uses the same names, accepted arguments,
+and `ArgumentError` validation as `Toyoterm.action(name, argument = nil)` below.
+For example, `keys.ctrl("z").action(:toggle_zoom)` and
+`keys.ctrl("z").toggle_zoom` are equivalent. Invalid arguments register nothing.
+Each binding may register only one action or callback.
 
 ```ruby
-config.bind "CTRL+SHIFT+H" do |context|
+config.keys.key("CTRL+SHIFT+H").run do |context|
   context.pane.send_text("echo hello from mruby\n")
 end
 ```
@@ -374,7 +448,7 @@ end
 | `name` | Workspace name. |
 | `windows` | Child `Window` handles. |
 | `activate` | Queues activation and returns `self`. |
-| `create_window(command: nil, cwd: nil, env: nil)` | Queues a new window in this workspace and returns `self`. |
+| `new_window(command: nil, cwd: nil, env: nil)` | Queues a new window in this workspace and returns `self`. |
 
 ### `Toyoterm::Window`
 
@@ -383,7 +457,7 @@ end
 | `tabs` | Child `Tab` handles. |
 | `new_tab(command: nil, cwd: nil, env: nil)` | Queues a new tab in this window and returns `self`. |
 | `close` | Queues closing this window and returns `self`. |
-| `focus` | Queues activation and returns `self`. |
+| `activate` | Queues activation and returns `self`. |
 
 ### `Toyoterm::Tab`
 
@@ -393,7 +467,7 @@ end
 | `panes` | Child `Pane` handles. |
 | `zoomed?` | Whether this tab is currently zoomed. |
 | `close` | Queues closing this tab and returns `self`. |
-| `focus` / `activate` | Queues activation and returns `self`. |
+| `activate` | Queues activation and returns `self`. |
 
 ### `Toyoterm::Pane`
 
@@ -408,17 +482,17 @@ end
 | `zoomed?` | Whether this pane is the tab's current zoom target. |
 | `split(direction, command: nil, cwd: nil, env: nil)` | Queues `:left`, `:right`, `:up`, or `:down`; returns `self`. |
 | `close` | Queues closing the pane and returns `self`. |
-| `focus` | Queues activation and returns `self`. |
+| `activate` | Queues activation and returns `self`. |
 | `send_text(text)` | Queues text for the PTY and returns `self`; rejects NUL bytes. |
 | `search(query, direction: :next)` | Queues a literal scrollback search and returns `self`. |
 | `badge` / `badge=` | Reads or queues pane-corner display text. Assign `nil` to clear it. |
 
-`Workspace#create_window`, `Window#new_tab`, and `Pane#split` accept an optional
+`Workspace#new_window`, `Window#new_tab`, and `Pane#split` accept an optional
 launch specification:
 
 ```ruby
 Toyoterm.command :dev_layout do |context|
-  Toyoterm.current_workspace.create_window(command: "btop")
+  Toyoterm.current_workspace.new_window(command: "btop")
   context.pane.split(
     :right,
     command: ["cargo", "watch", "-x", "test"],
@@ -490,7 +564,8 @@ end
 ```
 
 Command names must be non-empty and unique. A command callback receives a
-`CommandContext` with `pane`. Its queued mutations are rolled back if it raises.
+`CommandContext` with `workspace`, `window`, `tab`, and `pane`.
+Its queued mutations are rolled back if it raises.
 
 ## Runtime events
 
@@ -620,7 +695,7 @@ Toyoterm::Plugin.define "git-tools" do |plugin|
     context.pane.send_text("git rev-parse --show-toplevel\n")
   end
   plugin.on(:bell) { |event| event.pane.badge = "bell" }
-  plugin.bind("CTRL+G") { |context| context.pane.send_text("git status\n") }
+  plugin.keys.ctrl("g").run { |context| context.pane.send_text("git status\n") }
   plugin.keys { ctrl_shift("G").command(:git_root) }
 end
 ```

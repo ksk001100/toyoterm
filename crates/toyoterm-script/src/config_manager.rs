@@ -806,7 +806,7 @@ fn read_config(
     source_dir: Option<&Path>,
     previous: Option<&ToyotermConfig>,
 ) -> Result<ToyotermConfig, ScriptError> {
-    let image_path = runtime.eval("Toyoterm.__config.window.background_image")?;
+    let image_path = runtime.eval("Toyoterm.__config.window.image.path")?;
     let background_image = if image_path.is_empty() {
         None
     } else {
@@ -839,7 +839,7 @@ fn read_config(
     };
     let background_image_opacity = parse_f32(
         "background image opacity",
-        &runtime.eval("Toyoterm.__config.window.background_image_opacity")?,
+        &runtime.eval("Toyoterm.__config.window.image.opacity")?,
     )?;
     if !(0.0..=1.0).contains(&background_image_opacity) {
         return Err(ScriptError::new(

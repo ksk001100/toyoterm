@@ -1,4 +1,247 @@
 use super::*;
+
+#[test]
+fn removed_dsl_methods_and_action_aliases_are_rejected() {
+    let mut manager = ConfigManager::new().unwrap();
+    for source in [
+        "Toyoterm.configure { |c| c.bind('CTRL+A') {} }",
+        "Toyoterm::Plugin::Definition.new('test').bind('CTRL+A') {}",
+        "Toyoterm.current_workspace.create_window",
+        "Toyoterm.current_workspace.focus",
+        "Toyoterm.current_window.focus",
+        "Toyoterm.current_tab.focus",
+        "Toyoterm.current_pane.focus",
+    ] {
+        let error = manager.eval(source).unwrap_err();
+        assert!(
+            error.message().contains("NoMethodError"),
+            "{source}: {error}"
+        );
+    }
+    assert!(
+        manager
+            .eval("Toyoterm.configure { |c| c.theme('moon') }")
+            .unwrap_err()
+            .message()
+            .contains("ArgumentError")
+    );
+    for name in [
+        "toggle_pane_zoom",
+        "enter_visual_mode",
+        "toggle_visual_selection",
+        "select",
+        "exit_visual_mode",
+        "visual_move",
+        "copy_visual_selection",
+    ] {
+        let error = manager
+            .eval(&format!(
+                "Toyoterm.configure {{ |c| c.keys.ctrl('a').{name} }}"
+            ))
+            .unwrap_err();
+        assert!(error.message().contains("NoMethodError"), "{name}: {error}");
+        for source in [
+            format!("Toyoterm.action(:{name})"),
+            format!("Toyoterm.configure {{ |c| c.keys.ctrl('a').action(:{name}) }}"),
+        ] {
+            assert!(
+                manager
+                    .eval(&source)
+                    .unwrap_err()
+                    .message()
+                    .contains("unsupported action")
+            );
+        }
+    }
+    assert!(manager.drain_commands(PaneId(0)).unwrap().is_empty());
+}
+
+#[test]
+fn static_and_runtime_actions_share_names_and_arguments() {
+    let actions = [
+        ("new_tab", "nil"),
+        ("close_pane", "nil"),
+        ("close_tab", "nil"),
+        ("new_workspace", "nil"),
+        ("reload_config", "nil"),
+        ("search", "nil"),
+        ("maximize_window", "nil"),
+        ("toggle_maximize", "nil"),
+        ("minimize_window", "nil"),
+        ("toggle_fullscreen", "nil"),
+        ("toggle_zoom", "nil"),
+        ("next_tab", "nil"),
+        ("previous_tab", "nil"),
+        ("next_workspace", "nil"),
+        ("previous_workspace", "nil"),
+        ("copy_selection", "nil"),
+        ("paste_clipboard", "nil"),
+        ("start_visual_mode", "nil"),
+        ("toggle_visual_mode", "nil"),
+        ("start_visual_selection", "nil"),
+        ("select_visual_selection", "nil"),
+        ("end_visual_selection", "nil"),
+        ("yank_selection", "nil"),
+        ("split", ":RIGHT"),
+        ("activate_pane", ":DOWN"),
+        ("move_visual_selection", ":LINE_END"),
+    ];
+    for (name, argument) in actions {
+        let mut manager = ConfigManager::new().unwrap();
+        let args = if argument == "nil" { "" } else { argument };
+        manager.reload(&format!(
+            "Toyoterm.configure {{ |c| c.keys.ctrl('a').{name}({args}); c.keys.ctrl('b').action('{name}', {argument}) }}"
+        )).unwrap();
+        let expected = manager.native_action("CTRL+A").unwrap();
+        assert_eq!(
+            manager.native_action("CTRL+B"),
+            Some(expected.clone()),
+            "{name}"
+        );
+        manager
+            .eval(&format!(
+                "Toyoterm.action('{}', {argument})",
+                name.to_uppercase()
+            ))
+            .unwrap();
+        assert_eq!(
+            manager.drain_commands(PaneId(0)).unwrap(),
+            vec![NativeCommand::InvokeAction(expected)],
+            "{name}"
+        );
+    }
+    let mut manager = ConfigManager::new().unwrap();
+    for args in [
+        "''",
+        ":unknown",
+        ":split",
+        ":split, :diagonal",
+        ":toggle_zoom, :extra",
+        ":visual_move, :page_down",
+        ":command, :foo",
+    ] {
+        let runtime = manager
+            .eval(&format!("Toyoterm.action({args})"))
+            .unwrap_err();
+        let binding = manager
+            .eval(&format!(
+                "Toyoterm.configure {{ |c| c.keys.ctrl('a').action({args}) }}"
+            ))
+            .unwrap_err();
+        assert!(runtime.message().contains("ArgumentError"));
+        assert!(binding.message().contains("ArgumentError"));
+        assert!(manager.drain_commands(PaneId(0)).unwrap().is_empty());
+    }
+}
+
+#[test]
+fn fluent_dynamic_bindings_share_context_and_rollback() {
+    let mut manager = ConfigManager::new().unwrap();
+    manager
+        .reload(
+            r#"
+      Toyoterm.configure do |config|
+        config.keys do
+          ctrl("a").run do |ctx|
+            ctx.pane.send_text([ctx.workspace.id, ctx.window.id, ctx.tab.id, ctx.pane.id].join(":"))
+          end
+          physical("KeyB", "CTRL").run do |ctx|
+            ctx.pane.send_text("discard")
+            Toyoterm.action(:toggle_zoom)
+            raise "cancel"
+          end
+        end
+      end
+      Toyoterm.command(:context) do |ctx|
+        ctx.pane.send_text([ctx.workspace.id, ctx.window.id, ctx.tab.id, ctx.pane.id].join(":"))
+      end
+    "#,
+        )
+        .unwrap();
+    let context = script_test_context();
+    manager
+        .set_live_handles(context.handles.iter().copied())
+        .unwrap();
+    manager.set_object_model(&context.model).unwrap();
+    assert!(manager.native_action("CTRL+A").is_none());
+    manager.trigger_keybinding("CTRL+A", PaneId(4)).unwrap();
+    manager.trigger_user_command("context", PaneId(4)).unwrap();
+    let expected = NativeCommand::Mux(Command::SendText {
+        pane: PaneId(4),
+        text: "1:2:3:4".into(),
+    });
+    assert_eq!(
+        manager.drain_commands(PaneId(4)).unwrap(),
+        vec![expected.clone(), expected]
+    );
+    assert!(
+        manager
+            .trigger_keybinding("CTRL+PHYSICAL:KEYB", PaneId(4))
+            .is_err()
+    );
+    assert!(manager.drain_commands(PaneId(4)).unwrap().is_empty());
+    for source in [
+        "c.keys.ctrl('a').run",
+        "c.keys.ctrl('a').run {}; c.keys.ctrl('a').new_tab",
+        "c.keys.ctrl('a').new_tab; c.keys.ctrl('a').run {}",
+        "c.keys.key('CTRL+A').run {}; c.keys.ctrl('a').run {}",
+    ] {
+        assert!(
+            manager
+                .reload(&format!("Toyoterm.configure {{ |c| {source} }}"))
+                .is_err()
+        );
+    }
+}
+
+#[test]
+fn configuration_sections_return_objects_and_handles_use_consistent_verbs() {
+    let mut manager = ConfigManager::new().unwrap();
+    manager.eval(r#"
+      config = Toyoterm.configure do |c|
+        [
+          [c.font { nil }, c.font], [c.colors { nil }, c.colors],
+          [c.window { nil }, c.window], [c.ui { nil }, c.ui],
+          [c.behavior { nil }, c.behavior], [c.keys { nil }, c.keys]
+        ].each do |pair|
+          raise "wrong section" unless pair[0].class == pair[1].class
+        end
+      end
+      raise "wrong config" unless config.is_a?(Toyoterm::Config)
+      [Toyoterm.current_workspace, Toyoterm.current_window, Toyoterm.current_tab, Toyoterm.current_pane].each do |handle|
+        raise "wrong receiver" unless handle.activate == handle
+      end
+      Toyoterm.current_workspace.new_window(command: ["echo", "hello"])
+    "#).unwrap();
+    let commands = manager.drain_commands(PaneId(0)).unwrap();
+    assert_eq!(commands.len(), 5);
+    assert!(matches!(
+        commands[4],
+        NativeCommand::CreateWindowWithLaunch { .. }
+    ));
+    assert!(
+        manager
+            .eval("Toyoterm.configure")
+            .unwrap_err()
+            .message()
+            .contains("configuration requires a block")
+    );
+    manager.set_live_handles([]).unwrap();
+    for source in [
+        "Toyoterm.current_window.activate",
+        "Toyoterm.current_pane.activate",
+        "Toyoterm.current_workspace.new_window",
+    ] {
+        assert!(
+            manager
+                .eval(source)
+                .unwrap_err()
+                .message()
+                .contains("InvalidHandleError")
+        );
+    }
+}
+
 fn script_test_context() -> ScriptContext {
     ScriptContext {
         model: RubyObjectModel {
@@ -282,7 +525,8 @@ fn loads_local_plugins_with_metadata_and_registrations() {
               plugin.requires = ">= 0.1.0, < 0.2.0"
               plugin.command(:git_root) { |ctx| ctx.pane.send_text("git root\n") }
               plugin.on(:bell) { |event| event.pane.badge = "bell" }
-              plugin.bind("CTRL+G") { |ctx| ctx.pane.send_text("git status\n") }
+              plugin.keys.key("CTRL+G").run { |ctx| ctx.pane.send_text("git status\n") }
+              plugin.keys.ctrl("h").run { |ctx| ctx.pane.send_text("git log\n") }
               plugin.keys { ctrl_shift("G").command(:git_root) }
             end
             "#,
@@ -302,6 +546,7 @@ fn loads_local_plugins_with_metadata_and_registrations() {
     assert!(loaded.user_command_names.contains("git_root"));
     assert!(loaded.event_names.contains("bell"));
     assert!(loaded.keybindings.contains("CTRL+G"));
+    assert!(loaded.keybindings.contains("CTRL+H"));
     assert_eq!(
         loaded.native_actions.get("CTRL+SHIFT+G"),
         Some(&NativeAction::UserCommand("git_root".into()))
@@ -627,7 +872,7 @@ fn registers_toggle_zoom_keybinding() {
             r#"
             Toyoterm.configure do |config|
               config.keys.ctrl("z").toggle_zoom
-              config.keys.ctrl_shift("z").toggle_pane_zoom
+              config.keys.ctrl_shift("z").toggle_zoom
             end
             "#,
         )
@@ -924,14 +1169,14 @@ fn converts_object_model_operations_to_native_commands() {
             .eval(
                 "[Toyoterm.current_pane.split(:left), \
                       Toyoterm.current_window.new_tab, \
-                      Toyoterm.current_workspace.create_window].map(&:inspect)",
+                      Toyoterm.current_workspace.new_window].map(&:inspect)",
             )
             .unwrap(),
         "[\"#<Toyoterm::Pane:0>\", \"#<Toyoterm::Window:0>\", \"#<Toyoterm::Workspace:0>\"]"
     );
     manager
         .eval(
-            "Toyoterm.current_pane.focus; Toyoterm.current_tab.close; \
+            "Toyoterm.current_pane.activate; Toyoterm.current_tab.close; \
                  Toyoterm.current_window.close; Toyoterm.current_workspace.activate",
         )
         .unwrap();
@@ -1047,7 +1292,7 @@ fn validates_and_rolls_back_builtin_actions() {
         .reload(
             r#"
             Toyoterm.configure do |config|
-              config.bind "CTRL+A" do
+              config.keys.key("CTRL+A").run do
                 Toyoterm.action(:toggle_fullscreen)
                 raise "cancel action"
               end
@@ -1076,7 +1321,7 @@ fn converts_custom_pane_launches_to_native_commands() {
             )
             Toyoterm.current_window.new_tab(command: "btop")
             Toyoterm.current_window.new_tab(cwd: "/tmp")
-            Toyoterm.current_workspace.create_window(
+            Toyoterm.current_workspace.new_window(
               command: ["tail", "-f", "app.log"],
               env: { "LC_ALL" => "C" }
             )
@@ -1421,7 +1666,7 @@ fn ruby_callback_errors_roll_back_clipboard_writes() {
         .reload(
             r#"
                 Toyoterm.configure do |config|
-                  config.bind "CTRL+C" do
+                  config.keys.key("CTRL+C").run do
                     Toyoterm.clipboard.write("must not be copied")
                     raise "broken clipboard callback"
                   end
@@ -1442,7 +1687,7 @@ fn ruby_callback_errors_roll_back_pane_badges() {
         .reload(
             r#"
                 Toyoterm.configure do |config|
-                  config.bind "CTRL+B" do |context|
+                  config.keys.key("CTRL+B").run do |context|
                     context.pane.badge = "must not persist"
                     raise "broken badge callback"
                   end
@@ -1481,7 +1726,7 @@ fn invokes_only_matching_dynamic_keybindings() {
             r#"
                 $callback_count = 0
                 Toyoterm.configure do |config|
-                  config.bind "CTRL+SHIFT+H" do |ctx|
+                  config.keys.key("CTRL+SHIFT+H").run do |ctx|
                     $callback_count += 1
                     ctx.pane.send_text("echo from ruby\n")
                   end
@@ -1526,7 +1771,7 @@ fn compiles_static_key_dsl_to_native_actions() {
                     primary_shift("o").reload_config
                     ctrl_shift("r").reload_config
                     physical("KeyH", "CTRL").activate_pane(:left)
-                    key("v").toggle_visual_selection
+                    key("v").toggle_visual_mode
                     key("ESCAPE").end_visual_selection
                     key("h").move_visual_selection(:left)
                     key("0").move_visual_selection(:line_start)
@@ -1666,7 +1911,7 @@ fn rejects_duplicate_static_and_dynamic_bindings() {
             r#"
                 Toyoterm.configure do |config|
                   config.keys { ctrl("x").new_tab }
-                  config.bind("CTRL+X") { }
+                  config.keys.key("CTRL+X").run { }
                 end
                 "#,
         )
@@ -1681,7 +1926,7 @@ fn ruby_keybinding_errors_leave_the_runtime_usable() {
         .reload(
             r#"
                 Toyoterm.configure do |config|
-                  config.bind "CTRL+E" do |ctx|
+                  config.keys.key("CTRL+E").run do |ctx|
                     ctx.pane.send_text("must not run\n")
                     raise "broken callback"
                   end
@@ -1704,7 +1949,7 @@ fn exposes_reload_requests_from_ruby_keybindings() {
         .reload(
             r#"
                 Toyoterm.configure do |config|
-                  config.bind("CTRL+SHIFT+R") { Toyoterm.reload_config }
+                  config.keys.key("CTRL+SHIFT+R").run { Toyoterm.reload_config }
                 end
                 "#,
         )
@@ -1920,10 +2165,10 @@ fn opacity_bindings_saturate_and_reverse_at_both_limits() {
             r#"
             Toyoterm.configure do |config|
               config.window.opacity = 0.9
-              config.bind "CTRL+[" do
+              config.keys.key("CTRL+[").run do
                 config.window.opacity -= 0.1
               end
-              config.bind "CTRL+]" do
+              config.keys.key("CTRL+]").run do
                 config.window.opacity += 0.1
               end
             end
@@ -1964,6 +2209,46 @@ fn opacity_bindings_saturate_and_reverse_at_both_limits() {
 }
 
 #[test]
+fn window_image_section_returns_the_same_object_and_rejects_old_api() {
+    let mut manager = ConfigManager::new().unwrap();
+    manager
+        .eval(
+            r#"
+      Toyoterm.configure do |config|
+        image = config.window.image
+        raise "wrong defaults" unless image.path.nil? && image.opacity == 1.0
+        section = config.window.image do |value|
+          raise "wrong image" unless value.equal?(image)
+          value.opacity = 0.25
+          nil
+        end
+        raise "wrong return" unless section.equal?(image)
+        raise "wrong opacity" unless config.window.image.opacity == 0.25
+        raise "window opacity changed" unless config.window.opacity == 1.0
+      end
+    "#,
+        )
+        .unwrap();
+    for expression in [
+        "background_image",
+        "background_image = nil",
+        "background_image_opacity",
+        "background_image_opacity = 0.5",
+        "image = nil",
+    ] {
+        assert!(
+            manager
+                .eval(&format!(
+                    "Toyoterm.configure {{ |c| c.window.{expression} }}"
+                ))
+                .unwrap_err()
+                .message()
+                .contains("NoMethodError")
+        );
+    }
+}
+
+#[test]
 fn background_images_reload_cache_clear_and_rollback() {
     let directory = temporary_test_directory("background-image");
     let image_path = directory.join("wallpaper.png");
@@ -1973,7 +2258,7 @@ fn background_images_reload_cache_clear_and_rollback() {
     )
     .unwrap();
     let config_path = directory.join("config.rb");
-    std::fs::write(&config_path, "Toyoterm.configure { |c| c.window.background_image = 'wallpaper.png'; c.window.background_image_opacity = 0.4 }").unwrap();
+    std::fs::write(&config_path, "Toyoterm.configure { |c| c.window.image { |image| image.path = 'wallpaper.png'; image.opacity = 0.4 } }").unwrap();
     let mut manager = ConfigManager::load_startup(Some(&config_path)).unwrap();
     let original = manager.config().window.background_image.clone().unwrap();
     assert_eq!(original.path, image_path);
@@ -2003,15 +2288,16 @@ fn background_images_reload_cache_clear_and_rollback() {
     assert!(manager.reload_file().is_err());
     assert_eq!(manager.config().window.opacity, 0.7);
     for source in [
-        "Toyoterm.configure { |c| c.window.background_image = 'missing.png' }",
-        "Toyoterm.configure { |c| c.window.background_image = '' }",
-        "Toyoterm.configure { |c| c.window.background_image = 123 }",
-        "Toyoterm.configure { |c| c.window.background_image = \"a\\0b\" }",
-        "Toyoterm.configure { |c| c.window.background_image_opacity = -0.1 }",
-        "Toyoterm.configure { |c| c.window.background_image_opacity = 1.1 }",
-        "Toyoterm.configure { |c| c.window.background_image_opacity = 0.0/0.0 }",
-        "Toyoterm.configure { |c| c.window.background_image_opacity = '0.5' }",
-        "Toyoterm.configure { |c| c.window.background_image = nil; c.window.background_image_opacity = 0; c.font.size = 0 }",
+        "Toyoterm.configure { |c| c.window.image.path = 'missing.png' }",
+        "Toyoterm.configure { |c| c.window.image.path = '' }",
+        "Toyoterm.configure { |c| c.window.image.path = 123 }",
+        "Toyoterm.configure { |c| c.window.image.path = \"a\\0b\" }",
+        "Toyoterm.configure { |c| c.window.image.opacity = -0.1 }",
+        "Toyoterm.configure { |c| c.window.image.opacity = 1.1 }",
+        "Toyoterm.configure { |c| c.window.image.opacity = 0.0/0.0 }",
+        "Toyoterm.configure { |c| c.window.image.opacity = '0.5' }",
+        "Toyoterm.configure { |c| c.window.image.path = nil; c.window.image.opacity = 0; c.font.size = 0 }",
+        "Toyoterm.configure { |c| c.window.image { |image| image.path = nil; image.opacity = 0; raise 'cancel image' } }",
     ] {
         assert!(eval(&mut manager, source).is_err(), "{source}");
         assert_eq!(
@@ -2020,15 +2306,13 @@ fn background_images_reload_cache_clear_and_rollback() {
         );
         assert_eq!(manager.config().window.background_image_opacity, 0.4);
         assert_eq!(
-            manager
-                .eval("Toyoterm.__config.window.background_image")
-                .unwrap(),
+            manager.eval("Toyoterm.__config.window.image.path").unwrap(),
             "wallpaper.png"
         );
     }
     eval(
         &mut manager,
-        "Toyoterm.configure { |c| c.window.background_image = nil }",
+        "Toyoterm.configure { |c| c.window.image.path = nil }",
     )
     .unwrap();
     assert!(manager.config().window.background_image.is_none());
