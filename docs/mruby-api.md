@@ -8,6 +8,20 @@ The runtime is mruby, not CRuby. CRuby gems, native extensions, and the complete
 CRuby standard library are unavailable unless toyoterm explicitly bundles them.
 Methods beginning with `__` are host integration details and are not public API.
 
+See the [usage guide](usage.md) for CLI commands and troubleshooting, or the
+[documentation index](README.md) for all guides.
+
+- [Loading configuration](#loading-configuration)
+- [Configuration DSL](#configuration-dsl)
+- [Key bindings](#key-bindings)
+- [Commands and object model](#commands-and-object-model)
+- [Runtime events](#runtime-events)
+- [Window bars](#window-bars)
+- [Host APIs](#platform-clipboard-environment-files-and-processes)
+- [Plugins and themes](#plugins-and-themes)
+- [Live Ruby console](#live-ruby-console)
+- [Callback execution model](#callback-execution-model)
+
 ## Loading configuration
 
 toyoterm selects one configuration source in this order:
@@ -15,11 +29,13 @@ toyoterm selects one configuration source in this order:
 1. The path passed with `--config`
 2. `TOYOTERM_CONFIG_FILE`
 3. Platform default config path:
-   - Linux / Unix: `$XDG_CONFIG_HOME/toyoterm/config.rb` (falls back to `~/.config/toyoterm/config.rb` if unset)
+   - Linux / macOS / Unix: `$XDG_CONFIG_HOME/toyoterm/config.rb` (falls back to `~/.config/toyoterm/config.rb` if unset or empty)
    - Windows: `%APPDATA%\toyoterm\config.rb` (falls back to `%USERPROFILE%\.config\toyoterm\config.rb` if it does not exist)
 
 The default path is optional. A path selected explicitly must exist and contain
-valid Ruby. Start toyoterm with a particular file using:
+valid Ruby. The GUI recovers from a missing or invalid selected file by showing
+an error banner and keeping defaults, with the path retained for a later reload.
+An empty `TOYOTERM_CONFIG_FILE` is ignored. Start with a particular file using:
 
 ```sh
 toyoterm --config /path/to/config.rb
@@ -40,7 +56,7 @@ Toyoterm.configure do |config|
 end
 ```
 
-`examples/default_config.rb` is a complete starting point. toyoterm has no
+[examples/default_config.rb](../examples/default_config.rb) is a complete starting point. toyoterm has no
 built-in GUI key bindings, so copy the bindings you want into your config.
 
 Configuration reload is atomic. A candidate file is evaluated and validated in
@@ -116,7 +132,7 @@ end
 
 | Setting | Default | Validation |
 | --- | --- | --- |
-| `family` | `"monospace"` | Non-empty installed font family name. |
+| `family` | `"monospace"` | Non-empty font family name; installation is not validated. |
 | `fallback` | `[]` | Array of at most 32 non-empty, unique family names; it must not repeat `family`. |
 | `size` | `14.0` | Positive finite number. |
 | `weight` | `400` | Integer from 1 through 1000. |
@@ -341,6 +357,29 @@ The leader prefix is consumed. An unmatched or expired suffix continues through
 normal input handling. IME activity, focus loss, and configuration reload clear
 leader state.
 
+Prefix repeat events are consumed without extending the original timeout.
+
+### Visual selection
+
+`toggle_visual_mode` enters visual mode without selecting text. Move to the
+desired position, then use `select_visual_selection` and movement actions to
+extend the selection; `yank_selection` copies it. Movement and selection actions
+are inactive in normal mode, so bindings for `h/j/k/l` can coexist with ordinary
+shell input. Use a leader chord to enter visual mode without intercepting `v`.
+
+```ruby
+config.leader key: "b", mods: "CTRL", timeout: 1000
+config.keys do
+  leader("v").toggle_visual_mode
+  key("SPACE").select_visual_selection
+  key("h").move_visual_selection(:left)
+  key("j").move_visual_selection(:down)
+  key("k").move_visual_selection(:up)
+  key("l").move_visual_selection(:right)
+  key("y").yank_selection
+end
+```
+
 ### Dynamic bindings
 
 `config.keys.key(chord).run { |context| ... }` invokes Ruby with a
@@ -452,6 +491,10 @@ end
 
 ### `Toyoterm::Window`
 
+`Window` is a mux object. The GUI displays the active mux window in a single OS
+window; `Workspace#new_window` does not create another OS window. Multiple OS
+windows remain deferred.
+
 | Member | Result |
 | --- | --- |
 | `tabs` | Child `Tab` handles. |
@@ -549,7 +592,7 @@ end
 
 `pane.chdir` is intentionally absent because the shell owns its working
 directory. If needed, send a correctly escaped shell command with `send_text`.
-See `docs/shell-integration.md` for cwd and command-status reporting.
+See [shell integration](shell-integration.md) for cwd and command-status reporting.
 
 Register a named command and bind it to a static key:
 
@@ -605,6 +648,9 @@ raises `Toyoterm::InvalidHandleError`. Events are processed in FIFO order. One
 handler runs to completion and its commands are applied before the next event;
 callbacks are never entered recursively. If a handler raises, its queued
 commands are discarded.
+
+Events without a registered handler are skipped before invoking Ruby. Delivery
+is limited to 1,024 events per application turn to bound self-generated loops.
 
 ## Window bars
 
@@ -677,8 +723,18 @@ rendering.
 
 ## Plugins and themes
 
-toyoterm loads `*.rb` directly inside the default plugins directory (`$XDG_CONFIG_HOME/toyoterm/plugins/` or `~/.config/toyoterm/plugins/` on Linux/Unix, `%APPDATA%\toyoterm\plugins` on Windows) in
-lexicographic filename order. Additional files can be requested with
+At startup and reload, toyoterm loads `*.rb` directly inside the default plugins
+directory in lexicographic filename order. The main config is evaluated first,
+then automatic plugins load, followed by explicitly requested plugins in
+declaration order. `Toyoterm.plugin(path)` queues loading rather than immediately
+evaluating the file; plugin definitions are therefore not available while the
+main config is being evaluated. Theme selection is resolved during validation
+after plugins load.
+Linux/macOS/Unix use `$XDG_CONFIG_HOME/toyoterm/plugins/`, falling back to
+`~/.config/toyoterm/plugins/` when the variable is unset or empty. Windows checks
+`%APPDATA%\toyoterm\plugins` then `%USERPROFILE%\.config\toyoterm\plugins` and
+uses the first existing path (or the first available candidate if neither exists).
+This discovery is independent of the selected configuration file. Additional files can be requested with
 `Toyoterm.plugin(path)`. Relative paths resolve from the declaring file, `~/`
 expands to the home directory, and a canonical path is loaded only once.
 `Toyoterm.plugins` returns loaded definitions; `Toyoterm.themes` returns theme
@@ -740,6 +796,18 @@ The console supports multiline input, `:history`, and `exit`.
 `Toyoterm.configure` changes are validated and applied immediately. If an
 evaluation leaves the config invalid, the whole evaluation transaction is
 rolled back.
+
+Live setting changes update the current window, renderer, and terminals without
+rewriting the config file. Initial window dimensions only apply at creation;
+`default_shell` only affects new sessions. Reloading evaluates a fresh VM and
+replaces live changes with the file's settings.
+
+```ruby
+Toyoterm.configure do |config|
+  config.font.size = 16
+  config.window.opacity = 0.9
+end
+```
 
 ## Callback execution model
 

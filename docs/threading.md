@@ -1,9 +1,11 @@
 # Threading and script execution
 
-The GUI uses four ownership domains:
+The GUI uses the main thread, PTY reader workers, a script thread, and an IPC
+listener thread:
 
 ```text
 PTY reader workers --AppEvent::Output/Eof/Error--> main thread
+IPC listener        --typed IPC requests---------> main thread
 main thread         --terminal input/state-------> PTY sessions
 main thread         --ScriptRequest--------------> toyoterm-script
 toyoterm-script     --ScriptCompletion-----------> main thread
@@ -16,7 +18,9 @@ VM. `MrubyRuntime` remains `!Send + !Sync`, so the C API cannot cross the owner
 thread through Rust's safe type system.
 
 Script requests carry an immutable mux/object-model snapshot and clipboard
-snapshot. Script completions carry only inspected values and `NativeCommand`s.
+snapshot. Script completions carry inspected values, `NativeCommand`s, and
+validated configuration snapshots when settings change, including immutable
+image pixels.
 The main thread serializes requests, applies returned commands, reconciles PTY
 runtimes, then submits the next request. This preserves event and re-entrant
 command ordering without allowing Ruby to mutate native state directly.

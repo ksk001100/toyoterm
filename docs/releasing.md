@@ -2,7 +2,7 @@
 
 toyoterm uses Semantic Versioning. Until 1.0, a minor version may contain API
 changes and a patch version contains compatible fixes. The single source of
-truth is `[package].version` in `Cargo.toml`; `Cargo.lock` and the macOS bundle
+truth is `[workspace.package].version` in `Cargo.toml`; `Cargo.lock` and the macOS bundle
 metadata are derived from it.
 
 ## Release checklist
@@ -10,10 +10,10 @@ metadata are derived from it.
 1. Choose the version, update `Cargo.toml`, and run `cargo check` to refresh
    `Cargo.lock`.
 2. Update both READMEs and user-visible examples when behavior changed.
-3. Complete the manual checks in `docs/platform-validation.md` for the release
+3. Complete the manual checks in [platform validation](platform-validation.md) for the release
    candidate and link their results from the release issue.
-4. Run `cargo fmt --check`, `cargo clippy --workspace --all-targets -- -D warnings`,
-   `cargo test --workspace --all-targets`, and `sh scripts/check-licenses.sh`.
+4. Run the full locked validation baseline in the
+   [development guide](development.md#validation), including the architecture check.
 5. Run `sh scripts/package.sh` locally. It must verify the archive and create its
    SHA-256 sidecar.
 6. Tag the reviewed commit as `vVERSION` and push the tag. The Release workflow
@@ -41,5 +41,5 @@ The macOS bundle is unsigned and not notarized; users may need to approve it in
 Privacy & Security. The Windows executable is not Authenticode-signed. Those
 steps require project-owned signing identities and are not replaced by SHA-256
 checksums. The Windows zip remains portable and modifies user state only when
-the included installer is explicitly run. See `docs/packaging.md` for layouts,
+the included installer is explicitly run. See [packaging](packaging.md) for layouts,
 commands, and verification details.

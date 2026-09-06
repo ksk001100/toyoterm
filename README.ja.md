@@ -6,520 +6,99 @@
 
 [English](README.md)
 
-toyotermは、Rustと組み込みmrubyで作る実験的なプログラマブル・ターミナルエミュレータです。ターミナルのホットパスはネイティブ実装のまま保ち、設定、動的キーバインド、ランタイムイベント、コマンドにRubyを利用します。
-
-これは私が個人的に使うためのプロジェクトであり、実験的に作っているおもちゃです。
+toyotermはRustと組み込みmrubyによる、プログラム可能な実験的ターミナルエミュレータです。
+端末処理はネイティブで行い、Rubyを設定、キーバインド、イベント、コマンドに使用します。
+自分で使うために作っている個人の実験的プロジェクトです。
 
 > [!IMPORTANT]
-> toyotermは活発に開発中です。GUIの各Workspace、タブ、分割Paneは独立したPTYとターミナルセッションを持ちます。複数OSウィンドウ対応は初期リリース後へ明示的に延期しています。
+> 開発中です。Workspace・Tab・分割Paneは独立したPTYと端末セッションを持ちます。複数OSウィンドウは初回リリース後の対応予定です。
 
 ## 機能
 
-- ネイティブPTYとプラットフォーム標準シェル
-- `wgpu`と`glyphon`によるGPU描画ウィンドウ
-- `alacritty_terminal`を利用したVTシーケンス解析
-- UTF-8入力、リサイズ、スクロールバック、マウスホイール
-- IME preedit描画とcommit・cancel処理
-- テキスト選択とクリップボードのコピー・ペースト
-- mruby 4.0を組み込んだ設定ランタイム
-- ネイティブコマンドを発行できる動的Rubyキーバインド
-- アトミックな設定リロード。不正な更新時は以前の設定を維持
-- 起動・設定reload、Window・Tab・Pane、title・cwd・bell、Workspace変更のRubyイベント
-- タブ、ペイン分割、ワークスペースに対応したネイティブCommand・Muxモデル
-- PaneごとにPTYとTerminalBackendを持つGUIタブ
-- Paneごとのresizeとfocusに対応した分割Pane描画
-- マウス操作とキーボード操作に対応したタブバー
-- Workspaceごとのfocus復元に対応したWorkspaceバー
-- ユーザー定義RubyコマンドとRubyで設定可能なnativeキーバインド
-- 起動中GUIの単一mruby VMへ接続するライブRuby REPL
-- metadata・互換性検査・failure isolationを備えたlocal Ruby plugin
-- viewportとscrollbackを対象にしたliteral検索
-- OSC 8 hyperlinkと通常URLの検出、安全なmodifier+click
-- shell integration、local IPC CLI、Rubyで構成できるedge bar
+- ネイティブPTY、`alacritty_terminal`によるVT解析、`wgpu`と`glyphon`によるGPU描画
+- Workspace、Tab、Pane分割・ズームと独立したシェルセッション
+- UTF-8・IME入力、スクロールバック、検索、選択、クリップボードへのコピー・貼り付け
+- OSC 8リンク、URL自動検出、作業ディレクトリとコマンド状態を通知するシェル連携
+- mruby 4.0による設定、ネイティブ・Rubyキーバインド、イベント、コマンド、プラグイン、テーマ
+- アトミックな設定リロード、ライブRubyコンソール、ローカルIPC、ウィンドウバーと壁紙
 
 ## 現在の状態
 
-主な開発環境はLinuxです。アーキテクチャと依存ライブラリはクロスプラットフォームを意識していますが、macOSとWindowsではまだ十分な動作検証を行っていません。
-
-初回リリースの対象外：
-
-- 複数OSウィンドウ
-- 画像プロトコル、セッション永続化
-
-主要機能は実装済みですが、初回リリース前にLinux Wayland/X11、macOS、Windowsでの対話的な実機検証と性能・画像回帰テストが必要です。
+主な開発環境はLinuxです。CIではLinux・macOS・Windowsのビルド、テスト、パッケージ作成、
+GUI起動スモークテストを実行します。実機での対話的な検証は別途必要です。
+詳細は[プラットフォーム検証](docs/platform-validation.md)を参照してください。
+複数OSウィンドウ、画像プロトコル、セッション永続化は初回リリースの対象外です。
+Rubyの`Window`は、単一OSウィンドウ内で表示するMux上のウィンドウを表します。
 
 ## ビルドと起動
 
-### 必要なもの
-
-- 新しい安定版Rustツールチェーン
-- 同梱mrubyをビルドするためのCコンパイラ
-- `winit`・`wgpu`が要求する各プラットフォームの開発ライブラリ
-
-LinuxではWaylandまたはX11のデスクトップセッションが必要です。不足している場合は、利用中のディストリビューションからCビルドツール、`pkg-config`、Wayland/X11、xkbcommonの開発パッケージをインストールしてください。
-
-シェルプロンプトや各種ターミナルツールのアイコン・記号を正しく表示するため、Nerd Font系フォントの使用を推奨します。等幅版（例：`JetBrainsMono Nerd Font Mono`）を選び、インストール後のfamily名を`config.font.family`に指定してください。
-
-端末内の記号・診断アイコン・全角文字は端末のセル座標に配置し、フォントの文字幅によって分割境界や後続の文字がずれないようにしています。
-
-リポジトリをcloneした後、次のコマンドで起動します。
+最近の安定版Rust、同梱mrubyをビルドするCコンパイラ、`winit`・`wgpu`に必要な
+プラットフォームライブラリが必要です。LinuxではWaylandまたはX11セッションと、
+xkbcommon・`pkg-config`などの開発用ライブラリを用意してください。Windowsの描画にはDirectX 12が必要です。
 
 ```sh
-cd toyoterm
-cargo run
+cargo run --locked
 ```
 
-最適化したバイナリをビルドして起動する場合：
+最適化ビルドは`cargo build --release --locked`で作成し、`target/release/toyoterm`
+（Windowsでは`target/release/toyoterm.exe`）を実行します。
 
-```sh
-cargo build --release --locked
-./target/release/toyoterm
-```
-
-### インストール・更新・アンインストール
-
-ReleaseからOS・CPUに合う成果物を取得します。Linuxではarchiveを展開して
-`./install.sh`を実行すると、`~/.local`への導入とdesktop menu登録を行います。
-macOSではDMGを開いて`toyoterm.app`をApplicationsへdragします（`.tar.gz`も
-提供します）。Windowsではportable zipを展開し、`Install-Toyoterm.ps1`を実行
-するか、installせず展開先からそのまま利用できます。
-
-新しい成果物を同じ場所へinstallすると更新できます。Linuxのuninstallerは
-`~/.local/lib/toyoterm/uninstall.sh`、Windowsでは実行ファイルと同じdirectoryの
-`Uninstall-Toyoterm.ps1`です。ユーザー設定`~/.config/toyoterm/`は保持します。
-各ReleaseにはSHA-256 checksumを同梱します。任意のinstall先、portable利用、
-検証、削除方法は[packaging・install guide](docs/packaging.md)を参照してください。
-
-設定ファイルを明示する場合：
-
-```sh
-cargo run -- --config /path/to/config.rb
-```
-
-起動中のGUIへライブRuby REPLで接続するには、別の端末で次を実行します。複数行入力、`:history`、`exit`に対応します。
-
-```sh
-cargo run -- ruby console
-```
+リリース成果物は、Linuxでは`install.sh`付きアーカイブ、macOSではDMGまたはappバンドルの
+アーカイブ、Windowsでは任意のユーザー単位インストーラ付きportable zipです。
+[インストール・更新・削除・チェックサム](docs/packaging.md)を参照してください。
 
 ## 設定
 
-設定項目、キーアクション、コールバック、オブジェクトメソッド、イベント、
-プラグイン API の一覧は、[mruby 設定 DSL / API リファレンス](docs/mruby-api.md)
-を参照してください。
-
-ネイティブアクション（`ctrl("t").new_tab`）もRubyコールバック
-（`ctrl("h").run { |context| ... }`）も、`config.keys`で設定できます。
-`toggle_zoom`を含め、組み込みアクションはキー設定と
-`Toyoterm.action`で共通です。キー・コマンド・バーのコンテキストは
-`workspace`・`window`・`tab`・`pane`を公開します。
-ハンドルの選択は`activate`、ウィンドウ作成は`workspace.new_window`に揃えます。
-リリース前のため互換用の旧名は削除し、上記の形式に統一しています。
-テーマ設定には`config.theme = name`を使います。
-設定セクションのブロックと`Toyoterm.configure`は設定オブジェクトを返すため、
-従来ブロック末尾の式を戻り値として利用していた場合は、その値を明示的に保存してください。
-詳しくはリファレンスの移行方針を参照してください。
-
-設定ファイルは次の優先順位で読み込まれます。
-
-1. `--config`で指定したパス
-2. `TOYOTERM_CONFIG_FILE`
-3. プラットフォーム標準のデフォルトパス：
-   - Linux / Unix: `$XDG_CONFIG_HOME/toyoterm/config.rb`（未設定時は `~/.config/toyoterm/config.rb`）
-   - Windows: `%APPDATA%\toyoterm\config.rb`（存在しない場合は `%USERPROFILE%\.config\toyoterm\config.rb`）
-
-デフォルトパスのファイルは省略可能です。明示的に指定したファイルは存在し、正しいRubyである必要があります。
-
-設定例：
-
-```ruby
-Toyoterm.configure do |config|
-  config.font do |font|
-    font.family = "monospace"
-    font.fallback = ["Noto Sans Mono CJK JP", "Noto Color Emoji"]
-    font.size = 14
-    font.weight = 400
-  end
-
-  config.colors do |colors|
-    colors.background = "#090b0e"
-    colors.foreground = "#dce1e8"
-    colors.cursor = "#f5f7fa"
-    colors.selection = "#375891"
-    colors.zoomed_pane_border = "#ffbe3a"
-    # ANSIインデックス0〜15はテーマに合わせて個別に変更できます。
-    colors.ansi[1] = "#ff5f56"
-  end
-
-  config.window.opacity = 0.96
-  config.window.title = "my toyoterm"
-
-  config.ui do |ui|
-    ui.padding_x = 10
-    ui.padding_y = 8
-    ui.line_height = 1.3
-    ui.tab_bar = true
-    ui.tab_bar_height = 30
-    ui.tab_width = 160
-    ui.workspace_bar = true
-    ui.workspace_bar_height = 24
-    ui.workspace_width = 160
-    ui.status_bar_height = 24
-    ui.pane_divider_width = 2
-    ui.active_pane_border_width = 2
-  end
-
-  config.behavior do |behavior|
-    behavior.scroll_lines = 3
-    behavior.copy_on_select = false
-  end
-  config.scrollback_lines = 20_000
-  config.leader key: "b", mods: "CTRL", timeout: 1000
-
-  # 必要な場合はシェルを明示できます。省略時はプラットフォーム標準です
-  # （Windows環境では pwsh.exe -> powershell.exe -> %ComSpec% を自動検出）。
-  # config.default_shell = "/bin/zsh"
-
-  config.keys.key("CTRL+SHIFT+H").run do |context|
-    context.pane.send_text("echo hello from mruby\n")
-  end
-
-  # 一般的な操作はNative Actionへcompileされ、キー入力時にmrubyを呼びません。
-  config.keys do
-    leader("v").split(:right)
-    leader("z").toggle_zoom
-    ctrl_shift("e").split(:right)
-    ctrl_shift("o").activate_pane(:right)
-    ctrl_shift("t").new_tab
-    ctrl_shift("r").reload_config
-    alt("F10").toggle_maximize
-    ctrl_shift("F11").toggle_fullscreen
-  end
-end
-
-Toyoterm.on :app_started do |event|
-  event.pane.send_text("echo toyoterm started\n")
-end
-
-Toyoterm.on :config_reloaded do |event|
-  event.pane.send_text("echo config reloaded\n")
-end
-```
-
-ToyotermはANSI 256色の前景色と背景色を描画します。`colors.ansi`ではテーマの
-基本色であるインデックス0〜15を変更できます。インデックス16〜231は標準の
-xterm 6×6×6カラ―キューブ、232〜255はグレースケールです。`colors.ansi`配列
-全体を代入する場合は、`#RRGGBB`形式の文字列をちょうど16個指定してください。
-
-`font.fallback`は省略できます。CJK、emoji、記号などの不足グリフに対し、インストール済みのフォントを指定順で試した後、OS標準のfallbackを使います。存在しないフォント名はフォントシステムが読み飛ばします。Nerd Font系を使う場合は、`font.family = "JetBrainsMono Nerd Font Mono"`のように、インストール後の正確なfamily名を指定してください。
-
-`config.window`では`opacity`、`width`、`height`、`min_width`、`min_height`、`decorations`、`resizable`、`always_on_top`、`title`を設定できます。初期サイズは起動時に、その他の変更可能な属性はreload時にも反映されます。
-
-`window.image.path`でPNG/JPEGの背景画像を指定できます（`nil`で解除）。
-`window.image.opacity`で`colors.background`に重ねる画像の濃さを
-0〜1で調整します（既定値は1）。画像は縦横比を維持し、中央を基準に切り抜いて
-ウィンドウ全体を覆います。相対パスは設定ファイルのディレクトリが基準です。
-`~/`や`C:/Pictures/wallpaper.jpg`などの絶対パスも使えます。PNGのアルファに
-対応し、`window.opacity`は背景色と画像を合成した背景全体に適用されます。
-reloadで画像ファイルを再読み込みし、実行中の設定変更でも画像の変更・解除が
-できます。画像が不正な場合は以前の設定を維持します。各辺8192ピクセルまで、
-デコーダーのメモリ割り当て上限は256 MiBです。
-
-```ruby
-Toyoterm.configure do |config|
-  config.window.image do |image|
-    image.path = "images/wallpaper.jpg"
-    image.opacity = 0.25
-  end
-end
-```
-
-`window.opacity`はターミナルの既定の背景の不透明度を指定します（`0.0`で透明、
-`1.0`で不透明）。文字、UI、端末アプリが明示した背景色はそれぞれの不透明度を維持します。
-範囲外の有限値は`0.0`または`1.0`に補正されます。キー設定で
-`config.window.opacity += 0.1`や`-= 0.1`を繰り返しても上下限で止まり、
-すぐに逆方向へ変更できます。数値以外や非有限値はエラーになります。
-Windowsでは`1.0`でもウィンドウと描画処理の透過対応を維持し、値を下げると
-再び背景を透過できるようにしています。
-WindowsではHDR・SDRディスプレイ間の移動時も背景を透過できるよう、
-DirectX 12とDirectComposition、乗算済みアルファを使用します。
-DirectX 12対応のGPUが必要です。他のOSでは従来のGPUバックエンド選択を維持します。
-
-zoom中のpaneは四辺の枠線に`config.colors.zoomed_pane_border`（既定値`#ffbe3a`）を使い、通常のアクティブpaneは`pane_border`を使います。どちらも太さは`ui.active_pane_border_width`で、`0`を指定すると表示されません。
-
-UI配色は`tab_bar`、`tab_active`、`tab_inactive`、`workspace_bar`、`status_bar`、`pane_border`、`zoomed_pane_border`、`search_match`、`search_match_active`を`config.colors`で指定できます。バーを隠すには`config.ui.tab_bar = false`または`workspace_bar = false`を使います。余白と境界幅には`0`も指定できます。
-
-### キーバインド
-
-キー名は大文字・小文字を区別しません。修飾キーには`CTRL`、`SHIFT`、`ALT`、`SUPER`などを使用します。名前付きキーは`ENTER`、`TAB`、`SPACE`、矢印キー、ナビゲーションキー、`F1`から`F12`に対応しています。
-
-`config.keys`では`key`、`ctrl`、`ctrl_shift`、`ctrl_alt`、`ctrl_super`、`primary`、`primary_shift`、`primary_alt`、`alt`、`super_key`、`leader`、`physical`ヘルパーを使用できます。Pane・Tab操作、Workspace／Tab切替、検索、window状態変更、reload、クリップボードのコピー／貼り付け、ビジュアル選択（`start_visual_mode`、`toggle_visual_mode`、`start_visual_selection`、`select_visual_selection`、`end_visual_selection`、`move_visual_selection`、`yank_selection`）などのstatic actionを登録できます。`primary`はmacOSで`SUPER`、Linux・Windowsで`CTRL`に展開されるため、1つの設定でOSごとの慣習に合わせられます。modifier名はOS間で共通で、macOSのOptionは`ALT`、macOSのCommandとWindowsキーは`SUPER`です。`physical("KeyH", "CTRL")`のように指定すると、論理文字ではなく物理キー位置へ割り当てられます。physical設定は論理設定より優先されます。組み込みGUIキーバインドはなく、同じchordの重複定義は設定エラーです。
-
-`config.leader`では、ミリ秒単位のtimeout付きLeader prefixをネイティブ側へ設定できます。`leader("v")`の割り当てはmrubyを呼ばずに解決されます。Leader prefix自体は破棄し、不一致またはtimeout後の次キーは通常のキー処理へ戻します。Prefixのrepeatは元のtimeoutを延長せずに破棄し、IME入力、フォーカス喪失、設定reloadではLeader待機状態を解除します。
-
-割り当てのないキーはmrubyを呼ばず、ネイティブのターミナルキーエンコーダへ直接渡されます。Ruby callbackで例外が発生した場合はエラーをログへ出し、シェルの実行を継続します。
-
-Vim風にする場合は、`leader("v").toggle_visual_mode`、`key("SPACE").select_visual_selection`、`move_visual_selection(:left)`／`:right`／`:up`／`:down`／`:line_start`／`:line_end`、`yank_selection`を割り当てます。ビジュアルモード開始時は選択せず、目的のログ位置まで移動してから選択を開始し、範囲を伸ばします。移動・選択actionは通常モードでは無効なので、`h/j/k/l`を割り当てても通常のシェル入力は奪いません。Leaderを使うことで通常の`v`もシェルへ入力できます。
-
-Ruby callbackからは`Toyoterm.clipboard.read`と`Toyoterm.clipboard.write(text)`でホストのテキストクリップボードを操作できます。動的キーバインドまたはイベントcallbackの実行直前に、クリップボードのsnapshotを更新します。プラットフォームのクリップボードを利用できない場合、`read`は`RuntimeError`を発生させます。書込みはcallbackが正常終了した後だけ反映するため、例外時は他のqueue済みcommandと一緒にロールバックされます。
-
-```ruby
-config.keys.key("CTRL+SHIFT+Y").run do
-  Toyoterm.clipboard.write("pane #{Toyoterm.current_pane.id}")
-end
-
-config.keys.key("CTRL+SHIFT+P").run do |context|
-  context.pane.send_text(Toyoterm.clipboard.read)
-end
-```
-
-trusted configからは、ホストの環境変数、filesystem、子processも利用できます。
-
-```ruby
-platform = Toyoterm.platform # :linux、:macos、:windows、または :other
-home = Toyoterm.env["HOME"]
-contents = Toyoterm.read_file("/path/to/file")
-result = Toyoterm.spawn("git", "status", "--short")
-warn result.stderr unless result.success?
-```
-
-`Toyoterm.platform`はhost platformを`:linux`、`:macos`、`:windows`のいずれかのSymbolで返し、それ以外のtargetでは`:other`を返します。`Toyoterm.env`はRuby VM作成時の環境変数snapshotのコピーを返し、Hashを変更してもprocess環境は変わりません。UTF-8で表せないentryは含まれません。path、program名、引数はUTF-8かつNUL byteを含まない文字列に限ります。`read_file`は内容のbyteを保持したRuby Stringを返します。`spawn`はScript Thread上で同期実行し、byteを保持した`stdout`と`stderr`をcaptureします。戻り値の`Toyoterm::ProcessResult`は`stdout`、`stderr`、`exit_status`、`success?`を持ち、portableな終了codeがない場合は`-1`です。filesystem操作とprocess起動の失敗は`RuntimeError`になり、子processの非zero終了は通常の結果として返ります。PTY読取りと描画は止まりませんが、長時間動く子processは後続のRuby callbackを待たせます。
-
-configはtrusted codeであり、MVPではこれらのAPIに制限を設けません。local pluginも現在は同じmruby VMで動作し、filesystem、process、environment、clipboardにconfigと同じ権限を持ちます。そのためpluginの導入は任意code実行の許可に相当します。sourceと更新元を信頼できるpluginだけを導入してください。filesystem・process・network・clipboardを分離するcapability modelは、存在しないsandboxを保証せず後続設計へ延期します。
-
-### Local plugin
-
-起動時とconfig reload時に、標準のpluginディレクトリ（Linux / Unix: `$XDG_CONFIG_HOME/toyoterm/plugins/` または `~/.config/toyoterm/plugins/`、Windows: `%APPDATA%\toyoterm\plugins`）直下の`*.rb`をファイル名の辞書順で読み込みます。その後、configで指定したpluginを記述順に追加します。相対pathは宣言元のconfigまたはpluginファイルを基準に解決し、`~/`はhome directoryへ展開します。
-
-```ruby
-Toyoterm.plugin "plugins/project.rb"
-Toyoterm.plugin "~/.config/toyoterm/extra/status.rb"
-```
-
-各pluginファイルは、一意なnameとsemantic versionを持つpluginをちょうど1つ定義する必要があります。任意の`requires`では、toyoterm plugin API version（`0.1.0`）への条件を、`,`区切りの`=`、`<`、`<=`、`>`、`>=`で指定できます。
-
-```ruby
-Toyoterm::Plugin.define "git-tools" do |plugin|
-  plugin.version = "0.1.0"
-  plugin.requires = ">= 0.1.0, < 0.2.0"
-
-  plugin.command :git_root do |context|
-    context.pane.send_text("git rev-parse --show-toplevel\n")
-  end
-
-  plugin.on :bell do |event|
-    event.pane.badge = "bell"
-  end
-
-  plugin.keys.key("CTRL+G").run do |context|
-    context.pane.send_text("git status\n")
-  end
-
-  plugin.keys do
-    ctrl_shift("G").command(:git_root)
-  end
-end
-```
-
-`plugin.command`、`plugin.on`、`plugin.keys`は、main configと同じcommand、event、dynamic binding、native binding APIを使用します。同じcanonical pathの重複読込は無視します。plugin nameや登録の重複、不正なmetadata、API version非互換、読込不能なファイル、Ruby例外が発生した場合は、そのpluginによる登録をすべてrollbackして無効化し、残りのpluginの読込を続け、`toyoterm::script`へwarningを記録します。config自体のエラーは、従来どおり候補VM全体をatomicに拒否します。
-
-プラグインは名前付きテーマも提供できます。テーマは`config.colors`と同じ全項目を持ち、省略した項目にはtoyotermの既定色が使われます。
-
-```ruby
-# ~/.config/toyoterm/plugins/moon-theme.rb
-Toyoterm::Plugin.define "moon-theme" do |plugin|
-  plugin.version = "0.1.0"
-
-  plugin.theme "moon" do |theme|
-    theme.background = "#10131a"
-    theme.foreground = "#d8dee9"
-    theme.cursor = "#88c0d0"
-    theme.selection = "#3b4252"
-    theme.ansi = [
-      "#000000", "#bf616a", "#a3be8c", "#ebcb8b",
-      "#81a1c1", "#b48ead", "#88c0d0", "#e5e9f0",
-      "#4c566a", "#bf616a", "#a3be8c", "#ebcb8b",
-      "#81a1c1", "#b48ead", "#8fbcbb", "#eceff4"
-    ]
-  end
-end
-```
-
-設定では自動読込されたテーマを名前で選択します。任意のプラグインファイルを`Toyoterm.plugin`で先に宣言する形にも対応します。テーマ選択より後に書いた個別の色設定はテーマ値を上書きします。
-
-```ruby
-Toyoterm.plugin "plugins/moon-theme.rb"
-
-Toyoterm.configure do |config|
-  config.theme = "moon"
-  config.colors.cursor = "#ffffff"
-end
-```
-
-`Toyoterm.themes`は現在登録されているテーマ名の配列を返します。テーマ名の重複は後から読み込んだプラグインだけを無効にし、選択したテーマが見つからない場合はconfig reload全体を拒否します。
-
-### Rubyオブジェクトモデル
-
-各callbackでは、`Toyoterm.current_workspace`、`current_window`、`current_tab`、`current_pane`から最新のsnapshotを参照できます。`Toyoterm.workspaces`、`windows`、`workspace(name)`で検索でき、Workspace・Window・Tabから子要素を取得できます。`tab.zoomed?`はTabがzoom中か、`pane.zoomed?`はそのzoom対象かを返します。Paneのメタデータには`title`、`cwd`、`pid`、`command_running?`、`last_exit_status`と、表示中のviewportを返す`screen_text`も含まれます。command関連フィールドは[Shell integration](docs/shell-integration.md)を有効にすると更新されます。`split`、`close`、`activate`、`new_tab`、`new_window`などの変更操作はNative Commandをqueueし、callbackが正常終了した後に反映します。保存したオブジェクトのnative実体が削除済みの場合は`Toyoterm::InvalidHandleError`を発生させます。
-
-`pane.screen_text`はcallback snapshotに含まれる表示行を改行で連結して返し、現在のviewport外にあるscrollbackは含みません。戻り値は独立したStringで、変更しても端末内容には影響しません。
-
-`Toyoterm.switch_workspace(name)`は名前でWorkspaceを有効化し、存在しない場合はWindow・Tab・Paneを含む完全な階層を作成します。他の変更操作と同様、callbackが正常終了するまでqueueされます。
-
-`Toyoterm.action(name, argument = nil)`は静的keybindingと同じ組み込み操作をqueueし、commandやevent handlerからfullscreen切替、検索開始、visual selection操作、Tab／Workspace移動などを実行できるようにします。方向付きactionの引数は静的bindingと共通です。適用時点でactiveなUI objectを対象とし、user command actionは対象外です。
-
-`pane.split`、`window.new_tab`、`workspace.new_window`には`command:`、`cwd:`、`env:`の起動optionを指定できます。commandはprogram文字列またはargv配列で、shellによる解釈を挟まず直接実行します。環境変数の値に`nil`を指定すると子processからその変数を除去します。`command`を省略すると設定済みまたはplatform既定のshellを使うため、`pane.cwd`を引き継ぎつつ一部の環境変数だけを上書きしたshellも開けます。
-
-`pane.badge`はPane右上に描画するcallback用テキストです。`nil`を代入すると消去します。badge変更はcallbackが正常終了した後だけ反映し、例外時は他のqueue済み変更と一緒に破棄します。`pane.chdir`は提供しません。作業ディレクトリはshellが所有するため、設定から変更する場合は対象shell向けに適切にescapeした`pane.send_text("cd ...\n")`を使用します。
-
-`pane.search(query, direction: :next)`は対象Paneで検索barを開き、表示中の画面とscrollbackから次または前のliteral matchを選択します。queueされる変更なので、callbackが例外終了した場合はUIへ反映せず破棄します。
-
-### Runtime event
-
-`Toyoterm.on`では、起動・reloadイベントに加えて、`window_created`、`window_closed`、`tab_created`、`tab_closed`、`pane_created`、`pane_closed`、`pane_focused`、`title_changed`、`cwd_changed`、`command_started`、`command_finished`、`bell`、`workspace_changed`を購読できます。`Toyoterm::Event`は`name`、`workspace`、`window`、`tab`、`pane`、`title`、`cwd`、`exit_status`を公開し、イベントと無関係な属性は`nil`です。削除イベントには削除済みオブジェクトの型付きIDが残りますが、その状態を参照すると`Toyoterm::InvalidHandleError`が発生します。command lifecycleイベントにはOSC 133 shell integrationが必要で、有効な終了statusが報告されなかった場合の`command_finished.exit_status`は`nil`です。
-
-native側の発生元はmrubyを直接呼ばず、すべてのイベントを単一のFIFO queueへ追加します。各callbackを最後まで実行し、queueされたcommandを反映してから次のイベントを配送します。そのcommandから発生したイベントはqueue末尾へ追加するため、callbackへ再入しません。自己生成イベントの無限loopを防ぐため、1 application turnあたり1,024件を上限とします。handler未登録のイベントはRuby VMを呼ぶ前に破棄します。
-
-optionalな上下barは`config.window.bar`で設定します。各barには`bar.add(:left)`、`bar.add(:center)`、`bar.add(:right)`で任意数のwidgetを配置できます。widgetには固定値、または現在の`workspace`、`window`、`tab`、`pane`を参照できるcontextを受け取るblockを指定します。
-
-上下それぞれに1本のbarを登録できます。100ms未満のintervalは拒否し、callbackはscript workerで実行するため、遅いwidget生成がterminal描画をblockしません。bar widgetがqueueしたcommandは破棄します。
-
-```ruby
-Toyoterm.configure do |config|
-  config.window.bar :bottom, interval: 1.0 do |bar|
-    bar.add(:left) { |context| context.workspace.name }
-    bar.add(:center, "toyoterm")
-    bar.add(:right) { |context| context.pane.cwd }
-  end
-end
-```
-
-### ホットリロード
-
-`Toyoterm.reload_config`は、起動時に選択されたものと同じファイルを再読込します。新しいソースは別のmruby VMで評価・検証され、成功した場合だけ有効な設定と入れ替わります。正常に再読込できると、実行中のターミナルセッションを維持したまま、配色、フォントメトリクス、透明度、スクロールバック、キーバインド、イベントハンドラを更新します。
-
-設定エラーにはソースのファイル名、行番号、Ruby backtraceを表示します。再読込に失敗した場合は、それまでの設定を維持します。
-
-GUIで設定の読込に失敗すると、アプリを終了せずエラーバナーを表示します。`Open Log`で診断全体を展開し、`Dismiss`で閉じます。起動時の設定が壊れている場合はデフォルト設定で起動し、修正後に再読込できるよう元のパスを維持します。
-
-`default_shell`を変更しても実行中のシェルは置き換えません。新しいターミナルセッションを作成するときに適用されます。
-
-Ruby Consoleまたは`toyoterm ruby console`から`Toyoterm.configure`を実行すると、設定ファイルのreloadなしで設定を変更できます。`font.family`、`font.fallback`、`font.size`、`font.weight`、`colors`、`window.opacity`、`scrollback_lines`、`leader`などの設定は評価完了後に検証され、変更があれば現在のwindow・renderer・terminalへ即時反映されます。値が不正な場合は変更全体を直前の値へ戻します。
-
-```ruby
-Toyoterm.configure do |config|
-  config.font.size = 16
-  config.font.family = "JetBrains Mono"
-  config.window.opacity = 0.9
-end
-```
-
-実行可能な設定例は`examples/minimal_config.rb`にあります。`examples/default_config.rb`には、以前の標準GUIキーバインドを通常のRuby設定として収録しています。
-
-組み込みランタイムはCRubyではなくmrubyです。toyotermが明示的にbundleしていないCRuby gem、native extension、完全なCRuby標準ライブラリは利用できません。現在の設定・イベントAPIでは不要なため、v0.1では`mruby-time`をbundleしません。
-
-### ログ
-
-診断情報は`tracing`を通して標準エラー出力へ書き込み、デフォルトlevelは`warn`です。`TOYOTERM_LOG`で全体のlevelまたはカンマ区切りのtarget filterを設定できます。targetは`toyoterm::pty`、`toyoterm::render`、`toyoterm::mux`、`toyoterm::script`、`toyoterm::config`、`toyoterm::app`です。`pty`のような短縮target名も使用できます。
-
-動的キーバインドとイベントcallbackの実行時間は、`toyoterm::script`の`debug`として出力します。100ms以上かかったcallbackはslow callbackとして`warn`で出力し、種類、名前、実行時間、成功状態を記録します。
+組み込みGUIキーバインドはありません。設定ファイルを保存して次のように起動します。
 
 ```sh
-TOYOTERM_LOG=debug toyoterm
-TOYOTERM_LOG=warn,pty=trace,render=debug toyoterm
+toyoterm --config /path/to/config.rb
 ```
 
-v0.1のログ出力先は標準エラー出力のみで、ログファイルの作成やrotationは行いません。標準エラー出力のredirectはユーザーの明示的な選択とし、その場合の保存期間とrotationはprocess manager側の責務とします。PTYの入出力、クリップボード内容、設定source本文は意図的にログへ含めません。設定path、process・Pane ID、callback名、画面寸法、エラーメッセージ、Ruby backtraceは診断情報へ含まれる場合があるため、共有前に内容を確認してください。
+```ruby
+Toyoterm.configure do |config|
+  config.font.family = "monospace"
+  config.font.size = 14
 
-## 操作
-
-組み込みのGUIキーバインドはありません。`examples/default_config.rb`のキーバインドを`config.rb`へコピーし、必要に応じて変更してください。
-
-- 通常のキー入力：PTYへ入力を送信
-- Workspaceまたはタブのラベルをクリック：対象をactivate
-- 左マウスボタンでドラッグ：テキストを選択
-- マウスホイール：履歴をスクロール。アプリケーションがマウスレポートを要求している場合はホイール入力を送信
-- Linux・WindowsのControl+クリックまたはmacOSのCommand+クリック：scheme検証後にOSC 8または自動検出したWeb／メールリンクを開く
-
-シェルが`exit`などで終了すると、そのPaneを自動的に閉じます。空になったタブとWorkspaceも閉じ、最後のPaneだった場合はtoyotermを終了します。PTYの読取りエラーでは、診断できるよう終了画面を保持します。
-
-### クリップボードのセキュリティ
-
-v0.1ではOSC 52によるクリップボードアクセスを無効にします。端末出力は信頼できないローカルプロセスやSSH先から送られる可能性があり、OSC 52を許可すると、明示的なユーザー操作なしにホストのクリップボードを書き換えられます。また、読取り応答はクリップボード内容の流出経路になります。設定したコピー／貼り付けショートカットと、信頼済み設定向けRuby APIは引き続き使用できます。将来OSC 52を実装する場合はopt-inとし、クリップボード読取りはデフォルトで無効のまま、payloadサイズ上限と明示的な許可または確認UIを必須とします。
-
-## CLI
-
-```text
-toyoterm [--config PATH] [--title TITLE] [--app-id APP-ID]
-         [--working-directory DIR] [-e COMMAND [ARG...]]
-toyoterm gui [同じGUI option]
-toyoterm list
-toyoterm reload
-toyoterm ruby console
-toyoterm cli list-panes
-toyoterm cli send-text --pane ID TEXT
-toyoterm cli split [left|right|up|down]
-toyoterm cli activate-workspace NAME
-toyoterm demo
-toyoterm pty-demo
-toyoterm screen-demo
-toyoterm version
-toyoterm help
+  config.keys do
+    ctrl_shift("t").new_tab
+    ctrl_shift("e").split(:right)
+    ctrl_shift("r").reload_config
+    primary_shift("c").copy_selection
+    primary_shift("v").paste_clipboard
+  end
+end
 ```
 
-Linuxでは、packageに含まれるdesktop entryがこれらの起動optionを
-`xdg-terminal-exec`へ公開します。desktop統合からwindow title、application ID、
-作業directory、commandを指定できるため、toyotermをデフォルトターミナルにした
-Omarchyでも対話的な更新を実行できます。
+[minimal_config.rb](examples/minimal_config.rb)または[default_config.rb](examples/default_config.rb)
+を出発点にできます。プロンプトのアイコン表示にはNerd Fontが便利です。インストール済みの正確なファミリー名を指定してください。
 
-ローカル実行の`demo`系コマンドを除き、Unix domain socketまたはWindows Named Pipeで起動中GUIへ接続します。`list`はGUIの最新Mux状態を表示し、`cli`の変更操作はRubyと同じNative Commandモデルを使います。複数GUIが動作している場合は最後に起動したinstanceを選びます。安定した名前で対象を指定する場合は、GUI起動時とclient実行時の両方で同じ`TOYOTERM_INSTANCE=name`を設定してください。
+設定は`--config`、`TOYOTERM_CONFIG_FILE`、プラットフォーム既定パスの順に選択します。
+Linux・macOS・Windowsのパスとエラー時の復旧は[設定の読込](docs/mruby-api.md#loading-configuration)
+を参照してください。`toyoterm reload`で再読込し、`toyoterm ruby console`でRubyによるライブ変更ができます。
 
-IPCの状態directoryとUnix socketは所有者専用です。各requestはinstanceごとのrandom tokenとprotocol versionも送信します。protocolとsecurity boundaryの詳細は[Local IPC設計](docs/ipc.md)を参照してください。
+設定とプラグインは信頼済みコードとして動作し、ファイル・プロセス・環境変数・クリップボードへ
+アクセスできます。サンドボックスではありません。組み込みランタイムはmrubyのため、
+CRubyの全標準ライブラリやgemは利用できません。
 
-## セキュリティ
+## 操作とドキュメント
 
-設定ファイルは、組み込みmrubyランタイムで信頼済みのRubyコードとして評価されます。pluginは第三者による任意codeであり、configと同じ権限を持ちます。現在のtoyotermは、どちらにもsandboxやcapability制限を提供していません。導入前にpluginのsourceと更新経路を確認し、信頼できる提供元のconfigとpluginだけを読み込んでください。
+- [利用ガイド](docs/usage.md)：マウス操作、CLI、ログ、トラブルシューティング
+- [mruby APIリファレンス](docs/mruby-api.md)：設定、キーバインド、コールバック、プラグイン、テーマ
+- [シェル連携](docs/shell-integration.md)：作業ディレクトリとコマンド状態の通知
+- [ドキュメント一覧](docs/README.md)：利用者・開発者向けガイド
+
+通常のキー入力はシェルへ送信し、Tab・Workspaceのクリックで切り替え、ドラッグでテキストを
+選択します。Control+クリック（macOSはCommand+クリック）で許可されたWeb・メールリンクを開きます。
+最後のPaneが終了するとアプリも終了します。
 
 ## 開発
 
-テストと静的検査：
-
-```sh
-cargo test --workspace --all-targets
-cargo clippy --workspace --all-targets -- -D warnings
-cargo fmt --check
-sh scripts/check-licenses.sh
-```
-
-`dist/`以下にリリースアーカイブを作成：
-
-```sh
-sh scripts/package.sh
-```
-
-Linuxは`.tar.gz`、macOSは未署名`.app`を含む`.tar.gz`とDMG、Windowsは任意実行の
-per-user installerを含むportable `.zip`を生成します。archive内のbinaryを実際に
-install・実行して検証し、SHA-256 sidecarも生成します。詳細は
-[packaging guide](docs/packaging.md)、[release checklist](docs/releasing.md)、
-[platform validation guide](docs/platform-validation.md)を参照してください。
-
-## アーキテクチャ
-
-```text
-winit events
-    ├─ native key binding resolver ─> mruby callback ─> native Command
-    └─ terminal key encoder
-                                      ↓
-                                  native Mux
-                                      ↓
-                                     PTY
-                                      ↓
-                              alacritty_terminal
-                                      ↓
-                                wgpu + glyphon
-```
-
-組み込みmruby VMは単一スレッドで動作します。Ruby callbackはターミナルやMuxの内部状態を直接変更せず、ネイティブコマンドをキューへ追加します。
+locked指定の検証コマンドとネイティブスモークテストは[開発ガイド](docs/development.md)、
+パッケージ作成は[リリースチェックリスト](docs/releasing.md)を参照してください。
+[クレート構成](docs/architecture.md)と[スレッド契約](docs/threading.md)で、ネイティブ側の所有権と
+専用スクリプトスレッドを説明しています。静的キーバインドはRubyを呼び出さず、
+Rubyコールバックの返すコマンドはメインスレッドで適用します。
 
 ## ライセンス
 

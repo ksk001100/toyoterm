@@ -1,6 +1,6 @@
 # Packaging and installation
 
-toyoterm releases self-contained, target-named artifacts. The version comes
+toyoterm packages target-named artifacts with the embedded mruby runtime. The version comes
 from the Cargo workspace and the target comes from `rustc`; filenames therefore
 identify exactly which binary they contain. The project is not published to
 crates.io.
@@ -14,7 +14,7 @@ Extract `toyoterm-VERSION-TARGET.tar.gz` and run:
 ```
 
 The default prefix is `~/.local`. The installer writes the executable to
-`~/.local/bin`, a desktop entry to `~/.local/share/applications`, a scalable icon
+`~/.local/bin`, a desktop entry to `~/.local/share/applications`, a 1024×1024 PNG icon
 to the hicolor icon tree, and an uninstaller to
 `~/.local/lib/toyoterm/uninstall.sh`. It does not edit shell startup files.
 Add `~/.local/bin` to `PATH` when the directory is not already present.
@@ -42,7 +42,8 @@ use. Quit toyoterm before replacing an existing bundle. Uninstall by removing
 The application bundle currently has no Apple Developer signature or
 notarization ticket. macOS may require explicit approval in Privacy & Security.
 Signing and notarization require project-owned Apple credentials and are the
-remaining external release prerequisite.
+external prerequisites for signed and notarized releases. Interactive validation
+is tracked separately in the [platform checklist](platform-validation.md).
 
 ## Windows
 
@@ -62,8 +63,19 @@ entry, shortcut, and installer files. The zip remains usable as a portable
 fallback.
 
 The executable is not currently Authenticode-signed. Signing requires a
-project-owned code-signing certificate and is the remaining external Windows
-release prerequisite.
+project-owned code-signing certificate. Interactive validation is tracked
+separately in the [platform checklist](platform-validation.md).
+
+All platforms preserve user configuration when uninstalling. Configuration paths
+are listed in the [API reference](mruby-api.md#loading-configuration).
+
+## Included documentation
+
+Packages include both READMEs, `examples/minimal_config.rb`, the project license,
+third-party notices, and the mruby license. They do not currently include the
+repository's `docs/` tree or `examples/default_config.rb`; consult the source
+checkout for those guides and examples. On macOS the common files are inside
+`toyoterm.app/Contents/Resources`.
 
 ## Integrity and release automation
 

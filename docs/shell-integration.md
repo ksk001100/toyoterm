@@ -6,7 +6,7 @@ observed without capturing command text or changing the PTY protocol.
 ## Protocol
 
 Shells write these OSC sequences to the terminal. Both BEL (`0x07`) and ST
-(`ESC \\`) terminators are accepted.
+(`ESC \`, bytes `0x1b 0x5c`) terminators are accepted.
 
 | State | Sequence | Pane metadata |
 | --- | --- | --- |
