@@ -12,7 +12,7 @@ See the [usage guide](usage.md) for CLI commands and troubleshooting, or the
 [documentation index](README.md) for all guides.
 
 - [Loading configuration](#loading-configuration)
-- [Bundled metaprogramming APIs](#bundled-metaprogramming-apis)
+- [Bundled Ruby libraries](#bundled-ruby-libraries)
 - [Configuration DSL](#configuration-dsl)
 - [Key bindings](#key-bindings)
 - [Commands and object model](#commands-and-object-model)
@@ -23,12 +23,20 @@ See the [usage guide](usage.md) for CLI commands and troubleshooting, or the
 - [Live Ruby console](#live-ruby-console)
 - [Callback execution model](#callback-execution-model)
 
-## Bundled metaprogramming APIs
+## Bundled Ruby libraries
 
-The embedded runtime includes the `mruby-metaprog`, `mruby-object-ext`,
-`mruby-class-ext`, and `mruby-method` core gems. Their APIs are available
-directly in configuration, callbacks, commands, plugins, and the live console;
-no `require` call is needed.
+The embedded runtime includes `mruby-error` and the `stdlib`, `stdlib-ext`,
+`math`, and `metaprog` core gemboxes. Their APIs are available directly in
+configuration, callbacks, commands, plugins, and the live console; no `require`
+call is needed.
+
+| Group | Included capabilities |
+| --- | --- |
+| Collections and iteration | `Set`, `Enumerator`, `Enumerator::Lazy`, `Enumerator::Chain`, and extended `Array`, `Hash`, `Enumerable`, and `Range` methods |
+| Objects and control flow | `Fiber`, `ObjectSpace`, `catch` / `throw`, and extended `Object`, `Kernel`, `Module`, `Class`, `Numeric`, `Symbol`, and top-level methods |
+| Standard data types | `Struct`, `Data`, `Time`, `Random`, `Array#pack`, `String#unpack`, and `sprintf` |
+| Math | `Math`, `Rational`, `Complex`, and multi-precision integers |
+| Metaprogramming | source compilation and `eval`, `Binding`, `Proc#binding`, reflection, `Method`, and `UnboundMethod` |
 
 This includes runtime method definition and reflection such as
 `define_singleton_method`, `send`, `public_send`, `methods`, `instance_methods`,
@@ -55,6 +63,13 @@ Ruby exceptions raised by these APIs follow the same atomic reload and callback
 rollback rules as the rest of the scripting API. `Method#source_location` is
 available, but may return `nil` because toyoterm does not enable mruby debug
 information in production builds.
+
+OS-dependent `mruby-io`, `mruby-dir`, `mruby-socket`, and `mruby-task` are not
+bundled. Neither are `mruby-sleep`, `mruby-exit`, command binaries, or test gems.
+Use the [host APIs](#platform-clipboard-environment-files-and-processes) for
+files and processes. Keeping platform HAL gems out of the amalgamation preserves
+one runtime build across Linux, macOS, and Windows; it also avoids introducing
+blocking socket or task-scheduler behavior into the single script thread.
 
 ## Loading configuration
 

@@ -502,6 +502,49 @@ fn exposes_bundled_metaprogramming_gems() {
 }
 
 #[test]
+fn exposes_bundled_portable_standard_library_gemboxes() {
+    let mut runtime = MrubyRuntime::new().unwrap();
+    assert_eq!(
+        runtime
+            .eval(
+                r#"
+                raise "set" unless Set[1, 1, 2] == Set[1, 2]
+                raise "lazy enumerator" unless [1, 2, 3].lazy.map { |n| n * 2 }.force == [2, 4, 6]
+                raise "enumerator chain" unless [1].chain([2, 3]).to_a == [1, 2, 3]
+
+                fiber = Fiber.new { Fiber.yield(7); 8 }
+                raise "fiber" unless fiber.resume == 7 && fiber.resume == 8
+
+                point = Struct.new(:x, :y).new(3, 4)
+                record = Data.define(:name).new("toyoterm")
+                raise "struct" unless point.to_a == [3, 4]
+                raise "data" unless record.name == "toyoterm" && record.frozen?
+                raise "pack" unless [65, 66].pack("C*").unpack("C*") == [65, 66]
+                raise "sprintf" unless sprintf("%s-%02d", "ruby", 7) == "ruby-07"
+                raise "time" unless Time.at(0).to_i == 0
+
+                random = Random.new(1234).rand(100)
+                raise "random" unless random >= 0 && random < 100
+                raise "math" unless Math.sqrt(81) == 9.0
+                raise "rational" unless Rational(1, 3) + Rational(2, 3) == 1
+                raise "complex" unless Complex(2, 3).real == 2
+                raise "bigint" unless 2**100 > 2**99
+
+                context = binding
+                raise "binding" unless eval("6 * 7", context) == 42
+                raise "proc binding" unless proc { 1 }.binding.is_a?(Binding)
+                raise "catch" unless catch(:done) { throw(:done, 42) } == 42
+                raise "objectspace" unless ObjectSpace.count_objects[:TOTAL] > 0
+
+                "portable stdlib ok"
+                "#,
+            )
+            .unwrap(),
+        "portable stdlib ok"
+    );
+}
+
+#[test]
 fn loads_the_configuration_dsl() {
     let mut manager = ConfigManager::new().unwrap();
     let config = manager
