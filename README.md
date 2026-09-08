@@ -88,6 +88,8 @@ is mruby, so the complete CRuby standard library and gems are not available.
 The bundled runtime includes mruby's portable standard-library, math, and
 metaprogramming APIs; see the API reference for details. Platform-dependent
 I/O and socket gems remain excluded in favor of toyoterm's host APIs.
+External commands can be captured with `Toyoterm.spawn`; pass `cwd:` to run a
+command in a specific working directory.
 
 ## Usage and documentation
 

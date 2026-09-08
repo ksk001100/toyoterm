@@ -751,9 +751,12 @@ sandboxed and carry the authority of the toyoterm process.
   created. Non-UTF-8 entries are omitted; changing the Hash affects no process.
 - `Toyoterm.read_file(path)` returns a byte-preserving String. The UTF-8 path
   must not contain NUL; I/O failures raise `RuntimeError`.
-- `Toyoterm.spawn(program, *args)` runs synchronously on the script thread and
-  captures byte-preserving output. Arguments are stringified and cannot contain
-  NUL. Launch failures raise `RuntimeError`; nonzero exit is a normal result.
+- `Toyoterm.spawn(program, *args, cwd: nil)` runs synchronously on the script
+  thread and captures byte-preserving output. Arguments and a non-`nil` `cwd`
+  are stringified and cannot contain NUL; `cwd` must not be empty. When supplied,
+  `cwd` is the child process's working directory. Launch failures, including a
+  missing or inaccessible working directory, raise `RuntimeError`; nonzero exit
+  is a normal result.
 
 `Toyoterm::ProcessResult` exposes `stdout`, `stderr`, `exit_status`, and
 `success?`. A process terminated without a portable exit code reports `-1`.
@@ -763,7 +766,7 @@ Toyoterm.configure do |config|
   config.window.decorations = false if Toyoterm.platform == :linux
 end
 
-result = Toyoterm.spawn("git", "status", "--short")
+result = Toyoterm.spawn("git", "branch", "--show-current", cwd: "/path/to/repository")
 warn result.stderr unless result.success?
 ```
 

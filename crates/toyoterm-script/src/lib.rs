@@ -94,13 +94,17 @@ pub unsafe extern "C" fn toyoterm_host_read_file(
 /// # Safety
 ///
 /// `arguments` and `lengths` must each contain `count` readable entries, and every argument pointer
-/// must address the corresponding number of bytes. All out-pointers must be valid for writes; the
-/// caller owns returned buffers and must release them with the matching free functions.
+/// must address the corresponding number of bytes. When `cwd_available` is nonzero, `cwd` must
+/// address `cwd_length` readable bytes. All out-pointers must be valid for writes; the caller owns
+/// returned buffers and must release them with the matching free functions.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn toyoterm_host_spawn(
     arguments: *const *const u8,
     lengths: *const usize,
     count: usize,
+    cwd: *const u8,
+    cwd_length: usize,
+    cwd_available: i32,
     stdout_output: *mut *mut u8,
     stdout_length: *mut usize,
     stderr_output: *mut *mut u8,
@@ -134,6 +138,15 @@ pub unsafe extern "C" fn toyoterm_host_spawn(
     };
     let mut command = ProcessCommand::new(program);
     command.args(arguments);
+    if cwd_available != 0 {
+        // SAFETY: The C shim supplies a live Ruby string buffer bounded by `cwd_length`.
+        let cwd = unsafe { slice::from_raw_parts(cwd, cwd_length) };
+        let cwd = match std::str::from_utf8(cwd) {
+            Ok(cwd) => cwd,
+            Err(_) => return return_host_error("cwd must be valid UTF-8".to_owned(), error),
+        };
+        command.current_dir(cwd);
+    }
     #[cfg(windows)]
     command.creation_flags(CREATE_NO_WINDOW);
     match command.output() {

@@ -1689,6 +1689,32 @@ fn spawn_captures_stdout_stderr_and_nonzero_status() {
     assert!(error.message().contains("spawn"));
 }
 
+#[cfg(unix)]
+#[test]
+fn spawn_uses_requested_working_directory() {
+    let unique = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let directory = std::env::temp_dir().join(format!(
+        "toyoterm-ruby-spawn-{}-{unique}",
+        std::process::id()
+    ));
+    std::fs::create_dir(&directory).unwrap();
+    std::fs::write(directory.join("marker.txt"), b"requested cwd").unwrap();
+    let literal = ruby_string_literal(directory.to_str().unwrap());
+    let mut manager = ConfigManager::new().unwrap();
+    assert_eq!(
+        manager
+            .eval(&format!(
+                r#"Toyoterm.spawn("/bin/sh", "-c", "cat marker.txt", cwd: {literal}).stdout"#
+            ))
+            .unwrap(),
+        "requested cwd"
+    );
+    std::fs::remove_dir_all(directory).unwrap();
+}
+
 #[cfg(windows)]
 #[test]
 fn spawn_captures_stdout_stderr_and_nonzero_status() {
@@ -1701,6 +1727,45 @@ fn spawn_captures_stdout_stderr_and_nonzero_status() {
                 .unwrap(),
             "out|err|7|false"
         );
+}
+
+#[cfg(windows)]
+#[test]
+fn spawn_uses_requested_working_directory() {
+    let unique = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let directory = std::env::temp_dir().join(format!(
+        "toyoterm-ruby-spawn-{}-{unique}",
+        std::process::id()
+    ));
+    std::fs::create_dir(&directory).unwrap();
+    std::fs::write(directory.join("marker.txt"), b"requested cwd").unwrap();
+    let literal = ruby_string_literal(directory.to_str().unwrap());
+    let mut manager = ConfigManager::new().unwrap();
+    assert_eq!(
+        manager
+            .eval(&format!(
+                r#"Toyoterm.spawn("cmd", "/C", "type marker.txt", cwd: {literal}).stdout"#
+            ))
+            .unwrap(),
+        "requested cwd"
+    );
+    std::fs::remove_dir_all(directory).unwrap();
+}
+
+#[test]
+fn spawn_rejects_invalid_working_directories_before_launch() {
+    let mut manager = ConfigManager::new().unwrap();
+    let empty = manager
+        .eval(r#"Toyoterm.spawn("unused", cwd: "")"#)
+        .unwrap_err();
+    assert!(empty.message().contains("cwd cannot be empty"));
+    let nul = manager
+        .eval(r#"Toyoterm.spawn("unused", cwd: "bad\0cwd")"#)
+        .unwrap_err();
+    assert!(nul.message().contains("cwd cannot contain a NUL byte"));
 }
 
 #[test]

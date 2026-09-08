@@ -1047,14 +1047,19 @@ module Toyoterm
     __host_read_file(path)
   end
 
-  def self.spawn(program, *args)
+  def self.spawn(program, *args, cwd: nil)
     program = program.to_s
     raise ArgumentError, "program cannot be empty" if program.empty?
     values = [program] + args.map { |arg| arg.to_s }
     if values.any? { |value| value.index("\0") }
       raise ArgumentError, "program and arguments cannot contain NUL bytes"
     end
-    ProcessResult.new(*__host_spawn(values))
+    unless cwd.nil?
+      cwd = cwd.to_s
+      raise ArgumentError, "cwd cannot be empty" if cwd.empty?
+      raise ArgumentError, "cwd cannot contain a NUL byte" if cwd.index("\0")
+    end
+    ProcessResult.new(*__host_spawn(values, cwd))
   end
 
   def self.plugin(path)

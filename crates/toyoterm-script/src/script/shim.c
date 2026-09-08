@@ -9,6 +9,8 @@ extern int toyoterm_host_read_file(const uint8_t *path, size_t path_length,
                                    char **error);
 extern int toyoterm_host_spawn(const uint8_t *const *arguments,
                                const size_t *lengths, size_t count,
+                               const uint8_t *cwd, size_t cwd_length,
+                               int cwd_available,
                                uint8_t **stdout_output, size_t *stdout_length,
                                uint8_t **stderr_output, size_t *stderr_length,
                                int32_t *exit_status, char **error);
@@ -118,7 +120,8 @@ static mrb_value host_read_file(mrb_state *mrb, mrb_value self) {
 static mrb_value host_spawn(mrb_state *mrb, mrb_value self) {
   (void)self;
   mrb_value arguments;
-  mrb_get_args(mrb, "A", &arguments);
+  mrb_value cwd;
+  mrb_get_args(mrb, "Ao", &arguments, &cwd);
   mrb_int count = RARRAY_LEN(arguments);
   const uint8_t **pointers = calloc((size_t)count, sizeof(*pointers));
   size_t *lengths = calloc((size_t)count, sizeof(*lengths));
@@ -144,8 +147,21 @@ static mrb_value host_spawn(mrb_state *mrb, mrb_value self) {
   size_t stderr_length = 0;
   int32_t exit_status = -1;
   char *error = NULL;
+  const uint8_t *cwd_pointer = NULL;
+  size_t cwd_length = 0;
+  int cwd_available = !mrb_nil_p(cwd);
+  if (cwd_available) {
+    if (!mrb_string_p(cwd)) {
+      free(pointers);
+      free(lengths);
+      mrb_raise(mrb, E_TYPE_ERROR, "process cwd must be a string or nil");
+    }
+    cwd_pointer = (const uint8_t *)RSTRING_PTR(cwd);
+    cwd_length = (size_t)RSTRING_LEN(cwd);
+  }
   int status = toyoterm_host_spawn(
-      pointers, lengths, (size_t)count, &stdout_output, &stdout_length,
+      pointers, lengths, (size_t)count, cwd_pointer, cwd_length, cwd_available,
+      &stdout_output, &stdout_length,
       &stderr_output, &stderr_length, &exit_status, &error);
   free(pointers);
   free(lengths);
@@ -174,7 +190,7 @@ void toyoterm_mruby_install_host_api(void *state) {
   mrb_define_module_function(mrb, module, "__host_read_file", host_read_file,
                              MRB_ARGS_REQ(1));
   mrb_define_module_function(mrb, module, "__host_spawn", host_spawn,
-                             MRB_ARGS_REQ(1));
+                             MRB_ARGS_REQ(2));
 }
 
 int toyoterm_mruby_set_environment(void *state, const char *const *keys,
