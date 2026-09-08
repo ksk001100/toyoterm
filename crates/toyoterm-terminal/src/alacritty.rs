@@ -1,3 +1,8 @@
+use super::graphics::{
+    Graphics,
+    handler::GraphicsHandler,
+    stream::{Stream, Token},
+};
 use std::sync::mpsc::{self, Receiver, Sender};
 
 use alacritty_terminal::Term;
@@ -178,9 +183,12 @@ impl EventListener for TerminalEventSender {
 }
 
 pub struct AlacrittyTerminalBackend {
+    graphics: Graphics,
+    graphics_stream: Stream,
     processor: Processor,
     terminal: Term<TerminalEventSender>,
     events: Receiver<TerminalEvent>,
+    event_sender: Sender<TerminalEvent>,
     shell_integration: ShellIntegrationParser,
     pending_events: Vec<TerminalEvent>,
     selection_anchor: Option<Point>,
@@ -211,8 +219,11 @@ impl AlacrittyTerminalBackend {
         let config = terminal_config(scrollback_lines);
         let (event_sender, events) = mpsc::channel();
         Self {
+            graphics: Graphics::new(),
+            graphics_stream: Stream::default(),
             processor: Processor::new(),
-            terminal: Term::new(config, &size, TerminalEventSender(event_sender)),
+            terminal: Term::new(config, &size, TerminalEventSender(event_sender.clone())),
+            event_sender,
             events,
             shell_integration: ShellIntegrationParser::default(),
             pending_events: Vec::new(),
@@ -225,6 +236,16 @@ impl AlacrittyTerminalBackend {
         let mut events = std::mem::take(&mut self.pending_events);
         events.extend(self.events.try_iter());
         events
+    }
+
+    /// Physical cell size used by pixel-based image protocols.
+    pub fn set_cell_size(&mut self, width: u16, height: u16) {
+        let size = (width.max(1), height.max(1));
+        if self.graphics.cell_size != size {
+            self.graphics.clear(false, i32::MIN, i32::MAX);
+            self.graphics.clear(true, i32::MIN, i32::MAX);
+            self.graphics.cell_size = size;
+        }
     }
 
     pub fn set_scrollback_lines(&mut self, scrollback_lines: usize) {
@@ -264,7 +285,50 @@ impl Default for AlacrittyTerminalBackend {
 impl TerminalBackend for AlacrittyTerminalBackend {
     fn advance(&mut self, bytes: &[u8]) {
         let shell_events = self.shell_integration.advance(bytes);
-        self.processor.advance(&mut self.terminal, bytes);
+        for token in self.graphics_stream.advance(bytes) {
+            match token {
+                Token::Cancel => self.graphics.cancel_transfer(),
+                Token::Text(bytes) => self.processor.advance(
+                    &mut GraphicsHandler {
+                        terminal: &mut self.terminal,
+                        graphics: &mut self.graphics,
+                        output: &self.event_sender,
+                    },
+                    &bytes,
+                ),
+                Token::Graphic(kind, payload) => {
+                    use alacritty_terminal::vte::ansi::Handler;
+                    // Flush buffered synchronized text before capturing the image cursor.
+                    self.processor.stop_sync(&mut GraphicsHandler {
+                        terminal: &mut self.terminal,
+                        graphics: &mut self.graphics,
+                        output: &self.event_sender,
+                    });
+                    let at = self.terminal.grid().cursor.point;
+                    let result = self.graphics.receive(
+                        kind,
+                        &payload,
+                        (at.column.0 as u16, at.line.0),
+                        self.dimensions(),
+                        self.terminal.mode().contains(TermMode::ALT_SCREEN),
+                    );
+                    if let Some(reply) = result.reply {
+                        let _ = self.event_sender.send(TerminalEvent::PtyWrite(reply));
+                    }
+                    if let Some((columns, rows)) = result.advance {
+                        let mut handler = GraphicsHandler {
+                            terminal: &mut self.terminal,
+                            graphics: &mut self.graphics,
+                            output: &self.event_sender,
+                        };
+                        for _ in 1..rows.min(handler.terminal.screen_lines() as u16) {
+                            handler.linefeed();
+                        }
+                        handler.goto_col(at.column.0.saturating_add(usize::from(columns)));
+                    }
+                }
+            }
+        }
         self.pending_events.extend(shell_events);
         if !self.search.query.is_empty() {
             self.search.matches = terminal_matches(&self.terminal, &self.search.query);
@@ -279,6 +343,11 @@ impl TerminalBackend for AlacrittyTerminalBackend {
     }
 
     fn resize(&mut self, columns: u16, rows: u16) {
+        if self.dimensions() != (columns, rows) {
+            self.graphics.clear(false, i32::MIN, i32::MAX);
+            self.graphics.clear(true, i32::MIN, i32::MAX);
+            self.graphics.region = None;
+        }
         self.terminal.resize(TermSize::new(columns, rows));
     }
 
@@ -371,6 +440,9 @@ impl TerminalBackend for AlacrittyTerminalBackend {
         }
 
         TerminalSnapshot {
+            images: self
+                .graphics
+                .snapshot(self.mode().alternate_screen, display_offset, rows),
             columns,
             rows,
             lines,

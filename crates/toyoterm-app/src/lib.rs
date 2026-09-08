@@ -162,10 +162,17 @@ impl CellMetrics {
             (f64::from(content_width) / (self.width * scale_factor).max(1.0)).floor() as u32;
         let rows =
             (f64::from(content_height) / (self.height * scale_factor).max(1.0)).floor() as u32;
-        PtySize::new(
+        let mut size = PtySize::new(
             columns.clamp(2, u16::MAX.into()) as u16,
             rows.clamp(1, u16::MAX.into()) as u16,
-        )
+        );
+        size.pixel_width = (f64::from(size.columns) * (self.width * scale_factor).max(1.0))
+            .round()
+            .clamp(1.0, f64::from(u16::MAX)) as u16;
+        size.pixel_height = (f64::from(size.rows) * (self.height * scale_factor).max(1.0))
+            .round()
+            .clamp(1.0, f64::from(u16::MAX)) as u16;
+        size
     }
 
     pub fn text_layout(self, scale_factor: f64) -> TextLayout {
@@ -1163,7 +1170,12 @@ mod tests {
         let metrics = CellMetrics::default();
         assert_eq!(
             metrics.terminal_size(PhysicalSize::new(916, 556)),
-            PtySize::new(100, 30)
+            PtySize {
+                columns: 100,
+                rows: 30,
+                pixel_width: 900,
+                pixel_height: 540
+            }
         );
     }
 
@@ -1172,7 +1184,12 @@ mod tests {
         let metrics = CellMetrics::default();
         assert_eq!(
             metrics.terminal_size(PhysicalSize::new(0, 0)),
-            PtySize::new(2, 1)
+            PtySize {
+                columns: 2,
+                rows: 1,
+                pixel_width: 18,
+                pixel_height: 18
+            }
         );
     }
 
@@ -1181,7 +1198,11 @@ mod tests {
         let metrics = CellMetrics::default();
         let logical = metrics.terminal_size_at_scale(PhysicalSize::new(916, 556), 1.0);
         let hidpi = metrics.terminal_size_at_scale(PhysicalSize::new(1832, 1112), 2.0);
-        assert_eq!(logical, hidpi);
+        assert_eq!((logical.columns, logical.rows), (hidpi.columns, hidpi.rows));
+        assert_eq!(
+            (hidpi.pixel_width, hidpi.pixel_height),
+            (logical.pixel_width * 2, logical.pixel_height * 2)
+        );
     }
 
     #[test]

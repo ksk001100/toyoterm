@@ -7,3 +7,7 @@ publish.workspace = true
 
 [dependencies]
 alacritty_terminal.workspace = true
+base64.workspace = true
+flate2.workspace = true
+image.workspace = true
+unicode-width.workspace = true

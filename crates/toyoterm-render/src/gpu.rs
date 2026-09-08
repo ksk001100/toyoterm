@@ -130,6 +130,7 @@ struct ConfigErrorRenderLayout {
 }
 
 struct PaneBuffers {
+    images: Vec<(toyoterm_terminal::TerminalImage, graphics::GpuImage)>,
     text: Buffer,
     cell_runs: Vec<CellRunBuffer>,
     cursor_glyph: Buffer,
@@ -276,6 +277,7 @@ impl PaneBuffers {
             backgrounds: Vec::new(),
             selection_highlights: Vec::new(),
             search_highlights: Vec::new(),
+            images: Vec::new(),
         }
     }
 }
@@ -539,6 +541,27 @@ impl GpuRenderer {
                 .get_mut(&pane.pane)
                 .expect("pane buffers were inserted");
             buffers.layout = layout;
+            let mut cached = std::mem::take(&mut buffers.images);
+            for image in &pane.snapshot.images {
+                if image.width > self.device.limits().max_texture_dimension_2d
+                    || image.height > self.device.limits().max_texture_dimension_2d
+                {
+                    continue;
+                }
+                let gpu = if let Some(index) = cached.iter().position(|(previous, _)| {
+                    previous.id == image.id && Arc::ptr_eq(&previous.rgba, &image.rgba)
+                }) {
+                    cached.swap_remove(index).1
+                } else {
+                    graphics::GpuImage::new(
+                        &self.device,
+                        &self.queue,
+                        self.configuration.format,
+                        image,
+                    )
+                };
+                buffers.images.push((image.clone(), gpu));
+            }
             buffers.cursor = pane.cursor;
             buffers.rect = pane.rect;
             buffers.active = pane.active;
@@ -1213,6 +1236,38 @@ impl GpuRenderer {
                 pass.set_vertex_buffer(0, ui_buffer.slice(..));
                 pass.draw(0..ui_vertices.len() as u32, 0..1);
             }
+            for pane in self.panes.values() {
+                let right = pane
+                    .rect
+                    .x
+                    .saturating_add(pane.rect.width)
+                    .min(self.configuration.width);
+                let bottom = pane
+                    .rect
+                    .y
+                    .saturating_add(pane.rect.height)
+                    .min(self.configuration.height);
+                if right <= pane.rect.x || bottom <= pane.rect.y {
+                    continue;
+                }
+                pass.set_scissor_rect(
+                    pane.rect.x,
+                    pane.rect.y,
+                    right - pane.rect.x,
+                    bottom - pane.rect.y,
+                );
+                for (image, gpu) in &pane.images {
+                    gpu.update(
+                        &self.queue,
+                        image,
+                        pane.rect,
+                        pane.layout,
+                        &self.configuration,
+                    );
+                    gpu.draw(&mut pass);
+                }
+            }
+            pass.set_scissor_rect(0, 0, self.configuration.width, self.configuration.height);
             self.text_renderer
                 .render(&self.text_atlas, &self.viewport, &mut pass)
                 .map_err(|error| RenderError::new("render terminal text", error))?;

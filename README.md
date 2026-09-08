@@ -19,6 +19,7 @@ This is a personal project built for my own use and an experimental toy.
 - Workspaces, tabs, split panes, pane zoom, and independent shell sessions
 - UTF-8 and IME input, scrollback, search, selection, and clipboard copy/paste
 - OSC 8 links, plain-URL detection, and shell integration for cwd and command status
+- Inline images using Sixel, Kitty graphics, and iTerm2 OSC 1337 ([supported subset and example](docs/image-protocols.md))
 - Embedded mruby 4.0 configuration, native and Ruby key bindings, events, commands, plugins, and themes
 - Atomic configuration reload, a live Ruby console, local IPC, and configurable window bars and wallpaper
 
@@ -27,7 +28,7 @@ This is a personal project built for my own use and an experimental toy.
 Linux is the primary development platform. CI runs builds, tests, packaging,
 and GUI startup smoke tests on Linux, macOS, and Windows. Interactive validation
 on physical machines is still required; see [platform validation](docs/platform-validation.md).
-Multiple OS windows, image protocols, and session persistence remain outside
+Multiple OS windows and session persistence remain outside
 the initial release scope. Ruby `Window` handles represent mux windows inside
 the application's single OS window.
 

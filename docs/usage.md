@@ -15,6 +15,10 @@ There are no built-in GUI key bindings. Copy the bindings from
 
 See [URL opening security](url-security.md) for the allowed schemes and limits.
 
+Terminal output can display Sixel, Kitty, and iTerm2 OSC 1337 images. Run
+`python examples/terminal_images.py` inside toyoterm for a color chart, and see
+[terminal images](image-protocols.md) for the supported subset and limits.
+
 When a shell exits, toyoterm closes its pane automatically. Empty tabs and workspaces are collapsed, and exiting the final pane closes toyoterm. A pane is retained after a PTY read error so the failure remains visible for diagnosis.
 
 ### Clipboard security

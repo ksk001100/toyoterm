@@ -30,6 +30,7 @@ fn terminal_frame_matches_offscreen_image_snapshots() {
 
 fn fixture_snapshot() -> TerminalSnapshot {
     TerminalSnapshot {
+        images: Vec::new(),
         columns: 8,
         rows: 3,
         lines: vec!["ABC".into(), "CAB".into(), "BCA".into()],

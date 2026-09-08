@@ -27,6 +27,7 @@ use toyoterm_api::{PaneId, TabId, WorkspaceId};
 use toyoterm_terminal::{CellAttributes, CellColor, CursorShape, CursorState, TerminalSnapshot};
 
 mod background;
+mod graphics;
 pub use background::BackgroundImage;
 mod layout;
 mod terminal;
@@ -384,6 +385,7 @@ mod tests {
         };
         let background = clear_color(&style, CompositeAlphaMode::PreMultiplied);
         let terminal = TerminalSnapshot {
+            images: Vec::new(),
             columns: 8,
             rows: 3,
             lines: vec!["alpha".into(), "beta".into(), "gamma".into()],
@@ -590,6 +592,7 @@ mod tests {
     #[test]
     fn visual_cursor_uses_the_same_fixed_cell_grid_as_selection() {
         let snapshot = TerminalSnapshot {
+            images: Vec::new(),
             columns: 12,
             rows: 1,
             lines: vec!["wide: 日本語".into()],
@@ -624,6 +627,7 @@ mod tests {
     #[test]
     fn builds_cell_aligned_selection_rectangles() {
         let snapshot = TerminalSnapshot {
+            images: Vec::new(),
             columns: 8,
             rows: 3,
             lines: vec!["alpha".into(), "beta".into(), "gamma".into()],
@@ -700,6 +704,7 @@ mod tests {
     fn builds_background_rectangles_for_indexed_and_inverse_cells() {
         let ansi = default_ansi_palette();
         let snapshot = TerminalSnapshot {
+            images: Vec::new(),
             columns: 4,
             rows: 1,
             lines: vec!["ab".into()],

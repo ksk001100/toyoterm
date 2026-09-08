@@ -8,6 +8,10 @@ toyoterm is a Cargo workspace. Each crate owns one runtime responsibility:
 - `toyoterm-api`: stable IDs, native commands, events, and handles
 - `toyoterm-mux`: workspaces, windows, tabs, panes, and split trees
 - `toyoterm-terminal`: VT state, snapshots, selection, and input encoding
+- Terminal image decoding also belongs to `toyoterm-terminal`: bounded Sixel,
+  Kitty, and OSC 1337 payloads become immutable RGBA snapshots using `image`,
+  `base64`, and `flate2`. `toyoterm-render` uploads and caches their GPU textures.
+  These external dependencies add no internal crate edges.
 - `toyoterm-pty`: process spawning, PTY I/O, resize, and child lifecycle
 - `toyoterm-render`: layout plus GPU and text rendering
 - `toyoterm-config`: configuration values and path discovery

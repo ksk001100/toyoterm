@@ -99,6 +99,7 @@ pub struct TerminalSnapshot {
     pub cells: Vec<Vec<TerminalCell>>,
     pub selection: Vec<SelectionSpan>,
     pub search_matches: Vec<SearchMatchSpan>,
+    pub images: Vec<TerminalImage>,
 }
 
 /// Adapter boundary for a VT implementation such as `alacritty_terminal`.
@@ -119,7 +120,9 @@ pub trait TerminalBackend: Send {
 }
 
 mod alacritty;
+mod graphics;
 mod input;
+pub use graphics::TerminalImage;
 
 pub use alacritty::{AlacrittyTerminalBackend, DEFAULT_SCROLLBACK_LINES, TerminalEvent};
 pub use input::{

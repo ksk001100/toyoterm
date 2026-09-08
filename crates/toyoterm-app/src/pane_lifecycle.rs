@@ -66,12 +66,17 @@ impl ToyotermApplication {
         })?;
         let process_id = session.process_id();
         spawn_pty_reader(pane, reader, self.event_proxy.clone())?;
+        let mut terminal = AlacrittyTerminalBackend::with_scrollback(
+            size.columns,
+            size.rows,
+            self.script_snapshot.config.scrollback_lines,
+        );
+        terminal.set_cell_size(
+            size.pixel_width / size.columns.max(1),
+            size.pixel_height / size.rows.max(1),
+        );
         Ok(PaneRuntime {
-            terminal: AlacrittyTerminalBackend::with_scrollback(
-                size.columns,
-                size.rows,
-                self.script_snapshot.config.scrollback_lines,
-            ),
+            terminal,
             pty_session: Some(session),
             process_id,
             title: format!("Pane {}", pane.0),
@@ -122,6 +127,10 @@ impl ToyotermApplication {
         for (pane, size) in sizes {
             if let Some(runtime) = self.pane_runtimes.get_mut(&pane) {
                 runtime.terminal.resize(size.columns, size.rows);
+                runtime.terminal.set_cell_size(
+                    size.pixel_width / size.columns.max(1),
+                    size.pixel_height / size.rows.max(1),
+                );
                 if let Some(session) = runtime.pty_session.as_mut() {
                     session.resize(size).map_err(|error| {
                         tracing::error!(
