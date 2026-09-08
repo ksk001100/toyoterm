@@ -12,6 +12,7 @@ See the [usage guide](usage.md) for CLI commands and troubleshooting, or the
 [documentation index](README.md) for all guides.
 
 - [Loading configuration](#loading-configuration)
+- [Bundled metaprogramming APIs](#bundled-metaprogramming-apis)
 - [Configuration DSL](#configuration-dsl)
 - [Key bindings](#key-bindings)
 - [Commands and object model](#commands-and-object-model)
@@ -21,6 +22,39 @@ See the [usage guide](usage.md) for CLI commands and troubleshooting, or the
 - [Plugins and themes](#plugins-and-themes)
 - [Live Ruby console](#live-ruby-console)
 - [Callback execution model](#callback-execution-model)
+
+## Bundled metaprogramming APIs
+
+The embedded runtime includes the `mruby-metaprog`, `mruby-object-ext`,
+`mruby-class-ext`, and `mruby-method` core gems. Their APIs are available
+directly in configuration, callbacks, commands, plugins, and the live console;
+no `require` call is needed.
+
+This includes runtime method definition and reflection such as
+`define_singleton_method`, `send`, `public_send`, `methods`, `instance_methods`,
+`instance_variable_get` / `instance_variable_set`, `class_exec`, `module_exec`,
+`Class#subclasses`, `Object#method`, `Module#instance_method`, `Method`, and
+`UnboundMethod`. It also includes object helpers such as `tap`, `then`,
+`itself`, and `instance_exec`. These are mruby APIs and can differ from the
+corresponding CRuby version.
+
+For example, a plugin can generate methods and retain a callable method object:
+
+```ruby
+class Greeting
+  define_method(:call) { |name| "hello #{name}" }
+end
+
+greeting = Greeting.new
+greeting.define_singleton_method(:excited) { |name| call(name).upcase }
+callback = greeting.method(:excited)
+callback.call("toyoterm") # => "HELLO TOYOTERM"
+```
+
+Ruby exceptions raised by these APIs follow the same atomic reload and callback
+rollback rules as the rest of the scripting API. `Method#source_location` is
+available, but may return `nil` because toyoterm does not enable mruby debug
+information in production builds.
 
 ## Loading configuration
 

@@ -9,4 +9,8 @@ MRuby::Build.new do |conf|
   conf.gem core: "mruby-hash-ext"
   conf.gem core: "mruby-string-ext"
   conf.gem core: "mruby-proc-ext"
+  conf.gem core: "mruby-metaprog"
+  conf.gem core: "mruby-object-ext"
+  conf.gem core: "mruby-class-ext"
+  conf.gem core: "mruby-method"
 end

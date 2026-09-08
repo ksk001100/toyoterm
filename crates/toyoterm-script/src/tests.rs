@@ -459,6 +459,49 @@ fn evaluates_ruby_in_a_persistent_vm() {
 }
 
 #[test]
+fn exposes_bundled_metaprogramming_gems() {
+    let mut runtime = MrubyRuntime::new().unwrap();
+    assert_eq!(
+        runtime
+            .eval(
+                r##"
+                module ToyotermMetaTest
+                  class Base
+                    def value(prefix)
+                      "#{prefix}:base"
+                    end
+                  end
+
+                  class Child < Base
+                    define_method(:dynamic) { |value| value * 2 }
+                  end
+                end
+
+                object = ToyotermMetaTest::Child.new
+                object.instance_variable_set(:@answer, 21)
+                object.define_singleton_method(:answer) { @answer }
+                method = object.method(:dynamic)
+                unbound = ToyotermMetaTest::Base.instance_method(:value)
+
+                [
+                  object.send(:answer),
+                  object.instance_variables.include?(:@answer),
+                  ToyotermMetaTest::Base.subclasses.include?(ToyotermMetaTest::Child),
+                  ToyotermMetaTest::Child.class_exec { name },
+                  method.call(21),
+                  method.owner,
+                  unbound.bind(object).call("meta"),
+                  object.tap { |value| value.instance_variable_set(:@tapped, true) }
+                        .instance_variable_get(:@tapped)
+                ]
+                "##,
+            )
+            .unwrap(),
+        "[21, true, true, \"ToyotermMetaTest::Child\", 42, ToyotermMetaTest::Child, \"meta:base\", true]"
+    );
+}
+
+#[test]
 fn loads_the_configuration_dsl() {
     let mut manager = ConfigManager::new().unwrap();
     let config = manager

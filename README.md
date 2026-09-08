@@ -85,6 +85,8 @@ Reload with `toyoterm reload`; use `toyoterm ruby console` for live Ruby updates
 Configuration and plugins are trusted code with filesystem, process,
 environment, and clipboard access. They are not sandboxed. The embedded runtime
 is mruby, so the complete CRuby standard library and gems are not available.
+The bundled runtime includes mruby's metaprogramming, object/class extension,
+and `Method`/`UnboundMethod` APIs; see the API reference for details.
 
 ## Usage and documentation
 

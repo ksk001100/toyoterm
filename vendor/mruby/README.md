@@ -13,6 +13,10 @@ The build includes these core gems:
 - mruby-hash-ext
 - mruby-string-ext
 - mruby-proc-ext
+- mruby-metaprog
+- mruby-object-ext
+- mruby-class-ext
+- mruby-method
 
 Regenerate from an mruby 4.0.0 checkout with:
 
