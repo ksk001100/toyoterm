@@ -111,6 +111,7 @@ pub trait TerminalBackend: Send {
     fn cursor(&self) -> CursorState;
     fn mode(&self) -> TerminalMode;
     fn scroll_display(&mut self, lines: i32);
+    fn scroll_to_bottom(&mut self);
     fn start_selection(&mut self, column: u16, row: u16, kind: SelectionKind);
     fn update_selection(&mut self, column: u16, row: u16);
     fn clear_selection(&mut self);

@@ -699,7 +699,7 @@ impl ApplicationHandler<AppEvent> for ToyotermApplication {
                     .unwrap_or_default();
                 if let Some(press) = key_press(&event, modifiers, mode)
                     && let Some(bytes) = encode_key(&press, mode)
-                    && let Err(error) = self.write_pty(&bytes)
+                    && let Err(error) = self.write_input(&bytes)
                 {
                     self.fail(event_loop, error);
                 }
@@ -723,7 +723,7 @@ impl ApplicationHandler<AppEvent> for ToyotermApplication {
                     window.request_redraw();
                     return;
                 }
-                if let Err(error) = self.write_pty(text.as_bytes()) {
+                if let Err(error) = self.write_input(text.as_bytes()) {
                     self.fail(event_loop, error);
                 }
                 self.sync_active_renderer(window.scale_factor());
@@ -1329,6 +1329,29 @@ mod tests {
         assert!(should_handle_key_event(ElementState::Pressed, true));
         assert!(!should_handle_key_event(ElementState::Released, false));
         assert!(!should_handle_key_event(ElementState::Released, true));
+    }
+
+    #[test]
+    fn terminal_input_returns_a_scrolled_viewport_to_the_bottom() {
+        let mut terminal = AlacrittyTerminalBackend::new(10, 2);
+        terminal.advance(b"one\r\ntwo\r\nthree");
+        terminal.scroll_display(1);
+        assert_eq!(terminal.snapshot().lines, ["one", "two"]);
+
+        pane_lifecycle::reset_scroll_for_input(&mut terminal, b"x");
+
+        assert_eq!(terminal.snapshot().lines, ["two", "three"]);
+    }
+
+    #[test]
+    fn empty_terminal_input_preserves_a_scrolled_viewport() {
+        let mut terminal = AlacrittyTerminalBackend::new(10, 2);
+        terminal.advance(b"one\r\ntwo\r\nthree");
+        terminal.scroll_display(1);
+
+        pane_lifecycle::reset_scroll_for_input(&mut terminal, b"");
+
+        assert_eq!(terminal.snapshot().lines, ["one", "two"]);
     }
 
     #[test]

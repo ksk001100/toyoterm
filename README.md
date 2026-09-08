@@ -17,7 +17,7 @@ This is a personal project built for my own use and an experimental toy.
 
 - Native PTY sessions, VT parsing with `alacritty_terminal`, and GPU rendering with `wgpu` and `glyphon`
 - Workspaces, tabs, split panes, pane zoom, and independent shell sessions
-- UTF-8 and IME input, scrollback, search, selection, and clipboard copy/paste
+- UTF-8 and IME input, scrollback that returns to the bottom on input, search, selection, and clipboard copy/paste
 - OSC 8 links, plain-URL detection, and shell integration for cwd and command status
 - Inline images using Sixel, Kitty graphics, and iTerm2 OSC 1337 ([supported subset and example](docs/image-protocols.md))
 - Embedded mruby 4.0 configuration, native and Ruby key bindings, events, commands, plugins, and themes

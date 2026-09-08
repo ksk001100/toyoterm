@@ -95,7 +95,7 @@ impl ToyotermApplication {
                 .take_pending_input(pane)
                 .map_err(|error| error.to_string())?;
             if !bytes.is_empty() {
-                self.write_pane_pty(pane, &bytes)?;
+                self.write_pane_input(pane, &bytes)?;
             }
         }
         Ok(())
@@ -155,6 +155,23 @@ impl ToyotermApplication {
             .mux
             .current_pane()
             .ok_or_else(|| "mux has no current pane".to_owned())?;
+        self.write_pane_pty(pane, bytes)
+    }
+
+    pub(super) fn write_input(&mut self, bytes: &[u8]) -> Result<(), String> {
+        let pane = self
+            .mux
+            .current_pane()
+            .ok_or_else(|| "mux has no current pane".to_owned())?;
+        self.write_pane_input(pane, bytes)
+    }
+
+    fn write_pane_input(&mut self, pane: PaneId, bytes: &[u8]) -> Result<(), String> {
+        let runtime = self
+            .pane_runtimes
+            .get_mut(&pane)
+            .ok_or_else(|| format!("pane {pane} has no runtime"))?;
+        reset_scroll_for_input(&mut runtime.terminal, bytes);
         self.write_pane_pty(pane, bytes)
     }
 
@@ -635,7 +652,7 @@ impl ToyotermApplication {
             .get_text()
             .map_err(|error| format!("paste from clipboard: {error}"))?;
         let bytes = encode_paste(&text, mode);
-        self.write_pty(&bytes)
+        self.write_input(&bytes)
     }
 
     pub(super) fn clipboard(&mut self) -> Result<&mut Clipboard, String> {
@@ -644,6 +661,12 @@ impl ToyotermApplication {
                 Some(Clipboard::new().map_err(|error| format!("initialize clipboard: {error}"))?);
         }
         Ok(self.clipboard.as_mut().expect("clipboard was initialized"))
+    }
+}
+
+pub(super) fn reset_scroll_for_input(terminal: &mut dyn TerminalBackend, bytes: &[u8]) {
+    if !bytes.is_empty() {
+        terminal.scroll_to_bottom();
     }
 }
 

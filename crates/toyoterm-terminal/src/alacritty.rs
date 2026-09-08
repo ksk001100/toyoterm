@@ -522,6 +522,10 @@ impl TerminalBackend for AlacrittyTerminalBackend {
         self.terminal.scroll_display(Scroll::Delta(lines));
     }
 
+    fn scroll_to_bottom(&mut self) {
+        self.terminal.scroll_display(Scroll::Bottom);
+    }
+
     fn start_selection(&mut self, column: u16, row: u16, kind: SelectionKind) {
         let point = self.viewport_point(column, row);
         self.selection_anchor = Some(point);
@@ -1029,6 +1033,17 @@ mod tests {
         backend.scroll_display(1);
         assert_eq!(backend.snapshot().lines, ["one", "two"]);
         backend.scroll_display(-1);
+        assert_eq!(backend.snapshot().lines, ["two", "three"]);
+    }
+
+    #[test]
+    fn scrolls_directly_to_the_bottom_of_saved_history() {
+        let mut backend = AlacrittyTerminalBackend::new(10, 2);
+        backend.advance(b"one\r\ntwo\r\nthree");
+        backend.scroll_display(1);
+
+        backend.scroll_to_bottom();
+
         assert_eq!(backend.snapshot().lines, ["two", "three"]);
     }
 

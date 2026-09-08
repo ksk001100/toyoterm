@@ -17,7 +17,7 @@ toyotermはRustと組み込みmrubyによる、プログラム可能な実験的
 
 - ネイティブPTY、`alacritty_terminal`によるVT解析、`wgpu`と`glyphon`によるGPU描画
 - Workspace、Tab、Pane分割・ズームと独立したシェルセッション
-- UTF-8・IME入力、スクロールバック、検索、選択、クリップボードへのコピー・貼り付け
+- UTF-8・IME入力、入力時に最下部へ戻るスクロールバック、検索、選択、クリップボードへのコピー・貼り付け
 - OSC 8リンク、URL自動検出、作業ディレクトリとコマンド状態を通知するシェル連携
 - Sixel・Kitty画像プロトコル・iTerm2 OSC 1337による画像表示（[対応範囲と実行例](docs/image-protocols.md)）
 - mruby 4.0による設定、ネイティブ・Rubyキーバインド、イベント、コマンド、プラグイン、テーマ
