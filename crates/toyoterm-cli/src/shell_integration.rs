@@ -29,6 +29,9 @@ mod tests {
     fn every_script_emits_cwd_and_command_markers() {
         for source in [BASH, ZSH, FISH, POWERSHELL] {
             assert!(source.contains("]7;file://"));
+            assert!(source.contains("]1337;RemoteHost="));
+            assert!(source.contains("]133;A"));
+            assert!(source.contains("]133;B"));
             assert!(source.contains("]133;C"));
             assert!(source.contains("]133;D;"));
         }

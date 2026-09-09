@@ -96,26 +96,42 @@ impl ToyotermApplication {
             .tabs()
             .iter()
             .map(|placement| {
+                let mut title = format!(
+                    "Tab {}",
+                    self.mux
+                        .tab_number(placement.tab)
+                        .expect("layout tab exists in mux")
+                );
+                if let Some(progress) = self
+                    .mux
+                    .active_pane(placement.tab)
+                    .and_then(|pane| self.pane_runtimes.get(&pane))
+                    .and_then(|runtime| runtime.progress)
+                {
+                    title.push_str(&progress_title_suffix(progress));
+                }
+                let background = self
+                    .mux
+                    .active_pane(placement.tab)
+                    .and_then(|pane| self.pane_runtimes.get(&pane))
+                    .and_then(|runtime| runtime.tab_color.complete());
                 (
                     placement.tab,
-                    format!(
-                        "Tab {}",
-                        self.mux
-                            .tab_number(placement.tab)
-                            .expect("layout tab exists in mux")
-                    ),
+                    title,
                     placement.rect,
                     active_tab == Some(placement.tab),
+                    background,
                 )
             })
             .collect::<Vec<_>>();
         let tabs = tab_titles
             .iter()
-            .map(|(tab, title, rect, active)| TabRenderData {
+            .map(|(tab, title, rect, active, background)| TabRenderData {
                 tab: *tab,
                 title,
                 rect: *rect,
                 active: *active,
+                background: *background,
             })
             .collect::<Vec<_>>();
         let active_workspace = self.mux.current_workspace();
@@ -330,5 +346,41 @@ impl ToyotermApplication {
             self.base_window_title(),
             runtime.title
         ));
+    }
+}
+
+fn progress_title_suffix(progress: TerminalProgress) -> String {
+    match progress {
+        TerminalProgress::Hidden => String::new(),
+        TerminalProgress::Normal(value) => format!(" · {value}%"),
+        TerminalProgress::Error(value) => format!(" · error {value}%"),
+        TerminalProgress::Indeterminate => " · working".to_owned(),
+        TerminalProgress::Warning(value) => format!(" · warning {value}%"),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn formats_terminal_progress_for_tab_titles() {
+        assert_eq!(
+            progress_title_suffix(TerminalProgress::Normal(42)),
+            " · 42%"
+        );
+        assert_eq!(
+            progress_title_suffix(TerminalProgress::Error(100)),
+            " · error 100%"
+        );
+        assert_eq!(
+            progress_title_suffix(TerminalProgress::Indeterminate),
+            " · working"
+        );
+        assert_eq!(
+            progress_title_suffix(TerminalProgress::Warning(7)),
+            " · warning 7%"
+        );
+        assert!(progress_title_suffix(TerminalProgress::Hidden).is_empty());
     }
 }

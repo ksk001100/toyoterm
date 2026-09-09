@@ -86,6 +86,8 @@ pub struct WindowConfig {
 pub struct BehaviorConfig {
     pub scroll_lines: f32,
     pub copy_on_select: bool,
+    pub allow_osc52_copy: bool,
+    pub allow_osc_notifications: bool,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -156,6 +158,8 @@ impl Default for ToyotermConfig {
             behavior: BehaviorConfig {
                 scroll_lines: 3.0,
                 copy_on_select: false,
+                allow_osc52_copy: false,
+                allow_osc_notifications: false,
             },
             default_shell: None,
             scrollback_lines: 10_000,
@@ -368,6 +372,8 @@ mod tests {
         assert_eq!(config.window.opacity, 1.0);
         assert_eq!(config.default_shell, None);
         assert_eq!(config.scrollback_lines, 10_000);
+        assert!(!config.behavior.allow_osc52_copy);
+        assert!(!config.behavior.allow_osc_notifications);
         assert_eq!(config.leader, None);
         assert!(config.status_bars.is_empty());
     }

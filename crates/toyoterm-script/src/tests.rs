@@ -74,6 +74,11 @@ fn static_and_runtime_actions_share_names_and_arguments() {
         ("previous_tab", "nil"),
         ("next_workspace", "nil"),
         ("previous_workspace", "nil"),
+        ("next_prompt", "nil"),
+        ("previous_prompt", "nil"),
+        ("select_next_command_output", "nil"),
+        ("select_previous_command_output", "nil"),
+        ("select_last_command_output", "nil"),
         ("copy_selection", "nil"),
         ("paste_clipboard", "nil"),
         ("start_visual_mode", "nil"),
@@ -268,6 +273,8 @@ fn script_test_context() -> ScriptContext {
                 id: PaneId(4),
                 title: "Pane 4".into(),
                 cwd: None,
+                remote_host: None,
+                user_vars: Vec::new(),
                 pid: None,
                 command_running: false,
                 last_exit_status: None,
@@ -569,6 +576,8 @@ fn loads_the_configuration_dsl() {
                   config.ui.pane_divider_width = 0
                   config.behavior.scroll_lines = 5
                   config.behavior.copy_on_select = true
+                  config.behavior.allow_osc52_copy = true
+                  config.behavior.allow_osc_notifications = true
                   config.default_shell = "/bin/zsh"
                   config.scrollback_lines = 50_000
                 end
@@ -595,6 +604,8 @@ fn loads_the_configuration_dsl() {
     assert_eq!(config.ui.pane_divider_width, 0.0);
     assert_eq!(config.behavior.scroll_lines, 5.0);
     assert!(config.behavior.copy_on_select);
+    assert!(config.behavior.allow_osc52_copy);
+    assert!(config.behavior.allow_osc_notifications);
     assert_eq!(config.default_shell.as_deref(), Some("/bin/zsh"));
     assert_eq!(config.scrollback_lines, 50_000);
 }
@@ -1156,6 +1167,8 @@ fn exposes_the_synced_ruby_object_model() {
                 id: PaneId(40),
                 title: "shell".into(),
                 cwd: Some("/srv/app".into()),
+                remote_host: Some("alice@build.example.com".into()),
+                user_vars: vec![("gitBranch".into(), "main".into())],
                 pid: Some(1234),
                 command_running: true,
                 last_exit_status: Some(17),
@@ -1199,6 +1212,23 @@ fn exposes_the_synced_ruby_object_model() {
         "/srv/app"
     );
     assert_eq!(manager.eval("Toyoterm.current_pane.pid").unwrap(), "1234");
+    assert_eq!(
+        manager.eval("Toyoterm.current_pane.remote_host").unwrap(),
+        "alice@build.example.com"
+    );
+    assert_eq!(
+        manager.eval("Toyoterm.current_pane.user_vars").unwrap(),
+        r#"{"gitBranch" => "main"}"#
+    );
+    manager
+        .eval("Toyoterm.current_pane.user_vars['gitBranch'] = 'changed'")
+        .unwrap();
+    assert_eq!(
+        manager
+            .eval("Toyoterm.current_pane.user_vars['gitBranch']")
+            .unwrap(),
+        "main"
+    );
     assert_eq!(
         manager.eval("Toyoterm.current_pane.zoomed?").unwrap(),
         "true"

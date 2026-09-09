@@ -24,7 +24,10 @@ __toyoterm_precmd() {
   local status=$?
   printf '\e]133;D;%d\e\\' "$status"
   printf '\e]7;file://%s\e\\' "$(__toyoterm_urlencode_path "$PWD")"
+  [[ -n ${HOST-} ]] && printf '\e]1337;RemoteHost=%s@%s\e\\' "${USERNAME-}" "$HOST"
+  printf '\e]133;A\e\\'
 }
 
 add-zsh-hook preexec __toyoterm_preexec
 add-zsh-hook precmd __toyoterm_precmd
+PROMPT+=$'%{\e]133;B\e\\%}'

@@ -1112,6 +1112,16 @@ fn read_config(
                 "behavior.copy_on_select",
                 "Toyoterm.__config.behavior.copy_on_select",
             )?,
+            allow_osc52_copy: boolean(
+                runtime,
+                "behavior.allow_osc52_copy",
+                "Toyoterm.__config.behavior.allow_osc52_copy",
+            )?,
+            allow_osc_notifications: boolean(
+                runtime,
+                "behavior.allow_osc_notifications",
+                "Toyoterm.__config.behavior.allow_osc_notifications",
+            )?,
         },
         default_shell: if default_shell.is_empty() {
             defaults.default_shell

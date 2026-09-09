@@ -23,7 +23,52 @@ When a shell exits, toyoterm closes its pane automatically. Empty tabs and works
 
 ### Clipboard security
 
-OSC 52 clipboard access is disabled in v0.1. Terminal output may originate from an untrusted local process or remote host, so allowing OSC 52 would let it write the host clipboard without an explicit user gesture; clipboard query responses could also expose clipboard contents. Configured copy and paste shortcuts and the trusted-configuration Ruby API remain available. Future OSC 52 support must be opt-in, keep clipboard reads disabled by default, and provide an explicit permission or confirmation UI with a payload size limit.
+OSC 52 clipboard writes are disabled by default. Terminal output may originate
+from an untrusted local process or remote host, so enabling them lets that
+output replace the system clipboard without a user gesture. Trusted
+configuration can opt in with
+`config.behavior.allow_osc52_copy = true`. Decoded writes are limited to 64 KiB;
+invalid base64, invalid UTF-8, unsupported clipboard selectors, and oversized
+payloads are ignored. OSC 52 clipboard queries remain disabled, so terminal
+output cannot read clipboard contents. Configured copy/paste shortcuts and the
+trusted-configuration Ruby clipboard API remain available independently.
+
+### Notification security
+
+OSC 9, OSC 99, and OSC 777 desktop notifications are disabled by default because remote
+output could otherwise create notification spam. Enable them with
+`config.behavior.allow_osc_notifications = true`. Legacy messages are plain UTF-8;
+OSC 99 additionally accepts its bounded padded/unpadded base64 and ID-based chunk forms.
+Its `always`, `unfocused`, and `invisible` delivery occasions, urgency, expiry,
+and `system`/`silent` sound choice are applied when the platform supports them. Linux
+also accepts and advertises the standard `error`, `warn`/`warning`, `info`, and
+`question` sound names. Reusing an identifier requests replacement from notification
+backends that support stable IDs.
+OSC 99 explicit close requests are supported on Linux and macOS; they are not advertised
+and are a no-op with the current Windows notification backend. At most 128 notification
+handles are retained for explicit close, with older handles closed on eviction.
+Positive expiry deadlines use the same bounded handle set and are closed by toyoterm on
+Linux/macOS even when the desktop service does not honor its timeout. Windows forwards
+the timeout as a best effort and therefore does not advertise `w=1`. A value of zero
+requests a non-expiring platform notification; `-1` keeps the platform default.
+Linux additionally maps the protocol's standard named sounds and safe `n=` icon names
+to the freedesktop notification service. Icon names are limited to 128 ASCII identifier
+bytes; paths and control characters are rejected.
+Assembled title and body fields are limited to 4 KiB, identifiers are restricted to the
+protocol's safe character set, control characters are rejected, and delivery is rate limited
+to one notification per pane every two seconds. Notification delivery runs off the
+terminal/UI thread; a full queue or platform notification failure
+is logged and does not block PTY parsing.
+
+### Tab colors
+
+iTerm2 OSC 6 red, green, and blue brightness components set the tab color for
+the reporting pane. The override becomes visible after all three components
+have arrived. `OSC 6;1;bg;*;default` restores the configured tab color and
+resets the pane title. In a split tab, the active pane supplies the tab color.
+iTerm2 OSC 1337 `SetColors=tab=` reaches the same state and accepts untagged or
+`srgb:` three-/six-digit hexadecimal colors plus `default`. Device RGB and P3
+values are ignored until the renderer has matching color-space conversion.
 
 ## CLI
 

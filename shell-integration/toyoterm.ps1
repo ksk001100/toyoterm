@@ -10,6 +10,13 @@ function global:__ToyotermWriteCwd {
     [Console]::Write("`e]7;file://$path`e\")
 }
 
+function global:__ToyotermWriteRemoteHost {
+    $hostName = [System.Net.Dns]::GetHostName()
+    if ($hostName) {
+        [Console]::Write("`e]1337;RemoteHost=$([Environment]::UserName)@$hostName`e\")
+    }
+}
+
 $global:__ToyotermPreviousPrompt = $function:prompt
 function global:prompt {
     $succeeded = $?
@@ -17,7 +24,14 @@ function global:prompt {
     $status = if ($null -ne $nativeStatus) { $nativeStatus } elseif ($succeeded) { 0 } else { 1 }
     [Console]::Write("`e]133;D;$status`e\")
     __ToyotermWriteCwd
-    if ($global:__ToyotermPreviousPrompt) { & $global:__ToyotermPreviousPrompt } else { "PS $PWD> " }
+    __ToyotermWriteRemoteHost
+    [Console]::Write("`e]133;A`e\")
+    $promptText = if ($global:__ToyotermPreviousPrompt) {
+        & $global:__ToyotermPreviousPrompt
+    } else {
+        "PS $PWD> "
+    }
+    "$promptText`e]133;B`e\"
 }
 
 if (Get-Module -ListAvailable PSReadLine) {

@@ -162,6 +162,23 @@ impl MrubyRuntime {
                 pane.cwd.as_deref().map_or((std::ptr::null(), 0, 0), |cwd| {
                     (cwd.as_ptr().cast::<c_char>(), cwd.len(), 1)
                 });
+            let (remote_host, remote_host_len, remote_host_available) =
+                optional_string_parts(pane.remote_host.as_deref());
+            let user_var_keys = pane
+                .user_vars
+                .iter()
+                .map(|(name, _)| name.as_ptr().cast::<c_char>())
+                .collect::<Vec<_>>();
+            let user_var_values = pane
+                .user_vars
+                .iter()
+                .map(|(_, value)| value.as_ptr().cast::<c_char>())
+                .collect::<Vec<_>>();
+            let user_var_lengths = pane
+                .user_vars
+                .iter()
+                .flat_map(|(name, value)| [name.len(), value.len()])
+                .collect::<Vec<_>>();
             let mut error = std::ptr::null_mut();
             // SAFETY: Optional string storage remains live for the duration of the call.
             let status = unsafe {
@@ -173,6 +190,13 @@ impl MrubyRuntime {
                     cwd,
                     cwd_len,
                     cwd_available,
+                    remote_host,
+                    remote_host_len,
+                    remote_host_available,
+                    user_var_keys.as_ptr(),
+                    user_var_values.as_ptr(),
+                    user_var_lengths.as_ptr(),
+                    pane.user_vars.len(),
                     pane.pid.unwrap_or_default().into(),
                     i32::from(pane.pid.is_some()),
                     i32::from(pane.command_running),

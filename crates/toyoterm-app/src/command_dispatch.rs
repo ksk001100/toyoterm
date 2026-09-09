@@ -366,6 +366,15 @@ impl ToyotermApplication {
             NativeAction::PreviousTab => self.cycle_tab(true),
             NativeAction::NextWorkspace => self.cycle_workspace(false),
             NativeAction::PreviousWorkspace => self.cycle_workspace(true),
+            NativeAction::NextPrompt => self.navigate_prompt(SearchDirection::Next),
+            NativeAction::PreviousPrompt => self.navigate_prompt(SearchDirection::Previous),
+            NativeAction::SelectNextCommandOutput => {
+                self.select_command_output(SearchDirection::Next)
+            }
+            NativeAction::SelectPreviousCommandOutput => {
+                self.select_command_output(SearchDirection::Previous)
+            }
+            NativeAction::SelectLastCommandOutput => self.select_last_command_output(),
             NativeAction::CopySelection => self.copy_selection(),
             NativeAction::PasteClipboard => self.paste_clipboard(),
             NativeAction::StartVisualSelection => {
@@ -452,6 +461,36 @@ impl ToyotermApplication {
         self.search_result = SearchResult::default();
         if let Some(terminal) = self.active_terminal_mut() {
             terminal.clear_search();
+        }
+        Ok(())
+    }
+
+    fn navigate_prompt(&mut self, direction: SearchDirection) -> Result<(), String> {
+        let moved = self
+            .active_terminal_mut()
+            .is_some_and(|terminal| terminal.navigate_prompt(direction));
+        if moved && let Some(window) = self.window.as_ref() {
+            window.request_redraw();
+        }
+        Ok(())
+    }
+
+    fn select_last_command_output(&mut self) -> Result<(), String> {
+        let selected = self
+            .active_terminal_mut()
+            .is_some_and(|terminal| terminal.select_last_command_output());
+        if selected && let Some(window) = self.window.as_ref() {
+            window.request_redraw();
+        }
+        Ok(())
+    }
+
+    fn select_command_output(&mut self, direction: SearchDirection) -> Result<(), String> {
+        let selected = self
+            .active_terminal_mut()
+            .is_some_and(|terminal| terminal.select_command_output(direction));
+        if selected && let Some(window) = self.window.as_ref() {
+            window.request_redraw();
         }
         Ok(())
     }
@@ -755,6 +794,15 @@ impl ToyotermApplication {
             runtime
                 .terminal
                 .set_scrollback_lines(config.scrollback_lines);
+            runtime.terminal.set_default_colors(
+                render_style.foreground,
+                render_style.background,
+                render_style.cursor,
+                render_style.ansi,
+            );
+            runtime
+                .terminal
+                .set_osc52_copy_enabled(config.behavior.allow_osc52_copy);
         }
         self.render_style = render_style.clone();
         self.script_snapshot = snapshot;

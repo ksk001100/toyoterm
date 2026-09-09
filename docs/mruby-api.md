@@ -336,6 +336,8 @@ end
 | --- | --- | --- |
 | `scroll_lines` | `3` | Positive finite number of lines per mouse-wheel step. |
 | `copy_on_select` | `false` | Boolean. |
+| `allow_osc52_copy` | `false` | Boolean opt-in allowing terminal output to replace the system clipboard through OSC 52. Clipboard reads remain disabled and decoded payloads over 64 KiB are rejected. Applies to existing panes after a successful reload. |
+| `allow_osc_notifications` | `false` | Boolean opt-in for OSC 9, OSC 99, and OSC 777 desktop notifications. OSC 99 occasions, urgency, `system`/`silent` sound selection, and Linux/macOS explicit close and guaranteed positive expiry are honored; Linux also supports standard named sounds and safe named icons. Windows close is a no-op and expiry is best effort, so neither capability is advertised there. Assembled title/body fields over 4 KiB or containing control characters are rejected; each pane is limited to one notification every two seconds. Applies immediately after a successful reload. |
 
 ## Key bindings
 
@@ -389,6 +391,9 @@ Each helper returns a binding with one of these actions:
 | `reload_config`, `search` | None |
 | `maximize_window`, `toggle_maximize`, `minimize_window`, `toggle_fullscreen`, `toggle_zoom` | None |
 | `next_tab`, `previous_tab`, `next_workspace`, `previous_workspace` | None |
+| `next_prompt`, `previous_prompt` | None; cyclically reveals retained OSC 133 `A` markers in the active pane. No marker is a no-op. |
+| `select_last_command_output` | None; selects the most recent complete OSC 133 `C`–`D` range. No complete range is a no-op. |
+| `select_next_command_output`, `select_previous_command_output` | None; cyclically selects complete OSC 133 `C`–`D` ranges. No complete range is a no-op. |
 | `copy_selection`, `paste_clipboard` | None |
 | `start_visual_mode`, `toggle_visual_mode`, `start_visual_selection`, `select_visual_selection`, `end_visual_selection` | None |
 | `move_visual_selection(direction)` | `:left`, `:right`, `:up`, `:down`, `:line_start`, or `:line_end` |
@@ -407,6 +412,17 @@ normal input handling. IME activity, focus loss, and configuration reload clear
 leader state.
 
 Prefix repeat events are consumed without extending the original timeout.
+
+OSC 133 prompt navigation retains at most 4,096 semantic markers per terminal.
+Markers follow scrollback movement and are discarded when terminal resizing
+can reflow lines. The default configuration uses
+`leader("[").previous_prompt`, `leader("]").next_prompt`,
+`leader("p").select_previous_command_output`,
+`leader("n").select_next_command_output`, and
+`leader("o").select_last_command_output`. Each method returns the binding
+object during configuration. Navigation is a no-op without a prompt marker;
+output selection is a no-op without a complete `C`–`D` range and otherwise
+uses the normal selection/copy pipeline.
 
 ### Visual selection
 
@@ -567,6 +583,8 @@ windows remain deferred.
 | --- | --- |
 | `title` | Current terminal title. |
 | `cwd` | Working directory or `nil`; requires OSC 7 reporting. |
+| `remote_host` | Latest `user@host` report from OSC 1337 `RemoteHost=`, or `nil`. The read-only value is limited to 1 KiB; reports with a missing host, invalid UTF-8, or control characters are ignored. |
+| `user_vars` | A detached hash of OSC 1337 `SetUserVar` metadata. Names are limited to 128 bytes, UTF-8 values to 4 KiB, and each pane to 64 distinct names; malformed reports are ignored. Mutating the returned hash does not change pane state. |
 | `pid` | Child process ID or `nil`. |
 | `command_running?` | Whether shell integration reports an active command. |
 | `last_exit_status` | Last reported exit status or `nil`. |
@@ -675,6 +693,8 @@ exposes `name`, `workspace`, `window`, `tab`, `pane`, `title`, `cwd`, and
 | `pane_created`, `pane_closed`, `pane_focused` | `pane` |
 | `title_changed` | `pane`, `title` |
 | `cwd_changed` | `pane`, `cwd` |
+| `prompt_started` | `pane` |
+| `command_line_started` | `pane` |
 | `command_started` | `pane` |
 | `command_finished` | `pane`, `exit_status` when reported |
 | `bell` | `pane` |
@@ -685,7 +705,8 @@ Toyoterm.on :cwd_changed do |event|
 end
 ```
 
-`command_started` and `command_finished` require OSC 133 shell integration.
+`prompt_started`, `command_line_started`, `command_started`, and
+`command_finished` require the corresponding OSC 133 shell-integration marker.
 `command_finished.exit_status` is `nil` when the shell emits a completion marker
 without a valid decimal status. Badge changes become visible after a successful
 callback and are discarded if it raises. Badge text is drawn in the pane's

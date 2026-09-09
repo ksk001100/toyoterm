@@ -18,7 +18,7 @@ This is a personal project built for my own use and an experimental toy.
 - Native PTY sessions, VT parsing with `alacritty_terminal`, and GPU rendering with `wgpu` and `glyphon`
 - Workspaces, tabs, split panes, pane zoom, and independent shell sessions
 - UTF-8 and IME input, scrollback that returns to the bottom on input, search, selection, and clipboard copy/paste
-- OSC 8 links, plain-URL detection, and shell integration for cwd and command status
+- OSC titles, palette/dynamic color controls and color stacks, OSC 8 links, tab colors and progress, opt-in bounded clipboard copies and policy-aware desktop notifications, plain-URL detection, and shell integration for cwd, command-status markers, remote-host context, and prompt navigation ([support matrix](docs/osc-support.md))
 - Inline images using Sixel, Kitty graphics, and iTerm2 OSC 1337 ([supported subset and example](docs/image-protocols.md))
 - Embedded mruby 4.0 configuration, native and Ruby key bindings, events, commands, plugins, and themes
 - Atomic configuration reload, a live Ruby console, local IPC, and configurable window bars and wallpaper
@@ -95,7 +95,7 @@ command in a specific working directory.
 
 - [Usage guide](docs/usage.md): mouse controls, CLI, logs, and troubleshooting
 - [mruby API reference](docs/mruby-api.md): settings, bindings, callbacks, plugins, and themes
-- [Shell integration](docs/shell-integration.md): cwd and command lifecycle reporting
+- [Shell integration](docs/shell-integration.md): cwd, remote-host context, command lifecycle reporting, and prompt navigation
 - [Documentation index](docs/README.md): all user and developer guides
 
 Type normally to send input to the shell, click tabs/workspaces to activate

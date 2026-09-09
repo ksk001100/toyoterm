@@ -60,6 +60,10 @@ Toyoterm.configure do |config|
   config.behavior do |behavior|
     behavior.scroll_lines = 3
     behavior.copy_on_select = false
+    # Allows terminal output to replace the system clipboard; leave false for untrusted shells.
+    behavior.allow_osc52_copy = false
+    # Allows OSC 9/99/777 desktop notifications, limited to one per pane every two seconds.
+    behavior.allow_osc_notifications = false
   end
 
   config.scrollback_lines = 10_000
@@ -74,6 +78,11 @@ Toyoterm.configure do |config|
     ctrl_shift("TAB").previous_tab
     ctrl_alt("LEFT").previous_workspace
     ctrl_alt("RIGHT").next_workspace
+    leader("[").previous_prompt
+    leader("]").next_prompt
+    leader("p").select_previous_command_output
+    leader("n").select_next_command_output
+    leader("o").select_last_command_output
 
     # Vim-like visual selection. The leader keeps normal v available to the shell.
     leader("v").toggle_visual_mode

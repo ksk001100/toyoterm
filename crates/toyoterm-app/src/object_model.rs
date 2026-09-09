@@ -80,6 +80,16 @@ pub(super) fn ruby_object_model(
                         cwd: runtime
                             .and_then(|runtime| runtime.cwd.as_ref())
                             .map(|cwd| cwd.display().to_string()),
+                        remote_host: runtime.and_then(|runtime| runtime.remote_host.clone()),
+                        user_vars: runtime
+                            .map(|runtime| {
+                                runtime
+                                    .user_vars
+                                    .iter()
+                                    .map(|(name, value)| (name.clone(), value.clone()))
+                                    .collect()
+                            })
+                            .unwrap_or_default(),
                         pid: runtime.and_then(|runtime| runtime.process_id),
                         command_running: runtime.is_some_and(|runtime| runtime.command_running),
                         last_exit_status: runtime.and_then(|runtime| runtime.last_exit_status),

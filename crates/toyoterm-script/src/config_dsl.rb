@@ -221,11 +221,13 @@ module Toyoterm
   end
 
   class BehaviorConfig
-    attr_accessor :scroll_lines, :copy_on_select
+    attr_accessor :scroll_lines, :copy_on_select, :allow_osc52_copy, :allow_osc_notifications
 
     def initialize
       @scroll_lines = 3
       @copy_on_select = false
+      @allow_osc52_copy = false
+      @allow_osc_notifications = false
     end
   end
 
@@ -282,6 +284,9 @@ module Toyoterm
       toggle_maximize: nil, minimize_window: nil, toggle_fullscreen: nil,
       toggle_zoom: nil, next_tab: nil, previous_tab: nil,
       next_workspace: nil, previous_workspace: nil, copy_selection: nil,
+      next_prompt: nil, previous_prompt: nil,
+      select_next_command_output: nil, select_previous_command_output: nil,
+      select_last_command_output: nil,
       paste_clipboard: nil, start_visual_mode: nil, toggle_visual_mode: nil,
       start_visual_selection: nil, select_visual_selection: nil,
       end_visual_selection: nil, yank_selection: nil,
@@ -457,7 +462,8 @@ module Toyoterm
          @ui.tab_bar_height, @ui.tab_width, @ui.workspace_bar,
          @ui.workspace_bar_height, @ui.workspace_width, @ui.status_bar_height,
          @ui.pane_divider_width, @ui.active_pane_border_width],
-        [@behavior.scroll_lines, @behavior.copy_on_select],
+        [@behavior.scroll_lines, @behavior.copy_on_select, @behavior.allow_osc52_copy,
+         @behavior.allow_osc_notifications],
         [@leader_key, @leader_timeout, @theme,
          @theme_color_checkpoint && @theme_color_checkpoint.map { |value| value.is_a?(Array) ? value.dup : value }]
       ]
@@ -510,6 +516,8 @@ module Toyoterm
       @ui.active_pane_border_width = ui[11]
       @behavior.scroll_lines = behavior[0]
       @behavior.copy_on_select = behavior[1]
+      @behavior.allow_osc52_copy = behavior[2]
+      @behavior.allow_osc_notifications = behavior[3]
       @leader_key = leader[0]
       @leader_timeout = leader[1]
       @theme = leader[2]
@@ -761,27 +769,37 @@ module Toyoterm
 
     def pid
       validate!
+      Toyoterm.__object_data(:pane, @id)[4]
+    end
+
+    def remote_host
+      validate!
       Toyoterm.__object_data(:pane, @id)[2]
+    end
+
+    def user_vars
+      validate!
+      Toyoterm.__object_data(:pane, @id)[3].dup
     end
 
     def command_running?
       validate!
-      Toyoterm.__object_data(:pane, @id)[3]
+      Toyoterm.__object_data(:pane, @id)[5]
     end
 
     def last_exit_status
       validate!
-      Toyoterm.__object_data(:pane, @id)[4]
+      Toyoterm.__object_data(:pane, @id)[6]
     end
 
     def screen_text
       validate!
-      Toyoterm.__object_data(:pane, @id)[5].dup
+      Toyoterm.__object_data(:pane, @id)[7].dup
     end
 
     def zoomed?
       validate!
-      Toyoterm.__object_data(:pane, @id)[6]
+      Toyoterm.__object_data(:pane, @id)[8]
     end
 
     def split(direction, command: nil, cwd: nil, env: nil)
@@ -1374,8 +1392,8 @@ module Toyoterm
     @object_data[:tab][id] = [title, panes, zoomed]
   end
 
-  def self.__add_pane(id, title, cwd, pid, command_running, last_exit_status, screen_text, zoomed)
-    @object_data[:pane][id] = [title, cwd, pid, command_running, last_exit_status, screen_text, zoomed]
+  def self.__add_pane(id, title, cwd, remote_host, user_vars, pid, command_running, last_exit_status, screen_text, zoomed)
+    @object_data[:pane][id] = [title, cwd, remote_host, Hash[*user_vars], pid, command_running, last_exit_status, screen_text, zoomed]
   end
 
   def self.__object_data(kind, id)

@@ -177,6 +177,40 @@ pub(super) fn selection_highlight_rects(
         .collect()
 }
 
+pub(super) fn command_zone_marker_rects(
+    snapshot: &TerminalSnapshot,
+    pane: PaneRect,
+    layout: TextLayout,
+) -> Vec<(PaneRect, Option<i32>)> {
+    let origin_y = pane.y as f32 + layout.vertical_padding;
+    let pane_bottom = pane.y.saturating_add(pane.height);
+    let width = ((layout.cell_width * 0.12).round() as u32).clamp(2, 4);
+    let inset = ((layout.horizontal_padding.max(width as f32) - width as f32) * 0.5)
+        .round()
+        .max(0.0) as u32;
+    let left = pane.x.saturating_add(inset);
+    snapshot
+        .command_zones
+        .iter()
+        .filter_map(|zone| {
+            let top = (origin_y + f32::from(zone.start_row) * layout.line_height)
+                .floor()
+                .max(0.0) as u32;
+            let bottom = (origin_y + f32::from(zone.end_row.saturating_add(1)) * layout.line_height)
+                .ceil()
+                .max(0.0) as u32;
+            let top = top.max(pane.y);
+            let bottom = bottom.min(pane_bottom);
+            (bottom > top).then(|| {
+                (
+                    PaneRect::new(left, top, width.min(pane.width), bottom - top),
+                    zone.exit_status,
+                )
+            })
+        })
+        .collect()
+}
+
 pub(super) fn pane_cursor_x(
     buffer: &Buffer,
     snapshot: &TerminalSnapshot,

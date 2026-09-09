@@ -18,4 +18,17 @@ end
 
 function __toyoterm_cwd --on-event fish_prompt
     printf '\e]7;file://%s\e\\' (__toyoterm_urlencode_path $PWD)
+    set -l host_name (hostname 2>/dev/null)
+    test -n "$host_name"; and printf '\e]1337;RemoteHost=%s@%s\e\\' "$USER" "$host_name"
+end
+
+functions -q fish_prompt; and functions -c fish_prompt __toyoterm_original_fish_prompt
+function fish_prompt
+    printf '\e]133;A\e\\'
+    if functions -q __toyoterm_original_fish_prompt
+        __toyoterm_original_fish_prompt
+    else
+        printf '%s> ' (prompt_pwd)
+    end
+    printf '\e]133;B\e\\'
 end

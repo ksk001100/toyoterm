@@ -100,6 +100,7 @@ struct TabBuffer {
     text: Buffer,
     rect: PaneRect,
     active: bool,
+    background: Option<[u8; 3]>,
 }
 
 struct OverlayBuffer {
@@ -145,6 +146,7 @@ struct PaneBuffers {
     backgrounds: Vec<(PaneRect, [u8; 3])>,
     selection_highlights: Vec<PaneRect>,
     search_highlights: Vec<(PaneRect, bool)>,
+    command_zone_markers: Vec<(PaneRect, Option<i32>)>,
 }
 
 struct CellRunBuffer {
@@ -277,6 +279,7 @@ impl PaneBuffers {
             backgrounds: Vec::new(),
             selection_highlights: Vec::new(),
             search_highlights: Vec::new(),
+            command_zone_markers: Vec::new(),
             images: Vec::new(),
         }
     }
@@ -578,6 +581,8 @@ impl GpuRenderer {
             buffers.selection_highlights =
                 selection_highlight_rects(pane.snapshot, pane.rect, layout);
             buffers.search_highlights = search_highlight_rects(pane.snapshot, pane.rect, layout);
+            buffers.command_zone_markers =
+                command_zone_marker_rects(pane.snapshot, pane.rect, layout);
             if !use_cell_runs {
                 let content_width = pane
                     .rect
@@ -722,6 +727,7 @@ impl GpuRenderer {
                         text,
                         rect: tab.rect,
                         active: tab.active,
+                        background: tab.background,
                     },
                 );
             }
@@ -731,6 +737,7 @@ impl GpuRenderer {
                 .expect("tab buffer was inserted");
             buffer.rect = tab.rect;
             buffer.active = tab.active;
+            buffer.background = tab.background;
             buffer.text.set_metrics_and_size(
                 metrics,
                 Some(tab.rect.width.saturating_sub(16) as f32),
@@ -773,6 +780,7 @@ impl GpuRenderer {
                         text,
                         rect: workspace.rect,
                         active: workspace.active,
+                        background: None,
                     },
                 );
             }
@@ -782,6 +790,7 @@ impl GpuRenderer {
                 .expect("workspace buffer was inserted");
             buffer.rect = workspace.rect;
             buffer.active = workspace.active;
+            buffer.background = None;
             buffer.text.set_metrics_and_size(
                 metrics,
                 Some(workspace.rect.width.saturating_sub(12) as f32),
@@ -1325,11 +1334,7 @@ impl GpuRenderer {
             );
         }
         for tab in self.tabs.values() {
-            let fill = if tab.active {
-                rgba(self.style.tab_active, 1.0)
-            } else {
-                rgba(self.style.tab_inactive, 0.96)
-            };
+            let fill = tab_fill_color(&self.style, tab.background, tab.active);
             push_ui_rect(
                 &mut vertices,
                 inset_rect(tab.rect, 1, 1, 1, 0),
@@ -1393,6 +1398,20 @@ impl GpuRenderer {
                     } else {
                         rgba(self.style.search_match, 0.38)
                     },
+                    self.configuration.width,
+                    self.configuration.height,
+                );
+            }
+            for (rect, exit_status) in &pane.command_zone_markers {
+                let color = match exit_status {
+                    Some(0) => self.style.ansi[2],
+                    Some(_) => self.style.ansi[1],
+                    None => self.style.foreground,
+                };
+                push_ui_rect(
+                    &mut vertices,
+                    *rect,
+                    rgba(color, 0.72),
                     self.configuration.width,
                     self.configuration.height,
                 );

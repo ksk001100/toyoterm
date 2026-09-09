@@ -38,6 +38,8 @@ pub struct RubyPane {
     pub id: PaneId,
     pub title: String,
     pub cwd: Option<String>,
+    pub remote_host: Option<String>,
+    pub user_vars: Vec<(String, String)>,
     pub pid: Option<u32>,
     pub command_running: bool,
     pub last_exit_status: Option<i32>,

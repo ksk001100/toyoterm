@@ -64,6 +64,7 @@ fn fixture_snapshot() -> TerminalSnapshot {
             },
         ],
         search_matches: Vec::new(),
+        command_zones: Vec::new(),
     }
 }
 

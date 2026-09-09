@@ -67,6 +67,20 @@ pub struct TabRenderData<'a> {
     pub title: &'a str,
     pub rect: PaneRect,
     pub active: bool,
+    pub background: Option<[u8; 3]>,
+}
+
+fn tab_fill_color(style: &RenderStyle, background: Option<[u8; 3]>, active: bool) -> [f32; 4] {
+    background.map_or_else(
+        || {
+            if active {
+                rgba(style.tab_active, 1.0)
+            } else {
+                rgba(style.tab_inactive, 0.96)
+            }
+        },
+        |color| rgba(color, if active { 1.0 } else { 0.96 }),
+    )
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -403,6 +417,7 @@ mod tests {
                 },
             ],
             search_matches: Vec::new(),
+            command_zones: Vec::new(),
         };
         let selection_rects = selection_highlight_rects(&terminal, pane, layout);
         let snapshot = format!(
@@ -599,6 +614,7 @@ mod tests {
             cells: Vec::new(),
             selection: Vec::new(),
             search_matches: Vec::new(),
+            command_zones: Vec::new(),
         };
         let cursor = CursorState {
             column: 7,
@@ -645,6 +661,7 @@ mod tests {
                 },
             ],
             search_matches: Vec::new(),
+            command_zones: Vec::new(),
         };
         let layout = TextLayout {
             font_size: 14.0,
@@ -656,6 +673,46 @@ mod tests {
         assert_eq!(
             selection_highlight_rects(&snapshot, PaneRect::new(10, 20, 100, 80), layout),
             [PaneRect::new(36, 24, 27, 18), PaneRect::new(18, 42, 18, 18),]
+        );
+    }
+
+    #[test]
+    fn builds_status_aware_command_zone_markers_in_the_pane_margin() {
+        let snapshot = TerminalSnapshot {
+            images: Vec::new(),
+            columns: 8,
+            rows: 3,
+            lines: Vec::new(),
+            cells: Vec::new(),
+            selection: Vec::new(),
+            search_matches: Vec::new(),
+            command_zones: vec![
+                toyoterm_terminal::CommandZoneSpan {
+                    start_row: 0,
+                    end_row: 1,
+                    exit_status: Some(0),
+                },
+                toyoterm_terminal::CommandZoneSpan {
+                    start_row: 2,
+                    end_row: 2,
+                    exit_status: Some(1),
+                },
+            ],
+        };
+        let layout = TextLayout {
+            font_size: 14.0,
+            line_height: 18.0,
+            cell_width: 9.0,
+            horizontal_padding: 8.0,
+            vertical_padding: 4.0,
+        };
+
+        assert_eq!(
+            command_zone_marker_rects(&snapshot, PaneRect::new(10, 20, 100, 80), layout),
+            [
+                (PaneRect::new(13, 24, 2, 36), Some(0)),
+                (PaneRect::new(13, 60, 2, 18), Some(1)),
+            ]
         );
     }
 
@@ -733,6 +790,7 @@ mod tests {
             ]],
             selection: Vec::new(),
             search_matches: Vec::new(),
+            command_zones: Vec::new(),
         };
         let backgrounds = terminal_backgrounds(
             &snapshot,
@@ -972,6 +1030,23 @@ mod tests {
 
         assert_eq!(rgba([0, 0, 0], 0.5), [0.0, 0.0, 0.0, 0.5]);
         assert_eq!(rgba([255, 255, 255], 1.0), [1.0, 1.0, 1.0, 1.0]);
+    }
+
+    #[test]
+    fn terminal_tab_color_overrides_configured_active_and_inactive_colors() {
+        let style = RenderStyle::default();
+        assert_eq!(
+            tab_fill_color(&style, Some([255, 0, 0]), true),
+            [1.0, 0.0, 0.0, 1.0]
+        );
+        assert_eq!(
+            tab_fill_color(&style, Some([0, 255, 0]), false),
+            [0.0, 1.0, 0.0, 0.96]
+        );
+        assert_eq!(
+            tab_fill_color(&style, None, true),
+            rgba(style.tab_active, 1.0)
+        );
     }
 }
 

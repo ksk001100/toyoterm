@@ -2,15 +2,243 @@
 use super::Graphics;
 use alacritty_terminal::vte::ansi::*;
 use alacritty_terminal::{Term, event::EventListener, grid::Dimensions, term::TermMode};
+use base64::Engine;
 use unicode_width::UnicodeWidthChar;
+
+const MAX_SEMANTIC_MARKERS: usize = 4096;
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum SemanticMarkerKind {
+    Prompt,
+    CommandLine,
+    CommandStart,
+    CommandEnd,
+}
+
+#[derive(Clone, Copy)]
+struct SemanticMarker {
+    serial: u64,
+    kind: SemanticMarkerKind,
+    line: i32,
+    column: usize,
+    alternate: bool,
+    exit_status: Option<i32>,
+}
+
+#[derive(Default)]
+pub(crate) struct SemanticMarkers {
+    markers: Vec<SemanticMarker>,
+    serial: u64,
+    current_prompt: Option<u64>,
+    current_command: Option<u64>,
+}
+
+impl SemanticMarkers {
+    pub fn mark(
+        &mut self,
+        kind: SemanticMarkerKind,
+        line: i32,
+        column: usize,
+        alternate: bool,
+        exit_status: Option<i32>,
+    ) {
+        self.serial = self.serial.wrapping_add(1);
+        self.markers.push(SemanticMarker {
+            serial: self.serial,
+            kind,
+            line,
+            column,
+            alternate,
+            exit_status,
+        });
+        if kind == SemanticMarkerKind::Prompt {
+            self.current_prompt = None;
+        }
+        if kind == SemanticMarkerKind::CommandStart {
+            self.current_command = None;
+        }
+        if self.markers.len() > MAX_SEMANTIC_MARKERS {
+            let removed = self.markers.remove(0);
+            if self.current_prompt == Some(removed.serial) {
+                self.current_prompt = None;
+            }
+            if self.current_command == Some(removed.serial) {
+                self.current_command = None;
+            }
+        }
+    }
+
+    pub fn navigate_prompt(
+        &mut self,
+        direction: crate::SearchDirection,
+        alternate: bool,
+    ) -> Option<(i32, usize, usize)> {
+        let prompts = self
+            .markers
+            .iter()
+            .filter(|marker| {
+                marker.alternate == alternate && marker.kind == SemanticMarkerKind::Prompt
+            })
+            .collect::<Vec<_>>();
+        if prompts.is_empty() {
+            self.current_prompt = None;
+            return None;
+        }
+        let previous = self
+            .current_prompt
+            .and_then(|serial| prompts.iter().position(|marker| marker.serial == serial));
+        let index = match (previous, direction) {
+            (None, crate::SearchDirection::Next) => 0,
+            (None, crate::SearchDirection::Previous) => prompts.len() - 1,
+            (Some(index), crate::SearchDirection::Next) => (index + 1) % prompts.len(),
+            (Some(index), crate::SearchDirection::Previous) => {
+                (index + prompts.len() - 1) % prompts.len()
+            }
+        };
+        self.current_prompt = Some(prompts[index].serial);
+        Some((prompts[index].line, index + 1, prompts.len()))
+    }
+
+    pub fn has_markers(&self) -> bool {
+        !self.markers.is_empty()
+    }
+
+    pub fn last_command_range(&mut self, alternate: bool) -> Option<((i32, usize), (i32, usize))> {
+        let ranges = self.command_ranges(alternate);
+        let (start, end) = ranges.last()?;
+        self.current_command = Some(end.serial);
+        Some(((start.line, start.column), (end.line, end.column)))
+    }
+
+    pub fn navigate_command_output(
+        &mut self,
+        direction: crate::SearchDirection,
+        alternate: bool,
+    ) -> Option<((i32, usize), (i32, usize))> {
+        let ranges = self.command_ranges(alternate);
+        if ranges.is_empty() {
+            self.current_command = None;
+            return None;
+        }
+        let previous = self
+            .current_command
+            .and_then(|serial| ranges.iter().position(|(_, end)| end.serial == serial));
+        let index = match (previous, direction) {
+            (None, crate::SearchDirection::Next) => 0,
+            (None, crate::SearchDirection::Previous) => ranges.len() - 1,
+            (Some(index), crate::SearchDirection::Next) => (index + 1) % ranges.len(),
+            (Some(index), crate::SearchDirection::Previous) => {
+                (index + ranges.len() - 1) % ranges.len()
+            }
+        };
+        let (start, end) = ranges[index];
+        self.current_command = Some(end.serial);
+        Some(((start.line, start.column), (end.line, end.column)))
+    }
+
+    pub fn command_zones(&self, alternate: bool) -> Vec<(i32, i32, Option<i32>)> {
+        self.command_ranges(alternate)
+            .into_iter()
+            .map(|(start, end)| (start.line, end.line.max(start.line), end.exit_status))
+            .collect()
+    }
+
+    fn command_ranges(&self, alternate: bool) -> Vec<(SemanticMarker, SemanticMarker)> {
+        let mut start = None;
+        let mut ranges = Vec::new();
+        for marker in self.markers.iter().copied().filter(|marker| {
+            marker.alternate == alternate
+                && matches!(
+                    marker.kind,
+                    SemanticMarkerKind::CommandStart | SemanticMarkerKind::CommandEnd
+                )
+        }) {
+            match marker.kind {
+                SemanticMarkerKind::CommandStart => start = Some(marker),
+                SemanticMarkerKind::CommandEnd => {
+                    if let Some(start) = start.take() {
+                        ranges.push((start, marker));
+                    }
+                }
+                _ => unreachable!(),
+            }
+        }
+        ranges
+    }
+
+    pub fn reset(&mut self) {
+        self.markers.clear();
+        self.current_prompt = None;
+        self.current_command = None;
+    }
+
+    pub fn clear(&mut self, alternate: bool, start: i32, end: i32) {
+        self.retain(|marker| {
+            marker.alternate != alternate || marker.line < start || marker.line >= end
+        });
+    }
+
+    pub fn scroll(&mut self, alternate: bool, top: i32, bottom: i32, amount: i32, history: usize) {
+        let minimum = if top == 0 && !alternate {
+            -(history as i32)
+        } else {
+            top
+        };
+        self.retain_mut(|marker| {
+            if marker.alternate == alternate
+                && marker.line < bottom
+                && (marker.line >= top || (top == 0 && amount > 0))
+            {
+                marker.line -= amount;
+                return marker.line >= minimum && marker.line < bottom;
+            }
+            true
+        });
+    }
+
+    fn retain(&mut self, mut keep: impl FnMut(&SemanticMarker) -> bool) {
+        let current = self.current_prompt;
+        self.markers.retain(|marker| keep(marker));
+        if current.is_some_and(|serial| !self.markers.iter().any(|marker| marker.serial == serial))
+        {
+            self.current_prompt = None;
+        }
+        if self
+            .current_command
+            .is_some_and(|serial| !self.markers.iter().any(|marker| marker.serial == serial))
+        {
+            self.current_command = None;
+        }
+    }
+
+    fn retain_mut(&mut self, mut keep: impl FnMut(&mut SemanticMarker) -> bool) {
+        let current = self.current_prompt;
+        self.markers.retain_mut(|marker| keep(marker));
+        if current.is_some_and(|serial| !self.markers.iter().any(|marker| marker.serial == serial))
+        {
+            self.current_prompt = None;
+        }
+        if self
+            .current_command
+            .is_some_and(|serial| !self.markers.iter().any(|marker| marker.serial == serial))
+        {
+            self.current_command = None;
+        }
+    }
+}
+
 pub(crate) struct GraphicsHandler<'a, E> {
     pub terminal: &'a mut Term<E>,
     pub output: &'a std::sync::mpsc::Sender<crate::TerminalEvent>,
+    pub default_colors: &'a super::super::alacritty::DefaultColors,
+    pub allow_osc52_copy: bool,
     pub graphics: &'a mut Graphics,
+    pub semantic_markers: &'a mut SemanticMarkers,
+    pub mouse_cursor_stacks: &'a mut super::super::alacritty::MouseCursorStacks,
 }
 impl<E: EventListener> Handler for GraphicsHandler<'_, E> {
     fn input(&mut self, c: char) {
-        if !self.graphics.has_placements() {
+        if !self.graphics.has_placements() && !self.semantic_markers.has_markers() {
             self.terminal.input(c);
             return;
         }
@@ -65,15 +293,26 @@ impl<E: EventListener> Handler for GraphicsHandler<'_, E> {
             ClearMode::Saved => (i32::MIN, 0),
         };
         self.graphics.clear(self.alternate(), start, end);
+        self.semantic_markers.clear(self.alternate(), start, end);
         self.terminal.clear_screen(mode);
     }
     fn clear_line(&mut self, mode: LineClearMode) {
         let row = self.terminal.grid().cursor.point.line.0;
         self.graphics.clear(self.alternate(), row, row + 1);
+        self.semantic_markers.clear(self.alternate(), row, row + 1);
         self.terminal.clear_line(mode);
     }
     fn reset_state(&mut self) {
         self.graphics.reset();
+        self.semantic_markers.reset();
+        let cursor_changed = self.mouse_cursor_stacks.current_icon(self.alternate())
+            != cursor_icon::CursorIcon::Default;
+        self.mouse_cursor_stacks.reset();
+        if cursor_changed {
+            let _ = self.output.send(crate::TerminalEvent::MouseCursorChanged(
+                cursor_icon::CursorIcon::Default,
+            ));
+        }
         self.terminal.reset_state();
     }
     fn set_scrolling_region(&mut self, top: usize, bottom: Option<usize>) {
@@ -88,16 +327,34 @@ impl<E: EventListener> Handler for GraphicsHandler<'_, E> {
     }
     fn set_private_mode(&mut self, mode: PrivateMode) {
         let before = self.alternate();
+        let before_icon = self.mouse_cursor_stacks.current_icon(before);
         self.terminal.set_private_mode(mode);
-        if before != self.alternate() {
+        let after = self.alternate();
+        if before != after {
             self.graphics.clear(true, i32::MIN, i32::MAX);
+            self.semantic_markers.clear(true, i32::MIN, i32::MAX);
+            let after_icon = self.mouse_cursor_stacks.current_icon(after);
+            if before_icon != after_icon {
+                let _ = self
+                    .output
+                    .send(crate::TerminalEvent::MouseCursorChanged(after_icon));
+            }
         }
     }
     fn unset_private_mode(&mut self, mode: PrivateMode) {
         let before = self.alternate();
+        let before_icon = self.mouse_cursor_stacks.current_icon(before);
         self.terminal.unset_private_mode(mode);
-        if before != self.alternate() {
+        let after = self.alternate();
+        if before != after {
             self.graphics.clear(true, i32::MIN, i32::MAX);
+            self.semantic_markers.clear(true, i32::MIN, i32::MAX);
+            let after_icon = self.mouse_cursor_stacks.current_icon(after);
+            if before_icon != after_icon {
+                let _ = self
+                    .output
+                    .send(crate::TerminalEvent::MouseCursorChanged(after_icon));
+            }
         }
     }
     fn set_title(&mut self, arg0: Option<String>) {
@@ -108,6 +365,10 @@ impl<E: EventListener> Handler for GraphicsHandler<'_, E> {
     }
     fn set_cursor_shape(&mut self, arg0: CursorShape) {
         self.terminal.set_cursor_shape(arg0);
+    }
+    fn set_mouse_cursor_icon(&mut self, _icon: cursor_icon::CursorIcon) {
+        // OSC 22 is handled by the ordered parser so stack and query forms can
+        // share one screen-aware state machine.
     }
     fn goto(&mut self, arg0: i32, arg1: usize) {
         self.terminal.goto(arg0, arg1);
@@ -222,16 +483,38 @@ impl<E: EventListener> Handler for GraphicsHandler<'_, E> {
         self.terminal.set_color(arg0, arg1);
     }
     fn dynamic_color_sequence(&mut self, arg0: String, arg1: usize, arg2: &str) {
-        self.terminal.dynamic_color_sequence(arg0, arg1, arg2);
+        if let Some(color) =
+            super::super::alacritty::resolved_color(self.terminal, self.default_colors, arg1)
+        {
+            self.reply(format!(
+                "\x1b]{arg0};rgb:{0:02x}{0:02x}/{1:02x}{1:02x}/{2:02x}{2:02x}{arg2}",
+                color.r, color.g, color.b
+            ));
+        }
     }
     fn reset_color(&mut self, arg0: usize) {
         self.terminal.reset_color(arg0);
     }
     fn clipboard_store(&mut self, arg0: u8, arg1: &[u8]) {
-        self.terminal.clipboard_store(arg0, arg1);
+        const MAX_BASE64_BYTES: usize = crate::MAX_OSC52_COPY_BYTES.div_ceil(3) * 4;
+        if !self.allow_osc52_copy
+            || !matches!(arg0, b'c' | b'p' | b's')
+            || arg1.len() > MAX_BASE64_BYTES
+        {
+            return;
+        }
+        let Ok(bytes) = base64::engine::general_purpose::STANDARD.decode(arg1) else {
+            return;
+        };
+        if bytes.len() > crate::MAX_OSC52_COPY_BYTES {
+            return;
+        }
+        if let Ok(text) = String::from_utf8(bytes) {
+            let _ = self.output.send(crate::TerminalEvent::ClipboardStore(text));
+        }
     }
-    fn clipboard_load(&mut self, arg0: u8, arg1: &str) {
-        self.terminal.clipboard_load(arg0, arg1);
+    fn clipboard_load(&mut self, _clipboard: u8, _terminator: &str) {
+        // Never expose clipboard contents to terminal output, even when writes are enabled.
     }
     fn decaln(&mut self) {
         self.terminal.decaln();
@@ -308,12 +591,12 @@ impl<E: EventListener> GraphicsHandler<'_, E> {
             top = row;
         }
         let amount = count.min((bottom - top).max(0) as usize) as i32;
-        self.graphics.scroll(
-            self.alternate(),
-            top,
-            bottom,
-            if down { -amount } else { amount },
-            self.terminal.history_size().saturating_add(count),
-        );
+        let alternate = self.alternate();
+        let amount = if down { -amount } else { amount };
+        let history = self.terminal.history_size().saturating_add(count);
+        self.graphics
+            .scroll(alternate, top, bottom, amount, history);
+        self.semantic_markers
+            .scroll(alternate, top, bottom, amount, history);
     }
 }

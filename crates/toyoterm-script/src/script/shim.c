@@ -313,8 +313,16 @@ int toyoterm_mruby_add_tab(void *state, uint64_t tab_id, const char *title,
 
 int toyoterm_mruby_add_pane(void *state, uint64_t pane_id, const char *title,
                             size_t title_length, const char *cwd,
-                            size_t cwd_length, int cwd_available, uint64_t pid,
-                            int pid_available, int command_running,
+                            size_t cwd_length, int cwd_available,
+                            const char *remote_host,
+                            size_t remote_host_length,
+                            int remote_host_available,
+                            const char *const *user_var_keys,
+                            const char *const *user_var_values,
+                            const size_t *user_var_lengths,
+                            size_t user_var_count, uint64_t pid,
+                            int pid_available,
+                            int command_running,
                             int32_t last_exit_status,
                             int last_exit_status_available,
                             const char *screen_text, size_t screen_text_length,
@@ -322,11 +330,27 @@ int toyoterm_mruby_add_pane(void *state, uint64_t pane_id, const char *title,
   mrb_state *mrb = (mrb_state *)state;
   *error_output = NULL;
   mrb->exc = NULL;
-  mrb_value arguments[8] = {
+  mrb_value user_var_entries =
+      mrb_ary_new_capa(mrb, (mrb_int)(user_var_count * 2));
+  for (size_t index = 0; index < user_var_count; index++) {
+    mrb_ary_push(
+        mrb, user_var_entries,
+        mrb_str_new(mrb, user_var_keys[index],
+                    (mrb_int)user_var_lengths[index * 2]));
+    mrb_ary_push(
+        mrb, user_var_entries,
+        mrb_str_new(mrb, user_var_values[index],
+                    (mrb_int)user_var_lengths[index * 2 + 1]));
+  }
+  mrb_value arguments[10] = {
       mrb_int_value(mrb, (mrb_int)pane_id),
       mrb_str_new(mrb, title, (mrb_int)title_length),
       cwd_available ? mrb_str_new(mrb, cwd, (mrb_int)cwd_length)
                     : mrb_nil_value(),
+      remote_host_available
+          ? mrb_str_new(mrb, remote_host, (mrb_int)remote_host_length)
+          : mrb_nil_value(),
+      user_var_entries,
       pid_available ? mrb_int_value(mrb, (mrb_int)pid) : mrb_nil_value(),
       mrb_bool_value(command_running != 0),
       last_exit_status_available
@@ -336,7 +360,7 @@ int toyoterm_mruby_add_pane(void *state, uint64_t pane_id, const char *title,
       mrb_bool_value(zoomed != 0),
   };
   mrb_funcall_argv(mrb, toyoterm_module(mrb),
-                   mrb_intern_lit(mrb, "__add_pane"), 8, arguments);
+                   mrb_intern_lit(mrb, "__add_pane"), 10, arguments);
   return finish_typed_call(mrb, error_output);
 }
 

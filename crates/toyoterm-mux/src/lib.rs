@@ -261,6 +261,14 @@ impl Mux {
             .map(|tab| tab.active_pane)
     }
 
+    pub fn active_pane(&self, tab: TabId) -> Option<PaneId> {
+        self.tabs.get(&tab).map(|tab| tab.active_pane)
+    }
+
+    pub fn pane_tab(&self, pane: PaneId) -> Option<TabId> {
+        self.panes.get(&pane).map(|pane| pane.tab)
+    }
+
     pub fn pane_tree(&self, tab: TabId) -> Option<&PaneNode> {
         self.tabs
             .get(&tab)

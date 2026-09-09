@@ -41,6 +41,13 @@ pub struct SearchMatchSpan {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct CommandZoneSpan {
+    pub start_row: u16,
+    pub end_row: u16,
+    pub exit_status: Option<i32>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum SearchDirection {
     Next,
     Previous,
@@ -99,6 +106,7 @@ pub struct TerminalSnapshot {
     pub cells: Vec<Vec<TerminalCell>>,
     pub selection: Vec<SelectionSpan>,
     pub search_matches: Vec<SearchMatchSpan>,
+    pub command_zones: Vec<CommandZoneSpan>,
     pub images: Vec<TerminalImage>,
 }
 
@@ -118,6 +126,9 @@ pub trait TerminalBackend: Send {
     fn selected_text(&self) -> Option<String>;
     fn search(&mut self, query: &str, direction: SearchDirection) -> SearchResult;
     fn clear_search(&mut self);
+    fn navigate_prompt(&mut self, direction: SearchDirection) -> bool;
+    fn select_command_output(&mut self, direction: SearchDirection) -> bool;
+    fn select_last_command_output(&mut self) -> bool;
 }
 
 mod alacritty;
@@ -125,7 +136,11 @@ mod graphics;
 mod input;
 pub use graphics::TerminalImage;
 
-pub use alacritty::{AlacrittyTerminalBackend, DEFAULT_SCROLLBACK_LINES, TerminalEvent};
+pub use alacritty::{
+    AlacrittyTerminalBackend, DEFAULT_SCROLLBACK_LINES, MAX_OSC_NOTIFICATION_BYTES,
+    MAX_OSC52_COPY_BYTES, NotificationOccasion, NotificationSound, NotificationUrgency,
+    TabColorComponent, TerminalEvent, TerminalProgress,
+};
 pub use input::{
     BindingKey, KeyChord, KeyModifiers, KeyPress, KeypadKey, MouseWheelDirection, TerminalKey,
     encode_key, encode_mouse_wheel, encode_paste,

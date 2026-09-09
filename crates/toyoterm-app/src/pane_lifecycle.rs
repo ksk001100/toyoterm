@@ -34,6 +34,16 @@ pub(super) fn pty_command_for_launch(
 }
 
 impl ToyotermApplication {
+    pub(super) fn update_mouse_cursor(&self, window: &Window) {
+        let cursor = self
+            .pane_layout
+            .pane_at(self.mouse_position.x, self.mouse_position.y)
+            .and_then(|pane| self.pane_runtimes.get(&pane))
+            .map(|runtime| runtime.mouse_cursor)
+            .unwrap_or_default();
+        window.set_cursor(cursor);
+    }
+
     pub(super) fn start_shell(
         &mut self,
         pane: PaneId,
@@ -71,6 +81,13 @@ impl ToyotermApplication {
             size.rows,
             self.script_snapshot.config.scrollback_lines,
         );
+        terminal.set_default_colors(
+            self.render_style.foreground,
+            self.render_style.background,
+            self.render_style.cursor,
+            self.render_style.ansi,
+        );
+        terminal.set_osc52_copy_enabled(self.script_snapshot.config.behavior.allow_osc52_copy);
         terminal.set_cell_size(
             size.pixel_width / size.columns.max(1),
             size.pixel_height / size.rows.max(1),
@@ -81,8 +98,14 @@ impl ToyotermApplication {
             process_id,
             title: format!("Pane {}", pane.0),
             cwd: std::env::current_dir().ok(),
+            remote_host: None,
+            user_vars: BTreeMap::new(),
             command_running: false,
             last_exit_status: None,
+            progress: None,
+            tab_color: TabColorState::default(),
+            mouse_cursor: CursorIcon::Default,
+            last_notification_at: None,
             exited: false,
         })
     }

@@ -2,6 +2,8 @@
 //! Limits apply across PTY reads; overflow discards until the string terminator.
 use super::MAX_BYTES;
 
+const MAX_OSC52_SEQUENCE_BYTES: usize = crate::MAX_OSC52_COPY_BYTES.div_ceil(3) * 4 + 5;
+
 #[derive(Default)]
 pub(crate) struct Stream {
     state: State,
@@ -21,6 +23,7 @@ enum State {
 pub(crate) enum Token {
     Text(Vec<u8>),
     Graphic(u8, Vec<u8>),
+    Osc1337(Vec<u8>),
     Cancel,
 }
 impl Stream {
@@ -72,6 +75,8 @@ impl Stream {
                                         == Some(&b'q');
                             if graphic {
                                 tokens.push(Token::Graphic(kind, bytes));
+                            } else if kind == b']' && bytes.starts_with(b"1337;") {
+                                tokens.push(Token::Osc1337(bytes));
                             } else {
                                 text.extend_from_slice(&[0x1b, kind]);
                                 text.extend_from_slice(&bytes);
@@ -93,7 +98,14 @@ impl Stream {
                         State::Ground
                     } else {
                         if byte != 0x1b && !overflow {
-                            if bytes.len() == MAX_BYTES {
+                            let limit = if kind == b']'
+                                && (bytes.starts_with(b"52;") || b"52;".starts_with(&bytes))
+                            {
+                                MAX_OSC52_SEQUENCE_BYTES
+                            } else {
+                                MAX_BYTES
+                            };
+                            if bytes.len() == limit {
                                 bytes.clear();
                                 overflow = true;
                             } else {

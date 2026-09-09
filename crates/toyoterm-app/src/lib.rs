@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::fmt;
 use std::io::Read;
 use std::path::{Path, PathBuf};
@@ -13,7 +13,7 @@ use winit::dpi::{LogicalSize, PhysicalPosition, PhysicalSize};
 use winit::event::{ElementState, Ime, KeyEvent, MouseButton, MouseScrollDelta, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop, EventLoopProxy};
 use winit::keyboard::{Key, KeyCode, ModifiersState, NamedKey, PhysicalKey};
-use winit::window::{Fullscreen, Window, WindowId};
+use winit::window::{CursorIcon, Fullscreen, Window, WindowId};
 
 #[cfg(target_os = "linux")]
 use winit::platform::wayland::WindowAttributesExtWayland;
@@ -29,6 +29,7 @@ mod command_dispatch;
 mod input;
 mod lifecycle;
 mod logging;
+mod notifications;
 mod object_model;
 mod pane_lifecycle;
 mod render_coordinator;
@@ -36,6 +37,7 @@ mod runtime_events;
 mod ui_geometry;
 
 use input::*;
+use notifications::{DesktopNotification, NotificationSender};
 use object_model::*;
 use ui_geometry::*;
 
@@ -58,11 +60,15 @@ pub use toyoterm_render::{
 pub use toyoterm_script::ConfigManager;
 pub use toyoterm_terminal::{
     AlacrittyTerminalBackend, BindingKey, CursorShape, KeyChord, KeyModifiers, KeyPress, KeypadKey,
-    MouseWheelDirection, SearchDirection, SearchResult, SelectionKind, TerminalBackend,
-    TerminalEvent, TerminalKey, TerminalMode, encode_key, encode_mouse_wheel, encode_paste,
+    MouseWheelDirection, NotificationOccasion, NotificationSound, NotificationUrgency,
+    SearchDirection, SearchResult, SelectionKind, TabColorComponent, TerminalBackend,
+    TerminalEvent, TerminalKey, TerminalMode, TerminalProgress, encode_key, encode_mouse_wheel,
+    encode_paste,
 };
 
 const MULTI_CLICK_INTERVAL: Duration = Duration::from_millis(500);
+const OSC_NOTIFICATION_INTERVAL: Duration = Duration::from_secs(2);
+const MAX_OSC_USER_VARS: usize = 64;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 struct ClickTarget {
@@ -352,9 +358,32 @@ struct PaneRuntime {
     process_id: Option<u32>,
     title: String,
     cwd: Option<PathBuf>,
+    remote_host: Option<String>,
+    user_vars: BTreeMap<String, String>,
     command_running: bool,
     last_exit_status: Option<i32>,
+    progress: Option<TerminalProgress>,
+    tab_color: TabColorState,
+    mouse_cursor: CursorIcon,
+    last_notification_at: Option<Instant>,
     exited: bool,
+}
+
+#[derive(Default)]
+struct TabColorState([Option<u8>; 3]);
+
+impl TabColorState {
+    fn set(&mut self, component: TabColorComponent, value: u8) {
+        self.0[match component {
+            TabColorComponent::Red => 0,
+            TabColorComponent::Green => 1,
+            TabColorComponent::Blue => 2,
+        }] = Some(value);
+    }
+
+    fn complete(&self) -> Option<[u8; 3]> {
+        Some([self.0[0]?, self.0[1]?, self.0[2]?])
+    }
 }
 
 impl PaneRuntime {
@@ -398,6 +427,7 @@ struct ToyotermApplication {
     click_tracker: ClickTracker,
     clipboard: Option<Clipboard>,
     pending_clipboard_writes: Vec<String>,
+    notification_sender: Option<NotificationSender>,
     pane_badges: HashMap<PaneId, String>,
     runtime_events: VecDeque<RubyEvent>,
     next_script_request: u64,
@@ -437,12 +467,27 @@ fn ruby_event_from_terminal_event(pane: PaneId, event: TerminalEvent) -> Option<
             event.cwd = Some(cwd);
             event
         }
+        TerminalEvent::RemoteHostChanged(_) => return None,
+        TerminalEvent::UserVarChanged { .. } => return None,
+        TerminalEvent::PromptStarted => RubyEvent::new("prompt_started"),
+        TerminalEvent::CommandLineStarted => RubyEvent::new("command_line_started"),
         TerminalEvent::CommandStarted => RubyEvent::new("command_started"),
         TerminalEvent::CommandFinished(exit_status) => {
             let mut event = RubyEvent::new("command_finished");
             event.exit_status = exit_status;
             event
         }
+        TerminalEvent::MouseCursorChanged(_) => return None,
+        TerminalEvent::MouseCursorControl(_) => return None,
+        TerminalEvent::ColorControl(_)
+        | TerminalEvent::ColorStackPush
+        | TerminalEvent::ColorStackPop
+        | TerminalEvent::TabColorChanged { .. }
+        | TerminalEvent::TabColorSet(_)
+        | TerminalEvent::TabColorReset => return None,
+        TerminalEvent::ProgressChanged(_) => return None,
+        TerminalEvent::ClipboardStore(_) => return None,
+        TerminalEvent::Notification { .. } | TerminalEvent::NotificationClose(_) => return None,
         TerminalEvent::PtyWrite(_) => return None,
         TerminalEvent::Bell => RubyEvent::new("bell"),
     };
@@ -613,6 +658,7 @@ impl ApplicationHandler<AppEvent> for ToyotermApplication {
             }
             WindowEvent::CursorMoved { position, .. } => {
                 self.mouse_position = position;
+                self.update_mouse_cursor(&window);
                 if self.selecting {
                     let (column, row) = self.mouse_cell(window.scale_factor());
                     if let Some(terminal) = self.active_terminal_mut() {
@@ -818,6 +864,17 @@ impl ApplicationHandler<AppEvent> for ToyotermApplication {
         match event {
             AppEvent::Output { pane, bytes } => {
                 let mut terminal_events = Vec::new();
+                let mut mouse_cursor_changed = false;
+                let mut osc52_copies = Vec::new();
+                let mut notification = None;
+                let allow_notifications =
+                    self.script_snapshot.config.behavior.allow_osc_notifications;
+                let window_focused = self
+                    .window
+                    .as_ref()
+                    .is_some_and(|window| window.has_focus());
+                let source_focused = window_focused && self.mux.current_pane() == Some(pane);
+                let source_visible = window_focused && self.pane_layout.rect(pane).is_some();
                 if let Some(runtime) = self.pane_runtimes.get_mut(&pane) {
                     runtime.terminal.advance(&bytes);
                     terminal_events = runtime.terminal.drain_events();
@@ -828,11 +885,87 @@ impl ApplicationHandler<AppEvent> for ToyotermApplication {
                             TerminalEvent::CwdChanged(cwd) => {
                                 runtime.cwd = Some(PathBuf::from(cwd))
                             }
+                            TerminalEvent::RemoteHostChanged(remote_host) => {
+                                runtime.remote_host = Some(remote_host.clone());
+                            }
+                            TerminalEvent::UserVarChanged { name, value }
+                                if runtime.user_vars.contains_key(name)
+                                    || runtime.user_vars.len() < MAX_OSC_USER_VARS =>
+                            {
+                                runtime.user_vars.insert(name.clone(), value.clone());
+                            }
+                            TerminalEvent::UserVarChanged { .. } => {}
+                            TerminalEvent::PromptStarted | TerminalEvent::CommandLineStarted => {}
                             TerminalEvent::CommandStarted => runtime.command_running = true,
                             TerminalEvent::CommandFinished(status) => {
                                 runtime.command_running = false;
                                 runtime.last_exit_status = *status;
                             }
+                            TerminalEvent::MouseCursorChanged(cursor) => {
+                                runtime.mouse_cursor = *cursor;
+                                mouse_cursor_changed = true;
+                            }
+                            TerminalEvent::MouseCursorControl(_) => {}
+                            TerminalEvent::ColorControl(_)
+                            | TerminalEvent::ColorStackPush
+                            | TerminalEvent::ColorStackPop => {}
+                            TerminalEvent::TabColorChanged { component, value } => {
+                                runtime.tab_color.set(*component, *value);
+                            }
+                            TerminalEvent::TabColorSet(color) => {
+                                runtime.tab_color =
+                                    TabColorState([Some(color[0]), Some(color[1]), Some(color[2])]);
+                            }
+                            TerminalEvent::TabColorReset => {
+                                runtime.tab_color = TabColorState::default();
+                            }
+                            TerminalEvent::ProgressChanged(progress) => {
+                                runtime.progress =
+                                    (*progress != TerminalProgress::Hidden).then_some(*progress);
+                            }
+                            TerminalEvent::ClipboardStore(text) => {
+                                osc52_copies.push(text.clone());
+                            }
+                            TerminalEvent::Notification {
+                                id,
+                                title,
+                                body,
+                                occasion,
+                                urgency,
+                                timeout_ms,
+                                sound,
+                                icon_name,
+                            } if allow_notifications
+                                && notification_occasion_matches(
+                                    *occasion,
+                                    source_focused,
+                                    source_visible,
+                                )
+                                && runtime.last_notification_at.is_none_or(|last| {
+                                    last.elapsed() >= OSC_NOTIFICATION_INTERVAL
+                                }) =>
+                            {
+                                runtime.last_notification_at = Some(Instant::now());
+                                notification = Some(DesktopNotification {
+                                    id: id.as_deref().map(|id| notification_platform_id(pane, id)),
+                                    title: title.clone(),
+                                    body: body.clone(),
+                                    urgency: *urgency,
+                                    timeout_ms: *timeout_ms,
+                                    sound: *sound,
+                                    icon_name: icon_name.clone(),
+                                });
+                            }
+                            TerminalEvent::Notification { .. } => {}
+                            TerminalEvent::NotificationClose(id) if allow_notifications => {
+                                if let Some(sender) = self.notification_sender.as_ref()
+                                    && let Err(error) =
+                                        sender.close(notification_platform_id(pane, id))
+                                {
+                                    tracing::warn!(target: "toyoterm::notification", %error, "queue OSC notification close failed");
+                                }
+                            }
+                            TerminalEvent::NotificationClose(_) => {}
                             TerminalEvent::PtyWrite(response) => {
                                 if let Some(session) = runtime.pty_session.as_mut()
                                     && let Err(error) = session.write(response.as_bytes())
@@ -850,6 +983,22 @@ impl ApplicationHandler<AppEvent> for ToyotermApplication {
                             TerminalEvent::Bell => {}
                         }
                     }
+                }
+                if mouse_cursor_changed && let Some(window) = self.window.as_ref() {
+                    self.update_mouse_cursor(window);
+                }
+                for text in osc52_copies {
+                    if let Err(error) = self.clipboard().and_then(|clipboard| {
+                        clipboard.set_text(text).map_err(|error| error.to_string())
+                    }) {
+                        tracing::warn!(target: "toyoterm::clipboard", %error, "OSC 52 clipboard copy failed");
+                    }
+                }
+                if let Some(notification) = notification
+                    && let Some(sender) = self.notification_sender.as_ref()
+                    && let Err(error) = sender.send(notification)
+                {
+                    tracing::warn!(target: "toyoterm::notification", %error, "queue OSC notification failed");
                 }
                 for event in terminal_events {
                     if let Some(runtime_event) = ruby_event_from_terminal_event(pane, event) {
@@ -926,6 +1075,27 @@ impl ApplicationHandler<AppEvent> for ToyotermApplication {
             }
         }
     }
+}
+
+fn notification_occasion_matches(
+    occasion: NotificationOccasion,
+    source_focused: bool,
+    source_visible: bool,
+) -> bool {
+    match occasion {
+        NotificationOccasion::Always => true,
+        NotificationOccasion::Unfocused => !source_focused,
+        NotificationOccasion::Invisible => !source_visible,
+    }
+}
+
+fn notification_platform_id(pane: PaneId, id: &str) -> u32 {
+    let mut hash = 2_166_136_261_u32;
+    for byte in pane.0.to_le_bytes().into_iter().chain(id.bytes()) {
+        hash ^= u32::from(byte);
+        hash = hash.wrapping_mul(16_777_619);
+    }
+    hash.max(1)
 }
 
 impl ToyotermApplication {
@@ -1006,6 +1176,12 @@ impl ToyotermApplication {
             click_tracker: ClickTracker::default(),
             clipboard: None,
             pending_clipboard_writes: Vec::new(),
+            notification_sender: NotificationSender::start()
+                .map_err(|error| {
+                    tracing::warn!(target: "toyoterm::notification", %error);
+                    error
+                })
+                .ok(),
             pane_badges: HashMap::new(),
             runtime_events: VecDeque::new(),
             next_script_request: 1,
@@ -1052,8 +1228,67 @@ mod tests {
     use super::*;
 
     #[test]
+    fn tab_color_requires_all_components_and_resets_atomically() {
+        let mut color = TabColorState::default();
+        color.set(TabColorComponent::Red, 12);
+        color.set(TabColorComponent::Green, 34);
+        assert_eq!(color.complete(), None);
+        color.set(TabColorComponent::Blue, 56);
+        assert_eq!(color.complete(), Some([12, 34, 56]));
+        color = TabColorState::default();
+        assert_eq!(color.complete(), None);
+    }
+
+    #[test]
+    fn filters_notification_occasions_against_source_visibility() {
+        assert!(notification_occasion_matches(
+            NotificationOccasion::Always,
+            true,
+            true
+        ));
+        assert!(!notification_occasion_matches(
+            NotificationOccasion::Unfocused,
+            true,
+            true
+        ));
+        assert!(notification_occasion_matches(
+            NotificationOccasion::Unfocused,
+            false,
+            true
+        ));
+        assert!(!notification_occasion_matches(
+            NotificationOccasion::Invisible,
+            false,
+            true
+        ));
+        assert!(notification_occasion_matches(
+            NotificationOccasion::Invisible,
+            false,
+            false
+        ));
+    }
+
+    #[test]
+    fn notification_replacement_ids_are_stable_and_pane_scoped() {
+        let first = notification_platform_id(PaneId(1), "build-42");
+        assert_eq!(first, notification_platform_id(PaneId(1), "build-42"));
+        assert_ne!(first, notification_platform_id(PaneId(2), "build-42"));
+        assert_ne!(first, notification_platform_id(PaneId(1), "build-43"));
+        assert_ne!(first, 0);
+    }
+
+    #[test]
     fn maps_shell_command_lifecycle_to_ruby_events() {
         let pane = PaneId(7);
+        let prompt = ruby_event_from_terminal_event(pane, TerminalEvent::PromptStarted).unwrap();
+        assert_eq!(prompt.name, "prompt_started");
+        assert_eq!(prompt.pane, Some(pane));
+
+        let command_line =
+            ruby_event_from_terminal_event(pane, TerminalEvent::CommandLineStarted).unwrap();
+        assert_eq!(command_line.name, "command_line_started");
+        assert_eq!(command_line.pane, Some(pane));
+
         let started = ruby_event_from_terminal_event(pane, TerminalEvent::CommandStarted).unwrap();
         assert_eq!(started.name, "command_started");
         assert_eq!(started.pane, Some(pane));
@@ -1144,8 +1379,14 @@ mod tests {
                 process_id: Some(42),
                 title: "test".into(),
                 cwd: None,
+                remote_host: None,
+                user_vars: BTreeMap::new(),
                 command_running: false,
                 last_exit_status: None,
+                progress: None,
+                tab_color: TabColorState::default(),
+                mouse_cursor: CursorIcon::Default,
+                last_notification_at: None,
                 exited: false,
             };
         }
