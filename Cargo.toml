@@ -28,7 +28,7 @@ cc = "1.4.5"
 cursor-icon = "1.2.0"
 glyphon = "0.12.0"
 image = { version = "0.25.10", default-features = false, features = ["png", "jpeg"] }
-notify-rust = "4.18.0"
+notify-rust = { version = "4.18.0", features = ["preview-macos-un"] }
 portable-pty = "0.9.0"
 pollster = "1.0.1"
 sys-locale = "0.3.2"
