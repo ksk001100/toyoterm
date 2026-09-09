@@ -1,5 +1,59 @@
 use super::*;
 
+const MAX_PENDING_SCRIPT_EVENTS: usize = 1_024;
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum PendingScriptEnqueue {
+    Queued,
+    Coalesced,
+    Dropped,
+}
+
+fn is_coalescible_event(name: &str) -> bool {
+    matches!(
+        name,
+        "title_changed" | "cwd_changed" | "pane_focused" | "workspace_changed"
+    )
+}
+
+fn same_event_target(left: &RubyEvent, right: &RubyEvent) -> bool {
+    left.name == right.name
+        && left.workspace == right.workspace
+        && left.window == right.window
+        && left.tab == right.tab
+        && left.pane == right.pane
+}
+
+fn enqueue_pending_script(
+    queue: &mut VecDeque<(u64, ScriptInvocation)>,
+    id: u64,
+    invocation: ScriptInvocation,
+) -> PendingScriptEnqueue {
+    let ScriptInvocation::Event(event) = invocation else {
+        queue.push_back((id, invocation));
+        return PendingScriptEnqueue::Queued;
+    };
+    if is_coalescible_event(event.name)
+        && let Some((_, ScriptInvocation::Event(queued))) = queue.iter_mut().rev().find(
+            |(_, invocation)| {
+                matches!(invocation, ScriptInvocation::Event(queued) if same_event_target(queued, &event))
+            },
+        )
+    {
+        *queued = event;
+        return PendingScriptEnqueue::Coalesced;
+    }
+    let pending_events = queue
+        .iter()
+        .filter(|(_, invocation)| matches!(invocation, ScriptInvocation::Event(_)))
+        .count();
+    if pending_events < MAX_PENDING_SCRIPT_EVENTS {
+        queue.push_back((id, ScriptInvocation::Event(event)));
+        return PendingScriptEnqueue::Queued;
+    }
+    PendingScriptEnqueue::Dropped
+}
+
 impl ToyotermApplication {
     pub(super) fn script_context(&mut self) -> Result<ScriptContext, String> {
         let clipboard = self
@@ -20,7 +74,43 @@ impl ToyotermApplication {
     pub(super) fn submit_script(&mut self, invocation: ScriptInvocation) -> Result<u64, String> {
         let id = self.next_script_request;
         self.next_script_request = self.next_script_request.wrapping_add(1).max(1);
-        self.pending_script.push_back((id, invocation));
+        let event_name = match &invocation {
+            ScriptInvocation::Event(event) => Some(event.name),
+            _ => None,
+        };
+        match enqueue_pending_script(&mut self.pending_script, id, invocation) {
+            PendingScriptEnqueue::Queued => {}
+            PendingScriptEnqueue::Coalesced => {
+                tracing::trace!(
+                    target: "toyoterm::script",
+                    event_name,
+                    pending_script = self.pending_script.len(),
+                    runtime_events = self.runtime_events.len(),
+                    "coalesced stale queued Ruby event"
+                );
+            }
+            PendingScriptEnqueue::Dropped => {
+                self.script_event_drops = self.script_event_drops.saturating_add(1);
+                if self.script_event_drops.is_power_of_two() {
+                    tracing::warn!(
+                        target: "toyoterm::script",
+                        event_name,
+                        dropped_events = self.script_event_drops,
+                        pending_script = self.pending_script.len(),
+                        runtime_events = self.runtime_events.len(),
+                        max_pending_events = MAX_PENDING_SCRIPT_EVENTS,
+                        "dropping Ruby event because the script queue is saturated"
+                    );
+                }
+            }
+        }
+        tracing::trace!(
+            target: "toyoterm::script",
+            pending_script = self.pending_script.len(),
+            runtime_events = self.runtime_events.len(),
+            script_in_flight = self.script_in_flight,
+            "script queue state"
+        );
         self.start_next_script()?;
         Ok(id)
     }
@@ -214,5 +304,64 @@ impl ToyotermApplication {
                 .map_err(|error| format!("write clipboard from Ruby: {error}"))?;
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn event(name: &'static str, pane: u64, title: &str) -> ScriptInvocation {
+        let mut event = RubyEvent::new(name);
+        event.pane = Some(PaneId(pane));
+        event.title = Some(title.to_owned());
+        ScriptInvocation::Event(event)
+    }
+
+    #[test]
+    fn pending_event_queue_is_bounded_and_state_events_are_coalesced() {
+        let mut queue = VecDeque::new();
+        for id in 0..MAX_PENDING_SCRIPT_EVENTS as u64 {
+            assert_eq!(
+                enqueue_pending_script(&mut queue, id, event("bell", id, "old")),
+                PendingScriptEnqueue::Queued
+            );
+        }
+        assert_eq!(
+            enqueue_pending_script(&mut queue, 2_000, event("bell", 2_000, "new")),
+            PendingScriptEnqueue::Dropped
+        );
+        assert_eq!(queue.len(), MAX_PENDING_SCRIPT_EVENTS);
+
+        queue.pop_back();
+        assert_eq!(
+            enqueue_pending_script(&mut queue, 3_000, event("title_changed", 7, "old")),
+            PendingScriptEnqueue::Queued
+        );
+        assert_eq!(
+            enqueue_pending_script(&mut queue, 3_001, event("title_changed", 7, "new")),
+            PendingScriptEnqueue::Coalesced
+        );
+        assert_eq!(queue.len(), MAX_PENDING_SCRIPT_EVENTS);
+        let (_, ScriptInvocation::Event(latest)) = queue.back().unwrap() else {
+            panic!("expected queued event");
+        };
+        assert_eq!(latest.title.as_deref(), Some("new"));
+    }
+
+    #[test]
+    fn pending_event_limit_never_drops_non_event_requests() {
+        let mut queue = (0..MAX_PENDING_SCRIPT_EVENTS as u64)
+            .map(|id| (id, event("bell", id, "event")))
+            .collect::<VecDeque<_>>();
+        assert_eq!(
+            enqueue_pending_script(&mut queue, 9_000, ScriptInvocation::Eval("42".into())),
+            PendingScriptEnqueue::Queued
+        );
+        assert_eq!(queue.len(), MAX_PENDING_SCRIPT_EVENTS + 1);
+        assert!(matches!(
+            queue.back(),
+            Some((9_000, ScriptInvocation::Eval(source))) if source == "42"
+        ));
     }
 }

@@ -2662,6 +2662,17 @@ mod tests {
     }
 
     #[test]
+    fn sustained_output_does_not_grow_history_past_the_scrollback_limit() {
+        const SCROLLBACK: usize = 32;
+        let mut backend = AlacrittyTerminalBackend::with_scrollback(20, 4, SCROLLBACK);
+        for line in 0..20_000 {
+            backend.advance(format!("line {line}\r\n").as_bytes());
+        }
+
+        assert_eq!(backend.terminal.grid().history_size(), SCROLLBACK);
+    }
+
+    #[test]
     fn updates_the_scrollback_limit_without_replacing_the_terminal() {
         let mut backend = AlacrittyTerminalBackend::with_scrollback(10, 2, 10);
         backend.advance(b"one\r\ntwo\r\nthree\r\nfour");

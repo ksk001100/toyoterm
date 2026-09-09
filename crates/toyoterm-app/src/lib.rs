@@ -433,6 +433,7 @@ struct ToyotermApplication {
     next_script_request: u64,
     script_in_flight: bool,
     pending_script: VecDeque<(u64, ScriptInvocation)>,
+    script_event_drops: u64,
     eval_waiters: HashMap<u64, EvalWaiter>,
     cell_metrics: CellMetrics,
     script_thread: ScriptThread,
@@ -1187,6 +1188,7 @@ impl ToyotermApplication {
             next_script_request: 1,
             script_in_flight: false,
             pending_script: VecDeque::new(),
+            script_event_drops: 0,
             eval_waiters: HashMap::new(),
             cell_metrics: CellMetrics {
                 width: 9.0 * font_scale,

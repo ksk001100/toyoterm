@@ -383,6 +383,76 @@ fn window_bar_uses_typed_context_and_discards_commands() {
 }
 
 #[test]
+fn repeated_status_bar_requests_keep_the_gc_arena_bounded() {
+    let mut manager = ConfigManager::new().unwrap();
+    manager
+        .reload(
+            r#"
+                Toyoterm.configure do |config|
+                  config.window.bar(:bottom, interval: 0.1) do |bar|
+                    bar.add(:left) { |context| context.workspace.name }
+                    bar.add(:right) { |context| context.pane.cwd }
+                  end
+                end
+            "#,
+        )
+        .unwrap();
+    let context = script_test_context();
+    run_script_request(
+        &mut manager,
+        &context,
+        &ScriptInvocation::Bar {
+            position: StatusBarPosition::Bottom,
+        },
+    )
+    .unwrap();
+    manager.eval("GC.start").unwrap();
+    let baseline = manager.runtime.gc_stats();
+
+    for iteration in 0..2_000 {
+        let result = run_script_request(
+            &mut manager,
+            &context,
+            &ScriptInvocation::Bar {
+                position: StatusBarPosition::Bottom,
+            },
+        )
+        .unwrap();
+        assert_eq!(result.bar.unwrap().len(), 2);
+        assert_eq!(
+            manager.runtime.gc_stats().arena_index,
+            baseline.arena_index,
+            "GC arena grew after status bar iteration {iteration}"
+        );
+    }
+
+    // Force a collection so the object count distinguishes unreachable callback
+    // temporaries from persistent Ruby configuration state.
+    manager.eval("GC.start").unwrap();
+    let after = manager.runtime.gc_stats();
+    assert_eq!(after.arena_index, baseline.arena_index);
+    assert!(
+        after.live_objects <= baseline.live_objects + 64,
+        "live mruby objects grew from {} to {}",
+        baseline.live_objects,
+        after.live_objects,
+    );
+}
+
+#[test]
+fn eval_errors_restore_the_gc_arena_after_copying_the_exception() {
+    let mut runtime = MrubyRuntime::new().unwrap();
+    let baseline = runtime.gc_stats().arena_index;
+    for _ in 0..100 {
+        let error = runtime
+            .eval("raise 'arena exception with backtrace'")
+            .unwrap_err();
+        assert!(error.message().contains("arena exception with backtrace"));
+        assert_eq!(runtime.gc_stats().arena_index, baseline);
+    }
+}
+
+#[test]
 fn window_bar_interval_defaults_to_one_second_and_rejects_values_below_100ms() {
     let mut manager = ConfigManager::new().unwrap();
     manager
@@ -1827,10 +1897,12 @@ fn typed_mruby_calls_preserve_ruby_exceptions() {
     manager
         .eval("def Toyoterm.__set_current_pane(id); raise ArgumentError, \"bad pane #{id}\"; end")
         .unwrap();
+    let baseline_arena = manager.runtime.gc_stats().arena_index;
 
     let error = manager.set_current_pane(PaneId(23)).unwrap_err();
     assert_eq!(error.operation(), "set current pane");
     assert!(error.message().contains("bad pane 23"));
+    assert_eq!(manager.runtime.gc_stats().arena_index, baseline_arena);
 }
 
 #[test]

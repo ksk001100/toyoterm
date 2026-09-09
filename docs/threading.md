@@ -29,6 +29,16 @@ Ruby evaluation is asynchronous from the GUI's point of view. A slow or stuck
 callback delays later script requests, but it does not prevent PTY output from
 being parsed or frames from being scheduled and rendered.
 
+The main-thread request queue bounds only Ruby runtime events: at most 1,024
+event requests may wait behind the active callback. State notifications for the
+same object (`title_changed`, `cwd_changed`, `pane_focused`, and
+`workspace_changed`) coalesce to the newest snapshot. Other events are dropped
+with rate-limited warnings once that event budget is exhausted. Lossless inputs
+such as key bindings, named commands, reloads, and IPC evaluations remain
+ordered and are never dropped by this overload policy. Trace logging under
+`toyoterm::script` reports the pending request count, native runtime-event
+count, mruby GC arena index, and mruby live-object count.
+
 ## Execution-budget investigation
 
 mruby 4.0 exposes `code_fetch_hook` and `debug_op_hook` only when built with

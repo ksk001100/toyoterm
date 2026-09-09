@@ -678,12 +678,20 @@ pub(super) fn run_script_request(
         model.current_tab,
         model.current_pane,
     )?;
-    Ok(ScriptResult {
+    let result = ScriptResult {
         value,
         bar,
         commands,
         snapshot,
-    })
+    };
+    let gc = manager.runtime.gc_stats();
+    tracing::trace!(
+        target: "toyoterm::script",
+        arena_index = gc.arena_index,
+        live_objects = gc.live_objects,
+        "mruby state after script request"
+    );
+    Ok(result)
 }
 
 const fn resolve_bootstrap_id(id: u64, current: u64) -> u64 {

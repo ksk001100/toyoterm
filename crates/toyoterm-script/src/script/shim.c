@@ -75,11 +75,26 @@ static int finish_typed_call(mrb_state *mrb, char **error_output) {
     return 0;
   }
   mrb_value exception = mrb_obj_value(mrb->exc);
+  mrb_gc_protect(mrb, exception);
   mrb->exc = NULL;
   mrb_value error = format_exception(mrb, exception);
   *error_output = copy_mruby_string(error);
   mrb->exc = NULL;
   return *error_output == NULL ? 2 : 1;
+}
+
+/*
+ * Rust calls the functions below as top-level VM entry points.  mruby's GC
+ * arena is a stack of temporary roots, so every entry point must restore the
+ * stack after it has copied any result or exception into C-owned memory.
+ * Objects installed into Ruby instance/module variables remain reachable via
+ * Ruby's object graph and do not need to remain in the arena.
+ */
+static int finish_arena_call(mrb_state *mrb, int arena_index,
+                             char **error_output) {
+  int status = finish_typed_call(mrb, error_output);
+  mrb_gc_arena_restore(mrb, arena_index);
+  return status;
 }
 
 static mrb_value toyoterm_module(mrb_state *mrb) {
@@ -186,11 +201,13 @@ static mrb_value host_spawn(mrb_state *mrb, mrb_value self) {
 
 void toyoterm_mruby_install_host_api(void *state) {
   mrb_state *mrb = (mrb_state *)state;
+  int arena_index = mrb_gc_arena_save(mrb);
   struct RClass *module = mrb_module_get(mrb, "Toyoterm");
   mrb_define_module_function(mrb, module, "__host_read_file", host_read_file,
                              MRB_ARGS_REQ(1));
   mrb_define_module_function(mrb, module, "__host_spawn", host_spawn,
                              MRB_ARGS_REQ(2));
+  mrb_gc_arena_restore(mrb, arena_index);
 }
 
 int toyoterm_mruby_set_environment(void *state, const char *const *keys,
@@ -198,6 +215,7 @@ int toyoterm_mruby_set_environment(void *state, const char *const *keys,
                                    const size_t *lengths, size_t count,
                                    char **error_output) {
   mrb_state *mrb = (mrb_state *)state;
+  int arena_index = mrb_gc_arena_save(mrb);
   *error_output = NULL;
   mrb->exc = NULL;
   mrb_value entries = mrb_ary_new_capa(mrb, (mrb_int)(count * 2));
@@ -210,18 +228,19 @@ int toyoterm_mruby_set_environment(void *state, const char *const *keys,
   }
   mrb_funcall_argv(mrb, toyoterm_module(mrb),
                    mrb_intern_lit(mrb, "__replace_env"), 1, &entries);
-  return finish_typed_call(mrb, error_output);
+  return finish_arena_call(mrb, arena_index, error_output);
 }
 
 int toyoterm_mruby_set_current_pane(void *state, uint64_t pane_id,
                                     char **error_output) {
   mrb_state *mrb = (mrb_state *)state;
+  int arena_index = mrb_gc_arena_save(mrb);
   *error_output = NULL;
   mrb->exc = NULL;
   mrb_value argument = mrb_int_value(mrb, (mrb_int)pane_id);
   mrb_funcall_argv(mrb, toyoterm_module(mrb),
                    mrb_intern_lit(mrb, "__set_current_pane"), 1, &argument);
-  return finish_typed_call(mrb, error_output);
+  return finish_arena_call(mrb, arena_index, error_output);
 }
 
 int toyoterm_mruby_set_live_handles(
@@ -230,6 +249,7 @@ int toyoterm_mruby_set_live_handles(
     size_t tab_count, const uint64_t *panes, size_t pane_count,
     char **error_output) {
   mrb_state *mrb = (mrb_state *)state;
+  int arena_index = mrb_gc_arena_save(mrb);
   *error_output = NULL;
   mrb->exc = NULL;
   mrb_value arguments[4] = {
@@ -241,13 +261,14 @@ int toyoterm_mruby_set_live_handles(
   mrb_funcall_argv(mrb, toyoterm_module(mrb),
                    mrb_intern_lit(mrb, "__replace_live_handles"), 4,
                    arguments);
-  return finish_typed_call(mrb, error_output);
+  return finish_arena_call(mrb, arena_index, error_output);
 }
 
 int toyoterm_mruby_reset_object_model(void *state, uint64_t workspace_id,
                                       uint64_t window_id, uint64_t tab_id,
                                       uint64_t pane_id, char **error_output) {
   mrb_state *mrb = (mrb_state *)state;
+  int arena_index = mrb_gc_arena_save(mrb);
   *error_output = NULL;
   mrb->exc = NULL;
   mrb_value arguments[4] = {
@@ -258,7 +279,7 @@ int toyoterm_mruby_reset_object_model(void *state, uint64_t workspace_id,
   };
   mrb_funcall_argv(mrb, toyoterm_module(mrb),
                    mrb_intern_lit(mrb, "__reset_object_model"), 4, arguments);
-  return finish_typed_call(mrb, error_output);
+  return finish_arena_call(mrb, arena_index, error_output);
 }
 
 int toyoterm_mruby_add_workspace(void *state, uint64_t workspace_id,
@@ -266,6 +287,7 @@ int toyoterm_mruby_add_workspace(void *state, uint64_t workspace_id,
                                  const uint64_t *windows, size_t window_count,
                                  char **error_output) {
   mrb_state *mrb = (mrb_state *)state;
+  int arena_index = mrb_gc_arena_save(mrb);
   *error_output = NULL;
   mrb->exc = NULL;
   mrb_value arguments[3] = {
@@ -275,13 +297,14 @@ int toyoterm_mruby_add_workspace(void *state, uint64_t workspace_id,
   };
   mrb_funcall_argv(mrb, toyoterm_module(mrb),
                    mrb_intern_lit(mrb, "__add_workspace"), 3, arguments);
-  return finish_typed_call(mrb, error_output);
+  return finish_arena_call(mrb, arena_index, error_output);
 }
 
 int toyoterm_mruby_add_window(void *state, uint64_t window_id,
                               const uint64_t *tabs, size_t tab_count,
                               char **error_output) {
   mrb_state *mrb = (mrb_state *)state;
+  int arena_index = mrb_gc_arena_save(mrb);
   *error_output = NULL;
   mrb->exc = NULL;
   mrb_value arguments[2] = {
@@ -290,7 +313,7 @@ int toyoterm_mruby_add_window(void *state, uint64_t window_id,
   };
   mrb_funcall_argv(mrb, toyoterm_module(mrb),
                    mrb_intern_lit(mrb, "__add_window"), 2, arguments);
-  return finish_typed_call(mrb, error_output);
+  return finish_arena_call(mrb, arena_index, error_output);
 }
 
 int toyoterm_mruby_add_tab(void *state, uint64_t tab_id, const char *title,
@@ -298,6 +321,7 @@ int toyoterm_mruby_add_tab(void *state, uint64_t tab_id, const char *title,
                            size_t pane_count, int zoomed,
                            char **error_output) {
   mrb_state *mrb = (mrb_state *)state;
+  int arena_index = mrb_gc_arena_save(mrb);
   *error_output = NULL;
   mrb->exc = NULL;
   mrb_value arguments[4] = {
@@ -308,7 +332,7 @@ int toyoterm_mruby_add_tab(void *state, uint64_t tab_id, const char *title,
   };
   mrb_funcall_argv(mrb, toyoterm_module(mrb),
                    mrb_intern_lit(mrb, "__add_tab"), 4, arguments);
-  return finish_typed_call(mrb, error_output);
+  return finish_arena_call(mrb, arena_index, error_output);
 }
 
 int toyoterm_mruby_add_pane(void *state, uint64_t pane_id, const char *title,
@@ -328,6 +352,7 @@ int toyoterm_mruby_add_pane(void *state, uint64_t pane_id, const char *title,
                             const char *screen_text, size_t screen_text_length,
                             int zoomed, char **error_output) {
   mrb_state *mrb = (mrb_state *)state;
+  int arena_index = mrb_gc_arena_save(mrb);
   *error_output = NULL;
   mrb->exc = NULL;
   mrb_value user_var_entries =
@@ -361,7 +386,7 @@ int toyoterm_mruby_add_pane(void *state, uint64_t pane_id, const char *title,
   };
   mrb_funcall_argv(mrb, toyoterm_module(mrb),
                    mrb_intern_lit(mrb, "__add_pane"), 10, arguments);
-  return finish_typed_call(mrb, error_output);
+  return finish_arena_call(mrb, arena_index, error_output);
 }
 
 static mrb_value optional_integer(mrb_state *mrb, uint64_t value) {
@@ -376,6 +401,7 @@ int toyoterm_mruby_emit_event(
     int cwd_available, int exit_status, int exit_status_available,
     char **error_output) {
   mrb_state *mrb = (mrb_state *)state;
+  int arena_index = mrb_gc_arena_save(mrb);
   *error_output = NULL;
   mrb->exc = NULL;
   mrb_value arguments[8] = {
@@ -393,30 +419,33 @@ int toyoterm_mruby_emit_event(
   };
   mrb_funcall_argv(mrb, toyoterm_module(mrb),
                    mrb_intern_lit(mrb, "__emit_native_event"), 8, arguments);
-  return finish_typed_call(mrb, error_output);
+  return finish_arena_call(mrb, arena_index, error_output);
 }
 
 int toyoterm_mruby_set_clipboard_text(void *state, const char *text,
                                       size_t length, int available,
                                       char **error_output) {
   mrb_state *mrb = (mrb_state *)state;
+  int arena_index = mrb_gc_arena_save(mrb);
   *error_output = NULL;
   mrb->exc = NULL;
   mrb_value argument = available ? mrb_str_new(mrb, text, (mrb_int)length)
                                  : mrb_nil_value();
   mrb_funcall_argv(mrb, toyoterm_module(mrb),
                    mrb_intern_lit(mrb, "__set_clipboard_text"), 1, &argument);
-  return finish_typed_call(mrb, error_output);
+  return finish_arena_call(mrb, arena_index, error_output);
 }
 
 int toyoterm_mruby_eval(void *state, const char *source, const char *filename,
                         char **output) {
   mrb_state *mrb = (mrb_state *)state;
+  int arena_index = mrb_gc_arena_save(mrb);
   *output = NULL;
   mrb->exc = NULL;
 
   mrb_ccontext *context = mrb_ccontext_new(mrb);
   if (context == NULL) {
+    mrb_gc_arena_restore(mrb, arena_index);
     return 2;
   }
   mrb_ccontext_filename(mrb, context, filename);
@@ -424,24 +453,37 @@ int toyoterm_mruby_eval(void *state, const char *source, const char *filename,
   mrb_ccontext_free(mrb, context);
   if (mrb->exc != NULL) {
     mrb_value exception = mrb_obj_value(mrb->exc);
+    mrb_gc_protect(mrb, exception);
     mrb->exc = NULL;
     mrb_value error = format_exception(mrb, exception);
     *output = copy_mruby_string(error);
     mrb->exc = NULL;
+    mrb_gc_arena_restore(mrb, arena_index);
     return 1;
   }
 
   value = mrb_obj_as_string(mrb, value);
   if (mrb->exc != NULL) {
     mrb_value exception = mrb_obj_value(mrb->exc);
+    mrb_gc_protect(mrb, exception);
     mrb->exc = NULL;
     mrb_value error = format_exception(mrb, exception);
     *output = copy_mruby_string(error);
     mrb->exc = NULL;
+    mrb_gc_arena_restore(mrb, arena_index);
     return 1;
   }
   *output = copy_mruby_string(value);
-  return *output == NULL ? 2 : 0;
+  int status = *output == NULL ? 2 : 0;
+  mrb_gc_arena_restore(mrb, arena_index);
+  return status;
+}
+
+void toyoterm_mruby_gc_stats(void *state, size_t *arena_index,
+                             size_t *live_objects) {
+  mrb_state *mrb = (mrb_state *)state;
+  *arena_index = (size_t)mrb->gc.arena_idx;
+  *live_objects = mrb->gc.live;
 }
 
 void toyoterm_mruby_string_free(char *string) { free(string); }

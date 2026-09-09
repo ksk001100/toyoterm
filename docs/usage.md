@@ -130,6 +130,9 @@ See [shell integration](shell-integration.md) for startup-file instructions.
 Diagnostics are written to stderr through `tracing`; the default level is `warn`. `TOYOTERM_LOG` sets the global level or comma-separated target filters. The available targets are `toyoterm::pty`, `toyoterm::render`, `toyoterm::mux`, `toyoterm::script`, `toyoterm::config`, `toyoterm::app`, and `toyoterm::ipc`. Short target names such as `pty` are accepted.
 
 Dynamic key-binding and event callback durations are emitted at `debug` under `toyoterm::script`. Callbacks taking 100 ms or longer are logged at `warn` as slow callbacks, including their kind, name, duration, and success state.
+At `trace`, the same target reports `pending_script`, `runtime_events`, the
+mruby GC arena index, and the current live-object count for memory-growth
+diagnostics.
 
 ```sh
 TOYOTERM_LOG=debug toyoterm

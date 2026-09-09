@@ -333,6 +333,11 @@ unsafe extern "C" {
         error_output: *mut *mut c_char,
     ) -> i32;
     fn toyoterm_mruby_install_host_api(state: *mut c_void);
+    fn toyoterm_mruby_gc_stats(
+        state: *mut c_void,
+        arena_index: *mut usize,
+        live_objects: *mut usize,
+    );
     fn toyoterm_mruby_string_free(string: *mut c_char);
 }
 

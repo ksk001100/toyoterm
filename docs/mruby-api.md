@@ -721,6 +721,13 @@ commands are discarded.
 
 Events without a registered handler are skipped before invoking Ruby. Delivery
 is limited to 1,024 events per application turn to bound self-generated loops.
+While Ruby is slower than event production, at most 1,024 event requests wait
+behind the active callback. Queued `title_changed`, `cwd_changed`,
+`pane_focused`, and `workspace_changed` events for the same native object are
+coalesced to their newest snapshot. If the event portion of the queue is still
+full, newer events are dropped and a rate-limited warning is logged. Key
+bindings, named commands, configuration reloads, and live-console evaluations
+are lossless and are not subject to the event limit.
 
 ## Window bars
 

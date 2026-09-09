@@ -6,6 +6,12 @@ pub struct MrubyRuntime {
     not_send_or_sync: PhantomData<Rc<()>>,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) struct MrubyGcStats {
+    pub arena_index: usize,
+    pub live_objects: usize,
+}
+
 impl MrubyRuntime {
     pub fn new() -> Result<Self, ScriptError> {
         // SAFETY: The returned state is exclusively owned by this wrapper and closed in Drop.
@@ -52,6 +58,19 @@ impl MrubyRuntime {
 
     pub fn eval(&mut self, source: &str) -> Result<String, ScriptError> {
         self.eval_with_filename(source, "(eval)")
+    }
+
+    pub(super) fn gc_stats(&self) -> MrubyGcStats {
+        let mut arena_index = 0;
+        let mut live_objects = 0;
+        // SAFETY: The VM is live and exclusively owned by this thread; both outputs are valid.
+        unsafe {
+            toyoterm_mruby_gc_stats(self.state.as_ptr(), &mut arena_index, &mut live_objects);
+        }
+        MrubyGcStats {
+            arena_index,
+            live_objects,
+        }
     }
 
     pub(super) fn set_current_pane(&mut self, pane: PaneId) -> Result<(), ScriptError> {
