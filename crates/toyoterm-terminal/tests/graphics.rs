@@ -98,6 +98,41 @@ fn kitty_chunked_png_transmit_place_delete_and_query() {
 }
 
 #[test]
+fn kitty_unicode_placeholders_render_ratatui_image_virtual_placements() {
+    let mut t = terminal();
+    let image_id = 0x0200_002a;
+    t.advance(&kitty(
+        &format!("q=2,i={image_id},a=T,U=1,f=32,t=d,s=2,v=2"),
+        &[
+            255, 0, 0, 255, 0, 255, 0, 255, 0, 0, 255, 255, 255, 255, 255, 255,
+        ],
+    ));
+    assert!(t.snapshot().images.is_empty());
+
+    // ratatui-image emits all three diacritics on the first cell of each row
+    // and inherits them across the remaining columns.
+    t.advance(
+        "\x1b[2;3H\x1b[38;2;0;0;42m\u{10eeee}\u{0305}\u{0305}\u{030e}\u{10eeee}\
+         \x1b[3;3H\u{10eeee}\u{030d}\u{0305}\u{030e}\u{10eeee}\x1b[39m"
+            .as_bytes(),
+    );
+    let snapshot = t.snapshot();
+    assert_eq!(snapshot.images.len(), 1);
+    let image = &snapshot.images[0];
+    assert_eq!(
+        (image.column, image.row, image.columns, image.rows),
+        (2, 1, 2, 2)
+    );
+    assert_eq!(snapshot.lines[1], "");
+    assert_eq!(snapshot.lines[2], "");
+
+    // Placeholder-backed images follow the grid: overwriting the placeholder
+    // cells removes the displayed image without a graphics deletion command.
+    t.advance(b"\x1b[2;3H  \x1b[3;3H  ");
+    assert!(t.snapshot().images.is_empty());
+}
+
+#[test]
 fn sixel_palette_repeat_and_carriage_return_preserve_previous_pixels() {
     let mut t = terminal();
     for byte in b"\x1bP0;1q\"1;1;3;6#1;2;100;0;0!3~$#2;2;0;100;0A\x1b\\" {

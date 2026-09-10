@@ -1,5 +1,5 @@
 //! Bounded, in-band terminal graphics. No protocol may read local files.
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::io::{Cursor, Read};
 use std::sync::Arc;
 
@@ -37,6 +37,24 @@ struct Placement {
     alternate: bool,
 }
 
+#[derive(Clone, Copy)]
+struct VirtualPlacement {
+    image_id: u32,
+    placement_id: u32,
+    columns: u16,
+    rows: u16,
+    revision: u64,
+}
+
+pub(crate) struct PlaceholderCell {
+    pub column: u16,
+    pub row: i32,
+    pub image_color: u32,
+    pub placement_color: u32,
+    pub diacritics: [u16; 3],
+    pub diacritic_count: u8,
+}
+
 #[derive(Clone)]
 struct Pixels {
     width: u32,
@@ -53,6 +71,7 @@ struct ItermTransfer {
 pub(crate) struct Graphics {
     placements: Vec<Placement>,
     stored: BTreeMap<u32, Pixels>,
+    virtual_placements: Vec<VirtualPlacement>,
     kitty_transfer: Option<(BTreeMap<String, String>, Vec<u8>)>,
     iterm_transfer: Option<ItermTransfer>,
     serial: u64,
@@ -75,8 +94,15 @@ impl Graphics {
             ..Self::default()
         }
     }
-    pub fn snapshot(&self, alternate: bool, offset: i32, rows: u16) -> Vec<TerminalImage> {
-        self.placements
+    pub fn snapshot(
+        &self,
+        alternate: bool,
+        offset: i32,
+        rows: u16,
+        placeholders: &[PlaceholderCell],
+    ) -> Vec<TerminalImage> {
+        let mut images = self
+            .placements
             .iter()
             .filter_map(|p| {
                 let mut image = p.image.clone();
@@ -86,15 +112,116 @@ impl Graphics {
                     && image.row + i32::from(image.rows) > 0)
                     .then_some(image)
             })
-            .collect()
+            .collect::<Vec<_>>();
+        images.extend(self.placeholder_images(placeholders, rows));
+        images
     }
 
     pub fn reset(&mut self) {
         self.placements.clear();
         self.stored.clear();
+        self.virtual_placements.clear();
         self.kitty_transfer = None;
         self.iterm_transfer = None;
         self.region = None;
+    }
+
+    fn placeholder_images(
+        &self,
+        placeholders: &[PlaceholderCell],
+        screen_rows: u16,
+    ) -> Vec<TerminalImage> {
+        let mut previous: Option<(u16, i32, u32, u32, u16, u16, u8)> = None;
+        let mut high_bytes = BTreeMap::<(u32, u32), u8>::new();
+        let mut seen = BTreeSet::new();
+        let mut images = Vec::new();
+
+        for cell in placeholders {
+            let colors = (cell.image_color, cell.placement_color);
+            let adjacent = previous.filter(|previous| {
+                previous.0.checked_add(1) == Some(cell.column)
+                    && previous.1 == cell.row
+                    && (previous.2, previous.3) == colors
+            });
+            let decoded = match &cell.diacritics[..usize::from(cell.diacritic_count)] {
+                [] => {
+                    adjacent.map(|previous| (previous.4, previous.5.saturating_add(1), previous.6))
+                }
+                [row] => {
+                    let row = *row;
+                    let column = adjacent
+                        .filter(|previous| previous.4 == row)
+                        .map_or(0, |previous| previous.5.saturating_add(1));
+                    Some((row, column, *high_bytes.get(&colors).unwrap_or(&0)))
+                }
+                [row, column] => Some((
+                    *row,
+                    *column,
+                    adjacent
+                        .filter(|previous| previous.4 == *row && previous.5 + 1 == *column)
+                        .map_or(*high_bytes.get(&colors).unwrap_or(&0), |previous| {
+                            previous.6
+                        }),
+                )),
+                [row, column, high, ..] if *high <= u16::from(u8::MAX) => {
+                    Some((*row, *column, *high as u8))
+                }
+                _ => None,
+            };
+            let Some((image_row, image_column, high)) = decoded else {
+                previous = None;
+                continue;
+            };
+            high_bytes.insert(colors, high);
+            previous = Some((
+                cell.column,
+                cell.row,
+                cell.image_color,
+                cell.placement_color,
+                image_row,
+                image_column,
+                high,
+            ));
+
+            let image_id = (u32::from(high) << 24) | cell.image_color;
+            let Some(virtual_placement) = self.virtual_placements.iter().rev().find(|placement| {
+                placement.image_id == image_id
+                    && (cell.placement_color == 0 || placement.placement_id == cell.placement_color)
+            }) else {
+                continue;
+            };
+            let origin_column = i32::from(cell.column) - i32::from(image_column);
+            let origin_row = cell.row - i32::from(image_row);
+            if origin_column < 0
+                || origin_column > i32::from(u16::MAX)
+                || origin_row >= i32::from(screen_rows)
+                || origin_row + i32::from(virtual_placement.rows) <= 0
+                || !seen.insert((
+                    image_id,
+                    virtual_placement.placement_id,
+                    origin_column,
+                    origin_row,
+                ))
+            {
+                continue;
+            }
+            let Some(pixels) = self.stored.get(&image_id) else {
+                continue;
+            };
+            images.push(TerminalImage {
+                id: virtual_placement.revision,
+                width: pixels.width,
+                height: pixels.height,
+                rgba: pixels.rgba.clone(),
+                column: origin_column as u16,
+                row: origin_row,
+                display_width: u32::from(virtual_placement.columns) * self.size().0,
+                display_height: u32::from(virtual_placement.rows) * self.size().1,
+                columns: virtual_placement.columns,
+                rows: virtual_placement.rows,
+            });
+        }
+        images
     }
 
     pub fn cancel_transfer(&mut self) {
@@ -335,6 +462,9 @@ impl Graphics {
                         self.placements.retain(|p| {
                             p.kitty_id != id || (placement != 0 && p.placement_id != placement)
                         });
+                        self.virtual_placements.retain(|p| {
+                            p.image_id != id || (placement != 0 && p.placement_id != placement)
+                        });
                         vec![id]
                     }
                     _ => return Err("ENOTSUP:unsupported delete selector"),
@@ -345,6 +475,10 @@ impl Graphics {
                             .placements
                             .iter()
                             .any(|placement| placement.kitty_id == removed_id)
+                            && !self
+                                .virtual_placements
+                                .iter()
+                                .any(|placement| placement.image_id == removed_id)
                         {
                             self.stored.remove(&removed_id);
                         }
@@ -356,11 +490,15 @@ impl Graphics {
                 return Err("ENOTSUP:unsupported action");
             }
             // Reject advanced placement semantics instead of silently displaying incorrectly.
-            if ["U", "P", "Q", "x", "y", "w", "h", "X", "Y", "z", "I"]
+            if ["P", "Q", "x", "y", "w", "h", "X", "Y", "z", "I"]
                 .iter()
                 .any(|k| number(&keys, k, 0) != 0)
             {
                 return Err("ENOTSUP:unsupported placement");
+            }
+            let virtual_placement = number(&keys, "U", 0);
+            if virtual_placement > 1 {
+                return Err("EINVAL:invalid virtual placement");
             }
             let pixels = if action == "p" {
                 self.stored
@@ -436,6 +574,8 @@ impl Graphics {
                 // Image IDs are global. Re-transmission replaces the image data and
                 // removes every old placement before an optional new placement.
                 self.placements.retain(|placement| placement.kitty_id != id);
+                self.virtual_placements
+                    .retain(|placement| placement.image_id != id);
                 self.stored.insert(id, pixels.clone());
             }
             if action == "t" {
@@ -450,6 +590,24 @@ impl Graphics {
                 || rows > u32::from(u16::MAX)
             {
                 return Err("EINVAL:invalid placement size");
+            }
+            if virtual_placement == 1 {
+                if id == 0 {
+                    return Err("EINVAL:virtual placement requires image id");
+                }
+                self.serial = self.serial.wrapping_add(1);
+                self.virtual_placements.retain(|existing| {
+                    existing.image_id != id
+                        || (placement != 0 && existing.placement_id != placement)
+                });
+                self.virtual_placements.push(VirtualPlacement {
+                    image_id: id,
+                    placement_id: placement,
+                    columns: columns as u16,
+                    rows: rows as u16,
+                    revision: self.serial,
+                });
+                return Ok(());
             }
             let display = match (keys.contains_key("c"), keys.contains_key("r")) {
                 (false, false) => (pixels.width, pixels.height),

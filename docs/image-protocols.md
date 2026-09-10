@@ -16,7 +16,7 @@ python examples/terminal_images.py --protocol kitty
 | Protocol | Supported |
 | --- | --- |
 | Sixel (DCS `ESC P … q … ESC \\`) | Raster dimensions, repeat, carriage return, next sixel line, 256 color registers, RGB and DEC HLS definitions, transparent background (`P2=1`), and 7-bit or 8-bit DCS/ST controls |
-| Kitty (APC `ESC _ G … ESC \\`) | Direct base64 transmission (`t=d`), RGB/RGBA/PNG (`f=24/32/100`), zlib (`o=z`), chunking (`m`), transmit/query/display (`a=t/q/T/p`), image and placement IDs (`i/p`), cell sizes (`c/r`), cursor preservation (`C=1`), quiet replies (`q`), deletion of visible placements or an image ID (`d=a/A/i/I`), and 7-bit or 8-bit APC/ST controls |
+| Kitty (APC `ESC _ G … ESC \\`) | Direct base64 transmission (`t=d`), RGB/RGBA/PNG (`f=24/32/100`), zlib (`o=z`), chunking (`m`), transmit/query/display (`a=t/q/T/p`), image and placement IDs (`i/p`), cell sizes (`c/r`), cursor preservation (`C=1`), virtual placements (`U=1`) and Unicode placeholders, quiet replies (`q`), deletion of visible placements or an image ID (`d=a/A/i/I`), and 7-bit or 8-bit APC/ST controls |
 | iTerm2 (OSC 1337) | `File=inline=1` and `MultipartFile`/`FilePart`/`FileEnd`, base64 PNG/JPEG/GIF/BMP/WebP (the first frame of an animated image is displayed), optional byte `size`, `width`/`height` in cells, pixels, percent, or `auto`, `preserveAspectRatio`, BEL or 7-bit/8-bit ST termination |
 
 Kitty replies use the normal PTY response channel. Queries decode and validate
@@ -45,6 +45,13 @@ for an existing ID removes all old placements before storing the replacement.
 Placements with `p=0` are anonymous and may coexist; only a nonzero placement ID
 replaces another placement with the same image/placement ID pair.
 
+Kitty Unicode placeholders are derived from the terminal grid on each snapshot,
+so normal TUI redraws move and remove their images together with the placeholder
+cells. True-color and indexed image IDs, placement IDs encoded as underline
+colors, all 297 standard row/column diacritics, and the compact inherited form
+emitted by `ratatui-image` are recognized. Placeholder glyphs and their
+diacritics are not exposed to the text renderer.
+
 ## Limits and remaining compatibility work
 
 - Control strings accept both seven-bit ESC and eight-bit C1 introducer/ST
@@ -52,8 +59,8 @@ replaces another placement with the same image/placement ID pair.
   passthrough is not implemented.
 - Sixel pixel-aspect scaling, persistent palettes across separate images, and
   DEC private Sixel modes are not implemented.
-- Kitty file/shared-memory transmission, Unicode placeholders, animation,
-  image-number addressing, cropping, offsets, relative placement, and nonzero
+- Kitty file/shared-memory transmission, animation, image-number addressing,
+  cropping, offsets, relative placement, and nonzero
   z-index are not implemented. Use direct transmission with supported placement
   keys. Deletion selectors other than `a/A/i/I` return an unsupported error.
 - OSC 1337 file downloads (`inline=0`), image animation, and formats other than

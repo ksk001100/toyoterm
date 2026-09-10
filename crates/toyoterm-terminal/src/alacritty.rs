@@ -1,5 +1,5 @@
 use super::graphics::{
-    Graphics,
+    Graphics, PlaceholderCell,
     handler::{GraphicsHandler, SemanticMarkerKind, SemanticMarkers},
     stream::{Stream, Token},
 };
@@ -2092,6 +2092,7 @@ impl TerminalBackend for AlacrittyTerminalBackend {
             .as_ref()
             .and_then(|selection| selection.to_range(&self.terminal));
         let mut selection = Vec::new();
+        let mut placeholders = Vec::new();
 
         for viewport_row in 0..rows {
             let line = Line(viewport_row as i32 - display_offset);
@@ -2118,11 +2119,47 @@ impl TerminalBackend for AlacrittyTerminalBackend {
                 {
                     continue;
                 }
-                text.push(cell.c);
-                let mut cell_text = cell.c.to_string();
+                let placeholder = cell.c == '\u{10eeee}';
+                let mut cell_text = if placeholder {
+                    " ".to_owned()
+                } else {
+                    cell.c.to_string()
+                };
+                text.push(if placeholder { ' ' } else { cell.c });
                 if let Some(zerowidth) = cell.zerowidth() {
-                    text.extend(zerowidth);
-                    cell_text.extend(zerowidth);
+                    if placeholder {
+                        let diacritics = kitty_placeholder_diacritics(zerowidth);
+                        if let (Some(image_color), Some((diacritics, diacritic_count))) =
+                            (kitty_placeholder_color(cell.fg), diacritics)
+                        {
+                            placeholders.push(PlaceholderCell {
+                                column,
+                                row: i32::from(viewport_row),
+                                image_color,
+                                placement_color: cell
+                                    .underline_color()
+                                    .and_then(kitty_placeholder_color)
+                                    .unwrap_or(0),
+                                diacritics,
+                                diacritic_count,
+                            });
+                        }
+                    } else {
+                        text.extend(zerowidth);
+                        cell_text.extend(zerowidth);
+                    }
+                } else if placeholder && let Some(image_color) = kitty_placeholder_color(cell.fg) {
+                    placeholders.push(PlaceholderCell {
+                        column,
+                        row: i32::from(viewport_row),
+                        image_color,
+                        placement_color: cell
+                            .underline_color()
+                            .and_then(kitty_placeholder_color)
+                            .unwrap_or(0),
+                        diacritics: [0; 3],
+                        diacritic_count: 0,
+                    });
                 }
                 cells.push(TerminalCell {
                     column,
@@ -2187,9 +2224,12 @@ impl TerminalBackend for AlacrittyTerminalBackend {
             .collect();
 
         TerminalSnapshot {
-            images: self
-                .graphics
-                .snapshot(self.mode().alternate_screen, display_offset, rows),
+            images: self.graphics.snapshot(
+                self.mode().alternate_screen,
+                display_offset,
+                rows,
+                &placeholders,
+            ),
             columns,
             rows,
             lines,
@@ -2525,6 +2565,119 @@ fn cell_attributes(foreground: Color, background: Color, flags: Flags) -> CellAt
         inverse: flags.contains(Flags::INVERSE),
         hidden: flags.contains(Flags::HIDDEN),
     }
+}
+
+fn kitty_placeholder_color(color: Color) -> Option<u32> {
+    match cell_color(color, false) {
+        CellColor::Rgb(r, g, b) => Some((u32::from(r) << 16) | (u32::from(g) << 8) | u32::from(b)),
+        CellColor::Indexed(index) => Some(u32::from(index)),
+        CellColor::Default => None,
+    }
+}
+
+fn kitty_placeholder_diacritics(characters: &[char]) -> Option<([u16; 3], u8)> {
+    if characters.len() > 3 {
+        return None;
+    }
+    let mut diacritics = [0; 3];
+    for (index, character) in characters.iter().enumerate() {
+        diacritics[index] = kitty_diacritic_number(*character)?;
+    }
+    Some((diacritics, characters.len() as u8))
+}
+
+fn kitty_diacritic_number(character: char) -> Option<u16> {
+    let codepoint = u32::from(character);
+    let (offset, start) = match codepoint {
+        0x0305 => (0, 0x0305),
+        0x030d..=0x030e => (1, 0x030d),
+        0x0310 => (3, 0x0310),
+        0x0312 => (4, 0x0312),
+        0x033d..=0x033f => (5, 0x033d),
+        0x0346 => (8, 0x0346),
+        0x034a..=0x034c => (9, 0x034a),
+        0x0350..=0x0352 => (12, 0x0350),
+        0x0357 => (15, 0x0357),
+        0x035b => (16, 0x035b),
+        0x0363..=0x036f => (17, 0x0363),
+        0x0483..=0x0487 => (30, 0x0483),
+        0x0592..=0x0595 => (35, 0x0592),
+        0x0597..=0x0599 => (39, 0x0597),
+        0x059c..=0x05a1 => (42, 0x059c),
+        0x05a8..=0x05a9 => (48, 0x05a8),
+        0x05ab..=0x05ac => (50, 0x05ab),
+        0x05af => (52, 0x05af),
+        0x05c4 => (53, 0x05c4),
+        0x0610..=0x0617 => (54, 0x0610),
+        0x0657..=0x065b => (62, 0x0657),
+        0x065d..=0x065e => (67, 0x065d),
+        0x06d6..=0x06dc => (69, 0x06d6),
+        0x06df..=0x06e2 => (76, 0x06df),
+        0x06e4 => (80, 0x06e4),
+        0x06e7..=0x06e8 => (81, 0x06e7),
+        0x06eb..=0x06ec => (83, 0x06eb),
+        0x0730 => (85, 0x0730),
+        0x0732..=0x0733 => (86, 0x0732),
+        0x0735..=0x0736 => (88, 0x0735),
+        0x073a => (90, 0x073a),
+        0x073d => (91, 0x073d),
+        0x073f..=0x0741 => (92, 0x073f),
+        0x0743 => (95, 0x0743),
+        0x0745 => (96, 0x0745),
+        0x0747 => (97, 0x0747),
+        0x0749..=0x074a => (98, 0x0749),
+        0x07eb..=0x07f1 => (100, 0x07eb),
+        0x07f3 => (107, 0x07f3),
+        0x0816..=0x0819 => (108, 0x0816),
+        0x081b..=0x0823 => (112, 0x081b),
+        0x0825..=0x0827 => (121, 0x0825),
+        0x0829..=0x082d => (124, 0x0829),
+        0x0951 => (129, 0x0951),
+        0x0953..=0x0954 => (130, 0x0953),
+        0x0f82..=0x0f83 => (132, 0x0f82),
+        0x0f86..=0x0f87 => (134, 0x0f86),
+        0x135d..=0x135f => (136, 0x135d),
+        0x17dd => (139, 0x17dd),
+        0x193a => (140, 0x193a),
+        0x1a17 => (141, 0x1a17),
+        0x1a75..=0x1a7c => (142, 0x1a75),
+        0x1b6b => (150, 0x1b6b),
+        0x1b6d..=0x1b73 => (151, 0x1b6d),
+        0x1cd0..=0x1cd2 => (158, 0x1cd0),
+        0x1cda..=0x1cdb => (161, 0x1cda),
+        0x1ce0 => (163, 0x1ce0),
+        0x1dc0..=0x1dc1 => (164, 0x1dc0),
+        0x1dc3..=0x1dc9 => (166, 0x1dc3),
+        0x1dcb..=0x1dcc => (173, 0x1dcb),
+        0x1dd1..=0x1de6 => (175, 0x1dd1),
+        0x1dfe => (197, 0x1dfe),
+        0x20d0..=0x20d1 => (198, 0x20d0),
+        0x20d4..=0x20d7 => (200, 0x20d4),
+        0x20db..=0x20dc => (204, 0x20db),
+        0x20e1 => (206, 0x20e1),
+        0x20e7 => (207, 0x20e7),
+        0x20e9 => (208, 0x20e9),
+        0x20f0 => (209, 0x20f0),
+        0x2cef..=0x2cf1 => (210, 0x2cef),
+        0x2de0..=0x2dff => (213, 0x2de0),
+        0xa66f => (245, 0xa66f),
+        0xa67c..=0xa67d => (246, 0xa67c),
+        0xa6f0..=0xa6f1 => (248, 0xa6f0),
+        0xa8e0..=0xa8f1 => (250, 0xa8e0),
+        0xaab0 => (268, 0xaab0),
+        0xaab2..=0xaab3 => (269, 0xaab2),
+        0xaab7..=0xaab8 => (271, 0xaab7),
+        0xaabe..=0xaabf => (273, 0xaabe),
+        0xaac1 => (275, 0xaac1),
+        0xfe20..=0xfe26 => (276, 0xfe20),
+        0x10a0f => (283, 0x10a0f),
+        0x10a38 => (284, 0x10a38),
+        0x1d185..=0x1d189 => (285, 0x1d185),
+        0x1d1aa..=0x1d1ad => (290, 0x1d1aa),
+        0x1d242..=0x1d244 => (294, 0x1d242),
+        _ => return None,
+    };
+    Some((offset + codepoint - start) as u16)
 }
 
 fn cell_color(color: Color, background: bool) -> CellColor {
