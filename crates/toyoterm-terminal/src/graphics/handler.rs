@@ -300,13 +300,31 @@ impl<E: EventListener> Handler for GraphicsHandler<'_, E> {
             return;
         }
         let cursor = &self.terminal.grid().cursor;
+        let cursor_row = cursor.point.line.0;
+        let cursor_column = cursor.point.column.0;
+        let input_needs_wrap = cursor.input_needs_wrap;
         let width = c.width().unwrap_or(0);
         let wraps = self.terminal.mode().contains(TermMode::LINE_WRAP)
             && width > 0
-            && (cursor.input_needs_wrap
-                || (width == 2 && cursor.point.column.0 + 1 >= self.terminal.columns()));
+            && (input_needs_wrap || (width == 2 && cursor_column + 1 >= self.terminal.columns()));
         if wraps {
             self.track_linefeed();
+        }
+        if width > 0 {
+            let alternate = self.alternate();
+            let (column, row) = if wraps {
+                let (_, bottom) = self.region();
+                let row = if cursor_row + 1 == bottom {
+                    cursor_row
+                } else {
+                    cursor_row + 1
+                };
+                (0, row)
+            } else {
+                (cursor_column as u16, cursor_row)
+            };
+            self.graphics
+                .overwrite(alternate, row, column, column.saturating_add(width as u16));
         }
         self.terminal.input(c);
     }
@@ -444,6 +462,13 @@ impl<E: EventListener> Handler for GraphicsHandler<'_, E> {
         self.terminal.goto_col(arg0);
     }
     fn insert_blank(&mut self, arg0: usize) {
+        let cursor = self.terminal.grid().cursor.point;
+        self.graphics.clear_columns(
+            self.alternate(),
+            cursor.line.0,
+            cursor.column.0 as u16,
+            self.terminal.columns().min(usize::from(u16::MAX)) as u16,
+        );
         self.terminal.insert_blank(arg0);
     }
     fn move_up(&mut self, arg0: usize) {
@@ -501,9 +526,26 @@ impl<E: EventListener> Handler for GraphicsHandler<'_, E> {
         self.terminal.set_horizontal_tabstop();
     }
     fn erase_chars(&mut self, arg0: usize) {
+        let cursor = self.terminal.grid().cursor.point;
+        let start = cursor.column.0.min(usize::from(u16::MAX)) as u16;
+        let end = cursor
+            .column
+            .0
+            .saturating_add(arg0)
+            .min(self.terminal.columns())
+            .min(usize::from(u16::MAX)) as u16;
+        self.graphics
+            .clear_columns(self.alternate(), cursor.line.0, start, end);
         self.terminal.erase_chars(arg0);
     }
     fn delete_chars(&mut self, arg0: usize) {
+        let cursor = self.terminal.grid().cursor.point;
+        self.graphics.clear_columns(
+            self.alternate(),
+            cursor.line.0,
+            cursor.column.0 as u16,
+            self.terminal.columns().min(usize::from(u16::MAX)) as u16,
+        );
         self.terminal.delete_chars(arg0);
     }
     fn move_backward_tabs(&mut self, arg0: u16) {

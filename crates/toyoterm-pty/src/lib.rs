@@ -477,6 +477,42 @@ mod tests {
 
     #[cfg(windows)]
     #[test]
+    fn conpty_preserves_kitty_graphics_control_strings() {
+        let bundle = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../vendor/conpty/win-x64");
+        let backend = conpty_oxide::ConPtyBackend::from_dir(&bundle)
+            .expect("load the vendored ConPTY bundle");
+        let mut command = PtyCommand::new("powershell.exe");
+        command.args([
+            "-NoLogo",
+            "-NoProfile",
+            "-NonInteractive",
+            "-Command",
+            "$b=[byte[]](27,95,71,105,61,51,49,59,79,75,27,92);$o=[Console]::OpenStandardOutput();$o.Write($b,0,$b.Length)",
+        ]);
+        let mut session = windows::spawn_with_backend(command, PtySize::new(80, 24), backend)
+            .expect("spawn raw Kitty output in ConPTY");
+        let mut reader = session.take_reader().expect("take ConPTY reader");
+        let reader_thread = std::thread::spawn(move || {
+            let mut output = Vec::new();
+            reader.read_to_end(&mut output).map(|_| output)
+        });
+        let status = session.wait().expect("wait for PowerShell");
+        let output = reader_thread
+            .join()
+            .expect("join PowerShell reader")
+            .expect("read PowerShell output");
+
+        assert_eq!(status.code, 0, "unexpected status: {status:?}");
+        assert!(
+            output
+                .windows(b"\x1b_Gi=31;OK\x1b\\".len())
+                .any(|bytes| bytes == b"\x1b_Gi=31;OK\x1b\\"),
+            "ConPTY filtered Kitty APC bytes: {output:?}"
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
     fn default_shell_resolves_to_powershell_or_pwsh() {
         let shell = windows::default_shell_program();
         let shell_str = shell.to_string_lossy().to_lowercase();

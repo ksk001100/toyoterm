@@ -31,6 +31,9 @@ enum State {
     #[default]
     Ground,
     Escape,
+    Csi {
+        bytes: Vec<u8>,
+    },
     String {
         kind: u8,
         bytes: Vec<u8>,
@@ -42,6 +45,7 @@ pub(crate) enum Token {
     Text(Vec<u8>),
     Graphic(u8, Vec<u8>),
     Osc1337(Vec<u8>),
+    CellSizeQuery,
     Cancel,
 }
 impl Stream {
@@ -90,6 +94,7 @@ impl Stream {
                     text.push(byte);
                     State::Ground
                 }
+                State::Escape if byte == b'[' => State::Csi { bytes: Vec::new() },
                 State::Escape if matches!(byte, b'P' | b'_' | b']' | b'^' | b'X') => {
                     if !text.is_empty() {
                         tokens.push(Token::Text(std::mem::take(&mut text)));
@@ -108,6 +113,34 @@ impl Stream {
                     } else {
                         text.push(byte);
                         State::Ground
+                    }
+                }
+                State::Csi { bytes } if byte == 0x1b => {
+                    text.extend_from_slice(b"\x1b[");
+                    text.extend_from_slice(&bytes);
+                    State::Escape
+                }
+                State::Csi { mut bytes } => {
+                    bytes.push(byte);
+                    if (0x40..=0x7e).contains(&byte) {
+                        if bytes == b"16t" {
+                            if !text.is_empty() {
+                                tokens.push(Token::Text(std::mem::take(&mut text)));
+                            }
+                            tokens.push(Token::CellSizeQuery);
+                        } else {
+                            text.extend_from_slice(b"\x1b[");
+                            text.extend_from_slice(&bytes);
+                        }
+                        State::Ground
+                    } else if bytes.len() >= 64 {
+                        // Stop inspecting unusually long CSI sequences and let the
+                        // normal VT parser consume the remainder incrementally.
+                        text.extend_from_slice(b"\x1b[");
+                        text.extend_from_slice(&bytes);
+                        State::Ground
+                    } else {
+                        State::Csi { bytes }
                     }
                 }
                 State::String {

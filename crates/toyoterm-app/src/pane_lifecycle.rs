@@ -1,5 +1,21 @@
 use super::*;
 
+const OUTER_TERMINAL_ENVIRONMENT: &[&str] = &[
+    "ITERM_SESSION_ID",
+    "KITTY_LISTEN_ON",
+    "KITTY_WINDOW_ID",
+    "KONSOLE_DBUS_SERVICE",
+    "KONSOLE_DBUS_SESSION",
+    "KONSOLE_VERSION",
+    "LC_TERMINAL",
+    "LC_TERMINAL_VERSION",
+    "TMUX",
+    "TMUX_PANE",
+    "WEZTERM_EXECUTABLE",
+    "WEZTERM_PANE",
+    "WT_SESSION",
+];
+
 pub(super) fn pty_command_for_launch(
     default_shell: Option<&str>,
     launch: Option<&PaneLaunchSpec>,
@@ -30,6 +46,13 @@ pub(super) fn pty_command_for_launch(
     command.env("TERM", "xterm-256color");
     command.env("TERM_PROGRAM", "toyoterm");
     command.env("TERM_PROGRAM_VERSION", env!("CARGO_PKG_VERSION"));
+    // A terminal started from another terminal inherits its parent's private
+    // capability hints. Applications such as ratatui-image trust these hints
+    // and can blacklist protocols that toyoterm supports, so do not expose
+    // stale outer-terminal identity inside the new PTY.
+    for key in OUTER_TERMINAL_ENVIRONMENT {
+        command.env_remove(key);
+    }
     command
 }
 

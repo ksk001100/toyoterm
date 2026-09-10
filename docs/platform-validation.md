@@ -48,6 +48,8 @@ startup for both display protocols on every push.
 ## Windows
 
 - Start both PowerShell and `cmd.exe`; verify output, input, resize, and exit.
+- Run `python examples/terminal_images.py --protocol kitty` and `bsky_tui`;
+  confirm Kitty images render rather than being filtered by ConPTY.
 - Verify Ctrl shortcuts, AltGr, dead keys, and a Windows IME.
 - Copy and paste to Notepad; check 100%, 150%, and 200% DPI.
 - Repeat pane split, reload, and shutdown checks.

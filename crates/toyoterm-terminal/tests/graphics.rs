@@ -357,7 +357,7 @@ fn regular_osc_utf8_and_graphics_can_share_a_read() {
 fn capability_size_and_query_replies_keep_wire_order() {
     let mut t = terminal();
     t.set_cell_size(9, 18);
-    t.advance(b"\x1b[c\x1b[14t\x1b[18t");
+    t.advance(b"\x1b[c\x1b[14t\x1b[16t\x1b[18t");
     t.advance(&kitty("a=q,i=5,f=24,s=1,v=1", &[1, 2, 3]));
     t.advance(b"\x1b[6n");
     assert_eq!(
@@ -365,9 +365,45 @@ fn capability_size_and_query_replies_keep_wire_order() {
         [
             "\x1b[?62;4c",
             "\x1b[4;108;180t",
+            "\x1b[6;18;9t",
             "\x1b[8;6;20t",
             "\x1b_Gi=5;OK\x1b\\",
             "\x1b[1;1R"
+        ]
+        .map(|s| TerminalEvent::PtyWrite(s.into()))
+    );
+}
+
+#[test]
+fn cell_pixel_size_query_survives_every_pty_split() {
+    for split in 0..=5 {
+        let mut t = terminal();
+        t.set_cell_size(9, 18);
+        let query = b"\x1b[16t";
+        t.advance(&query[..split]);
+        t.advance(&query[split..]);
+        assert_eq!(
+            t.drain_events(),
+            [TerminalEvent::PtyWrite("\x1b[6;18;9t".into())],
+            "split at {split}"
+        );
+    }
+}
+
+#[test]
+fn ratatui_image_query_gets_kitty_and_windows_cell_size_capabilities() {
+    let mut t = terminal();
+    t.set_cell_size(9, 18);
+    let mut query = kitty("a=q,i=31,f=24,s=1,v=1", &[0, 0, 0]);
+    query.extend_from_slice(b"\x1b[c\x1b[16t\x1b[5n");
+    t.advance(&query);
+    assert_eq!(
+        t.drain_events(),
+        [
+            "\x1b_Gi=31;OK\x1b\\",
+            "\x1b[?62;4c",
+            "\x1b[6;18;9t",
+            "\x1b[0n"
         ]
         .map(|s| TerminalEvent::PtyWrite(s.into()))
     );
@@ -420,6 +456,31 @@ fn sixel_preserves_the_final_partial_band() {
     let mut t = terminal();
     t.advance(b"\x1bPq\"1;1;1;2#1;2;100;0;0B\x1b\\");
     assert_eq!(t.snapshot().images[0].height, 2);
+}
+
+#[test]
+fn sixel_is_removed_when_a_tui_erases_or_overwrites_its_cells() {
+    let mut t = terminal();
+    let sixel = b"\x1bPq\"1;1;1;2#1;2;100;0;0B\x1b\\";
+
+    t.advance(sixel);
+    assert_eq!(t.snapshot().images.len(), 1);
+    t.advance(b"\x1b[2;1H\x1b[1X");
+    assert!(t.snapshot().images.is_empty());
+
+    t.advance(b"\x1b[1;1H");
+    t.advance(sixel);
+    assert_eq!(t.snapshot().images.len(), 1);
+    t.advance(b"\x1b[2;1Hx");
+    assert!(t.snapshot().images.is_empty());
+}
+
+#[test]
+fn ordinary_text_does_not_delete_independently_layered_kitty_images() {
+    let mut t = terminal();
+    t.advance(&kitty("a=T,f=24,s=1,v=1,C=1", &[255, 0, 0]));
+    t.advance(b"\x1b[1;1Hx");
+    assert_eq!(t.snapshot().images.len(), 1);
 }
 
 #[test]

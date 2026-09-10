@@ -37,6 +37,17 @@ DEALINGS IN THE SOFTWARE.
 
 The original license is also preserved at `vendor/mruby/LICENSE`.
 
+## Microsoft Windows Console ConPTY 1.24.260710001
+
+Project: [Microsoft Terminal](https://github.com/microsoft/terminal)
+
+Vendored form: Windows x86_64 `conpty.dll` and `OpenConsole.exe` from the
+`Microsoft.Windows.Console.ConPTY` NuGet package
+
+License: MIT
+
+The original license is preserved at `vendor/conpty/LICENSE`.
+
 ## Rust dependencies
 
 Rust dependencies and their exact versions are recorded in `Cargo.lock`.

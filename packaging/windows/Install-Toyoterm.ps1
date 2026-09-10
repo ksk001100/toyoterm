@@ -7,15 +7,18 @@ param(
 
 $ErrorActionPreference = "Stop"
 $sourceDirectory = $PSScriptRoot
-$sourceExecutable = Join-Path $sourceDirectory "toyoterm.exe"
-if (-not (Test-Path -LiteralPath $sourceExecutable -PathType Leaf)) {
-    throw "toyoterm.exe was not found next to this installer"
+$requiredFiles = @("toyoterm.exe", "conpty.dll", "OpenConsole.exe", "Uninstall-Toyoterm.ps1")
+foreach ($requiredFile in $requiredFiles) {
+    if (-not (Test-Path -LiteralPath (Join-Path $sourceDirectory $requiredFile) -PathType Leaf)) {
+        throw "$requiredFile was not found next to this installer"
+    }
 }
 
 $resolvedInstallDirectory = [System.IO.Path]::GetFullPath($InstallDirectory)
 New-Item -ItemType Directory -Force -Path $resolvedInstallDirectory | Out-Null
-Copy-Item -Force -LiteralPath $sourceExecutable -Destination (Join-Path $resolvedInstallDirectory "toyoterm.exe")
-Copy-Item -Force -LiteralPath (Join-Path $sourceDirectory "Uninstall-Toyoterm.ps1") -Destination $resolvedInstallDirectory
+foreach ($requiredFile in $requiredFiles) {
+    Copy-Item -Force -LiteralPath (Join-Path $sourceDirectory $requiredFile) -Destination $resolvedInstallDirectory
+}
 
 if (-not $NoPath) {
     $userPath = [Environment]::GetEnvironmentVariable("Path", "User")

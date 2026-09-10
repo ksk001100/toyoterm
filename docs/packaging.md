@@ -62,6 +62,12 @@ Run the installed `Uninstall-Toyoterm.ps1` to remove the executable, user PATH
 entry, shortcut, and installer files. The zip remains usable as a portable
 fallback.
 
+The archive and installed directory keep `conpty.dll` and `OpenConsole.exe`
+next to `toyoterm.exe`. This matched Microsoft ConPTY bundle preserves private
+terminal control strings such as Kitty graphics APC on Windows; the operating
+system ConPTY may filter them. Do not copy or update only one file from the
+pair.
+
 The executable is not currently Authenticode-signed. Signing requires a
 project-owned code-signing certificate. Interactive validation is tracked
 separately in the [platform checklist](platform-validation.md).
@@ -72,10 +78,10 @@ are listed in the [API reference](mruby-api.md#loading-configuration).
 ## Included documentation
 
 Packages include both READMEs, `examples/minimal_config.rb`, the project license,
-third-party notices, and the mruby license. They do not currently include the
-repository's `docs/` tree or `examples/default_config.rb`; consult the source
-checkout for those guides and examples. On macOS the common files are inside
-`toyoterm.app/Contents/Resources`.
+third-party notices, and applicable mruby/ConPTY licenses. They do not currently
+include the repository's `docs/` tree or `examples/default_config.rb`; consult
+the source checkout for those guides and examples. On macOS the common files
+are inside `toyoterm.app/Contents/Resources`.
 
 ## Integrity and release automation
 

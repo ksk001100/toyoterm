@@ -1564,6 +1564,12 @@ impl AlacrittyTerminalBackend {
                     },
                     &bytes,
                 ),
+                Token::CellSizeQuery => {
+                    let (width, height) = self.graphics.size();
+                    let _ = self
+                        .event_sender
+                        .send(TerminalEvent::PtyWrite(format!("\x1b[6;{height};{width}t")));
+                }
                 Token::Graphic(kind, payload) => {
                     use alacritty_terminal::vte::ansi::Handler;
                     // Flush buffered synchronized text before capturing the image cursor.

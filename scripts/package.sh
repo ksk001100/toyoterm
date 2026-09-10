@@ -90,7 +90,11 @@ case "$target" in
     ;;
   *-windows-*)
     copy_common_files "$staging_directory"
-    cp "$binary_directory/toyoterm.exe" "$staging_directory/toyoterm.exe"
+    cp "$binary_directory/toyoterm.exe" \
+      "$binary_directory/conpty.dll" \
+      "$binary_directory/OpenConsole.exe" \
+      "$staging_directory/"
+    cp vendor/conpty/LICENSE "$staging_directory/licenses/conpty-MIT.txt"
     cp packaging/windows/Install-Toyoterm.ps1 packaging/windows/Uninstall-Toyoterm.ps1 \
       "$staging_directory/"
     archive_path="dist/$archive_name.zip"

@@ -87,6 +87,8 @@ jobs:
           $destination = Join-Path $testRoot "installed"
           New-Item -ItemType Directory -Force -Path $source | Out-Null
           Copy-Item "target/release/toyoterm.exe" $source
+          Copy-Item "target/release/conpty.dll" $source
+          Copy-Item "target/release/OpenConsole.exe" $source
           Copy-Item "packaging/windows/Install-Toyoterm.ps1" $source
           Copy-Item "packaging/windows/Uninstall-Toyoterm.ps1" $source
           & (Join-Path $source "Install-Toyoterm.ps1") -InstallDirectory $destination -NoPath -NoStartMenu

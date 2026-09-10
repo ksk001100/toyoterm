@@ -5,7 +5,7 @@ use std::path::Path;
 use conpty_oxide::blocking::{
     Child as ConPtyChild, Command as ConPtyCommand, OwnedReadHalf, OwnedWriteHalf,
 };
-use conpty_oxide::{PtyController, SessionOptions, Size as ConPtySize};
+use conpty_oxide::{ConPtyBackend, PtyController, SessionOptions, Size as ConPtySize};
 use windows_sys::Win32::Foundation::{CloseHandle, HANDLE};
 use windows_sys::Win32::System::JobObjects::{
     AssignProcessToJobObject, CreateJobObjectW, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
@@ -106,41 +106,88 @@ impl Drop for JobHandle {
 
 impl Pty for NativePty {
     fn spawn(&self, command: PtyCommand, size: PtySize) -> Result<Box<dyn PtySession>, PtyError> {
-        tracing::debug!(
-            target: "toyoterm::pty",
-            columns = size.columns,
-            rows = size.rows,
-            "spawn ConPTY"
-        );
-        let conpty_size = ConPtySize::try_new(size.columns, size.rows)
-            .map_err(|error| PtyError::new("open PTY", error))?;
-        let session = command_builder(command)
-            .spawn_with(SessionOptions::new().size(conpty_size))
-            .map_err(|error| PtyError::new("spawn PTY process", error))?;
-        let process_id = session.id();
-        let job = match JobHandle::create_kill_on_close() {
-            Ok(job) => {
-                if let Err(error) = job.assign_process(process_id) {
-                    tracing::warn!(target: "toyoterm::pty", %error, "failed to assign process to job object");
-                }
-                Some(job)
-            }
-            Err(error) => {
-                tracing::warn!(target: "toyoterm::pty", %error, "failed to create job object");
-                None
-            }
-        };
-        let parts = session.into_parts();
-        tracing::info!(target: "toyoterm::pty", process_id, "ConPTY process started");
-        Ok(Box::new(WindowsPtySession {
-            output: Some(parts.output),
-            input: Some(parts.input),
-            child: parts.child,
-            controller: parts.controller,
-            job,
-            completed: false,
-        }))
+        spawn(command, size, Some(default_backend()?))
     }
+}
+
+fn default_backend() -> Result<ConPtyBackend, PtyError> {
+    let executable_dir = std::env::current_exe()
+        .ok()
+        .and_then(|path| path.parent().map(Path::to_owned));
+    let bundled = executable_dir
+        .as_ref()
+        .is_some_and(|dir| dir.join("conpty.dll").is_file());
+    let backend = if bundled {
+        ConPtyBackend::from_dir(
+            executable_dir
+                .as_ref()
+                .expect("bundle directory was checked"),
+        )
+    } else {
+        ConPtyBackend::auto()
+    }
+    .map_err(|error| PtyError::new("load ConPTY backend", error))?;
+    tracing::info!(
+        target: "toyoterm::pty",
+        ?backend,
+        bundled,
+        "selected ConPTY backend"
+    );
+    Ok(backend)
+}
+
+fn spawn(
+    command: PtyCommand,
+    size: PtySize,
+    backend: Option<ConPtyBackend>,
+) -> Result<Box<dyn PtySession>, PtyError> {
+    tracing::debug!(
+        target: "toyoterm::pty",
+        columns = size.columns,
+        rows = size.rows,
+        "spawn ConPTY"
+    );
+    let conpty_size = ConPtySize::try_new(size.columns, size.rows)
+        .map_err(|error| PtyError::new("open PTY", error))?;
+    let mut options = SessionOptions::new().size(conpty_size);
+    if let Some(backend) = backend {
+        options = options.backend(backend);
+    }
+    let session = command_builder(command)
+        .spawn_with(options)
+        .map_err(|error| PtyError::new("spawn PTY process", error))?;
+    let process_id = session.id();
+    let job = match JobHandle::create_kill_on_close() {
+        Ok(job) => {
+            if let Err(error) = job.assign_process(process_id) {
+                tracing::warn!(target: "toyoterm::pty", %error, "failed to assign process to job object");
+            }
+            Some(job)
+        }
+        Err(error) => {
+            tracing::warn!(target: "toyoterm::pty", %error, "failed to create job object");
+            None
+        }
+    };
+    let parts = session.into_parts();
+    tracing::info!(target: "toyoterm::pty", process_id, "ConPTY process started");
+    Ok(Box::new(WindowsPtySession {
+        output: Some(parts.output),
+        input: Some(parts.input),
+        child: parts.child,
+        controller: parts.controller,
+        job,
+        completed: false,
+    }))
+}
+
+#[cfg(test)]
+pub(super) fn spawn_with_backend(
+    command: PtyCommand,
+    size: PtySize,
+    backend: ConPtyBackend,
+) -> Result<Box<dyn PtySession>, PtyError> {
+    spawn(command, size, Some(backend))
 }
 
 fn command_builder(command: PtyCommand) -> ConPtyCommand {

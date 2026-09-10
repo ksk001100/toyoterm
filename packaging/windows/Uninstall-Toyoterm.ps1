@@ -26,11 +26,22 @@ if (-not $KeepStartMenu) {
     Remove-Item -Recurse -Force -ErrorAction SilentlyContinue -LiteralPath $startMenuDirectory
 }
 
-$executable = Join-Path $resolvedInstallDirectory "toyoterm.exe"
-Remove-Item -Force -ErrorAction SilentlyContinue -LiteralPath $executable
-
-$installedUninstaller = Join-Path $resolvedInstallDirectory "Uninstall-Toyoterm.ps1"
-Remove-Item -Force -ErrorAction SilentlyContinue -LiteralPath $installedUninstaller
-Remove-Item -Force -ErrorAction SilentlyContinue -LiteralPath $resolvedInstallDirectory
+foreach ($installedFile in @("toyoterm.exe", "conpty.dll", "OpenConsole.exe", "Uninstall-Toyoterm.ps1")) {
+    $installedPath = Join-Path $resolvedInstallDirectory $installedFile
+    for ($attempt = 0; $attempt -lt 10; $attempt++) {
+        Remove-Item -Force -ErrorAction SilentlyContinue -LiteralPath $installedPath
+        if (-not (Test-Path -LiteralPath $installedPath)) {
+            break
+        }
+        Start-Sleep -Milliseconds 100
+    }
+}
+try {
+    [System.IO.Directory]::Delete($resolvedInstallDirectory, $false)
+} catch [System.IO.IOException] {
+    # Preserve an install directory that contains files not owned by toyoterm.
+} catch [System.UnauthorizedAccessException] {
+    # The installed files are already removed; a locked directory can remain.
+}
 
 Write-Host "Uninstalled toyoterm from $resolvedInstallDirectory"

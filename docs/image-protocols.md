@@ -23,8 +23,19 @@ Kitty replies use the normal PTY response channel. Queries decode and validate
 the image without retaining or displaying it. Unknown image IDs and unsupported
 actions return errors, subject to `q=1/2`. Image-less `a=p` and `a=d` commands
 may omit the semicolon. Kitty placement IDs can be replaced independently.
-Primary device attributes advertise Sixel, and `CSI 14 t` / `CSI 18 t` report
-text-area pixel / cell dimensions.
+Primary device attributes advertise Sixel. `CSI 14 t`, `CSI 16 t`, and
+`CSI 18 t` report text-area pixels, cell pixels, and text-area cells. The
+cell-pixel reply lets image libraries such as `ratatui-image` combine the
+advertised Sixel capability with a usable font size on Windows, where a PTY
+pixel-size fallback is not available. Child sessions remove inherited private
+identity variables from an outer terminal (for example `WEZTERM_EXECUTABLE`,
+`KONSOLE_VERSION`, and `TMUX`). Leaving those stale hints set can make terminal
+image libraries blacklist toyoterm's supported protocols and silently select a
+cell-background fallback.
+
+Windows builds place Microsoft's matching `conpty.dll` and `OpenConsole.exe`
+beside toyoterm. The bundled console host preserves Kitty APC strings that the
+operating system ConPTY can filter before toyoterm's terminal parser sees them.
 
 Images retain their native pixel size unless a display size is requested. They
 are clipped to their pane and composited after cell backgrounds and before text.
@@ -36,6 +47,9 @@ Kitty `C=1` leaves the cursor in place.
 Images follow vertical scrolling into history. Primary and alternate screens
 have separate placements; exiting the alternate screen discards its placements.
 Erasing a screen region or line removes an entire image intersecting those rows.
+Erasing characters removes images intersecting those cells. Writing ordinary
+text over Sixel and iTerm2 inline images also removes the intersecting image;
+Kitty placements retain their protocol-defined independent layering.
 Resizing the cell grid or changing the physical cell size clears placements;
 stored Kitty images can be placed again. Reset clears all images and transfers.
 Text selection and copying continue to operate on text only.

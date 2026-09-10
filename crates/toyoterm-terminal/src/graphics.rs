@@ -35,6 +35,20 @@ struct Placement {
     kitty_id: u32,
     placement_id: u32,
     alternate: bool,
+    kind: PlacementKind,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum PlacementKind {
+    Sixel,
+    Kitty,
+    Iterm,
+}
+
+#[derive(Clone, Copy)]
+struct PlacementIdentity {
+    ids: (u32, u32),
+    kind: PlacementKind,
 }
 
 #[derive(Clone, Copy)]
@@ -237,6 +251,35 @@ impl Graphics {
         });
     }
 
+    pub fn clear_columns(&mut self, alternate: bool, row: i32, start: u16, end: u16) {
+        self.placements.retain(|placement| {
+            placement.alternate != alternate
+                || row < placement.image.row
+                || row >= placement.image.row + i32::from(placement.image.rows)
+                || end <= placement.image.column
+                || start
+                    >= placement
+                        .image
+                        .column
+                        .saturating_add(placement.image.columns)
+        });
+    }
+
+    pub fn overwrite(&mut self, alternate: bool, row: i32, start: u16, end: u16) {
+        self.placements.retain(|placement| {
+            placement.kind == PlacementKind::Kitty
+                || placement.alternate != alternate
+                || row < placement.image.row
+                || row >= placement.image.row + i32::from(placement.image.rows)
+                || end <= placement.image.column
+                || start
+                    >= placement
+                        .image
+                        .column
+                        .saturating_add(placement.image.columns)
+        });
+    }
+
     pub fn scroll(&mut self, alternate: bool, top: i32, bottom: i32, amount: i32, history: usize) {
         self.placements.retain_mut(|p| {
             if p.alternate == alternate
@@ -267,10 +310,11 @@ impl Graphics {
         pixels: Pixels,
         at: (u16, i32),
         cells: (u16, u16),
-        ids: (u32, u32),
+        identity: PlacementIdentity,
         alternate: bool,
         display: (u32, u32),
     ) {
+        let ids = identity.ids;
         if ids.0 != 0 && ids.1 != 0 {
             self.placements
                 .retain(|p| p.kitty_id != ids.0 || p.placement_id != ids.1);
@@ -292,6 +336,7 @@ impl Graphics {
             kitty_id: ids.0,
             placement_id: ids.1,
             alternate,
+            kind: identity.kind,
         });
         // Count shared pixels conservatively; eviction is deterministic and bounded.
         while self.placements.len() > MAX_IMAGES
@@ -334,7 +379,19 @@ impl Graphics {
                 display.0.div_ceil(cell.0).min(u32::from(u16::MAX)) as u16,
                 display.1.div_ceil(cell.1).min(u32::from(u16::MAX)) as u16,
             );
-            self.place(pixels, at, cells, (0, 0), alternate, display);
+            let kind = if kind == b'P' {
+                PlacementKind::Sixel
+            } else {
+                PlacementKind::Iterm
+            };
+            self.place(
+                pixels,
+                at,
+                cells,
+                PlacementIdentity { ids: (0, 0), kind },
+                alternate,
+                display,
+            );
             result.advance = Some(cells);
         }
         result
@@ -634,7 +691,10 @@ impl Graphics {
                 pixels,
                 at,
                 cells,
-                (id, if id == 0 { 0 } else { placement }),
+                PlacementIdentity {
+                    ids: (id, if id == 0 { 0 } else { placement }),
+                    kind: PlacementKind::Kitty,
+                },
                 alternate,
                 display,
             );

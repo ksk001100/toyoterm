@@ -91,6 +91,9 @@ case "$target" in
     executable="$archive_name/toyoterm.exe"
     require_entry "$archive_name/Install-Toyoterm.ps1"
     require_entry "$archive_name/Uninstall-Toyoterm.ps1"
+    require_entry "$archive_name/conpty.dll"
+    require_entry "$archive_name/OpenConsole.exe"
+    require_entry "$archive_name/licenses/conpty-MIT.txt"
     ;;
   *-linux-*)
     common_prefix=$archive_name

@@ -1682,6 +1682,40 @@ mod tests {
         );
     }
 
+    #[cfg(windows)]
+    #[test]
+    fn pane_launch_removes_stale_outer_terminal_identity() {
+        let launch = PaneLaunchSpec {
+            program: Some("cmd.exe".into()),
+            args: vec![
+                "/D".into(),
+                "/S".into(),
+                "/C".into(),
+                concat!(
+                    "if defined WEZTERM_EXECUTABLE (exit /b 7) else ",
+                    "if defined TMUX (exit /b 8) else ",
+                    "if \"%TERM_PROGRAM%\"==\"toyoterm\" (exit /b 0) else exit /b 9"
+                )
+                .into(),
+            ],
+            cwd: None,
+            environment: vec![
+                ("WEZTERM_EXECUTABLE".into(), Some("stale".into())),
+                ("TMUX".into(), Some("stale".into())),
+            ],
+        };
+        let command = pane_lifecycle::pty_command_for_launch(None, Some(&launch));
+        let mut session = NativePty
+            .spawn(command, PtySize::new(80, 24))
+            .expect("spawn custom pane command");
+        let mut reader = session.take_reader().expect("take PTY reader");
+        let mut output = Vec::new();
+        reader.read_to_end(&mut output).expect("read PTY output");
+        let status = session.wait().expect("wait for custom pane command");
+
+        assert_eq!(status.code, 0, "unexpected output: {output:?}");
+    }
+
     struct KillTrackingSession(std::sync::Arc<std::sync::atomic::AtomicUsize>);
 
     impl PtySession for KillTrackingSession {
