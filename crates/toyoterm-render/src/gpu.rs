@@ -152,12 +152,17 @@ struct PaneBuffers {
     command_zone_markers: Vec<(PaneRect, Option<i32>)>,
     cursor_line_highlight: Option<PaneRect>,
     colors: TerminalColors,
+    cached_cells: Vec<Vec<toyoterm_terminal::TerminalCell>>,
+    cached_selection: Vec<toyoterm_terminal::SelectionSpan>,
+    text_cache_valid: bool,
+    used_cell_runs: bool,
 }
 
 struct CellRunBuffer {
     text: Buffer,
     column: u16,
     row: u16,
+    cells: Vec<toyoterm_terminal::TerminalCell>,
 }
 
 #[repr(C)]
@@ -295,6 +300,10 @@ impl PaneBuffers {
             cursor_line_highlight: None,
             colors,
             images: Vec::new(),
+            cached_cells: Vec::new(),
+            cached_selection: Vec::new(),
+            text_cache_valid: false,
+            used_cell_runs: false,
         }
     }
 }
@@ -457,6 +466,15 @@ impl GpuRenderer {
         self.configuration.alpha_mode = alpha_mode;
         self.clear_color = clear_color(&style, alpha_mode);
         self.style = style;
+        // Font family and weight are part of every terminal text buffer. Style
+        // changes are rare, so invalidate here instead of burdening the hot
+        // update path with another cache key.
+        for pane in self.panes.values_mut() {
+            pane.text_cache_valid = false;
+            for run in &mut pane.cell_runs {
+                run.cells.clear();
+            }
+        }
         if alpha_mode_changed && !self.suspended {
             self.surface.configure(&self.device, &self.configuration);
         }
@@ -531,20 +549,6 @@ impl GpuRenderer {
                 .iter()
                 .flatten()
                 .any(|cell| !cell.text.is_ascii());
-            let default_attrs = Attrs::new()
-                .family(resolve_font_family(&font_family))
-                .weight(Weight(font_weight));
-            let rich_text = if use_cell_runs {
-                Vec::new()
-            } else {
-                terminal_rich_text(
-                    pane.snapshot,
-                    Some(pane.cursor),
-                    &font_family,
-                    font_weight,
-                    &pane.colors,
-                )
-            };
             if !self.panes.contains_key(&pane.pane) {
                 self.panes.insert(
                     pane.pane,
@@ -555,6 +559,15 @@ impl GpuRenderer {
                 .panes
                 .get_mut(&pane.pane)
                 .expect("pane buffers were inserted");
+            let text_cache_matches = buffers.text_cache_valid
+                && buffers.used_cell_runs == use_cell_runs
+                && buffers.layout == layout
+                && buffers.rect == pane.rect
+                && buffers.colors == pane.colors
+                && buffers.cached_selection == pane.snapshot.selection
+                && (use_cell_runs
+                    || (buffers.cursor.column == pane.cursor.column
+                        && buffers.cursor.row == pane.cursor.row));
             buffers.layout = layout;
             let mut cached = std::mem::take(&mut buffers.images);
             for image in &pane.snapshot.images {
@@ -601,7 +614,19 @@ impl GpuRenderer {
             } else {
                 None
             };
-            if !use_cell_runs {
+            if !use_cell_runs
+                && !(text_cache_matches && buffers.cached_cells == pane.snapshot.cells)
+            {
+                let default_attrs = Attrs::new()
+                    .family(resolve_font_family(&font_family))
+                    .weight(Weight(font_weight));
+                let rich_text = terminal_rich_text(
+                    pane.snapshot,
+                    Some(pane.cursor),
+                    &font_family,
+                    font_weight,
+                    &pane.colors,
+                );
                 let content_width = pane
                     .rect
                     .width
@@ -644,6 +669,7 @@ impl GpuRenderer {
                 buffers
                     .text
                     .shape_until_scroll(&mut self.font_system, false);
+                buffers.cached_cells.clone_from(&pane.snapshot.cells);
             }
             buffers.cursor_x = pane_cursor_x(
                 &buffers.text,
@@ -667,24 +693,43 @@ impl GpuRenderer {
                         text,
                         column: 0,
                         row: 0,
+                        cells: Vec::new(),
                     });
                 }
                 let run = &mut buffers.cell_runs[index];
-                run.column = cells[0].column;
-                run.row = row;
-                update_terminal_cell_buffer(
-                    &mut run.text,
-                    &mut self.font_system,
+                let column = cells[0].column;
+                if !cell_run_cache_matches(
+                    text_cache_matches,
+                    run.column,
+                    run.row,
+                    &run.cells,
+                    row,
                     cells,
-                    layout,
-                    &self.style,
-                    CellRenderContext {
-                        row,
-                        selection: &pane.snapshot.selection,
-                        colors: &pane.colors,
-                    },
-                );
+                ) {
+                    run.column = column;
+                    run.row = row;
+                    update_terminal_cell_buffer(
+                        &mut run.text,
+                        &mut self.font_system,
+                        cells,
+                        layout,
+                        &self.style,
+                        CellRenderContext {
+                            row,
+                            selection: &pane.snapshot.selection,
+                            colors: &pane.colors,
+                        },
+                    );
+                    run.cells.clear();
+                    run.cells.extend_from_slice(cells);
+                }
             }
+
+            buffers
+                .cached_selection
+                .clone_from(&pane.snapshot.selection);
+            buffers.text_cache_valid = true;
+            buffers.used_cell_runs = use_cell_runs;
 
             buffers
                 .cursor_glyph

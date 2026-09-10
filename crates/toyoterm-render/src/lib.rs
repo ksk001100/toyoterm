@@ -648,6 +648,45 @@ mod tests {
     }
 
     #[test]
+    fn cell_run_cache_only_reuses_identical_shaping_inputs() {
+        let mut terminal = AlacrittyTerminalBackend::new(20, 2);
+        terminal.advance("日本語 and ASCII".as_bytes());
+        let snapshot = terminal.snapshot();
+        let (row, cells) = terminal_cell_runs(&snapshot)
+            .into_iter()
+            .next()
+            .expect("snapshot has a cell run");
+
+        assert!(cell_run_cache_matches(
+            true,
+            cells[0].column,
+            row,
+            cells,
+            row,
+            cells,
+        ));
+        assert!(!cell_run_cache_matches(
+            false,
+            cells[0].column,
+            row,
+            cells,
+            row,
+            cells,
+        ));
+
+        let mut changed = cells.to_vec();
+        changed[0].text = "語".to_owned();
+        assert!(!cell_run_cache_matches(
+            true,
+            cells[0].column,
+            row,
+            &changed,
+            row,
+            cells,
+        ));
+    }
+
+    #[test]
     fn terminal_rich_text_coalesces_adjacent_cells_with_the_same_attributes() {
         let mut terminal = AlacrittyTerminalBackend::new(10, 2);
         terminal.advance(b"abcdefghij");

@@ -34,6 +34,20 @@ pub(super) fn terminal_cell_runs(
     runs
 }
 
+pub(super) fn cell_run_cache_matches(
+    pane_cache_matches: bool,
+    cached_column: u16,
+    cached_row: u16,
+    cached_cells: &[toyoterm_terminal::TerminalCell],
+    row: u16,
+    cells: &[toyoterm_terminal::TerminalCell],
+) -> bool {
+    pane_cache_matches
+        && cached_column == cells[0].column
+        && cached_row == row
+        && cached_cells == cells
+}
+
 pub(super) fn update_terminal_cell_buffer(
     buffer: &mut Buffer,
     font_system: &mut FontSystem,
