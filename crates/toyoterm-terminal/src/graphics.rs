@@ -144,10 +144,9 @@ impl Graphics {
         alternate: bool,
         display: (u32, u32),
     ) {
-        if ids.0 != 0 {
-            self.placements.retain(|p| {
-                p.kitty_id != ids.0 || p.placement_id != ids.1 || p.alternate != alternate
-            });
+        if ids.0 != 0 && ids.1 != 0 {
+            self.placements
+                .retain(|p| p.kitty_id != ids.0 || p.placement_id != ids.1);
         }
         self.serial = self.serial.wrapping_add(1);
         self.placements.push(Placement {
@@ -187,16 +186,17 @@ impl Graphics {
         at: (u16, i32),
         screen: (u16, u16),
         alternate: bool,
+        terminal_background: [u8; 4],
     ) -> GraphicResult {
         let mut result = GraphicResult {
             advance: None,
             reply: None,
         };
         if kind == b'_' {
-            return self.kitty(payload, at, alternate);
+            return self.kitty(payload, at, screen, alternate);
         }
         let decoded = if kind == b'P' {
-            sixel::decode(payload).map(|p| (p, None))
+            sixel::decode(payload, terminal_background).map(|p| (p, None))
         } else {
             self.iterm(payload, screen)
         };
@@ -260,7 +260,13 @@ impl Graphics {
         None
     }
 
-    fn kitty(&mut self, payload: &[u8], at: (u16, i32), alternate: bool) -> GraphicResult {
+    fn kitty(
+        &mut self,
+        payload: &[u8],
+        at: (u16, i32),
+        screen: (u16, u16),
+        alternate: bool,
+    ) -> GraphicResult {
         let mut result = GraphicResult {
             advance: None,
             reply: None,
@@ -279,20 +285,27 @@ impl Graphics {
             .collect();
         let mut data = data.to_vec();
         if let Some((previous, mut bytes)) = self.kitty_transfer.take() {
-            if bytes.len().saturating_add(data.len()) > MAX_BYTES {
-                return result;
-            }
-            bytes.extend_from_slice(&data);
-            data = bytes;
-            let more = keys.remove("m");
-            keys = previous;
-            if let Some(more) = more {
-                keys.insert("m".into(), more);
-            } else {
-                keys.remove("m");
+            let continuation =
+                keys.contains_key("m") && keys.keys().all(|key| matches!(key.as_str(), "m" | "q"));
+            if continuation {
+                if bytes.len().saturating_add(data.len()) > MAX_BYTES {
+                    return result;
+                }
+                bytes.extend_from_slice(&data);
+                data = bytes;
+                let more = keys.remove("m");
+                let quiet = keys.remove("q");
+                keys = previous;
+                if let Some(more) = more {
+                    keys.insert("m".into(), more);
+                }
+                if let Some(quiet) = quiet {
+                    keys.insert("q".into(), quiet);
+                }
             }
         }
-        if value(&keys, "m", "0") == "1" {
+        let action = value(&keys, "a", "t");
+        if action != "d" && value(&keys, "m", "0") == "1" {
             if data.len() <= MAX_BYTES {
                 self.kitty_transfer = Some((keys, data));
             }
@@ -301,24 +314,41 @@ impl Graphics {
         let id = number(&keys, "i", 0);
         let placement = number(&keys, "p", 0);
         let quiet = number(&keys, "q", 0);
-        let action = value(&keys, "a", "t");
         let attempt = (|| -> Result<(), &'static str> {
             if action == "d" {
                 let delete = value(&keys, "d", "a");
-                match delete {
-                    "a" | "A" => self.placements.retain(|p| p.alternate != alternate),
-                    "i" | "I" => self.placements.retain(|p| {
-                        p.alternate != alternate
-                            || p.kitty_id != id
-                            || (placement != 0 && p.placement_id != placement)
-                    }),
+                let removed_ids = match delete {
+                    "a" | "A" => {
+                        let mut removed = Vec::new();
+                        self.placements.retain(|p| {
+                            let visible = p.alternate == alternate
+                                && p.image.row < i32::from(screen.1)
+                                && p.image.row + i32::from(p.image.rows) > 0;
+                            if visible && p.kitty_id != 0 {
+                                removed.push(p.kitty_id);
+                            }
+                            !visible
+                        });
+                        removed
+                    }
+                    "i" | "I" => {
+                        self.placements.retain(|p| {
+                            p.kitty_id != id || (placement != 0 && p.placement_id != placement)
+                        });
+                        vec![id]
+                    }
                     _ => return Err("ENOTSUP:unsupported delete selector"),
-                }
-                if delete == "I" {
-                    self.stored.remove(&id);
-                }
-                if delete == "A" {
-                    self.stored.clear();
+                };
+                if matches!(delete, "A" | "I") {
+                    for removed_id in removed_ids {
+                        if !self
+                            .placements
+                            .iter()
+                            .any(|placement| placement.kitty_id == removed_id)
+                        {
+                            self.stored.remove(&removed_id);
+                        }
+                    }
                 }
                 return Ok(());
             }
@@ -403,6 +433,9 @@ impl Graphics {
                 {
                     return Err("ENOSPC:image storage full");
                 }
+                // Image IDs are global. Re-transmission replaces the image data and
+                // removes every old placement before an optional new placement.
+                self.placements.retain(|placement| placement.kitty_id != id);
                 self.stored.insert(id, pixels.clone());
             }
             if action == "t" {
@@ -439,7 +472,14 @@ impl Graphics {
                 display.0.div_ceil(cell.0).min(u32::from(u16::MAX)) as u16,
                 display.1.div_ceil(cell.1).min(u32::from(u16::MAX)) as u16,
             );
-            self.place(pixels, at, cells, (id, placement), alternate, display);
+            self.place(
+                pixels,
+                at,
+                cells,
+                (id, if id == 0 { 0 } else { placement }),
+                alternate,
+                display,
+            );
             if number(&keys, "C", 0) == 0 {
                 result.advance = Some(cells);
             }

@@ -15,9 +15,9 @@ python examples/terminal_images.py --protocol kitty
 
 | Protocol | Supported |
 | --- | --- |
-| Sixel (DCS `ESC P … q … ESC \\`) | Raster dimensions, repeat, carriage return, next sixel line, 256 color registers, RGB and DEC HLS definitions, transparent background (`P2=1`) |
-| Kitty (APC `ESC _ G … ESC \\`) | Direct base64 transmission (`t=d`), RGB/RGBA/PNG (`f=24/32/100`), zlib (`o=z`), chunking (`m`), transmit/query/display (`a=t/q/T/p`), image and placement IDs (`i/p`), cell sizes (`c/r`), cursor preservation (`C=1`), quiet replies (`q`), deletion of visible placements or an image ID (`d=a/A/i/I`) |
-| iTerm2 (OSC 1337) | `File=inline=1` and `MultipartFile`/`FilePart`/`FileEnd`, base64 PNG/JPEG/GIF/BMP/WebP (the first frame of an animated image is displayed), optional byte `size`, `width`/`height` in cells, pixels, percent, or `auto`, `preserveAspectRatio`, BEL or ST termination |
+| Sixel (DCS `ESC P … q … ESC \\`) | Raster dimensions, repeat, carriage return, next sixel line, 256 color registers, RGB and DEC HLS definitions, transparent background (`P2=1`), and 7-bit or 8-bit DCS/ST controls |
+| Kitty (APC `ESC _ G … ESC \\`) | Direct base64 transmission (`t=d`), RGB/RGBA/PNG (`f=24/32/100`), zlib (`o=z`), chunking (`m`), transmit/query/display (`a=t/q/T/p`), image and placement IDs (`i/p`), cell sizes (`c/r`), cursor preservation (`C=1`), quiet replies (`q`), deletion of visible placements or an image ID (`d=a/A/i/I`), and 7-bit or 8-bit APC/ST controls |
+| iTerm2 (OSC 1337) | `File=inline=1` and `MultipartFile`/`FilePart`/`FileEnd`, base64 PNG/JPEG/GIF/BMP/WebP (the first frame of an animated image is displayed), optional byte `size`, `width`/`height` in cells, pixels, percent, or `auto`, `preserveAspectRatio`, BEL or 7-bit/8-bit ST termination |
 
 Kitty replies use the normal PTY response channel. Queries decode and validate
 the image without retaining or displaying it. Unknown image IDs and unsupported
@@ -40,10 +40,16 @@ Resizing the cell grid or changing the physical cell size clears placements;
 stored Kitty images can be placed again. Reset clears all images and transfers.
 Text selection and copying continue to operate on text only.
 
+Kitty image IDs follow the protocol's replacement rules: transmitting new data
+for an existing ID removes all old placements before storing the replacement.
+Placements with `p=0` are anonymous and may coexist; only a nonzero placement ID
+replaces another placement with the same image/placement ID pair.
+
 ## Limits and remaining compatibility work
 
-- Seven-bit ESC introducers are supported; eight-bit C1 introducers and tmux
-  passthrough are not implemented.
+- Control strings accept both seven-bit ESC and eight-bit C1 introducer/ST
+  forms without treating UTF-8 continuation bytes as C1 controls. tmux
+  passthrough is not implemented.
 - Sixel pixel-aspect scaling, persistent palettes across separate images, and
   DEC private Sixel modes are not implemented.
 - Kitty file/shared-memory transmission, Unicode placeholders, animation,

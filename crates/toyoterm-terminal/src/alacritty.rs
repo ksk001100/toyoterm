@@ -1578,12 +1578,31 @@ impl AlacrittyTerminalBackend {
                         allow_osc52_copy: self.allow_osc52_copy,
                     });
                     let at = self.terminal.grid().cursor.point;
+                    let background = match self.terminal.grid().cursor.template.bg {
+                        Color::Spec(rgb) => rgb,
+                        Color::Indexed(index) => {
+                            resolved_color(&self.terminal, &self.default_colors, usize::from(index))
+                                .expect("indexed terminal colors always resolve")
+                        }
+                        Color::Named(color) => {
+                            resolved_color(&self.terminal, &self.default_colors, color as usize)
+                                .unwrap_or_else(|| {
+                                    resolved_color(
+                                        &self.terminal,
+                                        &self.default_colors,
+                                        NamedColor::Background as usize,
+                                    )
+                                    .expect("terminal background always resolves")
+                                })
+                        }
+                    };
                     let result = self.graphics.receive(
                         kind,
                         &payload,
                         (at.column.0 as u16, at.line.0),
                         self.dimensions(),
                         self.terminal.mode().contains(TermMode::ALT_SCREEN),
+                        [background.r, background.g, background.b, 255],
                     );
                     if let Some(reply) = result.reply {
                         let _ = self.event_sender.send(TerminalEvent::PtyWrite(reply));

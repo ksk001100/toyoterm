@@ -14,9 +14,17 @@ fn is_iterm_multipart(bytes: &[u8]) -> bool {
         .any(|prefix| bytes.starts_with(prefix) || prefix.starts_with(bytes))
 }
 
-#[derive(Default)]
 pub(crate) struct Stream {
     state: State,
+    utf8_continuations: u8,
+}
+impl Default for Stream {
+    fn default() -> Self {
+        Self {
+            state: State::Ground,
+            utf8_continuations: 0,
+        }
+    }
 }
 #[derive(Default)]
 enum State {
@@ -41,8 +49,43 @@ impl Stream {
         let mut tokens = Vec::new();
         let mut text = Vec::new();
         for &byte in bytes {
+            // C1 controls overlap UTF-8 continuation bytes. Track well-formed UTF-8
+            // so non-ASCII text cannot accidentally start or end a control string.
+            let utf8_continuation = if self.utf8_continuations > 0 && (0x80..=0xbf).contains(&byte)
+            {
+                self.utf8_continuations -= 1;
+                true
+            } else {
+                self.utf8_continuations = match byte {
+                    0xc2..=0xdf => 1,
+                    0xe0..=0xef => 2,
+                    0xf0..=0xf4 => 3,
+                    _ => 0,
+                };
+                false
+            };
             self.state = match std::mem::take(&mut self.state) {
                 State::Ground if byte == 0x1b => State::Escape,
+                State::Ground
+                    if !utf8_continuation && matches!(byte, 0x90 | 0x9d | 0x9e | 0x9f | 0x98) =>
+                {
+                    if !text.is_empty() {
+                        tokens.push(Token::Text(std::mem::take(&mut text)));
+                    }
+                    State::String {
+                        kind: match byte {
+                            0x90 => b'P',
+                            0x9d => b']',
+                            0x9e => b'^',
+                            0x9f => b'_',
+                            0x98 => b'X',
+                            _ => unreachable!(),
+                        },
+                        bytes: Vec::new(),
+                        escape: false,
+                        overflow: false,
+                    }
+                }
                 State::Ground => {
                     text.push(byte);
                     State::Ground
@@ -76,7 +119,10 @@ impl Stream {
                     if matches!(byte, 0x18 | 0x1a) {
                         tokens.push(Token::Cancel);
                         State::Ground
-                    } else if (escape && byte == b'\\') || (kind == b']' && byte == 7) {
+                    } else if (!utf8_continuation && byte == 0x9c)
+                        || (escape && byte == b'\\')
+                        || (kind == b']' && byte == 7)
+                    {
                         if !overflow {
                             let graphic = kind == b'_' && bytes.starts_with(b"G")
                                 || kind == b']' && bytes.starts_with(b"1337;File=")

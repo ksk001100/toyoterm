@@ -388,6 +388,93 @@ fn sixel_preserves_the_final_partial_band() {
 }
 
 #[test]
+fn sixel_accepts_aspect_only_raster_attributes_and_full_implicit_bands() {
+    let mut t = terminal();
+    t.advance(b"\x1bPq\"1;1#1;2;100;0;0@\x1b\\");
+    let image = t.snapshot().images.remove(0);
+    assert_eq!((image.width, image.height), (1, 6));
+    assert_eq!(&image.rgba[..4], &[255, 0, 0, 255]);
+}
+
+#[test]
+fn sixel_opaque_background_uses_the_terminal_background() {
+    let mut t = terminal();
+    t.set_default_colors(
+        [220, 225, 232],
+        [12, 34, 56],
+        [245, 247, 250],
+        [55, 88, 145],
+        [[0, 0, 0]; 16],
+    );
+    t.advance(b"\x1bPq\"1;1;1;2#1;2;100;0;0@\x1b\\");
+    let image = t.snapshot().images.remove(0);
+    assert_eq!(&image.rgba[..4], &[255, 0, 0, 255]);
+    assert_eq!(&image.rgba[4..8], &[12, 34, 56, 255]);
+}
+
+#[test]
+fn eight_bit_dcs_and_st_display_sixel() {
+    let mut t = terminal();
+    t.advance(b"\x90q\"1;1;1;1#1;2;100;0;0@\x9c");
+    assert_eq!(t.snapshot().images.len(), 1);
+    assert_eq!(&*t.snapshot().images[0].rgba, &[255, 0, 0, 255]);
+}
+
+#[test]
+fn eight_bit_apc_and_st_display_kitty_images_without_corrupting_utf8() {
+    let mut t = terminal();
+    t.advance("日本語".as_bytes());
+    let encoded = STANDARD.encode([255, 0, 0]);
+    let mut sequence = vec![0x9f];
+    sequence.extend_from_slice(format!("Ga=T,f=24,s=1,v=1,C=1;{encoded}").as_bytes());
+    sequence.push(0x9c);
+    t.advance(&sequence);
+    assert_eq!(t.snapshot().lines[0], "日本語");
+    assert_eq!(&*t.snapshot().images[0].rgba, &[255, 0, 0, 255]);
+}
+
+#[test]
+fn kitty_zero_placement_ids_do_not_replace_each_other() {
+    let mut t = terminal();
+    t.advance(&kitty("a=t,f=24,s=1,v=1,i=7", &[255, 0, 0]));
+    t.advance(b"\x1b_Ga=p,i=7,C=1;\x1b\\\x1b[2;1H\x1b_Ga=p,i=7,C=1;\x1b\\");
+    let images = t.snapshot().images;
+    assert_eq!(images.len(), 2);
+    assert_eq!((images[0].row, images[1].row), (0, 1));
+}
+
+#[test]
+fn kitty_retransmission_replaces_data_and_all_old_placements() {
+    let mut t = terminal();
+    t.advance(&kitty("a=T,f=24,s=1,v=1,i=7,p=1,C=1", &[255, 0, 0]));
+    t.advance(b"\x1b[2;1H\x1b_Ga=p,i=7,p=2,C=1;\x1b\\");
+    t.advance(&kitty("a=t,f=24,s=1,v=1,i=7", &[0, 255, 0]));
+    assert!(t.snapshot().images.is_empty());
+    t.advance(b"\x1b_Ga=p,i=7,C=1;\x1b\\");
+    assert_eq!(&*t.snapshot().images[0].rgba, &[0, 255, 0, 255]);
+}
+
+#[test]
+fn kitty_delete_during_chunking_aborts_transfer_and_preserves_unrelated_storage() {
+    let mut t = terminal();
+    t.advance(&kitty("a=t,f=24,s=1,v=1,i=8", &[0, 255, 0]));
+    t.advance(b"\x1b_Ga=T,f=24,s=1,v=1,i=7,m=1;/wAA\x1b\\");
+    t.advance(b"\x1b_Ga=d,d=A;\x1b\\");
+    t.advance(b"\x1b_Gm=0;/w==\x1b\\");
+    assert!(t.snapshot().images.is_empty());
+    t.advance(b"\x1b_Ga=p,i=8,C=1;\x1b\\");
+    assert_eq!(&*t.snapshot().images[0].rgba, &[0, 255, 0, 255]);
+}
+
+#[test]
+fn kitty_image_id_deletion_applies_across_screen_buffers() {
+    let mut t = terminal();
+    t.advance(&kitty("a=T,f=24,s=1,v=1,i=7,C=1", &[255, 0, 0]));
+    t.advance(b"\x1b[?1049h\x1b_Ga=d,d=i,i=7;\x1b\\\x1b[?1049l");
+    assert!(t.snapshot().images.is_empty());
+}
+
+#[test]
 fn images_observe_synchronized_text_cursor() {
     let mut t = terminal();
     t.advance(b"\x1b[?2026habc");

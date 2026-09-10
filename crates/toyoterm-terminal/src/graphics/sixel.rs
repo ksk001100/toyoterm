@@ -1,7 +1,7 @@
 use super::{MAX_SIDE, Pixels, pixel_length};
 use std::sync::Arc;
 
-pub(super) fn decode(payload: &[u8]) -> Option<Pixels> {
+pub(super) fn decode(payload: &[u8], terminal_background: [u8; 4]) -> Option<Pixels> {
     let header = payload.iter().position(|b| *b == b'q')?;
     if !payload[..header]
         .iter()
@@ -45,8 +45,9 @@ pub(super) fn decode(payload: &[u8]) -> Option<Pixels> {
     let background = if transparent {
         [0, 0, 0, 0]
     } else {
-        palette[0]
+        terminal_background
     };
+    let mut declared_height = None;
     while index < data.len() {
         let command = data[index];
         index += 1;
@@ -64,12 +65,15 @@ pub(super) fn decode(payload: &[u8]) -> Option<Pixels> {
                     }
                 }
                 if command == b'"' {
-                    if params.len() != 4 {
+                    if !matches!(params.len(), 2 | 4) {
                         return None;
                     }
-                    width = width.max(params[2]);
-                    height = height.max(params[3]);
-                    pixel_length(width.max(1), height.max(1))?;
+                    if params.len() == 4 {
+                        width = width.max(params[2]);
+                        height = height.max(params[3]);
+                        declared_height = Some(params[3]);
+                        pixel_length(width.max(1), height.max(1))?;
+                    }
                 } else {
                     color = params[0] as usize;
                     if color >= palette.len() {
@@ -115,8 +119,13 @@ pub(super) fn decode(payload: &[u8]) -> Option<Pixels> {
                 };
                 let end = x.checked_add(count)?;
                 width = width.max(end);
-                // Raster attributes can describe a final band shorter than six rows.
-                height = height.max(y.checked_add((u8::BITS - bits.leading_zeros()).max(1))?);
+                // A sixel advances a full six-pixel band. A declared raster height can
+                // describe a shorter final band, but does not limit later data.
+                let band_end = y.checked_add(6)?;
+                let data_height = declared_height
+                    .filter(|declared| *declared > y && *declared < band_end)
+                    .unwrap_or(band_end);
+                height = height.max(data_height);
                 pixel_length(width, height)?;
                 raster.resize_with(height as usize, Vec::new);
                 for bit in 0..6 {
