@@ -26,6 +26,8 @@ Toyoterm.configure do |config|
   config.behavior.scroll_lines = 3
   config.behavior.allow_osc52_copy = false
   config.behavior.allow_osc_notifications = false
+  config.behavior.allow_osc_attention_requests = false
+  config.behavior.allow_osc_open_url = false
   config.scrollback_lines = 10_000
   config.leader key: "b", mods: "CTRL", timeout: 1000
 

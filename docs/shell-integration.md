@@ -12,6 +12,7 @@ Shells write these OSC sequences to the terminal. Both BEL (`0x07`) and ST
 | --- | --- | --- |
 | Working directory | `OSC 7;file://<host>/<percent-encoded-path> ST` | `cwd` |
 | Remote host | `OSC 1337;RemoteHost=<user>@<host> ST` | `remote_host` |
+| Integration version | `OSC 1337;ShellIntegrationVersion=<version>;<shell> ST` | `shell_integration_version`, `shell_integration_shell` |
 | User variable | `OSC 1337;SetUserVar=<name>=<base64-value> ST` | `user_vars` |
 | Prompt start | `OSC 133;A ST` | Ruby `prompt_started` event |
 | Command-line start | `OSC 133;B ST` | Ruby `command_line_started` event |
@@ -36,9 +37,18 @@ events expose the affected `pane`; `command_finished` also exposes
 Bash, Zsh, Fish, and PowerShell scripts emit all four markers, and compatible
 external shell integrations are accepted as well.
 
-toyoterm retains up to 4,096 `A`/`B`/`C`/`D` positions per terminal and moves
-them with the scrollback grid. The `previous_prompt` and `next_prompt` actions
-cycle through `A` positions in the active pane. `select_last_command_output`
+The bundled scripts report integration version `1` and their shell name once
+when loaded. External integrations may also use the deprecated version-only
+form. Versions must be unsigned 32-bit decimal integers. Shell names are
+limited to 64 UTF-8 bytes and cannot contain control characters or semicolons.
+The latest report is exposed through the read-only
+`Pane#shell_integration_version` and `Pane#shell_integration_shell` values.
+
+toyoterm retains up to 4,096 OSC 133 `A`/`B`/`C`/`D` and OSC 1337 `SetMark`
+positions per terminal and moves them with the scrollback grid. The
+`previous_prompt` and `next_prompt` actions cycle through `A` positions, while
+`previous_mark` and `next_mark` cycle through explicit marks in the active
+pane. `select_last_command_output`
 selects the most recent complete `C`–`D` range, while
 `select_previous_command_output` and `select_next_command_output` cycle through
 all complete ranges, so any retained command output can be copied or yanked
@@ -48,8 +58,9 @@ nonzero status, and the foreground color when no valid status was supplied.
 Markers are discarded on a
 terminal resize because the backend does not expose a reliable mapping across
 line reflow. The default example binds prompt navigation to leader+`[` /
-leader+`]`, command-output cycling to leader+`p` / leader+`n`, and latest-output
-selection to leader+`o`. Applications that emit only `C`/`D` still produce
+leader+`]`, mark navigation to leader+`,` / leader+`.`, command-output cycling
+to leader+`p` / leader+`n`, and latest-output selection to leader+`o`.
+Applications that emit only `C`/`D` still produce
 lifecycle events but cannot be used for prompt navigation.
 
 `SetUserVar` names must be non-empty UTF-8 without control characters and are

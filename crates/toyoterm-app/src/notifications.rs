@@ -135,6 +135,16 @@ fn run_notification_worker(receiver: Receiver<NotificationRequest>) {
             NotificationRequest::Show(request) => {
                 let id = request.id;
                 let timeout_ms = request.timeout_ms;
+                // Some notification services ignore replacement IDs. Close an
+                // existing identified notification first so an update cannot
+                // leave two visible notifications behind on those backends.
+                if let Some(key) = id.map(NotificationKey::Identified) {
+                    expirations.remove(&key);
+                    active_order.retain(|tracked| *tracked != key);
+                    if let Some(handle) = active.remove(&key) {
+                        handle.close();
+                    }
+                }
                 match build_notification(&request).show() {
                     Ok(handle) => {
                         let key = id.map_or_else(
@@ -145,8 +155,6 @@ fn run_notification_worker(receiver: Receiver<NotificationRequest>) {
                             },
                             NotificationKey::Identified,
                         );
-                        active_order.retain(|tracked| *tracked != key);
-                        expirations.remove(&key);
                         if active.len() >= MAX_TRACKED_NOTIFICATIONS
                             && !active.contains_key(&key)
                             && let Some(oldest) = active_order.pop_front()

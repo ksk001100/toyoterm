@@ -2,6 +2,7 @@
 if ($Host.Name -ne 'ConsoleHost' -or $env:TERM_PROGRAM -ne 'toyoterm' -or
     $global:TOYOTERM_SHELL_INTEGRATION_LOADED) { return }
 $global:TOYOTERM_SHELL_INTEGRATION_LOADED = $true
+[Console]::Write("`e]1337;ShellIntegrationVersion=1;powershell`e\")
 
 function global:__ToyotermWriteCwd {
     $rawPath = (Get-Location).Path.Replace('\', '/')

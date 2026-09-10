@@ -37,8 +37,11 @@ pub struct RubyTab {
 pub struct RubyPane {
     pub id: PaneId,
     pub title: String,
+    pub icon_title: Option<String>,
     pub cwd: Option<String>,
     pub remote_host: Option<String>,
+    pub shell_integration_version: Option<u32>,
+    pub shell_integration_shell: Option<String>,
     pub user_vars: Vec<(String, String)>,
     pub pid: Option<u32>,
     pub command_running: bool,

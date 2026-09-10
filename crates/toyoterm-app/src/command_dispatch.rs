@@ -368,6 +368,8 @@ impl ToyotermApplication {
             NativeAction::PreviousWorkspace => self.cycle_workspace(true),
             NativeAction::NextPrompt => self.navigate_prompt(SearchDirection::Next),
             NativeAction::PreviousPrompt => self.navigate_prompt(SearchDirection::Previous),
+            NativeAction::NextMark => self.navigate_mark(SearchDirection::Next),
+            NativeAction::PreviousMark => self.navigate_mark(SearchDirection::Previous),
             NativeAction::SelectNextCommandOutput => {
                 self.select_command_output(SearchDirection::Next)
             }
@@ -469,6 +471,16 @@ impl ToyotermApplication {
         let moved = self
             .active_terminal_mut()
             .is_some_and(|terminal| terminal.navigate_prompt(direction));
+        if moved && let Some(window) = self.window.as_ref() {
+            window.request_redraw();
+        }
+        Ok(())
+    }
+
+    fn navigate_mark(&mut self, direction: SearchDirection) -> Result<(), String> {
+        let moved = self
+            .active_terminal_mut()
+            .is_some_and(|terminal| terminal.navigate_mark(direction));
         if moved && let Some(window) = self.window.as_ref() {
             window.request_redraw();
         }
@@ -798,6 +810,7 @@ impl ToyotermApplication {
                 render_style.foreground,
                 render_style.background,
                 render_style.cursor,
+                render_style.selection,
                 render_style.ansi,
             );
             runtime

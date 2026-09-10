@@ -22,6 +22,8 @@ pub(super) fn decode_native_action(
         "previous_workspace" => Ok(NativeAction::PreviousWorkspace),
         "next_prompt" => Ok(NativeAction::NextPrompt),
         "previous_prompt" => Ok(NativeAction::PreviousPrompt),
+        "next_mark" => Ok(NativeAction::NextMark),
+        "previous_mark" => Ok(NativeAction::PreviousMark),
         "select_next_command_output" => Ok(NativeAction::SelectNextCommandOutput),
         "select_previous_command_output" => Ok(NativeAction::SelectPreviousCommandOutput),
         "select_last_command_output" => Ok(NativeAction::SelectLastCommandOutput),

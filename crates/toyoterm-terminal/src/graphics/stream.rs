@@ -3,6 +3,16 @@
 use super::MAX_BYTES;
 
 const MAX_OSC52_SEQUENCE_BYTES: usize = crate::MAX_OSC52_COPY_BYTES.div_ceil(3) * 4 + 5;
+const MAX_ITERM_MULTIPART_SEQUENCE_BYTES: usize = 1024 * 1024;
+
+const ITERM_MULTIPART_PREFIXES: [&[u8]; 3] =
+    [b"1337;MultipartFile=", b"1337;FilePart=", b"1337;FileEnd"];
+
+fn is_iterm_multipart(bytes: &[u8]) -> bool {
+    ITERM_MULTIPART_PREFIXES
+        .iter()
+        .any(|prefix| bytes.starts_with(prefix) || prefix.starts_with(bytes))
+}
 
 #[derive(Default)]
 pub(crate) struct Stream {
@@ -70,6 +80,10 @@ impl Stream {
                         if !overflow {
                             let graphic = kind == b'_' && bytes.starts_with(b"G")
                                 || kind == b']' && bytes.starts_with(b"1337;File=")
+                                || kind == b']'
+                                    && (bytes.starts_with(b"1337;MultipartFile=")
+                                        || bytes.starts_with(b"1337;FilePart=")
+                                        || bytes == b"1337;FileEnd")
                                 || kind == b'P'
                                     && bytes.iter().find(|b| (0x40..=0x7e).contains(*b))
                                         == Some(&b'q');
@@ -98,7 +112,9 @@ impl Stream {
                         State::Ground
                     } else {
                         if byte != 0x1b && !overflow {
-                            let limit = if kind == b']'
+                            let limit = if kind == b']' && is_iterm_multipart(&bytes) {
+                                MAX_ITERM_MULTIPART_SEQUENCE_BYTES
+                            } else if kind == b']'
                                 && (bytes.starts_with(b"52;") || b"52;".starts_with(&bytes))
                             {
                                 MAX_OSC52_SEQUENCE_BYTES

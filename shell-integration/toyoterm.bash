@@ -1,6 +1,7 @@
 # toyoterm shell integration for bash. Source this file from interactive bash only.
 [[ $- == *i* && ${TERM_PROGRAM-} == toyoterm && -z ${TOYOTERM_SHELL_INTEGRATION_LOADED-} ]] || return 0
 TOYOTERM_SHELL_INTEGRATION_LOADED=1
+printf '\e]1337;ShellIntegrationVersion=1;bash\e\\'
 
 __toyoterm_urlencode_path() {
   local LC_ALL=C value=$1 result= char hex i

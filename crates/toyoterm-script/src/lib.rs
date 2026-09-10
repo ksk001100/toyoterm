@@ -285,6 +285,11 @@ unsafe extern "C" {
         remote_host: *const c_char,
         remote_host_length: usize,
         remote_host_available: i32,
+        shell_integration_version: u64,
+        shell_integration_version_available: i32,
+        shell_integration_shell: *const c_char,
+        shell_integration_shell_length: usize,
+        shell_integration_shell_available: i32,
         user_var_keys: *const *const c_char,
         user_var_values: *const *const c_char,
         user_var_lengths: *const usize,
@@ -297,6 +302,9 @@ unsafe extern "C" {
         screen_text: *const c_char,
         screen_text_length: usize,
         zoomed: i32,
+        icon_title: *const c_char,
+        icon_title_length: usize,
+        icon_title_available: i32,
         error_output: *mut *mut c_char,
     ) -> i32;
     fn toyoterm_mruby_emit_event(

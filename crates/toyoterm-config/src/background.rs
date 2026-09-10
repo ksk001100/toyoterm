@@ -13,6 +13,19 @@ pub struct BackgroundImage {
 impl BackgroundImage {
     pub fn load(path: &Path) -> Result<Self, image::ImageError> {
         let mut reader = image::ImageReader::open(path)?.with_guessed_format()?;
+        if !matches!(
+            reader.format(),
+            Some(image::ImageFormat::Png | image::ImageFormat::Jpeg)
+        ) {
+            return Err(image::ImageError::Unsupported(
+                image::error::UnsupportedError::from_format_and_kind(
+                    image::error::ImageFormatHint::Unknown,
+                    image::error::UnsupportedErrorKind::Format(
+                        image::error::ImageFormatHint::Name("PNG or JPEG".into()),
+                    ),
+                ),
+            ));
+        }
         let mut limits = image::Limits::default();
         // Within wgpu's default maximum 2D texture dimension on all backends.
         limits.max_image_width = Some(8192);
@@ -53,6 +66,9 @@ mod tests {
             assert_eq!(loaded.rgba.len(), 24);
             assert_eq!(loaded.rgba[3], 255);
         }
+        let gif = directory.join("wallpaper.gif");
+        image.save(&gif).unwrap();
+        assert!(BackgroundImage::load(&gif).is_err());
         let oversized = directory.join("oversized.png");
         image::RgbImage::new(8193, 1).save(&oversized).unwrap();
         assert!(BackgroundImage::load(&oversized).is_err());

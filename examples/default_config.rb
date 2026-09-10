@@ -64,6 +64,10 @@ Toyoterm.configure do |config|
     behavior.allow_osc52_copy = false
     # Allows OSC 9/99/777 desktop notifications, limited to one per pane every two seconds.
     behavior.allow_osc_notifications = false
+    # Allows OSC 1337 RequestAttention=yes/once/no to request OS-level attention.
+    behavior.allow_osc_attention_requests = false
+    # Allows bounded http(s)/mailto OSC 1337 OpenURL requests without a click.
+    behavior.allow_osc_open_url = false
   end
 
   config.scrollback_lines = 10_000
@@ -80,6 +84,8 @@ Toyoterm.configure do |config|
     ctrl_alt("RIGHT").next_workspace
     leader("[").previous_prompt
     leader("]").next_prompt
+    leader(",").previous_mark
+    leader(".").next_mark
     leader("p").select_previous_command_output
     leader("n").select_next_command_output
     leader("o").select_last_command_output

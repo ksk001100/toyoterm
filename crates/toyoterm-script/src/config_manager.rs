@@ -1130,6 +1130,16 @@ fn read_config(
                 "behavior.allow_osc_notifications",
                 "Toyoterm.__config.behavior.allow_osc_notifications",
             )?,
+            allow_osc_attention_requests: boolean(
+                runtime,
+                "behavior.allow_osc_attention_requests",
+                "Toyoterm.__config.behavior.allow_osc_attention_requests",
+            )?,
+            allow_osc_open_url: boolean(
+                runtime,
+                "behavior.allow_osc_open_url",
+                "Toyoterm.__config.behavior.allow_osc_open_url",
+            )?,
         },
         default_shell: if default_shell.is_empty() {
             defaults.default_shell

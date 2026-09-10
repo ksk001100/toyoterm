@@ -221,13 +221,16 @@ module Toyoterm
   end
 
   class BehaviorConfig
-    attr_accessor :scroll_lines, :copy_on_select, :allow_osc52_copy, :allow_osc_notifications
+    attr_accessor :scroll_lines, :copy_on_select, :allow_osc52_copy, :allow_osc_notifications,
+                  :allow_osc_attention_requests, :allow_osc_open_url
 
     def initialize
       @scroll_lines = 3
       @copy_on_select = false
       @allow_osc52_copy = false
       @allow_osc_notifications = false
+      @allow_osc_attention_requests = false
+      @allow_osc_open_url = false
     end
   end
 
@@ -285,6 +288,7 @@ module Toyoterm
       toggle_zoom: nil, next_tab: nil, previous_tab: nil,
       next_workspace: nil, previous_workspace: nil, copy_selection: nil,
       next_prompt: nil, previous_prompt: nil,
+      next_mark: nil, previous_mark: nil,
       select_next_command_output: nil, select_previous_command_output: nil,
       select_last_command_output: nil,
       paste_clipboard: nil, start_visual_mode: nil, toggle_visual_mode: nil,
@@ -463,7 +467,8 @@ module Toyoterm
          @ui.workspace_bar_height, @ui.workspace_width, @ui.status_bar_height,
          @ui.pane_divider_width, @ui.active_pane_border_width],
         [@behavior.scroll_lines, @behavior.copy_on_select, @behavior.allow_osc52_copy,
-         @behavior.allow_osc_notifications],
+         @behavior.allow_osc_notifications, @behavior.allow_osc_attention_requests,
+         @behavior.allow_osc_open_url],
         [@leader_key, @leader_timeout, @theme,
          @theme_color_checkpoint && @theme_color_checkpoint.map { |value| value.is_a?(Array) ? value.dup : value }]
       ]
@@ -518,6 +523,8 @@ module Toyoterm
       @behavior.copy_on_select = behavior[1]
       @behavior.allow_osc52_copy = behavior[2]
       @behavior.allow_osc_notifications = behavior[3]
+      @behavior.allow_osc_attention_requests = behavior[4]
+      @behavior.allow_osc_open_url = behavior[5]
       @leader_key = leader[0]
       @leader_timeout = leader[1]
       @theme = leader[2]
@@ -762,6 +769,11 @@ module Toyoterm
       Toyoterm.__object_data(:pane, @id)[0]
     end
 
+    def icon_title
+      validate!
+      Toyoterm.__object_data(:pane, @id)[11]
+    end
+
     def cwd
       validate!
       Toyoterm.__object_data(:pane, @id)[1]
@@ -769,7 +781,7 @@ module Toyoterm
 
     def pid
       validate!
-      Toyoterm.__object_data(:pane, @id)[4]
+      Toyoterm.__object_data(:pane, @id)[6]
     end
 
     def remote_host
@@ -779,27 +791,37 @@ module Toyoterm
 
     def user_vars
       validate!
-      Toyoterm.__object_data(:pane, @id)[3].dup
+      Toyoterm.__object_data(:pane, @id)[5].dup
+    end
+
+    def shell_integration_version
+      validate!
+      Toyoterm.__object_data(:pane, @id)[3]
+    end
+
+    def shell_integration_shell
+      validate!
+      Toyoterm.__object_data(:pane, @id)[4]
     end
 
     def command_running?
       validate!
-      Toyoterm.__object_data(:pane, @id)[5]
+      Toyoterm.__object_data(:pane, @id)[7]
     end
 
     def last_exit_status
       validate!
-      Toyoterm.__object_data(:pane, @id)[6]
+      Toyoterm.__object_data(:pane, @id)[8]
     end
 
     def screen_text
       validate!
-      Toyoterm.__object_data(:pane, @id)[7].dup
+      Toyoterm.__object_data(:pane, @id)[9].dup
     end
 
     def zoomed?
       validate!
-      Toyoterm.__object_data(:pane, @id)[8]
+      Toyoterm.__object_data(:pane, @id)[10]
     end
 
     def split(direction, command: nil, cwd: nil, env: nil)
@@ -1392,8 +1414,8 @@ module Toyoterm
     @object_data[:tab][id] = [title, panes, zoomed]
   end
 
-  def self.__add_pane(id, title, cwd, remote_host, user_vars, pid, command_running, last_exit_status, screen_text, zoomed)
-    @object_data[:pane][id] = [title, cwd, remote_host, Hash[*user_vars], pid, command_running, last_exit_status, screen_text, zoomed]
+  def self.__add_pane(id, title, cwd, remote_host, shell_integration_version, shell_integration_shell, user_vars, pid, command_running, last_exit_status, screen_text, zoomed, icon_title)
+    @object_data[:pane][id] = [title, cwd, remote_host, shell_integration_version, shell_integration_shell, Hash[*user_vars], pid, command_running, last_exit_status, screen_text, zoomed, icon_title]
   end
 
   def self.__object_data(kind, id)

@@ -110,6 +110,20 @@ pub struct TerminalSnapshot {
     pub images: Vec<TerminalImage>,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct TerminalColors {
+    pub foreground: [u8; 3],
+    pub bold: [u8; 3],
+    pub background: [u8; 3],
+    pub cursor: [u8; 3],
+    pub ansi: [[u8; 3]; 16],
+    pub link: Option<[u8; 3]>,
+    pub cursor_foreground: Option<[u8; 3]>,
+    pub underline: Option<[u8; 3]>,
+    pub selection_background: Option<[u8; 3]>,
+    pub selection_foreground: Option<[u8; 3]>,
+}
+
 /// Adapter boundary for a VT implementation such as `alacritty_terminal`.
 pub trait TerminalBackend: Send {
     fn advance(&mut self, bytes: &[u8]);
@@ -127,6 +141,7 @@ pub trait TerminalBackend: Send {
     fn search(&mut self, query: &str, direction: SearchDirection) -> SearchResult;
     fn clear_search(&mut self);
     fn navigate_prompt(&mut self, direction: SearchDirection) -> bool;
+    fn navigate_mark(&mut self, direction: SearchDirection) -> bool;
     fn select_command_output(&mut self, direction: SearchDirection) -> bool;
     fn select_last_command_output(&mut self) -> bool;
 }
@@ -137,9 +152,10 @@ mod input;
 pub use graphics::TerminalImage;
 
 pub use alacritty::{
-    AlacrittyTerminalBackend, DEFAULT_SCROLLBACK_LINES, MAX_OSC_NOTIFICATION_BYTES,
-    MAX_OSC52_COPY_BYTES, NotificationOccasion, NotificationSound, NotificationUrgency,
-    TabColorComponent, TerminalEvent, TerminalProgress,
+    AlacrittyTerminalBackend, DEFAULT_SCROLLBACK_LINES, ItermUiColorRole,
+    MAX_OSC_NOTIFICATION_BYTES, MAX_OSC_REPORT_VARIABLE_NAME_BYTES, MAX_OSC52_COPY_BYTES,
+    NotificationOccasion, NotificationSound, NotificationUrgency, SessionStatusUpdate,
+    TabColorComponent, TerminalAttention, TerminalEvent, TerminalProgress,
 };
 pub use input::{
     BindingKey, KeyChord, KeyModifiers, KeyPress, KeypadKey, MouseWheelDirection, TerminalKey,

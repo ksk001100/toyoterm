@@ -40,6 +40,7 @@ pub(super) fn update_terminal_cell_buffer(
     cells: &[toyoterm_terminal::TerminalCell],
     layout: TextLayout,
     style: &RenderStyle,
+    context: CellRenderContext<'_>,
 ) {
     buffer.set_wrap(Wrap::None);
     buffer.set_monospace_width(Some(layout.cell_width));
@@ -51,18 +52,25 @@ pub(super) fn update_terminal_cell_buffer(
     buffer.set_rich_text(
         cells.iter().map(|cell| {
             let mut attributes = cell.attributes;
-            if cell.hyperlink.is_some() {
+            let hyperlink = cell.hyperlink.is_some();
+            if hyperlink {
                 attributes.underline = true;
             }
+            apply_selection_foreground(
+                &mut attributes,
+                context.selection,
+                context.row,
+                cell,
+                context.colors.selection_foreground,
+            );
             (
                 cell.text.as_str(),
                 glyph_attrs(
                     attributes,
+                    hyperlink,
                     &style.font_family,
                     style.font_weight,
-                    style.foreground,
-                    style.background,
-                    &style.ansi,
+                    context.colors,
                 ),
             )
         }),
@@ -73,6 +81,46 @@ pub(super) fn update_terminal_cell_buffer(
         None,
     );
     buffer.shape_until_scroll(font_system, false);
+}
+
+#[derive(Clone, Copy)]
+pub(super) struct CellRenderContext<'a> {
+    pub(super) row: u16,
+    pub(super) selection: &'a [toyoterm_terminal::SelectionSpan],
+    pub(super) colors: &'a TerminalColors,
+}
+
+pub(super) fn cursor_cell(
+    snapshot: &TerminalSnapshot,
+    cursor: CursorState,
+) -> Option<&toyoterm_terminal::TerminalCell> {
+    snapshot
+        .cells
+        .get(usize::from(cursor.row))?
+        .iter()
+        .find(|cell| cell.column == cursor.column)
+}
+
+pub(super) fn apply_selection_foreground(
+    attributes: &mut CellAttributes,
+    selection: &[toyoterm_terminal::SelectionSpan],
+    row: u16,
+    cell: &toyoterm_terminal::TerminalCell,
+    color: Option<[u8; 3]>,
+) {
+    let Some([red, green, blue]) = color else {
+        return;
+    };
+    let cell_end = cell
+        .column
+        .saturating_add(u16::from(cell.width.max(1)))
+        .saturating_sub(1);
+    if selection.iter().any(|span| {
+        span.row == row && span.start_column <= cell_end && span.end_column >= cell.column
+    }) {
+        attributes.foreground = CellColor::Rgb(red, green, blue);
+        attributes.inverse = false;
+    }
 }
 
 pub(super) fn pane_text_placement(
@@ -175,6 +223,30 @@ pub(super) fn selection_highlight_rects(
                 .then(|| PaneRect::new(left, top, right - left, bottom - top))
         })
         .collect()
+}
+
+pub(super) fn cursor_line_highlight_rect(
+    pane: PaneRect,
+    layout: TextLayout,
+    row: u16,
+) -> Option<PaneRect> {
+    let left = (pane.x as f32 + layout.horizontal_padding).floor().max(0.0) as u32;
+    let right = (pane.x.saturating_add(pane.width) as f32 - layout.horizontal_padding)
+        .ceil()
+        .max(0.0) as u32;
+    let top = (pane.y as f32 + layout.vertical_padding + f32::from(row) * layout.line_height)
+        .floor()
+        .max(0.0) as u32;
+    let bottom = (pane.y as f32
+        + layout.vertical_padding
+        + f32::from(row.saturating_add(1)) * layout.line_height)
+        .ceil()
+        .max(0.0) as u32;
+    let left = left.max(pane.x);
+    let top = top.max(pane.y);
+    let right = right.min(pane.x.saturating_add(pane.width));
+    let bottom = bottom.min(pane.y.saturating_add(pane.height));
+    (right > left && bottom > top).then(|| PaneRect::new(left, top, right - left, bottom - top))
 }
 
 pub(super) fn command_zone_marker_rects(
@@ -347,9 +419,7 @@ pub(super) fn terminal_rich_text<'a>(
     cursor: Option<CursorState>,
     font_family: &'a str,
     font_weight: u16,
-    default_foreground: [u8; 3],
-    default_background: [u8; 3],
-    ansi: &[[u8; 3]; 16],
+    colors: &TerminalColors,
 ) -> Vec<(String, Attrs<'a>)> {
     if snapshot.cells.is_empty() {
         return Vec::new();
@@ -376,20 +446,21 @@ pub(super) fn terminal_rich_text<'a>(
                 );
             }
             let mut attributes = cell.attributes;
-            if cell.hyperlink.is_some() {
+            let hyperlink = cell.hyperlink.is_some();
+            if hyperlink {
                 attributes.underline = true;
             }
+            apply_selection_foreground(
+                &mut attributes,
+                &snapshot.selection,
+                row,
+                cell,
+                colors.selection_foreground,
+            );
             push_rich_span(
                 &mut spans,
                 &cell.text,
-                glyph_attrs(
-                    attributes,
-                    font_family,
-                    font_weight,
-                    default_foreground,
-                    default_background,
-                    ansi,
-                ),
+                glyph_attrs(attributes, hyperlink, font_family, font_weight, colors),
             );
             column = cell.column.saturating_add(u16::from(cell.width.max(1)));
         }
@@ -434,16 +505,22 @@ fn push_rich_spaces<'a>(spans: &mut Vec<(String, Attrs<'a>)>, count: usize, attr
 
 pub(super) fn glyph_attrs<'a>(
     attributes: CellAttributes,
+    hyperlink: bool,
     font_family: &'a str,
     font_weight: u16,
-    default_foreground: [u8; 3],
-    default_background: [u8; 3],
-    ansi: &[[u8; 3]; 16],
+    colors: &TerminalColors,
 ) -> Attrs<'a> {
-    let foreground = if attributes.inverse {
-        resolve_cell_color(attributes.background, default_background, ansi)
+    let default_foreground = if hyperlink && attributes.foreground == CellColor::Default {
+        colors.link.unwrap_or(colors.foreground)
+    } else if attributes.bold && attributes.foreground == CellColor::Default {
+        colors.bold
     } else {
-        resolve_cell_color(attributes.foreground, default_foreground, ansi)
+        colors.foreground
+    };
+    let foreground = if attributes.inverse {
+        resolve_cell_color(attributes.background, colors.background, &colors.ansi)
+    } else {
+        resolve_cell_color(attributes.foreground, default_foreground, &colors.ansi)
     };
     let alpha = if attributes.hidden {
         0
@@ -464,6 +541,9 @@ pub(super) fn glyph_attrs<'a>(
     }
     if attributes.underline {
         attrs = attrs.underline(glyphon::cosmic_text::UnderlineStyle::Single);
+        if let Some(color) = colors.underline {
+            attrs = attrs.underline_color(glyph_color(color, 255));
+        }
     }
     if attributes.strikethrough {
         attrs = attrs.strikethrough();

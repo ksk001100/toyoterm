@@ -24,7 +24,9 @@ use winit::dpi::PhysicalSize;
 use winit::window::Window;
 
 use toyoterm_api::{PaneId, TabId, WorkspaceId};
-use toyoterm_terminal::{CellAttributes, CellColor, CursorShape, CursorState, TerminalSnapshot};
+use toyoterm_terminal::{
+    CellAttributes, CellColor, CursorShape, CursorState, TerminalColors, TerminalSnapshot,
+};
 
 mod background;
 mod graphics;
@@ -55,16 +57,21 @@ pub struct PaneRenderData<'a> {
     pub snapshot: &'a TerminalSnapshot,
     pub cursor: CursorState,
     pub cursor_uses_grid: bool,
+    pub cursor_line_highlight: bool,
     pub rect: PaneRect,
     pub active: bool,
     pub zoomed: bool,
     pub badge: Option<&'a str>,
+    pub colors: TerminalColors,
 }
 
 #[derive(Clone, Copy, Debug)]
 pub struct TabRenderData<'a> {
     pub tab: TabId,
     pub title: &'a str,
+    pub status: Option<&'a str>,
+    pub status_color: Option<[u8; 3]>,
+    pub indicator: Option<[u8; 3]>,
     pub rect: PaneRect,
     pub active: bool,
     pub background: Option<[u8; 3]>,
@@ -81,6 +88,20 @@ fn tab_fill_color(style: &RenderStyle, background: Option<[u8; 3]>, active: bool
         },
         |color| rgba(color, if active { 1.0 } else { 0.96 }),
     )
+}
+
+fn tab_indicator_rect(rect: PaneRect) -> PaneRect {
+    PaneRect::new(
+        rect.x.saturating_add(7),
+        rect.y
+            .saturating_add(rect.height.saturating_sub(6).saturating_div(2)),
+        6.min(rect.width.saturating_sub(7)),
+        6.min(rect.height),
+    )
+}
+
+fn pane_background_override(style: &RenderStyle, colors: TerminalColors) -> Option<[u8; 3]> {
+    (colors.background != style.background).then_some(colors.background)
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -311,6 +332,25 @@ mod tests {
     use super::*;
     use toyoterm_terminal::{AlacrittyTerminalBackend, SelectionSpan, TerminalBackend};
 
+    fn test_terminal_colors(
+        foreground: [u8; 3],
+        background: [u8; 3],
+        ansi: [[u8; 3]; 16],
+    ) -> TerminalColors {
+        TerminalColors {
+            foreground,
+            bold: foreground,
+            background,
+            cursor: foreground,
+            ansi,
+            link: None,
+            cursor_foreground: None,
+            underline: None,
+            selection_background: None,
+            selection_foreground: None,
+        }
+    }
+
     #[test]
     #[cfg(target_os = "windows")]
     fn windows_presentation_uses_direct_composition_and_premultiplied_alpha() {
@@ -470,9 +510,7 @@ mod tests {
             Some(cursor),
             "monospace",
             400,
-            [220, 225, 232],
-            [9, 11, 14],
-            &default_ansi_palette(),
+            &test_terminal_colors([220, 225, 232], [9, 11, 14], default_ansi_palette()),
         );
         let default_attrs = Attrs::new().family(Family::Monospace);
         buffer.set_rich_text(
@@ -519,9 +557,24 @@ mod tests {
             };
             let style = RenderStyle::default();
             let mut separator_x = None;
-            for (_, cells) in terminal_cell_runs(&snapshot) {
+            for (row, cells) in terminal_cell_runs(&snapshot) {
                 let mut buffer = Buffer::new(&mut font_system, Metrics::new(14.0, 18.0));
-                update_terminal_cell_buffer(&mut buffer, &mut font_system, cells, layout, &style);
+                update_terminal_cell_buffer(
+                    &mut buffer,
+                    &mut font_system,
+                    cells,
+                    layout,
+                    &style,
+                    CellRenderContext {
+                        row,
+                        selection: &snapshot.selection,
+                        colors: &test_terminal_colors(
+                            style.foreground,
+                            style.background,
+                            style.ansi,
+                        ),
+                    },
+                );
                 if cells.iter().any(|cell| cell.column == 40) {
                     let glyph = buffer.layout_runs().next().unwrap().glyphs.first().unwrap();
                     separator_x = Some(f32::from(cells[0].column) * cell_width + glyph.x);
@@ -557,7 +610,22 @@ mod tests {
             let snapshot = terminal.snapshot();
             let mut separators = 0;
             for (row, cells) in terminal_cell_runs(&snapshot) {
-                update_terminal_cell_buffer(&mut buffer, &mut font_system, cells, layout, &style);
+                update_terminal_cell_buffer(
+                    &mut buffer,
+                    &mut font_system,
+                    cells,
+                    layout,
+                    &style,
+                    CellRenderContext {
+                        row,
+                        selection: &snapshot.selection,
+                        colors: &test_terminal_colors(
+                            style.foreground,
+                            style.background,
+                            style.ansi,
+                        ),
+                    },
+                );
                 let run = buffer.layout_runs().next().unwrap();
                 assert_eq!(run.line_i, 0, "each run uses its explicit terminal row");
                 if cells[0].text == "│" {
@@ -589,9 +657,7 @@ mod tests {
             None,
             "monospace",
             400,
-            [220, 225, 232],
-            [9, 11, 14],
-            &default_ansi_palette(),
+            &test_terminal_colors([220, 225, 232], [9, 11, 14], default_ansi_palette()),
         );
 
         assert_eq!(
@@ -677,6 +743,25 @@ mod tests {
     }
 
     #[test]
+    fn cursor_line_highlight_is_clipped_to_the_pane_content() {
+        let layout = TextLayout {
+            font_size: 14.0,
+            line_height: 18.0,
+            cell_width: 9.0,
+            horizontal_padding: 8.0,
+            vertical_padding: 6.0,
+        };
+        assert_eq!(
+            cursor_line_highlight_rect(PaneRect::new(10, 20, 100, 50), layout, 1),
+            Some(PaneRect::new(18, 44, 84, 18))
+        );
+        assert_eq!(
+            cursor_line_highlight_rect(PaneRect::new(10, 20, 100, 50), layout, 9),
+            None
+        );
+    }
+
+    #[test]
     fn builds_status_aware_command_zone_markers_in_the_pane_margin() {
         let snapshot = TerminalSnapshot {
             images: Vec::new(),
@@ -723,6 +808,67 @@ mod tests {
         assert_eq!(xterm_color(21, &ansi), [0, 0, 255]);
         assert_eq!(xterm_color(232, &ansi), [8, 8, 8]);
 
+        let mut colors = test_terminal_colors([200, 200, 200], [0, 0, 0], ansi);
+        colors.bold = [10, 20, 30];
+        let bold_default = glyph_attrs(
+            CellAttributes {
+                bold: true,
+                ..CellAttributes::default()
+            },
+            false,
+            "monospace",
+            400,
+            &colors,
+        );
+        assert_eq!(
+            bold_default.color_opt,
+            Some(GlyphColor::rgba(10, 20, 30, 255))
+        );
+
+        colors.link = Some([40, 50, 60]);
+        let link = glyph_attrs(CellAttributes::default(), true, "monospace", 400, &colors);
+        assert_eq!(link.color_opt, Some(GlyphColor::rgba(40, 50, 60, 255)));
+
+        colors.underline = Some([30, 40, 50]);
+        let underline = glyph_attrs(
+            CellAttributes {
+                underline: true,
+                ..CellAttributes::default()
+            },
+            false,
+            "monospace",
+            400,
+            &colors,
+        );
+        assert_eq!(
+            underline.text_decoration.underline_color_opt,
+            Some(GlyphColor::rgba(30, 40, 50, 255))
+        );
+
+        let mut selected = CellAttributes {
+            inverse: true,
+            ..CellAttributes::default()
+        };
+        apply_selection_foreground(
+            &mut selected,
+            &[SelectionSpan {
+                row: 2,
+                start_column: 3,
+                end_column: 4,
+            }],
+            2,
+            &toyoterm_terminal::TerminalCell {
+                column: 3,
+                text: "x".into(),
+                width: 1,
+                attributes: CellAttributes::default(),
+                hyperlink: None,
+            },
+            Some([70, 80, 90]),
+        );
+        assert_eq!(selected.foreground, CellColor::Rgb(70, 80, 90));
+        assert!(!selected.inverse);
+
         let attrs = glyph_attrs(
             CellAttributes {
                 foreground: CellColor::Rgb(1, 2, 3),
@@ -731,11 +877,10 @@ mod tests {
                 dim: true,
                 ..CellAttributes::default()
             },
+            false,
             "monospace",
             400,
-            [200, 200, 200],
-            [0, 0, 0],
-            &ansi,
+            &test_terminal_colors([200, 200, 200], [0, 0, 0], ansi),
         );
         assert_eq!(attrs.color_opt, Some(GlyphColor::rgba(1, 2, 3, 150)));
         assert_eq!(attrs.weight, Weight::BOLD);
@@ -748,13 +893,49 @@ mod tests {
                 inverse: true,
                 ..CellAttributes::default()
             },
+            false,
             "monospace",
             400,
-            [200, 200, 200],
-            [0, 0, 0],
-            &ansi,
+            &test_terminal_colors([200, 200, 200], [0, 0, 0], ansi),
         );
         assert_eq!(inverse.color_opt, Some(GlyphColor::rgba(9, 8, 7, 255)));
+    }
+
+    #[test]
+    fn locates_only_the_leading_cell_under_the_cursor() {
+        let snapshot = TerminalSnapshot {
+            columns: 4,
+            rows: 1,
+            lines: vec!["界x".into()],
+            cells: vec![vec![
+                toyoterm_terminal::TerminalCell {
+                    column: 0,
+                    text: "界".into(),
+                    width: 2,
+                    ..toyoterm_terminal::TerminalCell::default()
+                },
+                toyoterm_terminal::TerminalCell {
+                    column: 2,
+                    text: "x".into(),
+                    width: 1,
+                    ..toyoterm_terminal::TerminalCell::default()
+                },
+            ]],
+            selection: Vec::new(),
+            search_matches: Vec::new(),
+            command_zones: Vec::new(),
+            images: Vec::new(),
+        };
+        let cursor = |column| CursorState {
+            column,
+            row: 0,
+            visible: true,
+            shape: CursorShape::Block,
+        };
+
+        assert_eq!(cursor_cell(&snapshot, cursor(0)).unwrap().text, "界");
+        assert!(cursor_cell(&snapshot, cursor(1)).is_none());
+        assert_eq!(cursor_cell(&snapshot, cursor(2)).unwrap().text, "x");
     }
 
     #[test]
@@ -1047,6 +1228,27 @@ mod tests {
             tab_fill_color(&style, None, true),
             rgba(style.tab_active, 1.0)
         );
+    }
+
+    #[test]
+    fn tab_indicator_is_inset_and_centered() {
+        assert_eq!(
+            tab_indicator_rect(PaneRect::new(10, 20, 160, 30)),
+            PaneRect::new(17, 32, 6, 6)
+        );
+        assert_eq!(
+            tab_indicator_rect(PaneRect::new(10, 20, 8, 4)),
+            PaneRect::new(17, 20, 1, 4)
+        );
+    }
+
+    #[test]
+    fn terminal_background_override_replaces_the_pane_base_color() {
+        let style = RenderStyle::default();
+        let mut colors = test_terminal_colors(style.foreground, style.background, style.ansi);
+        assert_eq!(pane_background_override(&style, colors), None);
+        colors.background = [1, 2, 3];
+        assert_eq!(pane_background_override(&style, colors), Some([1, 2, 3]));
     }
 }
 

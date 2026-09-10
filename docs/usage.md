@@ -23,15 +23,20 @@ When a shell exits, toyoterm closes its pane automatically. Empty tabs and works
 
 ### Clipboard security
 
-OSC 52 clipboard writes are disabled by default. Terminal output may originate
+OSC 52 and iTerm2 OSC 1337 clipboard writes are disabled by default. Terminal output may originate
 from an untrusted local process or remote host, so enabling them lets that
 output replace the system clipboard without a user gesture. Trusted
 configuration can opt in with
 `config.behavior.allow_osc52_copy = true`. Decoded writes are limited to 64 KiB;
 invalid base64, invalid UTF-8, unsupported clipboard selectors, and oversized
-payloads are ignored. OSC 52 clipboard queries remain disabled, so terminal
-output cannot read clipboard contents. Configured copy/paste shortcuts and the
-trusted-configuration Ruby clipboard API remain available independently.
+payloads are ignored. The iTerm2 one-shot `Copy=:` form and unnamed
+`CopyToClipboard=` / `EndCopy` text capture use the same permission and limit;
+overflow discards the complete capture, and disabling the permission cancels an
+active capture. Named `rule`, `find`, and `font` buffers are ignored because
+toyoterm has no matching clipboard destinations. OSC 52 clipboard queries
+remain disabled, so terminal output cannot read clipboard contents. Configured
+copy/paste shortcuts and the trusted-configuration Ruby clipboard API remain
+available independently.
 
 ### Notification security
 
@@ -60,15 +65,31 @@ to one notification per pane every two seconds. Notification delivery runs off t
 terminal/UI thread; a full queue or platform notification failure
 is logged and does not block PTY parsing.
 
+### Attention request security
+
+iTerm2 OSC 1337 attention requests are disabled by default because remote output
+could otherwise flash or bounce the application repeatedly. Trusted configuration
+can opt in with `config.behavior.allow_osc_attention_requests = true`. Values `yes`,
+`once`, and `no` request indefinite attention, one-shot attention, or cancellation
+through the platform window API. The cursor-local `fireworks` effect is ignored.
+
+### OSC URL opening security
+
+OSC 1337 `OpenURL=:` requests are disabled by default because they launch the
+platform URL handler without a click. Trusted configuration can opt in with
+`config.behavior.allow_osc_open_url = true`. The base64-decoded URL is limited
+to 2,048 bytes, must not contain control characters, and must use `https`,
+`http`, or `mailto`. Requests are limited to one per pane every two seconds.
+
 ### Tab colors
 
 iTerm2 OSC 6 red, green, and blue brightness components set the tab color for
 the reporting pane. The override becomes visible after all three components
 have arrived. `OSC 6;1;bg;*;default` restores the configured tab color and
 resets the pane title. In a split tab, the active pane supplies the tab color.
-iTerm2 OSC 1337 `SetColors=tab=` reaches the same state and accepts untagged or
-`srgb:` three-/six-digit hexadecimal colors plus `default`. Device RGB and P3
-values are ignored until the renderer has matching color-space conversion.
+iTerm2 OSC 1337 `SetColors=tab=` reaches the same state and accepts untagged,
+`rgb:`, `srgb:`, or `p3:` three-/six-digit hexadecimal colors plus `default`.
+Display P3 values are converted to sRGB for rendering.
 
 ## CLI
 

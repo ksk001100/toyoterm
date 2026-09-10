@@ -1,6 +1,7 @@
 # toyoterm shell integration for zsh. Source this file from interactive zsh only.
 [[ -o interactive && ${TERM_PROGRAM-} == toyoterm && -z ${TOYOTERM_SHELL_INTEGRATION_LOADED-} ]] || return 0
 typeset -g TOYOTERM_SHELL_INTEGRATION_LOADED=1
+printf '\e]1337;ShellIntegrationVersion=1;zsh\e\\'
 autoload -Uz add-zsh-hook
 
 __toyoterm_urlencode_path() {

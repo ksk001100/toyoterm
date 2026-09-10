@@ -66,11 +66,16 @@ impl ToyotermApplication {
                     (
                         placement.pane,
                         runtime.terminal.snapshot(),
+                        runtime.terminal.render_colors(),
                         cursor,
                         cursor_uses_grid,
+                        runtime.cursor_line_highlight,
                         placement.rect,
                         is_active,
-                        self.pane_badges.get(&placement.pane).cloned(),
+                        self.pane_badges
+                            .get(&placement.pane)
+                            .or(runtime.osc_badge.as_ref())
+                            .cloned(),
                     )
                 })
             })
@@ -78,11 +83,23 @@ impl ToyotermApplication {
         let panes = snapshots
             .iter()
             .map(
-                |(pane, snapshot, cursor, cursor_uses_grid, rect, active, badge)| PaneRenderData {
+                |(
+                    pane,
+                    snapshot,
+                    colors,
+                    cursor,
+                    cursor_uses_grid,
+                    cursor_line_highlight,
+                    rect,
+                    active,
+                    badge,
+                )| PaneRenderData {
                     pane: *pane,
                     snapshot,
+                    colors: *colors,
                     cursor: *cursor,
                     cursor_uses_grid: *cursor_uses_grid,
+                    cursor_line_highlight: *cursor_line_highlight,
                     rect: *rect,
                     active: *active,
                     badge: badge.as_deref(),
@@ -115,24 +132,38 @@ impl ToyotermApplication {
                     .active_pane(placement.tab)
                     .and_then(|pane| self.pane_runtimes.get(&pane))
                     .and_then(|runtime| runtime.tab_color.complete());
+                let session = self
+                    .mux
+                    .active_pane(placement.tab)
+                    .and_then(|pane| self.pane_runtimes.get(&pane));
                 (
                     placement.tab,
                     title,
                     placement.rect,
                     active_tab == Some(placement.tab),
                     background,
+                    session.and_then(|runtime| runtime.session_status.status.as_deref()),
+                    session.and_then(|runtime| runtime.session_status.status_color),
+                    session.and_then(|runtime| runtime.session_status.indicator),
                 )
             })
             .collect::<Vec<_>>();
         let tabs = tab_titles
             .iter()
-            .map(|(tab, title, rect, active, background)| TabRenderData {
-                tab: *tab,
-                title,
-                rect: *rect,
-                active: *active,
-                background: *background,
-            })
+            .map(
+                |(tab, title, rect, active, background, status, status_color, indicator)| {
+                    TabRenderData {
+                        tab: *tab,
+                        title,
+                        status: *status,
+                        status_color: *status_color,
+                        indicator: *indicator,
+                        rect: *rect,
+                        active: *active,
+                        background: *background,
+                    }
+                },
+            )
             .collect::<Vec<_>>();
         let active_workspace = self.mux.current_workspace();
         let workspace_titles = self

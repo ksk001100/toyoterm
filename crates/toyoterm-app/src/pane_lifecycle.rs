@@ -85,6 +85,7 @@ impl ToyotermApplication {
             self.render_style.foreground,
             self.render_style.background,
             self.render_style.cursor,
+            self.render_style.selection,
             self.render_style.ansi,
         );
         terminal.set_osc52_copy_enabled(self.script_snapshot.config.behavior.allow_osc52_copy);
@@ -92,20 +93,32 @@ impl ToyotermApplication {
             size.pixel_width / size.columns.max(1),
             size.pixel_height / size.rows.max(1),
         );
+        terminal.set_cell_scale_factor(
+            self.window
+                .as_ref()
+                .map_or(1.0, |window| window.scale_factor()),
+        );
         Ok(PaneRuntime {
             terminal,
             pty_session: Some(session),
             process_id,
             title: format!("Pane {}", pane.0),
+            icon_title: None,
+            osc_badge: None,
+            cursor_line_highlight: false,
             cwd: std::env::current_dir().ok(),
             remote_host: None,
+            shell_integration_version: None,
+            shell_integration_shell: None,
             user_vars: BTreeMap::new(),
             command_running: false,
             last_exit_status: None,
             progress: None,
             tab_color: TabColorState::default(),
+            session_status: SessionStatusState::default(),
             mouse_cursor: CursorIcon::Default,
             last_notification_at: None,
+            last_open_url_at: None,
             exited: false,
         })
     }
@@ -154,6 +167,7 @@ impl ToyotermApplication {
                     size.pixel_width / size.columns.max(1),
                     size.pixel_height / size.rows.max(1),
                 );
+                runtime.terminal.set_cell_scale_factor(scale_factor);
                 if let Some(session) = runtime.pty_session.as_mut() {
                     session.resize(size).map_err(|error| {
                         tracing::error!(

@@ -44,11 +44,17 @@ struct Pixels {
     rgba: Arc<[u8]>,
 }
 
+struct ItermTransfer {
+    header: Vec<u8>,
+    data: Vec<u8>,
+}
+
 #[derive(Default)]
 pub(crate) struct Graphics {
     placements: Vec<Placement>,
     stored: BTreeMap<u32, Pixels>,
-    transfer: Option<(BTreeMap<String, String>, Vec<u8>)>,
+    kitty_transfer: Option<(BTreeMap<String, String>, Vec<u8>)>,
+    iterm_transfer: Option<ItermTransfer>,
     serial: u64,
     pub region: Option<(i32, i32)>,
     pub cell_size: (u16, u16),
@@ -86,12 +92,14 @@ impl Graphics {
     pub fn reset(&mut self) {
         self.placements.clear();
         self.stored.clear();
-        self.transfer = None;
+        self.kitty_transfer = None;
+        self.iterm_transfer = None;
         self.region = None;
     }
 
     pub fn cancel_transfer(&mut self) {
-        self.transfer = None;
+        self.kitty_transfer = None;
+        self.iterm_transfer = None;
     }
 
     pub fn clear(&mut self, alternate: bool, start: i32, end: i32) {
@@ -120,7 +128,7 @@ impl Graphics {
         });
     }
 
-    fn size(&self) -> (u32, u32) {
+    pub(super) fn size(&self) -> (u32, u32) {
         (
             u32::from(self.cell_size.0.max(1)),
             u32::from(self.cell_size.1.max(1)),
@@ -190,7 +198,7 @@ impl Graphics {
         let decoded = if kind == b'P' {
             sixel::decode(payload).map(|p| (p, None))
         } else {
-            iterm(payload, self.size(), screen)
+            self.iterm(payload, screen)
         };
         if let Some((pixels, requested)) = decoded {
             let cell = self.size();
@@ -203,6 +211,53 @@ impl Graphics {
             result.advance = Some(cells);
         }
         result
+    }
+
+    fn iterm(
+        &mut self,
+        payload: &[u8],
+        screen: (u16, u16),
+    ) -> Option<(Pixels, Option<(u32, u32)>)> {
+        if let Some(payload) = payload.strip_prefix(b"1337;File=") {
+            self.iterm_transfer = None;
+            let (header, data) = payload.split_once_byte(b':');
+            return iterm_file(header, data, self.size(), screen);
+        }
+
+        if let Some(header) = payload.strip_prefix(b"1337;MultipartFile=") {
+            self.iterm_transfer = None;
+            let keys = iterm_keys(header)?;
+            if value(&keys, "inline", "0") == "1" && header.len() <= MAX_BYTES {
+                self.iterm_transfer = Some(ItermTransfer {
+                    header: header.to_vec(),
+                    data: Vec::new(),
+                });
+            }
+            return None;
+        }
+
+        if let Some(data) = payload.strip_prefix(b"1337;FilePart=") {
+            let transfer = self.iterm_transfer.as_mut()?;
+            if transfer
+                .header
+                .len()
+                .saturating_add(transfer.data.len())
+                .saturating_add(data.len())
+                > MAX_BYTES
+            {
+                self.iterm_transfer = None;
+                return None;
+            }
+            transfer.data.extend_from_slice(data);
+            return None;
+        }
+
+        if payload == b"1337;FileEnd" {
+            let transfer = self.iterm_transfer.take()?;
+            return iterm_file(&transfer.header, &transfer.data, self.size(), screen);
+        }
+
+        None
     }
 
     fn kitty(&mut self, payload: &[u8], at: (u16, i32), alternate: bool) -> GraphicResult {
@@ -223,7 +278,7 @@ impl Graphics {
             .map(|(k, v)| (k.to_owned(), v.to_owned()))
             .collect();
         let mut data = data.to_vec();
-        if let Some((previous, mut bytes)) = self.transfer.take() {
+        if let Some((previous, mut bytes)) = self.kitty_transfer.take() {
             if bytes.len().saturating_add(data.len()) > MAX_BYTES {
                 return result;
             }
@@ -239,7 +294,7 @@ impl Graphics {
         }
         if value(&keys, "m", "0") == "1" {
             if data.len() <= MAX_BYTES {
-                self.transfer = Some((keys, data));
+                self.kitty_transfer = Some((keys, data));
             }
             return result;
         }
@@ -448,19 +503,24 @@ fn decode_image(bytes: &[u8], png_only: bool) -> Option<Pixels> {
     })
 }
 
-fn iterm(
-    payload: &[u8],
+fn iterm_keys(header: &[u8]) -> Option<BTreeMap<String, String>> {
+    let header = std::str::from_utf8(header).ok()?;
+    Some(
+        header
+            .split(';')
+            .filter_map(|p| p.split_once('='))
+            .map(|(k, v)| (k.into(), v.into()))
+            .collect(),
+    )
+}
+
+fn iterm_file(
+    header: &[u8],
+    data: &[u8],
     cell: (u32, u32),
     screen: (u16, u16),
 ) -> Option<(Pixels, Option<(u32, u32)>)> {
-    let payload = payload.strip_prefix(b"1337;File=")?;
-    let (header, data) = payload.split_once_byte(b':');
-    let header = std::str::from_utf8(header).ok()?;
-    let keys: BTreeMap<String, String> = header
-        .split(';')
-        .filter_map(|p| p.split_once('='))
-        .map(|(k, v)| (k.into(), v.into()))
-        .collect();
+    let keys = iterm_keys(header)?;
     if value(&keys, "inline", "0") != "1" {
         return None;
     }

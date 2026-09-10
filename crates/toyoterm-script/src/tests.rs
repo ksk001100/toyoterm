@@ -76,6 +76,10 @@ fn static_and_runtime_actions_share_names_and_arguments() {
         ("previous_workspace", "nil"),
         ("next_prompt", "nil"),
         ("previous_prompt", "nil"),
+        ("next_mark", "nil"),
+        ("previous_mark", "nil"),
+        ("next_mark", "nil"),
+        ("previous_mark", "nil"),
         ("select_next_command_output", "nil"),
         ("select_previous_command_output", "nil"),
         ("select_last_command_output", "nil"),
@@ -272,8 +276,11 @@ fn script_test_context() -> ScriptContext {
             panes: vec![RubyPane {
                 id: PaneId(4),
                 title: "Pane 4".into(),
+                icon_title: None,
                 cwd: None,
                 remote_host: None,
+                shell_integration_version: None,
+                shell_integration_shell: None,
                 user_vars: Vec::new(),
                 pid: None,
                 command_running: false,
@@ -648,6 +655,8 @@ fn loads_the_configuration_dsl() {
                   config.behavior.copy_on_select = true
                   config.behavior.allow_osc52_copy = true
                   config.behavior.allow_osc_notifications = true
+                  config.behavior.allow_osc_attention_requests = true
+                  config.behavior.allow_osc_open_url = true
                   config.default_shell = "/bin/zsh"
                   config.scrollback_lines = 50_000
                 end
@@ -676,6 +685,8 @@ fn loads_the_configuration_dsl() {
     assert!(config.behavior.copy_on_select);
     assert!(config.behavior.allow_osc52_copy);
     assert!(config.behavior.allow_osc_notifications);
+    assert!(config.behavior.allow_osc_attention_requests);
+    assert!(config.behavior.allow_osc_open_url);
     assert_eq!(config.default_shell.as_deref(), Some("/bin/zsh"));
     assert_eq!(config.scrollback_lines, 50_000);
 }
@@ -1236,8 +1247,11 @@ fn exposes_the_synced_ruby_object_model() {
             panes: vec![RubyPane {
                 id: PaneId(40),
                 title: "shell".into(),
+                icon_title: Some("server icon".into()),
                 cwd: Some("/srv/app".into()),
                 remote_host: Some("alice@build.example.com".into()),
+                shell_integration_version: Some(12),
+                shell_integration_shell: Some("fish".into()),
                 user_vars: vec![("gitBranch".into(), "main".into())],
                 pid: Some(1234),
                 command_running: true,
@@ -1278,6 +1292,10 @@ fn exposes_the_synced_ruby_object_model() {
         "shell"
     );
     assert_eq!(
+        manager.eval("Toyoterm.current_pane.icon_title").unwrap(),
+        "server icon"
+    );
+    assert_eq!(
         manager.eval("Toyoterm.current_pane.cwd").unwrap(),
         "/srv/app"
     );
@@ -1285,6 +1303,18 @@ fn exposes_the_synced_ruby_object_model() {
     assert_eq!(
         manager.eval("Toyoterm.current_pane.remote_host").unwrap(),
         "alice@build.example.com"
+    );
+    assert_eq!(
+        manager
+            .eval("Toyoterm.current_pane.shell_integration_version")
+            .unwrap(),
+        "12"
+    );
+    assert_eq!(
+        manager
+            .eval("Toyoterm.current_pane.shell_integration_shell")
+            .unwrap(),
+        "fish"
     );
     assert_eq!(
         manager.eval("Toyoterm.current_pane.user_vars").unwrap(),

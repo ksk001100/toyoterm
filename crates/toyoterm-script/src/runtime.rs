@@ -177,12 +177,19 @@ impl MrubyRuntime {
             typed_call_result("add tab object", status, error)?;
         }
         for pane in &model.panes {
+            let (icon_title, icon_title_len, icon_title_available) =
+                optional_string_parts(pane.icon_title.as_deref());
             let (cwd, cwd_len, cwd_available) =
                 pane.cwd.as_deref().map_or((std::ptr::null(), 0, 0), |cwd| {
                     (cwd.as_ptr().cast::<c_char>(), cwd.len(), 1)
                 });
             let (remote_host, remote_host_len, remote_host_available) =
                 optional_string_parts(pane.remote_host.as_deref());
+            let (
+                shell_integration_shell,
+                shell_integration_shell_len,
+                shell_integration_shell_available,
+            ) = optional_string_parts(pane.shell_integration_shell.as_deref());
             let user_var_keys = pane
                 .user_vars
                 .iter()
@@ -212,6 +219,11 @@ impl MrubyRuntime {
                     remote_host,
                     remote_host_len,
                     remote_host_available,
+                    u64::from(pane.shell_integration_version.unwrap_or_default()),
+                    i32::from(pane.shell_integration_version.is_some()),
+                    shell_integration_shell,
+                    shell_integration_shell_len,
+                    shell_integration_shell_available,
                     user_var_keys.as_ptr(),
                     user_var_values.as_ptr(),
                     user_var_lengths.as_ptr(),
@@ -224,6 +236,9 @@ impl MrubyRuntime {
                     pane.screen_text.as_ptr().cast(),
                     pane.screen_text.len(),
                     i32::from(pane.zoomed),
+                    icon_title,
+                    icon_title_len,
+                    icon_title_available,
                     &mut error,
                 )
             };

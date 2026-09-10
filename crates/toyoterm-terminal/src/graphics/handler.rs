@@ -9,6 +9,7 @@ const MAX_SEMANTIC_MARKERS: usize = 4096;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum SemanticMarkerKind {
+    Mark,
     Prompt,
     CommandLine,
     CommandStart,
@@ -30,6 +31,7 @@ pub(crate) struct SemanticMarkers {
     markers: Vec<SemanticMarker>,
     serial: u64,
     current_prompt: Option<u64>,
+    current_mark: Option<u64>,
     current_command: Option<u64>,
 }
 
@@ -54,6 +56,9 @@ impl SemanticMarkers {
         if kind == SemanticMarkerKind::Prompt {
             self.current_prompt = None;
         }
+        if kind == SemanticMarkerKind::Mark {
+            self.current_mark = None;
+        }
         if kind == SemanticMarkerKind::CommandStart {
             self.current_command = None;
         }
@@ -61,6 +66,9 @@ impl SemanticMarkers {
             let removed = self.markers.remove(0);
             if self.current_prompt == Some(removed.serial) {
                 self.current_prompt = None;
+            }
+            if self.current_mark == Some(removed.serial) {
+                self.current_mark = None;
             }
             if self.current_command == Some(removed.serial) {
                 self.current_command = None;
@@ -97,6 +105,37 @@ impl SemanticMarkers {
         };
         self.current_prompt = Some(prompts[index].serial);
         Some((prompts[index].line, index + 1, prompts.len()))
+    }
+
+    pub fn navigate_mark(
+        &mut self,
+        direction: crate::SearchDirection,
+        alternate: bool,
+    ) -> Option<(i32, usize, usize)> {
+        let marks = self
+            .markers
+            .iter()
+            .filter(|marker| {
+                marker.alternate == alternate && marker.kind == SemanticMarkerKind::Mark
+            })
+            .collect::<Vec<_>>();
+        if marks.is_empty() {
+            self.current_mark = None;
+            return None;
+        }
+        let previous = self
+            .current_mark
+            .and_then(|serial| marks.iter().position(|marker| marker.serial == serial));
+        let index = match (previous, direction) {
+            (None, crate::SearchDirection::Next) => 0,
+            (None, crate::SearchDirection::Previous) => marks.len() - 1,
+            (Some(index), crate::SearchDirection::Next) => (index + 1) % marks.len(),
+            (Some(index), crate::SearchDirection::Previous) => {
+                (index + marks.len() - 1) % marks.len()
+            }
+        };
+        self.current_mark = Some(marks[index].serial);
+        Some((marks[index].line, index + 1, marks.len()))
     }
 
     pub fn has_markers(&self) -> bool {
@@ -169,6 +208,7 @@ impl SemanticMarkers {
     pub fn reset(&mut self) {
         self.markers.clear();
         self.current_prompt = None;
+        self.current_mark = None;
         self.current_command = None;
     }
 
@@ -204,6 +244,12 @@ impl SemanticMarkers {
             self.current_prompt = None;
         }
         if self
+            .current_mark
+            .is_some_and(|serial| !self.markers.iter().any(|marker| marker.serial == serial))
+        {
+            self.current_mark = None;
+        }
+        if self
             .current_command
             .is_some_and(|serial| !self.markers.iter().any(|marker| marker.serial == serial))
         {
@@ -217,6 +263,12 @@ impl SemanticMarkers {
         if current.is_some_and(|serial| !self.markers.iter().any(|marker| marker.serial == serial))
         {
             self.current_prompt = None;
+        }
+        if self
+            .current_mark
+            .is_some_and(|serial| !self.markers.iter().any(|marker| marker.serial == serial))
+        {
+            self.current_mark = None;
         }
         if self
             .current_command
@@ -235,9 +287,14 @@ pub(crate) struct GraphicsHandler<'a, E> {
     pub graphics: &'a mut Graphics,
     pub semantic_markers: &'a mut SemanticMarkers,
     pub mouse_cursor_stacks: &'a mut super::super::alacritty::MouseCursorStacks,
+    pub clipboard_capture: &'a mut Option<super::super::alacritty::ClipboardCapture>,
 }
 impl<E: EventListener> Handler for GraphicsHandler<'_, E> {
     fn input(&mut self, c: char) {
+        if let Some(capture) = self.clipboard_capture.as_mut() {
+            let mut encoded = [0; 4];
+            capture.push(c.encode_utf8(&mut encoded));
+        }
         if !self.graphics.has_placements() && !self.semantic_markers.has_markers() {
             self.terminal.input(c);
             return;
@@ -254,10 +311,16 @@ impl<E: EventListener> Handler for GraphicsHandler<'_, E> {
         self.terminal.input(c);
     }
     fn linefeed(&mut self) {
+        if let Some(capture) = self.clipboard_capture.as_mut() {
+            capture.push("\n");
+        }
         self.track_linefeed();
         self.terminal.linefeed();
     }
     fn newline(&mut self) {
+        if let Some(capture) = self.clipboard_capture.as_mut() {
+            capture.push("\n");
+        }
         self.track_linefeed();
         self.terminal.newline();
     }
@@ -303,6 +366,7 @@ impl<E: EventListener> Handler for GraphicsHandler<'_, E> {
         self.terminal.clear_line(mode);
     }
     fn reset_state(&mut self) {
+        *self.clipboard_capture = None;
         self.graphics.reset();
         self.semantic_markers.reset();
         let cursor_changed = self.mouse_cursor_stacks.current_icon(self.alternate())
@@ -411,12 +475,20 @@ impl<E: EventListener> Handler for GraphicsHandler<'_, E> {
         self.terminal.move_up_and_cr(arg0);
     }
     fn put_tab(&mut self, arg0: u16) {
+        if let Some(capture) = self.clipboard_capture.as_mut() {
+            for _ in 0..arg0 {
+                capture.push("\t");
+            }
+        }
         self.terminal.put_tab(arg0);
     }
     fn backspace(&mut self) {
         self.terminal.backspace();
     }
     fn carriage_return(&mut self) {
+        if let Some(capture) = self.clipboard_capture.as_mut() {
+            capture.push("\r");
+        }
         self.terminal.carriage_return();
     }
     fn bell(&mut self) {

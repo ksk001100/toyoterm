@@ -336,8 +336,10 @@ end
 | --- | --- | --- |
 | `scroll_lines` | `3` | Positive finite number of lines per mouse-wheel step. |
 | `copy_on_select` | `false` | Boolean. |
-| `allow_osc52_copy` | `false` | Boolean opt-in allowing terminal output to replace the system clipboard through OSC 52. Clipboard reads remain disabled and decoded payloads over 64 KiB are rejected. Applies to existing panes after a successful reload. |
+| `allow_osc52_copy` | `false` | Boolean opt-in allowing terminal output to replace the system clipboard through OSC 52, one-shot iTerm2 OSC 1337 `Copy=:`, or a general `CopyToClipboard=` / `EndCopy` text capture. Clipboard reads and iTerm2's named `rule`/`find`/`font` buffers remain disabled. Decoded or captured payloads over 64 KiB are rejected. Applies to existing panes after a successful reload and cancels an active capture when disabled. |
 | `allow_osc_notifications` | `false` | Boolean opt-in for OSC 9, OSC 99, and OSC 777 desktop notifications. OSC 99 occasions, urgency, `system`/`silent` sound selection, and Linux/macOS explicit close and guaranteed positive expiry are honored; Linux also supports standard named sounds and safe named icons. Windows close is a no-op and expiry is best effort, so neither capability is advertised there. Assembled title/body fields over 4 KiB or containing control characters are rejected; each pane is limited to one notification every two seconds. Applies immediately after a successful reload. |
+| `allow_osc_attention_requests` | `false` | Boolean opt-in for OSC 1337 `RequestAttention=yes`, `once`, and `no`. These map to the platform's indefinite, one-shot, and cancel attention hints. `fireworks` is ignored because toyoterm has no cursor-local animation surface. Applies immediately after a successful reload. |
+| `allow_osc_open_url` | `false` | Boolean opt-in allowing OSC 1337 `OpenURL=:` to launch a base64-encoded URL without a user gesture. Only `https`, `http`, and `mailto` URLs accepted by the normal 2,048-byte URL validator are allowed, and requests are limited to one per pane every two seconds. Applies immediately after a successful reload. |
 
 ## Key bindings
 
@@ -392,6 +394,7 @@ Each helper returns a binding with one of these actions:
 | `maximize_window`, `toggle_maximize`, `minimize_window`, `toggle_fullscreen`, `toggle_zoom` | None |
 | `next_tab`, `previous_tab`, `next_workspace`, `previous_workspace` | None |
 | `next_prompt`, `previous_prompt` | None; cyclically reveals retained OSC 133 `A` markers in the active pane. No marker is a no-op. |
+| `next_mark`, `previous_mark` | None; cyclically reveals retained iTerm2 OSC 1337 `SetMark` locations in the active pane. No mark is a no-op. |
 | `select_last_command_output` | None; selects the most recent complete OSC 133 `C`–`D` range. No complete range is a no-op. |
 | `select_next_command_output`, `select_previous_command_output` | None; cyclically selects complete OSC 133 `C`–`D` ranges. No complete range is a no-op. |
 | `copy_selection`, `paste_clipboard` | None |
@@ -413,10 +416,12 @@ leader state.
 
 Prefix repeat events are consumed without extending the original timeout.
 
-OSC 133 prompt navigation retains at most 4,096 semantic markers per terminal.
+OSC 133 prompt navigation and OSC 1337 `SetMark` navigation share a limit of
+4,096 semantic markers per terminal.
 Markers follow scrollback movement and are discarded when terminal resizing
 can reflow lines. The default configuration uses
 `leader("[").previous_prompt`, `leader("]").next_prompt`,
+`leader(",").previous_mark`, `leader(".").next_mark`,
 `leader("p").select_previous_command_output`,
 `leader("n").select_next_command_output`, and
 `leader("o").select_last_command_output`. Each method returns the binding
@@ -582,8 +587,11 @@ windows remain deferred.
 | Member | Result |
 | --- | --- |
 | `title` | Current terminal title. |
+| `icon_title` | Latest OSC 1 icon title, or `nil`. This read-only metadata is independent of the displayed terminal title, limited to 1 KiB, and rejects invalid UTF-8 or control characters. |
 | `cwd` | Working directory or `nil`; requires OSC 7 reporting. |
 | `remote_host` | Latest `user@host` report from OSC 1337 `RemoteHost=`, or `nil`. The read-only value is limited to 1 KiB; reports with a missing host, invalid UTF-8, or control characters are ignored. |
+| `shell_integration_version` | Latest numeric version from OSC 1337 `ShellIntegrationVersion=`, or `nil`. Malformed or out-of-range versions are ignored. |
+| `shell_integration_shell` | Shell name accompanying the latest OSC 1337 `ShellIntegrationVersion=` report, or `nil` for the deprecated version-only form. Names are limited to 64 UTF-8 bytes and cannot contain control characters or semicolons. |
 | `user_vars` | A detached hash of OSC 1337 `SetUserVar` metadata. Names are limited to 128 bytes, UTF-8 values to 4 KiB, and each pane to 64 distinct names; malformed reports are ignored. Mutating the returned hash does not change pane state. |
 | `pid` | Child process ID or `nil`. |
 | `command_running?` | Whether shell integration reports an active command. |
@@ -595,7 +603,7 @@ windows remain deferred.
 | `activate` | Queues activation and returns `self`. |
 | `send_text(text)` | Queues text for the PTY and returns `self`; rejects NUL bytes. |
 | `search(query, direction: :next)` | Queues a literal scrollback search and returns `self`. |
-| `badge` / `badge=` | Reads or queues pane-corner display text. Assign `nil` to clear it. |
+| `badge` / `badge=` | Reads or queues trusted pane-corner display text. Assign `nil` to clear it. A Ruby-set badge takes display precedence over an OSC 1337 `SetBadgeFormat` badge. |
 
 `Workspace#new_window`, `Window#new_tab`, and `Pane#split` accept an optional
 launch specification:

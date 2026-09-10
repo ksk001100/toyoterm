@@ -8,12 +8,13 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use arboard::Clipboard;
+use base64::Engine;
 use winit::application::ApplicationHandler;
 use winit::dpi::{LogicalSize, PhysicalPosition, PhysicalSize};
 use winit::event::{ElementState, Ime, KeyEvent, MouseButton, MouseScrollDelta, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop, EventLoopProxy};
 use winit::keyboard::{Key, KeyCode, ModifiersState, NamedKey, PhysicalKey};
-use winit::window::{CursorIcon, Fullscreen, Window, WindowId};
+use winit::window::{CursorIcon, Fullscreen, UserAttentionType, Window, WindowId};
 
 #[cfg(target_os = "linux")]
 use winit::platform::wayland::WindowAttributesExtWayland;
@@ -61,14 +62,16 @@ pub use toyoterm_script::ConfigManager;
 pub use toyoterm_terminal::{
     AlacrittyTerminalBackend, BindingKey, CursorShape, KeyChord, KeyModifiers, KeyPress, KeypadKey,
     MouseWheelDirection, NotificationOccasion, NotificationSound, NotificationUrgency,
-    SearchDirection, SearchResult, SelectionKind, TabColorComponent, TerminalBackend,
-    TerminalEvent, TerminalKey, TerminalMode, TerminalProgress, encode_key, encode_mouse_wheel,
-    encode_paste,
+    SearchDirection, SearchResult, SelectionKind, SessionStatusUpdate, TabColorComponent,
+    TerminalAttention, TerminalBackend, TerminalEvent, TerminalKey, TerminalMode, TerminalProgress,
+    encode_key, encode_mouse_wheel, encode_paste,
 };
 
 const MULTI_CLICK_INTERVAL: Duration = Duration::from_millis(500);
 const OSC_NOTIFICATION_INTERVAL: Duration = Duration::from_secs(2);
+const OSC_OPEN_URL_INTERVAL: Duration = Duration::from_secs(2);
 const MAX_OSC_USER_VARS: usize = 64;
+const MAX_OSC_REPORT_VARIABLE_VALUE_BYTES: usize = 4 * 1024;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 struct ClickTarget {
@@ -357,15 +360,22 @@ struct PaneRuntime {
     pty_session: Option<Box<dyn PtySession>>,
     process_id: Option<u32>,
     title: String,
+    icon_title: Option<String>,
+    osc_badge: Option<String>,
+    cursor_line_highlight: bool,
     cwd: Option<PathBuf>,
     remote_host: Option<String>,
+    shell_integration_version: Option<u32>,
+    shell_integration_shell: Option<String>,
     user_vars: BTreeMap<String, String>,
     command_running: bool,
     last_exit_status: Option<i32>,
     progress: Option<TerminalProgress>,
     tab_color: TabColorState,
+    session_status: SessionStatusState,
     mouse_cursor: CursorIcon,
     last_notification_at: Option<Instant>,
+    last_open_url_at: Option<Instant>,
     exited: bool,
 }
 
@@ -384,6 +394,102 @@ impl TabColorState {
     fn complete(&self) -> Option<[u8; 3]> {
         Some([self.0[0]?, self.0[1]?, self.0[2]?])
     }
+}
+
+#[derive(Default)]
+struct SessionStatusState {
+    indicator: Option<[u8; 3]>,
+    status: Option<String>,
+    status_color: Option<[u8; 3]>,
+}
+
+impl SessionStatusState {
+    fn apply(&mut self, update: &SessionStatusUpdate) {
+        if let Some(indicator) = update.indicator {
+            self.indicator = indicator;
+        }
+        if let Some(status) = &update.status {
+            self.status = status.clone();
+        }
+        if let Some(status_color) = update.status_color {
+            self.status_color = status_color;
+        }
+    }
+}
+
+fn iterm_variable_value(runtime: &PaneRuntime, name: &str) -> Option<String> {
+    let (columns, rows) = runtime.terminal.dimensions();
+    let value = match name {
+        "session.name" => Some(runtime.title.clone()),
+        "session.terminalIconName" => runtime.icon_title.clone(),
+        "session.columns" => Some(columns.to_string()),
+        "session.rows" => Some(rows.to_string()),
+        "session.path" => runtime
+            .cwd
+            .as_ref()
+            .map(|path| path.to_string_lossy().into_owned()),
+        "session.shell" => runtime.shell_integration_shell.clone(),
+        "session.hostname" => runtime
+            .remote_host
+            .as_deref()
+            .and_then(|remote_host| remote_host.split_once('@'))
+            .map(|(_, hostname)| hostname.to_owned()),
+        "session.username" => runtime
+            .remote_host
+            .as_deref()
+            .and_then(|remote_host| remote_host.split_once('@'))
+            .map(|(username, _)| username.to_owned()),
+        name => name
+            .strip_prefix("session.user.")
+            .and_then(|name| runtime.user_vars.get(name))
+            .cloned(),
+    }?;
+    (value.len() <= MAX_OSC_REPORT_VARIABLE_VALUE_BYTES).then_some(value)
+}
+
+fn iterm_variable_response(runtime: &PaneRuntime, name: &str) -> String {
+    let value = iterm_variable_value(runtime, name).unwrap_or_default();
+    let encoded = base64::engine::general_purpose::STANDARD.encode(value);
+    format!("\x1b]1337;ReportVariable={encoded}\x1b\\")
+}
+
+fn interpolate_iterm_badge(runtime: &PaneRuntime, format: &str) -> Option<String> {
+    let mut rendered = String::with_capacity(format.len());
+    let mut remaining = format;
+    while let Some(start) = remaining.find("\\(") {
+        rendered.push_str(&remaining[..start]);
+        let expression = &remaining[start + 2..];
+        let Some(end) = expression.find(')') else {
+            rendered.push_str(&remaining[start..]);
+            remaining = "";
+            break;
+        };
+        let name = &expression[..end];
+        let qualified = name
+            .strip_prefix("user.")
+            .map(|name| format!("session.user.{name}"));
+        let name = qualified.as_deref().unwrap_or(name);
+        if name.len() <= toyoterm_terminal::MAX_OSC_REPORT_VARIABLE_NAME_BYTES
+            && !name.chars().any(char::is_control)
+            && let Some(value) = iterm_variable_value(runtime, name)
+        {
+            rendered.push_str(&value);
+        }
+        if rendered.len() > MAX_OSC_REPORT_VARIABLE_VALUE_BYTES {
+            return None;
+        }
+        remaining = &expression[end + 1..];
+    }
+    rendered.push_str(remaining);
+    (rendered.len() <= MAX_OSC_REPORT_VARIABLE_VALUE_BYTES).then_some(rendered)
+}
+
+fn apply_iterm_badge_format(runtime: &mut PaneRuntime, format: &str) {
+    runtime.osc_badge = if format.is_empty() {
+        None
+    } else {
+        interpolate_iterm_badge(runtime, format)
+    };
 }
 
 impl PaneRuntime {
@@ -463,13 +569,21 @@ fn ruby_event_from_terminal_event(pane: PaneId, event: TerminalEvent) -> Option<
             event.title = Some(format!("Pane {}", pane.0));
             event
         }
+        TerminalEvent::IconTitleChanged(_) => return None,
         TerminalEvent::CwdChanged(cwd) => {
             let mut event = RubyEvent::new("cwd_changed");
             event.cwd = Some(cwd);
             event
         }
         TerminalEvent::RemoteHostChanged(_) => return None,
+        TerminalEvent::ShellIntegrationChanged { .. } => return None,
+        TerminalEvent::ItermVariableQuery(_) => return None,
+        TerminalEvent::ItermBadgeFormatChanged(_) => return None,
+        TerminalEvent::CursorLineHighlightChanged(_) => return None,
+        TerminalEvent::AttentionRequested(_) => return None,
+        TerminalEvent::OpenUrlRequested(_) => return None,
         TerminalEvent::UserVarChanged { .. } => return None,
+        TerminalEvent::MarkSet => return None,
         TerminalEvent::PromptStarted => RubyEvent::new("prompt_started"),
         TerminalEvent::CommandLineStarted => RubyEvent::new("command_line_started"),
         TerminalEvent::CommandStarted => RubyEvent::new("command_started"),
@@ -481,13 +595,19 @@ fn ruby_event_from_terminal_event(pane: PaneId, event: TerminalEvent) -> Option<
         TerminalEvent::MouseCursorChanged(_) => return None,
         TerminalEvent::MouseCursorControl(_) => return None,
         TerminalEvent::ColorControl(_)
+        | TerminalEvent::ItermUiColorChanged { .. }
+        | TerminalEvent::ItermUiColorReset(_)
+        | TerminalEvent::ItermUiColorQuery { .. }
         | TerminalEvent::ColorStackPush
         | TerminalEvent::ColorStackPop
         | TerminalEvent::TabColorChanged { .. }
         | TerminalEvent::TabColorSet(_)
-        | TerminalEvent::TabColorReset => return None,
+        | TerminalEvent::TabColorReset
+        | TerminalEvent::SessionStatusChanged(_) => return None,
         TerminalEvent::ProgressChanged(_) => return None,
-        TerminalEvent::ClipboardStore(_) => return None,
+        TerminalEvent::ClipboardStore(_)
+        | TerminalEvent::ClipboardCaptureStart
+        | TerminalEvent::ClipboardCaptureEnd => return None,
         TerminalEvent::Notification { .. } | TerminalEvent::NotificationClose(_) => return None,
         TerminalEvent::PtyWrite(_) => return None,
         TerminalEvent::Bell => RubyEvent::new("bell"),
@@ -868,8 +988,16 @@ impl ApplicationHandler<AppEvent> for ToyotermApplication {
                 let mut mouse_cursor_changed = false;
                 let mut osc52_copies = Vec::new();
                 let mut notification = None;
+                let mut attention_request = None;
+                let mut open_urls = Vec::new();
                 let allow_notifications =
                     self.script_snapshot.config.behavior.allow_osc_notifications;
+                let allow_attention = self
+                    .script_snapshot
+                    .config
+                    .behavior
+                    .allow_osc_attention_requests;
+                let allow_open_url = self.script_snapshot.config.behavior.allow_osc_open_url;
                 let window_focused = self
                     .window
                     .as_ref()
@@ -883,12 +1011,59 @@ impl ApplicationHandler<AppEvent> for ToyotermApplication {
                         match event {
                             TerminalEvent::TitleChanged(title) => runtime.title = title.clone(),
                             TerminalEvent::TitleReset => runtime.title = format!("Pane {}", pane.0),
+                            TerminalEvent::IconTitleChanged(title) => {
+                                runtime.icon_title = Some(title.clone());
+                            }
                             TerminalEvent::CwdChanged(cwd) => {
                                 runtime.cwd = Some(PathBuf::from(cwd))
                             }
                             TerminalEvent::RemoteHostChanged(remote_host) => {
                                 runtime.remote_host = Some(remote_host.clone());
                             }
+                            TerminalEvent::ShellIntegrationChanged { version, shell } => {
+                                runtime.shell_integration_version = Some(*version);
+                                runtime.shell_integration_shell = shell.clone();
+                            }
+                            TerminalEvent::ItermVariableQuery(name) => {
+                                let response = iterm_variable_response(runtime, name);
+                                if let Some(session) = runtime.pty_session.as_mut()
+                                    && let Err(error) = session.write(response.as_bytes())
+                                {
+                                    tracing::error!(
+                                        target: "toyoterm::pty",
+                                        operation = error.operation(),
+                                        %pane,
+                                        bytes = response.len(),
+                                        %error,
+                                        "write iTerm2 variable response to pane PTY failed"
+                                    );
+                                }
+                            }
+                            TerminalEvent::ItermBadgeFormatChanged(format) => {
+                                apply_iterm_badge_format(runtime, format);
+                            }
+                            TerminalEvent::CursorLineHighlightChanged(enabled) => {
+                                runtime.cursor_line_highlight = *enabled;
+                            }
+                            TerminalEvent::AttentionRequested(TerminalAttention::Cancel) => {
+                                attention_request = Some(TerminalAttention::Cancel);
+                            }
+                            TerminalEvent::AttentionRequested(request) if allow_attention => {
+                                attention_request = Some(*request);
+                            }
+                            TerminalEvent::AttentionRequested(_) => {}
+                            TerminalEvent::OpenUrlRequested(url)
+                                if should_open_osc_url(
+                                    allow_open_url,
+                                    url,
+                                    runtime.last_open_url_at,
+                                    Instant::now(),
+                                ) =>
+                            {
+                                runtime.last_open_url_at = Some(Instant::now());
+                                open_urls.push(url.clone());
+                            }
+                            TerminalEvent::OpenUrlRequested(_) => {}
                             TerminalEvent::UserVarChanged { name, value }
                                 if runtime.user_vars.contains_key(name)
                                     || runtime.user_vars.len() < MAX_OSC_USER_VARS =>
@@ -896,6 +1071,7 @@ impl ApplicationHandler<AppEvent> for ToyotermApplication {
                                 runtime.user_vars.insert(name.clone(), value.clone());
                             }
                             TerminalEvent::UserVarChanged { .. } => {}
+                            TerminalEvent::MarkSet => {}
                             TerminalEvent::PromptStarted | TerminalEvent::CommandLineStarted => {}
                             TerminalEvent::CommandStarted => runtime.command_running = true,
                             TerminalEvent::CommandFinished(status) => {
@@ -908,6 +1084,9 @@ impl ApplicationHandler<AppEvent> for ToyotermApplication {
                             }
                             TerminalEvent::MouseCursorControl(_) => {}
                             TerminalEvent::ColorControl(_)
+                            | TerminalEvent::ItermUiColorChanged { .. }
+                            | TerminalEvent::ItermUiColorReset(_)
+                            | TerminalEvent::ItermUiColorQuery { .. }
                             | TerminalEvent::ColorStackPush
                             | TerminalEvent::ColorStackPop => {}
                             TerminalEvent::TabColorChanged { component, value } => {
@@ -920,6 +1099,9 @@ impl ApplicationHandler<AppEvent> for ToyotermApplication {
                             TerminalEvent::TabColorReset => {
                                 runtime.tab_color = TabColorState::default();
                             }
+                            TerminalEvent::SessionStatusChanged(update) => {
+                                runtime.session_status.apply(update);
+                            }
                             TerminalEvent::ProgressChanged(progress) => {
                                 runtime.progress =
                                     (*progress != TerminalProgress::Hidden).then_some(*progress);
@@ -927,6 +1109,8 @@ impl ApplicationHandler<AppEvent> for ToyotermApplication {
                             TerminalEvent::ClipboardStore(text) => {
                                 osc52_copies.push(text.clone());
                             }
+                            TerminalEvent::ClipboardCaptureStart
+                            | TerminalEvent::ClipboardCaptureEnd => {}
                             TerminalEvent::Notification {
                                 id,
                                 title,
@@ -987,6 +1171,20 @@ impl ApplicationHandler<AppEvent> for ToyotermApplication {
                 }
                 if mouse_cursor_changed && let Some(window) = self.window.as_ref() {
                     self.update_mouse_cursor(window);
+                }
+                if let Some(request) = attention_request
+                    && let Some(window) = self.window.as_ref()
+                {
+                    window.request_user_attention(match request {
+                        TerminalAttention::Indefinite => Some(UserAttentionType::Critical),
+                        TerminalAttention::Once => Some(UserAttentionType::Informational),
+                        TerminalAttention::Cancel => None,
+                    });
+                }
+                for url in open_urls {
+                    if let Err(error) = open_allowed_url(&url) {
+                        tracing::warn!(target: "toyoterm::app", %error, %url, "open OSC URL failed");
+                    }
                 }
                 for text in osc52_copies {
                     if let Err(error) = self.clipboard().and_then(|clipboard| {
@@ -1097,6 +1295,18 @@ fn notification_platform_id(pane: PaneId, id: &str) -> u32 {
         hash = hash.wrapping_mul(16_777_619);
     }
     hash.max(1)
+}
+
+fn should_open_osc_url(
+    enabled: bool,
+    url: &str,
+    last_opened_at: Option<Instant>,
+    now: Instant,
+) -> bool {
+    enabled
+        && validate_allowed_url(url).is_ok()
+        && last_opened_at
+            .is_none_or(|last| now.saturating_duration_since(last) >= OSC_OPEN_URL_INTERVAL)
 }
 
 impl ToyotermApplication {
@@ -1242,6 +1452,32 @@ mod tests {
     }
 
     #[test]
+    fn session_status_updates_only_present_fields_and_supports_clear() {
+        let mut state = SessionStatusState::default();
+        state.apply(&SessionStatusUpdate {
+            indicator: Some(Some([1, 2, 3])),
+            status: Some(Some("building".into())),
+            status_color: Some(Some([4, 5, 6])),
+        });
+        state.apply(&SessionStatusUpdate {
+            status: Some(Some("ready".into())),
+            ..SessionStatusUpdate::default()
+        });
+        assert_eq!(state.indicator, Some([1, 2, 3]));
+        assert_eq!(state.status.as_deref(), Some("ready"));
+        assert_eq!(state.status_color, Some([4, 5, 6]));
+
+        state.apply(&SessionStatusUpdate {
+            indicator: Some(None),
+            status: Some(None),
+            status_color: Some(None),
+        });
+        assert_eq!(state.indicator, None);
+        assert_eq!(state.status, None);
+        assert_eq!(state.status_color, None);
+    }
+
+    #[test]
     fn filters_notification_occasions_against_source_visibility() {
         assert!(notification_occasion_matches(
             NotificationOccasion::Always,
@@ -1267,6 +1503,31 @@ mod tests {
             NotificationOccasion::Invisible,
             false,
             false
+        ));
+    }
+
+    #[test]
+    fn osc_url_opening_requires_opt_in_allowlisted_scheme_and_rate_limit() {
+        let now = Instant::now();
+        assert!(should_open_osc_url(true, "https://example.com", None, now));
+        assert!(!should_open_osc_url(
+            false,
+            "https://example.com",
+            None,
+            now
+        ));
+        assert!(!should_open_osc_url(true, "file:///tmp/a", None, now));
+        assert!(!should_open_osc_url(
+            true,
+            "https://example.com",
+            Some(now - Duration::from_secs(1)),
+            now
+        ));
+        assert!(should_open_osc_url(
+            true,
+            "mailto:user@example.com",
+            Some(now - OSC_OPEN_URL_INTERVAL),
+            now
         ));
     }
 
@@ -1301,6 +1562,92 @@ mod tests {
         assert_eq!(finished.name, "command_finished");
         assert_eq!(finished.pane, Some(pane));
         assert_eq!(finished.exit_status, Some(23));
+    }
+
+    #[test]
+    fn reports_bounded_iterm_session_variables() {
+        let mut user_vars = BTreeMap::new();
+        user_vars.insert("gitBranch".into(), "main".into());
+        let mut runtime = PaneRuntime {
+            terminal: AlacrittyTerminalBackend::new(80, 24),
+            pty_session: None,
+            process_id: None,
+            title: "build server".into(),
+            icon_title: Some("build".into()),
+            osc_badge: None,
+            cursor_line_highlight: false,
+            cwd: Some(PathBuf::from("/srv/project")),
+            remote_host: Some("alice@example.com".into()),
+            shell_integration_version: Some(1),
+            shell_integration_shell: Some("bash".into()),
+            user_vars,
+            command_running: false,
+            last_exit_status: None,
+            progress: None,
+            tab_color: TabColorState::default(),
+            session_status: SessionStatusState::default(),
+            mouse_cursor: CursorIcon::Default,
+            last_notification_at: None,
+            last_open_url_at: None,
+            exited: false,
+        };
+
+        assert_eq!(
+            iterm_variable_response(&runtime, "session.name"),
+            "\x1b]1337;ReportVariable=YnVpbGQgc2VydmVy\x1b\\"
+        );
+        assert_eq!(
+            iterm_variable_value(&runtime, "session.terminalIconName").as_deref(),
+            Some("build")
+        );
+        assert_eq!(
+            iterm_variable_value(&runtime, "session.path").as_deref(),
+            Some("/srv/project")
+        );
+        assert_eq!(
+            iterm_variable_value(&runtime, "session.columns").as_deref(),
+            Some("80")
+        );
+        assert_eq!(
+            iterm_variable_value(&runtime, "session.rows").as_deref(),
+            Some("24")
+        );
+        assert_eq!(
+            iterm_variable_value(&runtime, "session.shell").as_deref(),
+            Some("bash")
+        );
+        assert_eq!(
+            iterm_variable_value(&runtime, "session.hostname").as_deref(),
+            Some("example.com")
+        );
+        assert_eq!(
+            iterm_variable_value(&runtime, "session.username").as_deref(),
+            Some("alice")
+        );
+        assert_eq!(
+            iterm_variable_value(&runtime, "session.user.gitBranch").as_deref(),
+            Some("main")
+        );
+        assert_eq!(
+            iterm_variable_response(&runtime, "session.unknown"),
+            "\x1b]1337;ReportVariable=\x1b\\"
+        );
+        assert_eq!(
+            interpolate_iterm_badge(
+                &runtime,
+                r"\(session.name) · \(user.gitBranch) · \(session.hostname)"
+            )
+            .as_deref(),
+            Some("build server · main · example.com")
+        );
+        assert_eq!(
+            interpolate_iterm_badge(&runtime, r"unknown=\(session.missing)").as_deref(),
+            Some("unknown=")
+        );
+        apply_iterm_badge_format(&mut runtime, r"\(session.name):\(user.gitBranch)");
+        assert_eq!(runtime.osc_badge.as_deref(), Some("build server:main"));
+        apply_iterm_badge_format(&mut runtime, "");
+        assert_eq!(runtime.osc_badge, None);
     }
 
     #[cfg(unix)]
@@ -1380,15 +1727,22 @@ mod tests {
                 pty_session: Some(Box::new(KillTrackingSession(kills.clone()))),
                 process_id: Some(42),
                 title: "test".into(),
+                icon_title: None,
+                osc_badge: None,
+                cursor_line_highlight: false,
                 cwd: None,
                 remote_host: None,
+                shell_integration_version: None,
+                shell_integration_shell: None,
                 user_vars: BTreeMap::new(),
                 command_running: false,
                 last_exit_status: None,
                 progress: None,
                 tab_color: TabColorState::default(),
+                session_status: SessionStatusState::default(),
                 mouse_cursor: CursorIcon::Default,
                 last_notification_at: None,
+                last_open_url_at: None,
                 exited: false,
             };
         }

@@ -77,10 +77,15 @@ pub(super) fn ruby_object_model(
                         title: runtime
                             .map(|runtime| runtime.title.clone())
                             .unwrap_or_else(|| format!("Pane {}", pane_id.0)),
+                        icon_title: runtime.and_then(|runtime| runtime.icon_title.clone()),
                         cwd: runtime
                             .and_then(|runtime| runtime.cwd.as_ref())
                             .map(|cwd| cwd.display().to_string()),
                         remote_host: runtime.and_then(|runtime| runtime.remote_host.clone()),
+                        shell_integration_version: runtime
+                            .and_then(|runtime| runtime.shell_integration_version),
+                        shell_integration_shell: runtime
+                            .and_then(|runtime| runtime.shell_integration_shell.clone()),
                         user_vars: runtime
                             .map(|runtime| {
                                 runtime

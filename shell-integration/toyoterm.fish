@@ -2,6 +2,7 @@
 status is-interactive; and test "$TERM_PROGRAM" = toyoterm; or return 0
 set -q TOYOTERM_SHELL_INTEGRATION_LOADED; and return 0
 set -gx TOYOTERM_SHELL_INTEGRATION_LOADED 1
+printf '\e]1337;ShellIntegrationVersion=1;fish\e\\'
 
 function __toyoterm_urlencode_path --argument-names value
     string escape --style=url -- $value | string replace -a '%2F' '/'

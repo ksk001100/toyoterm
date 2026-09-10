@@ -124,6 +124,8 @@ pub enum NativeAction {
     PreviousWorkspace,
     NextPrompt,
     PreviousPrompt,
+    NextMark,
+    PreviousMark,
     SelectNextCommandOutput,
     SelectPreviousCommandOutput,
     SelectLastCommandOutput,

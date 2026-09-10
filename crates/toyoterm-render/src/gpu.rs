@@ -101,6 +101,7 @@ struct TabBuffer {
     rect: PaneRect,
     active: bool,
     background: Option<[u8; 3]>,
+    indicator: Option<[u8; 3]>,
 }
 
 struct OverlayBuffer {
@@ -135,6 +136,8 @@ struct PaneBuffers {
     text: Buffer,
     cell_runs: Vec<CellRunBuffer>,
     cursor_glyph: Buffer,
+    cursor_text: Buffer,
+    has_cursor_text: bool,
     badge: Buffer,
     has_badge: bool,
     layout: TextLayout,
@@ -147,6 +150,8 @@ struct PaneBuffers {
     selection_highlights: Vec<PaneRect>,
     search_highlights: Vec<(PaneRect, bool)>,
     command_zone_markers: Vec<(PaneRect, Option<i32>)>,
+    cursor_line_highlight: Option<PaneRect>,
+    colors: TerminalColors,
 }
 
 struct CellRunBuffer {
@@ -253,7 +258,12 @@ pub(super) fn configured_font_system(fallback: &[String]) -> FontSystem {
 }
 
 impl PaneBuffers {
-    pub(super) fn new(font_system: &mut FontSystem, metrics: Metrics, layout: TextLayout) -> Self {
+    pub(super) fn new(
+        font_system: &mut FontSystem,
+        metrics: Metrics,
+        layout: TextLayout,
+        colors: TerminalColors,
+    ) -> Self {
         let mut buffer = || {
             let mut buffer = Buffer::new(font_system, metrics);
             buffer.set_wrap(Wrap::None);
@@ -263,6 +273,8 @@ impl PaneBuffers {
             text: buffer(),
             cell_runs: Vec::new(),
             cursor_glyph: buffer(),
+            cursor_text: buffer(),
+            has_cursor_text: false,
             badge: buffer(),
             has_badge: false,
             layout,
@@ -280,6 +292,8 @@ impl PaneBuffers {
             selection_highlights: Vec::new(),
             search_highlights: Vec::new(),
             command_zone_markers: Vec::new(),
+            cursor_line_highlight: None,
+            colors,
             images: Vec::new(),
         }
     }
@@ -507,10 +521,10 @@ impl GpuRenderer {
         let metrics = Metrics::new(layout.font_size.max(1.0), layout.line_height.max(1.0));
         let font_family = self.style.font_family.clone();
         let font_weight = self.style.font_weight;
-        let foreground = self.style.foreground;
-        let background = self.style.background;
-        let ansi = self.style.ansi;
         for pane in panes {
+            let foreground = pane.colors.foreground;
+            let background = pane.colors.background;
+            let ansi = pane.colors.ansi;
             let use_cell_runs = pane
                 .snapshot
                 .cells
@@ -528,15 +542,13 @@ impl GpuRenderer {
                     Some(pane.cursor),
                     &font_family,
                     font_weight,
-                    foreground,
-                    background,
-                    &ansi,
+                    &pane.colors,
                 )
             };
             if !self.panes.contains_key(&pane.pane) {
                 self.panes.insert(
                     pane.pane,
-                    PaneBuffers::new(&mut self.font_system, metrics, layout),
+                    PaneBuffers::new(&mut self.font_system, metrics, layout, pane.colors),
                 );
             }
             let buffers = self
@@ -569,6 +581,7 @@ impl GpuRenderer {
             buffers.rect = pane.rect;
             buffers.active = pane.active;
             buffers.zoomed = pane.zoomed;
+            buffers.colors = pane.colors;
             buffers.backgrounds = terminal_backgrounds(
                 pane.snapshot,
                 pane.rect,
@@ -583,6 +596,11 @@ impl GpuRenderer {
             buffers.search_highlights = search_highlight_rects(pane.snapshot, pane.rect, layout);
             buffers.command_zone_markers =
                 command_zone_marker_rects(pane.snapshot, pane.rect, layout);
+            buffers.cursor_line_highlight = if pane.cursor_line_highlight {
+                cursor_line_highlight_rect(pane.rect, layout, pane.cursor.row)
+            } else {
+                None
+            };
             if !use_cell_runs {
                 let content_width = pane
                     .rect
@@ -660,6 +678,11 @@ impl GpuRenderer {
                     cells,
                     layout,
                     &self.style,
+                    CellRenderContext {
+                        row,
+                        selection: &pane.snapshot.selection,
+                        colors: &pane.colors,
+                    },
                 );
             }
 
@@ -681,6 +704,38 @@ impl GpuRenderer {
             buffers
                 .cursor_glyph
                 .shape_until_scroll(&mut self.font_system, false);
+            buffers.has_cursor_text = false;
+            if pane.cursor.shape == CursorShape::Block
+                && let Some([red, green, blue]) = pane.colors.cursor_foreground
+                && let Some(cell) = cursor_cell(pane.snapshot, pane.cursor)
+                && !cell.text.is_empty()
+            {
+                let mut attributes = cell.attributes;
+                attributes.foreground = CellColor::Rgb(red, green, blue);
+                attributes.inverse = false;
+                buffers
+                    .cursor_text
+                    .set_monospace_width(Some(layout.cell_width));
+                buffers
+                    .cursor_text
+                    .set_metrics_and_size(metrics, None, None);
+                buffers.cursor_text.set_text(
+                    &cell.text,
+                    &glyph_attrs(
+                        attributes,
+                        false,
+                        &self.style.font_family,
+                        self.style.font_weight,
+                        &pane.colors,
+                    ),
+                    Shaping::Advanced,
+                    None,
+                );
+                buffers
+                    .cursor_text
+                    .shape_until_scroll(&mut self.font_system, false);
+                buffers.has_cursor_text = true;
+            }
 
             buffers.has_badge = pane.badge.is_some_and(|badge| !badge.is_empty());
             buffers.badge.set_metrics_and_size(
@@ -728,6 +783,7 @@ impl GpuRenderer {
                         rect: tab.rect,
                         active: tab.active,
                         background: tab.background,
+                        indicator: tab.indicator,
                     },
                 );
             }
@@ -738,19 +794,36 @@ impl GpuRenderer {
             buffer.rect = tab.rect;
             buffer.active = tab.active;
             buffer.background = tab.background;
+            buffer.indicator = tab.indicator;
+            let text_inset = if tab.indicator.is_some() { 28 } else { 16 };
             buffer.text.set_metrics_and_size(
                 metrics,
-                Some(tab.rect.width.saturating_sub(16) as f32),
+                Some(tab.rect.width.saturating_sub(text_inset) as f32),
                 Some(tab.rect.height as f32),
             );
-            buffer.text.set_text(
-                tab.title,
-                &Attrs::new()
-                    .family(resolve_font_family(&self.style.font_family))
-                    .weight(Weight(self.style.font_weight)),
-                Shaping::Advanced,
-                None,
-            );
+            let default_attrs = Attrs::new()
+                .family(resolve_font_family(&self.style.font_family))
+                .weight(Weight(self.style.font_weight));
+            if let Some(status) = tab.status {
+                let status_attrs = tab.status_color.map_or_else(
+                    || default_attrs.clone(),
+                    |color| default_attrs.clone().color(glyph_color(color, 255)),
+                );
+                buffer.text.set_rich_text(
+                    [
+                        (tab.title, default_attrs.clone()),
+                        (" · ", default_attrs.clone()),
+                        (status, status_attrs),
+                    ],
+                    &default_attrs,
+                    Shaping::Advanced,
+                    None,
+                );
+            } else {
+                buffer
+                    .text
+                    .set_text(tab.title, &default_attrs, Shaping::Advanced, None);
+            }
             buffer.text.shape_until_scroll(&mut self.font_system, false);
         }
     }
@@ -781,6 +854,7 @@ impl GpuRenderer {
                         rect: workspace.rect,
                         active: workspace.active,
                         background: None,
+                        indicator: None,
                     },
                 );
             }
@@ -1038,7 +1112,7 @@ impl GpuRenderer {
         for tab in self.tabs.values() {
             text_areas.push(TextArea {
                 buffer: &tab.text,
-                left: tab.rect.x as f32 + 8.0,
+                left: tab.rect.x as f32 + if tab.indicator.is_some() { 20.0 } else { 8.0 },
                 top: tab.rect.y as f32 + 4.0,
                 scale: 1.0,
                 bounds: pane_bounds(tab.rect),
@@ -1118,7 +1192,7 @@ impl GpuRenderer {
                     top: placement.text_top,
                     scale: 1.0,
                     bounds,
-                    default_color: glyph_color(self.style.foreground, 255),
+                    default_color: glyph_color(pane.colors.foreground, 255),
                     custom_glyphs: &[],
                 });
             } else {
@@ -1129,7 +1203,7 @@ impl GpuRenderer {
                         top: placement.text_top + f32::from(run.row) * pane.layout.line_height,
                         scale: 1.0,
                         bounds,
-                        default_color: glyph_color(self.style.foreground, 255),
+                        default_color: glyph_color(pane.colors.foreground, 255),
                         custom_glyphs: &[],
                     });
                 }
@@ -1141,9 +1215,25 @@ impl GpuRenderer {
                     top: placement.cursor_top,
                     scale: 1.0,
                     bounds,
-                    default_color: glyph_color(self.style.cursor, 255),
+                    default_color: glyph_color(pane.colors.cursor, 255),
                     custom_glyphs: &[],
                 });
+                if pane.has_cursor_text {
+                    text_areas.push(TextArea {
+                        buffer: &pane.cursor_text,
+                        left: placement.cursor_left,
+                        top: placement.cursor_top,
+                        scale: 1.0,
+                        bounds,
+                        default_color: glyph_color(
+                            pane.colors
+                                .cursor_foreground
+                                .unwrap_or(pane.colors.foreground),
+                            255,
+                        ),
+                        custom_glyphs: &[],
+                    });
+                }
             }
             if pane.active && self.has_preedit {
                 text_areas.push(TextArea {
@@ -1342,6 +1432,15 @@ impl GpuRenderer {
                 self.configuration.width,
                 self.configuration.height,
             );
+            if let Some(indicator) = tab.indicator {
+                push_ui_rect(
+                    &mut vertices,
+                    tab_indicator_rect(tab.rect),
+                    rgba(indicator, 1.0),
+                    self.configuration.width,
+                    self.configuration.height,
+                );
+            }
             push_ui_rect(
                 &mut vertices,
                 PaneRect::new(
@@ -1371,6 +1470,15 @@ impl GpuRenderer {
         }
 
         for pane in self.panes.values() {
+            if let Some(background) = pane_background_override(&self.style, pane.colors) {
+                push_ui_rect(
+                    &mut vertices,
+                    pane.rect,
+                    rgba(background, 1.0),
+                    self.configuration.width,
+                    self.configuration.height,
+                );
+            }
             for (rect, color) in &pane.backgrounds {
                 push_ui_rect(
                     &mut vertices,
@@ -1380,11 +1488,24 @@ impl GpuRenderer {
                     self.configuration.height,
                 );
             }
+            if let Some(rect) = pane.cursor_line_highlight {
+                push_ui_rect(
+                    &mut vertices,
+                    rect,
+                    rgba(self.style.selection, 0.18),
+                    self.configuration.width,
+                    self.configuration.height,
+                );
+            }
             for rect in &pane.selection_highlights {
+                let (color, alpha) = pane
+                    .colors
+                    .selection_background
+                    .map_or((self.style.selection, 210.0 / 255.0), |color| (color, 1.0));
                 push_ui_rect(
                     &mut vertices,
                     *rect,
-                    rgba(self.style.selection, 210.0 / 255.0),
+                    rgba(color, alpha),
                     self.configuration.width,
                     self.configuration.height,
                 );
@@ -1404,9 +1525,9 @@ impl GpuRenderer {
             }
             for (rect, exit_status) in &pane.command_zone_markers {
                 let color = match exit_status {
-                    Some(0) => self.style.ansi[2],
-                    Some(_) => self.style.ansi[1],
-                    None => self.style.foreground,
+                    Some(0) => pane.colors.ansi[2],
+                    Some(_) => pane.colors.ansi[1],
+                    None => pane.colors.foreground,
                 };
                 push_ui_rect(
                     &mut vertices,

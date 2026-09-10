@@ -30,10 +30,15 @@ mod tests {
         for source in [BASH, ZSH, FISH, POWERSHELL] {
             assert!(source.contains("]7;file://"));
             assert!(source.contains("]1337;RemoteHost="));
+            assert!(source.contains("]1337;ShellIntegrationVersion=1;"));
             assert!(source.contains("]133;A"));
             assert!(source.contains("]133;B"));
             assert!(source.contains("]133;C"));
             assert!(source.contains("]133;D;"));
         }
+        assert!(BASH.contains("ShellIntegrationVersion=1;bash"));
+        assert!(ZSH.contains("ShellIntegrationVersion=1;zsh"));
+        assert!(FISH.contains("ShellIntegrationVersion=1;fish"));
+        assert!(POWERSHELL.contains("ShellIntegrationVersion=1;powershell"));
     }
 }

@@ -17,6 +17,20 @@ fn png() -> Vec<u8> {
     bytes.into_inner()
 }
 
+fn gif() -> Vec<u8> {
+    let image = image::RgbaImage::from_raw(2, 1, vec![255, 0, 0, 255, 0, 255, 0, 255]).unwrap();
+    let mut bytes = Cursor::new(Vec::new());
+    image.write_to(&mut bytes, image::ImageFormat::Gif).unwrap();
+    bytes.into_inner()
+}
+
+fn encoded_image(format: image::ImageFormat) -> Vec<u8> {
+    let image = image::RgbaImage::from_raw(2, 1, vec![255, 0, 0, 255, 0, 255, 0, 255]).unwrap();
+    let mut bytes = Cursor::new(Vec::new());
+    image.write_to(&mut bytes, format).unwrap();
+    bytes.into_inner()
+}
+
 #[test]
 fn every_split_preserves_graphics_text_and_cursor_order() {
     let mut bytes = b"before\r\n".to_vec();
@@ -123,6 +137,120 @@ fn osc1337_png_bel_and_st_do_not_leak_payload_into_text() {
 }
 
 #[test]
+fn osc1337_gif_displays_its_first_frame() {
+    let mut t = terminal();
+    let bytes = gif();
+    t.advance(
+        format!(
+            "\x1b]1337;File=inline=1;size={}:{}\x1b\\",
+            bytes.len(),
+            STANDARD.encode(bytes)
+        )
+        .as_bytes(),
+    );
+
+    let image = t.snapshot().images.remove(0);
+    assert_eq!((image.width, image.height), (2, 1));
+    assert_eq!(&*image.rgba, &[255, 0, 0, 255, 0, 255, 0, 255]);
+}
+
+#[test]
+fn osc1337_displays_bmp_and_webp_images() {
+    for format in [image::ImageFormat::Bmp, image::ImageFormat::WebP] {
+        let mut t = terminal();
+        let bytes = encoded_image(format);
+        t.advance(
+            format!(
+                "\x1b]1337;File=inline=1;size={}:{}\x1b\\",
+                bytes.len(),
+                STANDARD.encode(bytes)
+            )
+            .as_bytes(),
+        );
+
+        let image = t.snapshot().images.remove(0);
+        assert_eq!((image.width, image.height), (2, 1), "format={format:?}");
+        assert_eq!(
+            &*image.rgba,
+            &[255, 0, 0, 255, 0, 255, 0, 255],
+            "format={format:?}"
+        );
+    }
+}
+
+#[test]
+fn osc1337_multipart_png_preserves_fragmentation_size_and_cursor_order() {
+    let bytes = png();
+    let encoded = STANDARD.encode(&bytes);
+    let split = encoded.len() / 2;
+    let sequence = format!(
+        "before\r\n\x1b]1337;MultipartFile=inline=1;size={};width=4px\x07\
+         \x1b]1337;FilePart={}\x1b\\\
+         \x1b]1337;FilePart={}\x07\
+         \x1b]1337;FileEnd\x1b\\after",
+        bytes.len(),
+        &encoded[..split],
+        &encoded[split..]
+    );
+    let sequence = sequence.as_bytes();
+
+    let mut complete = terminal();
+    complete.advance(sequence);
+    let expected = complete.snapshot();
+    assert_eq!(expected.images.len(), 1);
+    assert_eq!(
+        (
+            expected.images[0].column,
+            expected.images[0].row,
+            expected.images[0].display_width,
+            expected.images[0].display_height,
+        ),
+        (0, 1, 4, 2)
+    );
+    assert_eq!(expected.lines[2], "    after");
+
+    for split in 0..=sequence.len() {
+        let mut fragmented = terminal();
+        fragmented.advance(&sequence[..split]);
+        fragmented.advance(&sequence[split..]);
+        assert_eq!(fragmented.snapshot(), expected, "split={split}");
+    }
+}
+
+#[test]
+fn osc1337_multipart_rejects_downloads_malformed_data_and_oversized_parts() {
+    let mut t = terminal();
+    t.advance(b"\x1b]1337;MultipartFile=inline=0\x07");
+    t.advance(b"\x1b]1337;FilePart=AAAA\x07\x1b]1337;FileEnd\x07");
+    t.advance(b"\x1b]1337;MultipartFile=inline=1\x07");
+    t.advance(b"\x1b]1337;FilePart=not-base64\x07\x1b]1337;FileEnd\x07");
+    t.advance(b"\x1b]1337;MultipartFile=inline=1\x07\x1b]1337;FilePart=");
+    t.advance(&vec![b'A'; 1024 * 1024]);
+    t.advance(b"\x07\x1b]1337;FileEnd\x07restored");
+    assert!(t.snapshot().images.is_empty());
+    assert_eq!(t.snapshot().lines[0], "restored");
+}
+
+#[test]
+fn osc1337_multipart_cancel_and_restart_discards_previous_chunks() {
+    let mut t = terminal();
+    t.advance(b"\x1b]1337;MultipartFile=inline=1\x07");
+    t.advance(b"\x1b]1337;FilePart=AAAA\x18");
+    let bytes = png();
+    let encoded = STANDARD.encode(&bytes);
+    t.advance(
+        format!(
+            "\x1b]1337;MultipartFile=inline=1;size={}\x07\
+             \x1b]1337;FilePart={encoded}\x07\
+             \x1b]1337;FileEnd\x07",
+            bytes.len()
+        )
+        .as_bytes(),
+    );
+    assert_eq!(t.snapshot().images.len(), 1);
+}
+
+#[test]
 fn graphics_follow_history_and_alternate_screen_and_clear() {
     let mut t = terminal();
     t.advance(&kitty("a=T,f=24,s=1,v=1,i=1,C=1", &[255, 0, 0]));
@@ -207,6 +335,21 @@ fn capability_size_and_query_replies_keep_wire_order() {
             "\x1b[1;1R"
         ]
         .map(|s| TerminalEvent::PtyWrite(s.into()))
+    );
+}
+
+#[test]
+fn iterm_cell_size_query_reports_logical_height_width_and_scale() {
+    let mut t = terminal();
+    t.set_cell_size(9, 18);
+    t.set_cell_scale_factor(1.5);
+    t.advance(b"before\x1b]1337;ReportCellSize\x07after");
+    assert_eq!(t.snapshot().lines[0], "beforeafter");
+    assert_eq!(
+        t.drain_events(),
+        [TerminalEvent::PtyWrite(
+            "\x1b]1337;ReportCellSize=12.00;6.00;1.50\x1b\\".into()
+        )]
     );
 }
 

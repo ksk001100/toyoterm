@@ -88,6 +88,8 @@ pub struct BehaviorConfig {
     pub copy_on_select: bool,
     pub allow_osc52_copy: bool,
     pub allow_osc_notifications: bool,
+    pub allow_osc_attention_requests: bool,
+    pub allow_osc_open_url: bool,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -160,6 +162,8 @@ impl Default for ToyotermConfig {
                 copy_on_select: false,
                 allow_osc52_copy: false,
                 allow_osc_notifications: false,
+                allow_osc_attention_requests: false,
+                allow_osc_open_url: false,
             },
             default_shell: None,
             scrollback_lines: 10_000,
@@ -374,6 +378,8 @@ mod tests {
         assert_eq!(config.scrollback_lines, 10_000);
         assert!(!config.behavior.allow_osc52_copy);
         assert!(!config.behavior.allow_osc_notifications);
+        assert!(!config.behavior.allow_osc_attention_requests);
+        assert!(!config.behavior.allow_osc_open_url);
         assert_eq!(config.leader, None);
         assert!(config.status_bars.is_empty());
     }

@@ -17,7 +17,7 @@ python examples/terminal_images.py --protocol kitty
 | --- | --- |
 | Sixel (DCS `ESC P … q … ESC \\`) | Raster dimensions, repeat, carriage return, next sixel line, 256 color registers, RGB and DEC HLS definitions, transparent background (`P2=1`) |
 | Kitty (APC `ESC _ G … ESC \\`) | Direct base64 transmission (`t=d`), RGB/RGBA/PNG (`f=24/32/100`), zlib (`o=z`), chunking (`m`), transmit/query/display (`a=t/q/T/p`), image and placement IDs (`i/p`), cell sizes (`c/r`), cursor preservation (`C=1`), quiet replies (`q`), deletion of visible placements or an image ID (`d=a/A/i/I`) |
-| iTerm2 (OSC 1337) | `File=inline=1`, base64 PNG/JPEG, optional byte `size`, `width`/`height` in cells, pixels, percent, or `auto`, `preserveAspectRatio`, BEL or ST termination |
+| iTerm2 (OSC 1337) | `File=inline=1` and `MultipartFile`/`FilePart`/`FileEnd`, base64 PNG/JPEG/GIF/BMP/WebP (the first frame of an animated image is displayed), optional byte `size`, `width`/`height` in cells, pixels, percent, or `auto`, `preserveAspectRatio`, BEL or ST termination |
 
 Kitty replies use the normal PTY response channel. Queries decode and validate
 the image without retaining or displaying it. Unknown image IDs and unsupported
@@ -50,9 +50,10 @@ Text selection and copying continue to operate on text only.
   image-number addressing, cropping, offsets, relative placement, and nonzero
   z-index are not implemented. Use direct transmission with supported placement
   keys. Deletion selectors other than `a/A/i/I` return an unsupported error.
-- OSC 1337 multipart transfers, file downloads (`inline=0`), and formats other
-  than PNG/JPEG are not implemented.
-- Each control string and accumulated Kitty transfer is limited to 32 MiB.
+- OSC 1337 file downloads (`inline=0`), image animation, and formats other than
+  PNG/JPEG/GIF/BMP/WebP are not implemented.
+- Each control string and accumulated Kitty or iTerm2 transfer is limited to 32
+  MiB. Each iTerm2 multipart control string is additionally limited to 1 MiB.
   Decoded RGBA is limited to 32 MiB and 4096 pixels per side. Image decoding also
   has a 32 MiB allocation budget. Oversized/malformed strings are discarded and
   normal text parsing resumes at the terminator.
