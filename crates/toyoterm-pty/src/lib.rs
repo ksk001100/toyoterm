@@ -430,7 +430,11 @@ mod tests {
         // call wait first. The Windows backend must therefore finish output
         // autonomously when the root shell exits.
         let output = output_receiver
-            .recv_timeout(std::time::Duration::from_secs(10))
+            // Legacy ConPTY backends may need several seconds to drain and
+            // close their console host after the root shell exits. Keep this
+            // test bound aligned with that teardown budget so a busy Windows
+            // CI runner does not turn a slow, valid shutdown into a failure.
+            .recv_timeout(std::time::Duration::from_secs(30))
             .expect("ConPTY reader did not reach EOF after shell exit")
             .expect("read default shell output");
         let status = session.wait().expect("wait for default shell");
