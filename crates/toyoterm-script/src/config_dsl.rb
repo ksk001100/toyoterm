@@ -124,6 +124,15 @@ module Toyoterm
       widget
     end
 
+    def group(position, separator: " | ", &block)
+      validate_position(position)
+      raise ArgumentError, "bar group requires a block" unless block
+      group = AsyncBarGroup.new(separator)
+      block.call(group)
+      @widgets << [position, group]
+      group
+    end
+
     def __widgets
       @widgets
     end
@@ -132,6 +141,101 @@ module Toyoterm
       copy = BarConfig.new
       @widgets.each { |widget| copy.__widgets << widget.dup }
       copy
+    end
+
+    def __checkpoint
+      @widgets.map do |position, widget|
+        [position, widget.respond_to?(:__checkpoint) ? widget.__checkpoint : nil]
+      end
+    end
+
+    def __rollback(checkpoint)
+      checkpoint.each_with_index do |(_, state), index|
+        widget = @widgets[index][1]
+        widget.__rollback(state) if state && widget.respond_to?(:__rollback)
+      end
+    end
+
+    private
+
+    def validate_position(position)
+      raise ArgumentError, "bar widget position must be :left, :center, or :right" unless position.is_a?(Symbol)
+      unless [:left, :center, :right].include?(position)
+        raise ArgumentError, "bar widget position must be :left, :center, or :right"
+      end
+    end
+  end
+
+  class AsyncBarGroup
+    def initialize(separator)
+      raise TypeError, "bar group separator must be a String" unless separator.is_a?(String)
+      raise ArgumentError, "bar group separator cannot contain NUL" if separator.include?("\0")
+      @separator = separator
+      @widgets = []
+    end
+
+    def add_async(program, *args, interval: 1.0, initial: "", cwd: nil, &block)
+      unless interval.is_a?(Numeric) && interval.to_f.finite? && interval >= 0.1
+        raise ArgumentError, "async bar interval must be at least 0.1 seconds"
+      end
+      initial = initial.to_s
+      raise ArgumentError, "async bar initial text cannot contain NUL" if initial.include?("\0")
+      @widgets << AsyncBarWidget.new(program, args, interval.to_f, initial, cwd, block)
+      self
+    end
+
+    def call(context)
+      @widgets.map { |widget| widget.call(context) }
+        .reject { |text| text.nil? || text.empty? }
+        .join(@separator)
+    end
+
+    def __checkpoint
+      @widgets.map(&:__checkpoint)
+    end
+
+    def __rollback(checkpoint)
+      @widgets.each_with_index { |widget, index| widget.__rollback(checkpoint[index]) }
+    end
+  end
+
+  class AsyncBarWidget
+    def initialize(program, args, interval, initial, cwd, formatter)
+      @program = program
+      @args = args
+      @interval = interval
+      @initial = initial
+      @cwd = cwd
+      @formatter = formatter
+      @task = nil
+      @result = nil
+      @next_at = 0.0
+    end
+
+    def call(context)
+      now = Time.now.to_f
+      if @task && @task.complete?
+        @result = @task.result
+        @task = nil
+        @next_at = now + @interval
+      end
+
+      if @task.nil? && now >= @next_at
+        cwd = @cwd.respond_to?(:call) ? @cwd.call(context) : @cwd
+        @task = Toyoterm.async(@program, *@args, cwd: cwd)
+      end
+
+      return @initial if @result.nil?
+      value = @formatter ? @formatter.call(@result) : @result.stdout
+      value.nil? ? "" : value.to_s
+    end
+
+    def __checkpoint
+      [@task, @result, @next_at]
+    end
+
+    def __rollback(checkpoint)
+      @task, @result, @next_at = checkpoint
     end
   end
 
@@ -1368,6 +1472,7 @@ module Toyoterm
     checkpoint = __command_checkpoint
     badge_checkpoint = __badge_checkpoint
     async_checkpoint = __async_request_checkpoint
+    bar_checkpoint = entry[1].__checkpoint
     begin
       widgets = entry[1].__widgets.map do |widget|
         value = widget[1].respond_to?(:call) ? widget[1].call(context) : widget[1]
@@ -1381,6 +1486,7 @@ module Toyoterm
       end
     rescue => error
       __rollback_async_requests(async_checkpoint)
+      entry[1].__rollback(bar_checkpoint)
       raise error
     ensure
       __rollback_commands(checkpoint)

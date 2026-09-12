@@ -796,6 +796,33 @@ Toyoterm.configure do |config|
 end
 ```
 
+For multiple independent asynchronous values in one alignment, use a group.
+Each `add_async` call owns its result, refresh schedule, and one in-flight
+process. The group joins non-empty values with its separator, so no user-side
+cache variables are required:
+
+```ruby
+bar.group(:right, separator: " | ") do |group|
+  group.add_async("date", "+%Y-%m-%d %H:%M:%S",
+                  interval: 1.0, initial: "clock...") do |result|
+    result.success? ? result.stdout.strip : ""
+  end
+
+  group.add_async("git", "branch", "--show-current",
+                  interval: 2.0, cwd: ->(ctx) { ctx.pane.cwd },
+                  initial: "branch...") do |result|
+    result.success? ? "\u{e725} #{result.stdout.strip}" : ""
+  end
+end
+```
+
+`BarConfig#group(position, separator: " | ")` registers one grouped widget;
+`AsyncBarGroup#add_async(program, *args, interval:, initial:, cwd:)` registers
+one independent asynchronous process. `cwd` may be a string, `nil`, or a
+context lambda. A new process is not started while the previous process for
+that widget is still running. `interval` is the minimum delay between process
+starts and must be at least 0.1 seconds.
+
 
 ## Platform, clipboard, environment, files, and processes
 

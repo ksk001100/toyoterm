@@ -3043,3 +3043,48 @@ fn async_task_can_be_retained_in_bar_closure_without_global_state() {
     );
     assert!(manager.drain_async_requests().unwrap().is_empty());
 }
+
+#[test]
+fn async_bar_group_renders_multiple_tasks_with_a_separator() {
+    let mut manager = ConfigManager::new().unwrap();
+    manager
+        .reload(
+            r#"
+            Toyoterm.configure do |config|
+              config.window.bar :bottom, interval: 1.0 do |bar|
+                bar.group(:right, separator: " | ") do |group|
+                  group.add_async("printf", "clock", initial: "clock...") do |result|
+                    result.success? ? result.stdout : ""
+                  end
+                  group.add_async("printf", "branch", initial: "branch...") do |result|
+                    result.success? ? result.stdout : ""
+                  end
+                end
+              end
+            end
+            "#,
+        )
+        .unwrap();
+
+    let items = manager.render_bar(StatusBarPosition::Bottom).unwrap();
+    assert_eq!(items[0].text, "clock... | branch...");
+    let requests = manager.drain_async_requests().unwrap();
+    assert_eq!(requests.len(), 2);
+
+    manager
+        .invoke_async_callback(requests[0].id, b"12:00", b"", 0)
+        .unwrap();
+    assert_eq!(
+        manager.render_bar(StatusBarPosition::Bottom).unwrap()[0].text,
+        "12:00 | branch..."
+    );
+
+    manager
+        .invoke_async_callback(requests[1].id, b"main", b"", 0)
+        .unwrap();
+    assert_eq!(
+        manager.render_bar(StatusBarPosition::Bottom).unwrap()[0].text,
+        "12:00 | main"
+    );
+    assert!(manager.drain_async_requests().unwrap().is_empty());
+}
