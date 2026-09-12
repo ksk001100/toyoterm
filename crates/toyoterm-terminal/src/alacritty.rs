@@ -469,7 +469,9 @@ fn parse_shell_integration_payload(
             && !path.contains(&0)
             && let Ok(path) = std::str::from_utf8(path)
         {
-            events.push(TerminalEvent::CwdChanged(path.to_owned()));
+            events.push(TerminalEvent::CwdChanged(normalize_terminal_path(
+                path.to_owned(),
+            )));
         }
     } else if let Some(remote_host) = payload.strip_prefix(b"1337;RemoteHost=") {
         if let Some(remote_host) = osc1337_remote_host(remote_host) {
@@ -1375,6 +1377,22 @@ fn osc133_marker(payload: &[u8], marker: u8) -> bool {
     })
 }
 
+fn normalize_terminal_path(mut path: String) -> String {
+    let bytes = path.as_bytes();
+    if bytes.len() >= 3
+        && bytes[0] == b'/'
+        && bytes[1].is_ascii_alphabetic()
+        && (bytes[2] == b':' || bytes[2] == b'|')
+        && (bytes.len() == 3 || bytes[3] == b'/' || bytes[3] == b'\\')
+    {
+        path.remove(0);
+        if path.starts_with(|c: char| c.is_ascii_alphabetic()) && path.chars().nth(1) == Some('|') {
+            path.replace_range(1..2, ":");
+        }
+    }
+    path
+}
+
 fn osc7_path(payload: &[u8]) -> Option<String> {
     let payload = payload.strip_prefix(b"file://")?;
     let path_start = payload.iter().position(|byte| *byte == b'/')?;
@@ -1394,7 +1412,7 @@ fn osc7_path(payload: &[u8]) -> Option<String> {
             index += 1;
         }
     }
-    String::from_utf8(decoded).ok()
+    String::from_utf8(decoded).ok().map(normalize_terminal_path)
 }
 
 const fn hex_digit(byte: u8) -> Option<u8> {
@@ -3866,6 +3884,29 @@ mod tests {
         assert_eq!(
             backend.drain_events(),
             vec![TerminalEvent::CwdChanged("/srv/my project".into())]
+        );
+    }
+
+    #[test]
+    fn normalizes_windows_drive_paths_for_osc7_and_current_dir() {
+        let mut backend = AlacrittyTerminalBackend::new(20, 2);
+        backend.advance(b"\x1b]7;file:///C%3A/Users/my%20app\x1b\\");
+        backend.advance(b"\x1b]7;file://localhost/D:/work/repo\x1b\\");
+        backend.advance(b"\x1b]7;file:///c:/users/lower\x1b\\");
+        backend.advance(b"\x1b]7;file:///E|/legacy/drive\x1b\\");
+        backend.advance(b"\x1b]1337;CurrentDir=/F:/iterm/current\x1b\\");
+        backend.advance(b"\x1b]1337;CurrentDir=G:\\native\\windows\\path\x1b\\");
+
+        assert_eq!(
+            backend.drain_events(),
+            vec![
+                TerminalEvent::CwdChanged("C:/Users/my app".into()),
+                TerminalEvent::CwdChanged("D:/work/repo".into()),
+                TerminalEvent::CwdChanged("c:/users/lower".into()),
+                TerminalEvent::CwdChanged("E:/legacy/drive".into()),
+                TerminalEvent::CwdChanged("F:/iterm/current".into()),
+                TerminalEvent::CwdChanged("G:\\native\\windows\\path".into()),
+            ]
         );
     }
 

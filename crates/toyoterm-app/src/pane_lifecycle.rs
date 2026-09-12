@@ -129,7 +129,9 @@ impl ToyotermApplication {
             icon_title: None,
             osc_badge: None,
             cursor_line_highlight: false,
-            cwd: std::env::current_dir().ok(),
+            cwd: launch
+                .and_then(|spec| spec.cwd.as_deref().map(PathBuf::from))
+                .or_else(|| std::env::current_dir().ok()),
             remote_host: None,
             shell_integration_version: None,
             shell_integration_shell: None,

@@ -17,6 +17,8 @@ use toyoterm_terminal::{AlacrittyTerminalBackend, TerminalBackend};
 mod shell_integration;
 
 fn main() -> ExitCode {
+    #[cfg(windows)]
+    attach_console();
     if let Err(error) = init_logging() {
         eprintln!("toyoterm: {error}");
         return ExitCode::FAILURE;
@@ -400,6 +402,96 @@ fn screen_demo_command() -> PtyCommand {
 #[cfg(windows)]
 fn demo_input() -> &'static str {
     "echo hello from toyoterm PTY\r\nexit\r\n"
+}
+
+#[cfg(windows)]
+fn attach_console() {
+    use std::ffi::c_void;
+    #[link(name = "kernel32")]
+    unsafe extern "system" {
+        fn AttachConsole(dwProcessId: u32) -> i32;
+        fn CreateFileW(
+            lpFileName: *const u16,
+            dwDesiredAccess: u32,
+            dwShareMode: u32,
+            lpSecurityAttributes: *mut c_void,
+            dwCreationDisposition: u32,
+            dwFlagsAndAttributes: u32,
+            hTemplateFile: *mut c_void,
+        ) -> *mut c_void;
+        fn SetStdHandle(nStdHandle: u32, hHandle: *mut c_void) -> i32;
+        fn GetStdHandle(nStdHandle: u32) -> *mut c_void;
+    }
+    const ATTACH_PARENT_PROCESS: u32 = 0xFFFFFFFF;
+    const STD_INPUT_HANDLE: u32 = 0xFFFFFFF6; // -10
+    const STD_OUTPUT_HANDLE: u32 = 0xFFFFFFF5; // -11
+    const STD_ERROR_HANDLE: u32 = 0xFFFFFFF4; // -12
+    const GENERIC_READ: u32 = 0x80000000;
+    const GENERIC_WRITE: u32 = 0x40000000;
+    const FILE_SHARE_READ: u32 = 1;
+    const FILE_SHARE_WRITE: u32 = 2;
+    const OPEN_EXISTING: u32 = 3;
+    const INVALID_HANDLE_VALUE: *mut c_void = -1isize as *mut c_void;
+
+    let attached = unsafe { AttachConsole(ATTACH_PARENT_PROCESS) };
+    if attached != 0 {
+        let conout: Vec<u16> = "CONOUT$\0".encode_utf16().collect();
+        let conin: Vec<u16> = "CONIN$\0".encode_utf16().collect();
+
+        let current_out = unsafe { GetStdHandle(STD_OUTPUT_HANDLE) };
+        if current_out.is_null() || current_out == INVALID_HANDLE_VALUE {
+            let h = unsafe {
+                CreateFileW(
+                    conout.as_ptr(),
+                    GENERIC_READ | GENERIC_WRITE,
+                    FILE_SHARE_READ | FILE_SHARE_WRITE,
+                    std::ptr::null_mut(),
+                    OPEN_EXISTING,
+                    0,
+                    std::ptr::null_mut(),
+                )
+            };
+            if h != INVALID_HANDLE_VALUE {
+                unsafe { SetStdHandle(STD_OUTPUT_HANDLE, h) };
+            }
+        }
+
+        let current_err = unsafe { GetStdHandle(STD_ERROR_HANDLE) };
+        if current_err.is_null() || current_err == INVALID_HANDLE_VALUE {
+            let h = unsafe {
+                CreateFileW(
+                    conout.as_ptr(),
+                    GENERIC_READ | GENERIC_WRITE,
+                    FILE_SHARE_READ | FILE_SHARE_WRITE,
+                    std::ptr::null_mut(),
+                    OPEN_EXISTING,
+                    0,
+                    std::ptr::null_mut(),
+                )
+            };
+            if h != INVALID_HANDLE_VALUE {
+                unsafe { SetStdHandle(STD_ERROR_HANDLE, h) };
+            }
+        }
+
+        let current_in = unsafe { GetStdHandle(STD_INPUT_HANDLE) };
+        if current_in.is_null() || current_in == INVALID_HANDLE_VALUE {
+            let h = unsafe {
+                CreateFileW(
+                    conin.as_ptr(),
+                    GENERIC_READ | GENERIC_WRITE,
+                    FILE_SHARE_READ | FILE_SHARE_WRITE,
+                    std::ptr::null_mut(),
+                    OPEN_EXISTING,
+                    0,
+                    std::ptr::null_mut(),
+                )
+            };
+            if h != INVALID_HANDLE_VALUE {
+                unsafe { SetStdHandle(STD_INPUT_HANDLE, h) };
+            }
+        }
+    }
 }
 
 fn print_help() {

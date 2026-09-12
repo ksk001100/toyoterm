@@ -469,19 +469,33 @@ fn validate_instance_id(id: &str) -> Result<(), String> {
 }
 fn load_instance_state() -> Result<InstanceState, String> {
     let paths = RuntimePaths::from_environment();
-    let id = match requested_instance() {
+    let requested = requested_instance();
+    let id = match requested.as_deref() {
         Some(id) => {
-            validate_instance_id(&id)?;
-            id
+            validate_instance_id(id)?;
+            id.to_owned()
         }
         None => fs::read_to_string(&paths.active)
             .map_err(|_| "no running toyoterm GUI was found".to_owned())?
             .trim()
             .to_owned(),
     };
-    let contents = fs::read_to_string(paths.instances.join(format!("{id}.state")))
+    let state_path = paths.instances.join(format!("{id}.state"));
+    let contents = fs::read_to_string(&state_path)
         .map_err(|_| format!("toyoterm instance `{id}` is not running"))?;
-    parse_state(&contents)
+    let state = parse_state(&contents)?;
+    if !process_is_alive(state.pid) {
+        let _ = remove_stale_instance(&state_path);
+        if requested.is_none() && fs::read_to_string(&paths.active).is_ok_and(|v| v.trim() == id) {
+            let _ = fs::remove_file(&paths.active);
+        }
+        return Err(if requested.is_some() {
+            format!("toyoterm instance `{id}` is not running")
+        } else {
+            "no running toyoterm GUI was found".to_owned()
+        });
+    }
+    Ok(state)
 }
 fn serialize_state(s: &InstanceState) -> String {
     format!(
@@ -751,26 +765,39 @@ mod transport {
         }
     }
     impl Stream {
-        pub fn connect(e: &str) -> io::Result<Self> {
-            let h = unsafe {
-                CreateFileW(
-                    wide(e).as_ptr(),
-                    0xC0000000,
-                    0,
-                    std::ptr::null(),
-                    3,
-                    0,
-                    std::ptr::null_mut(),
-                )
-            };
-            if h == INVALID {
-                Err(io::Error::last_os_error())
-            } else {
-                Ok(Self(unsafe { File::from_raw_handle(h) }))
+        fn connect_internal(e: &str, retries: usize) -> io::Result<Self> {
+            let wide_path = wide(e);
+            let mut attempts = 0;
+            loop {
+                let h = unsafe {
+                    CreateFileW(
+                        wide_path.as_ptr(),
+                        0xC0000000,
+                        0,
+                        std::ptr::null(),
+                        3,
+                        0,
+                        std::ptr::null_mut(),
+                    )
+                };
+                if h != INVALID {
+                    return Ok(Self(unsafe { File::from_raw_handle(h) }));
+                }
+                let error = io::Error::last_os_error();
+                let raw = error.raw_os_error();
+                if attempts < retries && (raw == Some(2) || raw == Some(231)) {
+                    attempts += 1;
+                    std::thread::sleep(std::time::Duration::from_millis(25));
+                    continue;
+                }
+                return Err(error);
             }
         }
+        pub fn connect(e: &str) -> io::Result<Self> {
+            Self::connect_internal(e, 20)
+        }
         pub fn connect_for_wakeup(e: &str) -> io::Result<()> {
-            Self::connect(e).map(|_| ())
+            Self::connect_internal(e, 0).map(|_| ())
         }
     }
 }
@@ -894,5 +921,44 @@ mod tests {
         assert!(is_incomplete_ruby_error(
             "syntax error, unexpected end of file"
         ));
+    }
+    #[test]
+    fn cleans_up_stale_instance() {
+        let temp = std::env::temp_dir().join(format!("toyoterm-test-stale-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&temp);
+        fs::create_dir_all(temp.join("instances")).unwrap();
+        let dead_pid = 99999999;
+        let dead_state = InstanceState {
+            id: "dead".into(),
+            pid: dead_pid,
+            transport: platform_transport().into(),
+            endpoint: if cfg!(unix) {
+                "/tmp/dead.sock".into()
+            } else {
+                r"\\.\pipe\toyoterm-dead".into()
+            },
+            token: "deadtoken".into(),
+        };
+        fs::write(
+            temp.join("instances").join("dead.state"),
+            serialize_state(&dead_state),
+        )
+        .unwrap();
+        fs::write(temp.join("active"), "dead").unwrap();
+
+        unsafe {
+            std::env::set_var("TOYOTERM_RUNTIME_DIR", &temp);
+        }
+        let result = load_instance_state();
+        unsafe {
+            std::env::remove_var("TOYOTERM_RUNTIME_DIR");
+        }
+
+        assert!(result.is_err());
+        assert_eq!(result.unwrap_err(), "no running toyoterm GUI was found");
+        assert!(!temp.join("active").exists());
+        assert!(!temp.join("instances").join("dead.state").exists());
+
+        let _ = fs::remove_dir_all(&temp);
     }
 }

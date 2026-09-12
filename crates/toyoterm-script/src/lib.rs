@@ -89,6 +89,28 @@ pub unsafe extern "C" fn toyoterm_host_read_file(
     }
 }
 
+#[cfg(windows)]
+fn normalize_spawn_cwd(cwd: &str) -> std::borrow::Cow<'_, str> {
+    let bytes = cwd.as_bytes();
+    if bytes.len() >= 3
+        && bytes[0] == b'/'
+        && bytes[1].is_ascii_alphabetic()
+        && (bytes[2] == b':' || bytes[2] == b'|')
+        && (bytes.len() == 3 || bytes[3] == b'/' || bytes[3] == b'\\')
+    {
+        let stripped = &cwd[1..];
+        if stripped.as_bytes().get(1) == Some(&b'|') {
+            let mut owned = stripped.to_owned();
+            owned.replace_range(1..2, ":");
+            std::borrow::Cow::Owned(owned)
+        } else {
+            std::borrow::Cow::Borrowed(stripped)
+        }
+    } else {
+        std::borrow::Cow::Borrowed(cwd)
+    }
+}
+
 /// Executes a child process synchronously and captures its byte-exact standard output and error.
 ///
 /// # Safety
@@ -145,7 +167,9 @@ pub unsafe extern "C" fn toyoterm_host_spawn(
             Ok(cwd) => cwd,
             Err(_) => return return_host_error("cwd must be valid UTF-8".to_owned(), error),
         };
-        command.current_dir(cwd);
+        #[cfg(windows)]
+        let cwd = normalize_spawn_cwd(cwd);
+        command.current_dir(cwd.as_ref());
     }
     #[cfg(windows)]
     command.creation_flags(CREATE_NO_WINDOW);

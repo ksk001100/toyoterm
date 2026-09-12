@@ -27,6 +27,8 @@ included in the protocol.
 OSC 7 is also accepted independently of the bundled scripts, preserving cwd
 updates from shells and remote tools that already emit it. The iTerm2-compatible
 `OSC 1337;CurrentDir=<path>` form is accepted as an alternate cwd report.
+DOS/Windows drive paths (such as `file:///C:/path`) are normalized to remove the
+URI-prefix slash (yielding `C:/path`).
 `OSC 1337;RemoteHost=<user>@<host>` stores the bounded report on
 `Pane#remote_host`; an empty user is accepted, while a missing host, invalid
 UTF-8, control characters, and values over 1 KiB are ignored. Title changes remain
@@ -88,7 +90,8 @@ toyoterm shell-integration fish | source
 ```
 
 ```powershell
-# $PROFILE
+# $PROFILE (supports both Windows PowerShell 5.1 and PowerShell Core 6+)
+# Place after any custom prompt function or prompt theme (e.g. starship)
 toyoterm shell-integration powershell | Out-String | Invoke-Expression
 ```
 

@@ -1885,6 +1885,33 @@ fn spawn_uses_requested_working_directory() {
     std::fs::remove_dir_all(directory).unwrap();
 }
 
+#[cfg(windows)]
+#[test]
+fn spawn_normalizes_windows_working_directory_with_leading_slash() {
+    let unique = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let directory = std::env::temp_dir().join(format!(
+        "toyoterm-ruby-spawn-slash-{}-{unique}",
+        std::process::id()
+    ));
+    std::fs::create_dir(&directory).unwrap();
+    std::fs::write(directory.join("marker.txt"), b"normalized leading slash").unwrap();
+    let slash_path = format!("/{}", directory.to_str().unwrap().replace('\\', "/"));
+    let literal = ruby_string_literal(&slash_path);
+    let mut manager = ConfigManager::new().unwrap();
+    assert_eq!(
+        manager
+            .eval(&format!(
+                r#"Toyoterm.spawn("cmd", "/C", "type marker.txt", cwd: {literal}).stdout"#
+            ))
+            .unwrap(),
+        "normalized leading slash"
+    );
+    std::fs::remove_dir_all(directory).unwrap();
+}
+
 #[test]
 fn spawn_rejects_invalid_working_directories_before_launch() {
     let mut manager = ConfigManager::new().unwrap();
