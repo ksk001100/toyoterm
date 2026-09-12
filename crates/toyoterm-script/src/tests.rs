@@ -2818,9 +2818,11 @@ fn zoomed_pane_border_supports_reload_and_atomic_runtime_updates() {
 fn async_api_validates_arguments() {
     let mut manager = ConfigManager::new().unwrap();
 
-    // Block required
-    assert!(manager.eval("Toyoterm.async('ping')").is_err());
-    assert!(manager.eval("Toyoterm.async_spawn('ping')").is_err());
+    // A callback is optional; the returned handle exposes the result.
+    manager.eval("$task = Toyoterm.async('ping')").unwrap();
+    assert_eq!(manager.eval("$task.class").unwrap(), "Toyoterm::AsyncTask");
+    assert_eq!(manager.eval("$task.pending?").unwrap(), "true");
+    assert_eq!(manager.eval("$task.success?").unwrap(), "false");
 
     // Empty program rejected
     assert!(manager.eval("Toyoterm.async('') { |r| }").is_err());
@@ -2848,6 +2850,31 @@ fn async_api_validates_arguments() {
             .eval("Toyoterm.async('ping', cwd: '') { |r| }")
             .is_err()
     );
+}
+
+#[test]
+fn async_task_handle_exposes_result_without_global_state() {
+    let mut manager = ConfigManager::new().unwrap();
+    manager
+        .eval(
+            r#"
+            task = Toyoterm.async("printf", "hello")
+            $task_handle = task
+            $before = [task.pending?, task.complete?]
+            "#,
+        )
+        .unwrap();
+
+    let requests = manager.drain_async_requests().unwrap();
+    assert_eq!(requests.len(), 1);
+    manager
+        .invoke_async_callback(requests[0].id, b"hello", b"", 0)
+        .unwrap();
+
+    assert_eq!(manager.eval("$before[0]").unwrap(), "true");
+    assert_eq!(manager.eval("$task_handle.complete?").unwrap(), "true");
+    assert_eq!(manager.eval("$task_handle.result.stdout").unwrap(), "hello");
+    assert_eq!(manager.eval("$task_handle.success?").unwrap(), "true");
 }
 
 #[test]
@@ -2981,4 +3008,38 @@ fn async_api_works_inside_window_bar_widgets() {
     // Next bar render displays the updated value
     let items = manager.render_bar(StatusBarPosition::Bottom).unwrap();
     assert_eq!(items[0].text, "updated: pong");
+}
+
+#[test]
+fn async_task_can_be_retained_in_bar_closure_without_global_state() {
+    let mut manager = ConfigManager::new().unwrap();
+    manager
+        .reload(
+            r#"
+            Toyoterm.configure do |config|
+              config.window.bar :bottom, interval: 1.0 do |bar|
+                task = nil
+                bar.add(:left) do
+                  task = Toyoterm.async("printf", "ready") if task.nil?
+                  task.pending? ? "waiting" : task.result.stdout
+                end
+              end
+            end
+            "#,
+        )
+        .unwrap();
+
+    assert_eq!(
+        manager.render_bar(StatusBarPosition::Bottom).unwrap()[0].text,
+        "waiting"
+    );
+    let requests = manager.drain_async_requests().unwrap();
+    manager
+        .invoke_async_callback(requests[0].id, b"ready", b"", 0)
+        .unwrap();
+    assert_eq!(
+        manager.render_bar(StatusBarPosition::Bottom).unwrap()[0].text,
+        "ready"
+    );
+    assert!(manager.drain_async_requests().unwrap().is_empty());
 }

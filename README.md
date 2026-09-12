@@ -89,8 +89,9 @@ The bundled runtime includes mruby's portable standard-library, math, and
 metaprogramming APIs; see the API reference for details. Platform-dependent
 I/O and socket gems remain excluded in favor of toyoterm's host APIs.
 External commands can be captured synchronously with `Toyoterm.spawn`, or run in
-the background without blocking the script thread via `Toyoterm.async`; pass
-`cwd:` to run a command in a specific working directory.
+the background without blocking the script thread via `Toyoterm.async`. It
+returns an `AsyncTask` that can be retained in a widget closure without global
+state; pass `cwd:` to run a command in a specific working directory.
 
 ## Usage and documentation
 

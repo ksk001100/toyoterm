@@ -775,24 +775,22 @@ interval.
 Widgets can launch background asynchronous tasks via `Toyoterm.async` without
 blocking bar evaluation. Asynchronous tasks queued during bar rendering are
 retained when the widget callback succeeds (unlike native mutations, which are
-discarded). When an asynchronous task completes and updates Ruby state, toyoterm
-immediately schedules a bar refresh to update the displayed widgets:
+discarded). Keep the returned task in the bar closure and read its result when
+it completes; toyoterm immediately schedules a bar refresh after completion:
 
 ```ruby
-$weather = "Weather: ..."
-$last_weather_fetch = 0
-
 Toyoterm.configure do |config|
   config.window.bar :bottom, interval: 1.0 do |bar|
+    weather_task = nil
     bar.add(:right) do
-      now = Time.now.to_i
-      if now - $last_weather_fetch > 60
-        $last_weather_fetch = now
-        Toyoterm.async("curl", "-s", "https://wttr.in/Tokyo?format=1") do |result|
-          $weather = result.stdout.strip if result.success?
-        end
+      weather_task ||= Toyoterm.async("curl", "-s", "https://wttr.in/Tokyo?format=1")
+      if weather_task.complete? && weather_task.success?
+        weather_task.result.stdout.strip
+      elsif weather_task.complete?
+        "Weather: unavailable"
+      else
+        "Weather: fetching..."
       end
-      $weather
     end
   end
 end
@@ -823,7 +821,9 @@ sandboxed and carry the authority of the toyoterm process.
 - `Toyoterm.async(program, *args, cwd: nil) { |result| ... }` (aliased as
   `Toyoterm.async_spawn`) executes a child process asynchronously in a
   background worker thread without blocking the script thread or GUI. It returns
-  an integer task ID. Omitting the block, supplying an empty `program`, passing
+  a `Toyoterm::AsyncTask`; the block is optional. Omitting the block lets a
+  widget retain the task in a local closure and inspect its result without
+  global state. Supplying an empty `program`, passing
   NUL bytes, or passing an empty `cwd` raises `ArgumentError` immediately before
   scheduling. Upon completion, the block is invoked on the script thread with a
   `Toyoterm::ProcessResult`. Launch failures (such as a missing program) report
@@ -833,8 +833,11 @@ sandboxed and carry the authority of the toyoterm process.
   reloaded while an asynchronous task is in flight, its callback is discarded
   safely without error.
 
-`Toyoterm::ProcessResult` exposes `stdout`, `stderr`, `exit_status`, and
-`success?`. A process terminated without a portable exit code reports `-1`.
+`Toyoterm::AsyncTask` exposes `id`, `pending?`, `complete?`, `result`, and
+`success?`. `result` is `nil` while the process is pending and otherwise is a
+`Toyoterm::ProcessResult`. `Toyoterm::ProcessResult` exposes `stdout`,
+`stderr`, `exit_status`, and `success?`. A process terminated without a
+portable exit code reports `-1`.
 
 ```ruby
 Toyoterm.configure do |config|
@@ -844,9 +847,10 @@ end
 result = Toyoterm.spawn("git", "branch", "--show-current", cwd: "/path/to/repository")
 warn result.stderr unless result.success?
 
-Toyoterm.async("curl", "-s", "https://wttr.in/Tokyo?format=1") do |result|
-  warn result.stderr unless result.success?
-  puts "Weather: #{result.stdout.strip}" if result.success?
+task = Toyoterm.async("curl", "-s", "https://wttr.in/Tokyo?format=1")
+if task.complete?
+  warn task.result.stderr unless task.success?
+  puts "Weather: #{task.result.stdout.strip}" if task.success?
 end
 ```
 

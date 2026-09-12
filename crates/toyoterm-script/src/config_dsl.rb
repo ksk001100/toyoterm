@@ -923,6 +923,34 @@ module Toyoterm
     end
   end
 
+  # A handle for a process started by Toyoterm.async.  The handle is safe to
+  # retain in a widget closure, so callers do not need global variables just
+  # to render the latest result.
+  class AsyncTask
+    attr_reader :id
+
+    def initialize(id)
+      @id = id
+    end
+
+    def pending?
+      Toyoterm.__async_result(@id).nil?
+    end
+
+    def complete?
+      !pending?
+    end
+
+    def result
+      Toyoterm.__async_result(@id)
+    end
+
+    def success?
+      value = result
+      !value.nil? && value.success?
+    end
+  end
+
   class Plugin
     class Definition
       attr_reader :name
@@ -999,6 +1027,7 @@ module Toyoterm
   @current_plugin_path = nil
   @async_task_id = 0
   @async_callbacks = {}
+  @async_results = {}
   @async_requests = []
   @current_async_request = nil
 
@@ -1113,7 +1142,6 @@ module Toyoterm
   end
 
   def self.async_spawn(program, *args, cwd: nil, &block)
-    raise ArgumentError, "Toyoterm.async requires a block" unless block
     program = program.to_s
     raise ArgumentError, "program cannot be empty" if program.empty?
     values = [program] + args.map { |arg| arg.to_s }
@@ -1130,7 +1158,7 @@ module Toyoterm
     task_id = @async_task_id
     @async_callbacks[task_id] = block
     @async_requests << [task_id, program, values[1..-1], cwd]
-    task_id
+    AsyncTask.new(task_id)
   end
 
   def self.plugin(path)
@@ -1609,13 +1637,14 @@ module Toyoterm
   end
 
   def self.__invoke_async_callback(id, stdout, stderr, exit_status)
+    result = ProcessResult.new(stdout, stderr, exit_status)
+    @async_results[id] = result
     callback = @async_callbacks.delete(id)
-    return false unless callback
+    return true unless callback
     checkpoint = __command_checkpoint
     badge_checkpoint = __badge_checkpoint
     async_checkpoint = __async_request_checkpoint
     begin
-      result = ProcessResult.new(stdout, stderr, exit_status)
       callback.call(result)
     rescue => error
       __rollback_commands(checkpoint)
@@ -1624,6 +1653,10 @@ module Toyoterm
       raise error
     end
     true
+  end
+
+  def self.__async_result(id)
+    @async_results[id]
   end
 
   def self.__async_request_checkpoint
