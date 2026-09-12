@@ -267,6 +267,29 @@ impl ToyotermApplication {
             self.reconcile_pane_runtimes()?;
             self.flush_mux_input()?;
             self.deliver_runtime_events()?;
+            for request in result.async_requests {
+                let proxy = self.event_proxy.clone();
+                let id = request.id;
+                let program = request.program;
+                let args = request.args;
+                let cwd = request.cwd;
+                std::thread::Builder::new()
+                    .name(format!("toyoterm-async-{id}"))
+                    .spawn(move || {
+                        let output = execute_async_spawn(&program, &args, cwd.as_deref());
+                        let _ = proxy.send_event(AppEvent::AsyncCompleted { id, output });
+                    })
+                    .map_err(|error| format!("spawn async thread: {error}"))?;
+            }
+            if matches!(
+                completion.invocation,
+                ScriptInvocation::AsyncCallback { .. }
+            ) {
+                let now = Instant::now();
+                for bar in &self.script_snapshot.config.status_bars {
+                    self.next_bar_at.insert(bar.position, now);
+                }
+            }
             if reload_requested && !is_reload {
                 self.reload_config_with_notification()?;
             }
@@ -304,6 +327,61 @@ impl ToyotermApplication {
                 .map_err(|error| format!("write clipboard from Ruby: {error}"))?;
         }
         Ok(())
+    }
+}
+
+#[cfg(windows)]
+const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+
+#[cfg(windows)]
+fn normalize_spawn_cwd(cwd: &str) -> std::borrow::Cow<'_, str> {
+    let bytes = cwd.as_bytes();
+    if bytes.len() >= 3
+        && bytes[0] == b'/'
+        && bytes[1].is_ascii_alphabetic()
+        && (bytes[2] == b':' || bytes[2] == b'|')
+        && (bytes.len() == 3 || bytes[3] == b'/' || bytes[3] == b'\\')
+    {
+        let stripped = &cwd[1..];
+        if stripped.as_bytes().get(1) == Some(&b'|') {
+            let mut owned = stripped.to_owned();
+            owned.replace_range(1..2, ":");
+            std::borrow::Cow::Owned(owned)
+        } else {
+            std::borrow::Cow::Borrowed(stripped)
+        }
+    } else {
+        std::borrow::Cow::Borrowed(cwd)
+    }
+}
+
+fn execute_async_spawn(program: &str, args: &[String], cwd: Option<&str>) -> AsyncProcessOutput {
+    let mut command = std::process::Command::new(program);
+    command.args(args);
+    if let Some(cwd) = cwd {
+        #[cfg(windows)]
+        let cwd = normalize_spawn_cwd(cwd);
+        #[cfg(windows)]
+        command.current_dir(std::path::Path::new(&*cwd));
+        #[cfg(not(windows))]
+        command.current_dir(std::path::Path::new(cwd));
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        command.creation_flags(CREATE_NO_WINDOW);
+    }
+    match command.output() {
+        Ok(output) => AsyncProcessOutput {
+            stdout: output.stdout,
+            stderr: output.stderr,
+            exit_status: output.status.code().unwrap_or(-1),
+        },
+        Err(err) => AsyncProcessOutput {
+            stdout: Vec::new(),
+            stderr: format!("spawn {program}: {err}").into_bytes(),
+            exit_status: -1,
+        },
     }
 }
 
@@ -363,5 +441,14 @@ mod tests {
             queue.back(),
             Some((9_000, ScriptInvocation::Eval(source))) if source == "42"
         ));
+    }
+
+    #[test]
+    fn execute_async_spawn_captures_output_or_failure() {
+        // Test non-existent command returns error and -1 status
+        let output = execute_async_spawn("this-command-does-not-exist-toyoterm", &[], None);
+        assert_eq!(output.exit_status, -1);
+        assert!(output.stdout.is_empty());
+        assert!(!output.stderr.is_empty());
     }
 }

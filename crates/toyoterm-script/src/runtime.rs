@@ -331,6 +331,30 @@ impl MrubyRuntime {
             )),
         }
     }
+
+    pub(super) fn invoke_async_callback(
+        &mut self,
+        id: u64,
+        stdout: &[u8],
+        stderr: &[u8],
+        exit_status: i32,
+    ) -> Result<(), ScriptError> {
+        let mut error = std::ptr::null_mut();
+        // SAFETY: Buffers remain live for the duration of the call.
+        let status = unsafe {
+            toyoterm_mruby_invoke_async_callback(
+                self.state.as_ptr(),
+                id,
+                stdout.as_ptr(),
+                stdout.len(),
+                stderr.as_ptr(),
+                stderr.len(),
+                exit_status,
+                &mut error,
+            )
+        };
+        typed_call_result("invoke async callback", status, error)
+    }
 }
 
 fn typed_call_result(

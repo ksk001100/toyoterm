@@ -599,11 +599,13 @@ module Toyoterm
       return false unless callback
       checkpoint = Toyoterm.__command_checkpoint
       badge_checkpoint = Toyoterm.__badge_checkpoint
+      async_checkpoint = Toyoterm.__async_request_checkpoint
       begin
         callback.call(KeyBindingContext.new(pane))
       rescue => error
         Toyoterm.__rollback_commands(checkpoint)
         Toyoterm.__rollback_badges(badge_checkpoint)
+        Toyoterm.__rollback_async_requests(async_checkpoint)
         raise error
       end
       true
@@ -995,6 +997,10 @@ module Toyoterm
   @themes = {}
   @plugin_requests = []
   @current_plugin_path = nil
+  @async_task_id = 0
+  @async_callbacks = {}
+  @async_requests = []
+  @current_async_request = nil
 
   def self.configure(&block)
     raise ArgumentError, "configuration requires a block" unless block
@@ -1100,6 +1106,31 @@ module Toyoterm
       raise ArgumentError, "cwd cannot contain a NUL byte" if cwd.index("\0")
     end
     ProcessResult.new(*__host_spawn(values, cwd))
+  end
+
+  def self.async(program, *args, cwd: nil, &block)
+    async_spawn(program, *args, cwd: cwd, &block)
+  end
+
+  def self.async_spawn(program, *args, cwd: nil, &block)
+    raise ArgumentError, "Toyoterm.async requires a block" unless block
+    program = program.to_s
+    raise ArgumentError, "program cannot be empty" if program.empty?
+    values = [program] + args.map { |arg| arg.to_s }
+    if values.any? { |value| value.index("\0") }
+      raise ArgumentError, "program and arguments cannot contain NUL bytes"
+    end
+    unless cwd.nil?
+      cwd = cwd.to_s
+      raise ArgumentError, "cwd cannot be empty" if cwd.empty?
+      raise ArgumentError, "cwd cannot contain a NUL byte" if cwd.index("\0")
+    end
+
+    @async_task_id += 1
+    task_id = @async_task_id
+    @async_callbacks[task_id] = block
+    @async_requests << [task_id, program, values[1..-1], cwd]
+    task_id
   end
 
   def self.plugin(path)
@@ -1308,6 +1339,7 @@ module Toyoterm
     context = BarContext.new(current_workspace, current_window, current_tab, current_pane)
     checkpoint = __command_checkpoint
     badge_checkpoint = __badge_checkpoint
+    async_checkpoint = __async_request_checkpoint
     begin
       widgets = entry[1].__widgets.map do |widget|
         value = widget[1].respond_to?(:call) ? widget[1].call(context) : widget[1]
@@ -1319,6 +1351,9 @@ module Toyoterm
         alignment = { left: "l", center: "c", right: "r" }[widget[0]]
         encoded << alignment << "#{widget[1].bytesize}:" << widget[1]
       end
+    rescue => error
+      __rollback_async_requests(async_checkpoint)
+      raise error
     ensure
       __rollback_commands(checkpoint)
       __rollback_badges(badge_checkpoint)
@@ -1338,11 +1373,13 @@ module Toyoterm
     raise ArgumentError, "undefined user command: #{name}" unless callback
     checkpoint = __command_checkpoint
     badge_checkpoint = __badge_checkpoint
+    async_checkpoint = __async_request_checkpoint
     begin
       callback.call(CommandContext.new(pane))
     rescue => error
       __rollback_commands(checkpoint)
       __rollback_badges(badge_checkpoint)
+      __rollback_async_requests(async_checkpoint)
       raise error
     end
     true
@@ -1379,11 +1416,13 @@ module Toyoterm
     return false unless handlers
     checkpoint = __command_checkpoint
     badge_checkpoint = __badge_checkpoint
+    async_checkpoint = __async_request_checkpoint
     begin
       handlers.each { |handler| handler.call(event) }
     rescue => error
       __rollback_commands(checkpoint)
       __rollback_badges(badge_checkpoint)
+      __rollback_async_requests(async_checkpoint)
       raise error
     end
     true
@@ -1567,5 +1606,59 @@ module Toyoterm
 
   def self.__current_launch_env_value(index)
     @current_command[3][3].values[index]
+  end
+
+  def self.__invoke_async_callback(id, stdout, stderr, exit_status)
+    callback = @async_callbacks.delete(id)
+    return false unless callback
+    checkpoint = __command_checkpoint
+    badge_checkpoint = __badge_checkpoint
+    async_checkpoint = __async_request_checkpoint
+    begin
+      result = ProcessResult.new(stdout, stderr, exit_status)
+      callback.call(result)
+    rescue => error
+      __rollback_commands(checkpoint)
+      __rollback_badges(badge_checkpoint)
+      __rollback_async_requests(async_checkpoint)
+      raise error
+    end
+    true
+  end
+
+  def self.__async_request_checkpoint
+    @async_requests.length
+  end
+
+  def self.__rollback_async_requests(checkpoint)
+    while @async_requests.length > checkpoint
+      req = @async_requests.pop
+      @async_callbacks.delete(req[0]) if req
+    end
+  end
+
+  def self.__next_async_request
+    @current_async_request = @async_requests.shift
+    @current_async_request ? @current_async_request[0] : 0
+  end
+
+  def self.__current_async_program
+    @current_async_request[1]
+  end
+
+  def self.__current_async_arg_count
+    @current_async_request[2].length
+  end
+
+  def self.__current_async_arg(index)
+    @current_async_request[2][index]
+  end
+
+  def self.__current_async_has_cwd
+    !@current_async_request[3].nil?
+  end
+
+  def self.__current_async_cwd
+    @current_async_request[3]
   end
 end

@@ -6,6 +6,7 @@ listener thread:
 ```text
 PTY reader workers --AppEvent::Output/Eof/Error--> main thread
 IPC listener        --typed IPC requests---------> main thread
+Async workers       --AppEvent::AsyncCompleted---> main thread
 main thread         --terminal input/state-------> PTY sessions
 main thread         --ScriptRequest--------------> toyoterm-script
 toyoterm-script     --ScriptCompletion-----------> main thread
@@ -15,19 +16,24 @@ The main thread owns the winit event loop, terminal backends, mux, renderer, and
 PTY session handles. Each PTY reader owns only its blocking reader. The named
 `toyoterm-script` thread constructs, calls, reloads, and drops the single mruby
 VM. `MrubyRuntime` remains `!Send + !Sync`, so the C API cannot cross the owner
-thread through Rust's safe type system.
+thread through Rust's safe type system. Dedicated background threads execute
+asynchronous child processes requested via `Toyoterm.async` and report output
+back to the main thread through the winit event loop.
 
 Script requests carry an immutable mux/object-model snapshot and clipboard
-snapshot. Script completions carry inspected values, `NativeCommand`s, and
-validated configuration snapshots when settings change, including immutable
-image pixels.
+snapshot. Script completions carry inspected values, `NativeCommand`s,
+asynchronous spawn requests, and validated configuration snapshots when
+settings change, including immutable image pixels.
 The main thread serializes requests, applies returned commands, reconciles PTY
-runtimes, then submits the next request. This preserves event and re-entrant
-command ordering without allowing Ruby to mutate native state directly.
+runtimes, spawns background workers for asynchronous tasks, then submits the
+next request. This preserves event and re-entrant command ordering without
+allowing Ruby to mutate native state directly.
 
 Ruby evaluation is asynchronous from the GUI's point of view. A slow or stuck
 callback delays later script requests, but it does not prevent PTY output from
-being parsed or frames from being scheduled and rendered.
+being parsed or frames from being scheduled and rendered. Asynchronous tasks
+(`Toyoterm.async`) execute outside both the main and script threads, keeping
+long-running external calls from blocking either subsystem.
 
 The main-thread request queue bounds only Ruby runtime events: at most 1,024
 event requests may wait behind the active callback. State notifications for the

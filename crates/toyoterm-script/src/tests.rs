@@ -2813,3 +2813,172 @@ fn zoomed_pane_border_supports_reload_and_atomic_runtime_updates() {
     );
     assert_eq!(manager.config().colors.zoomed_pane_border, "#abcdef");
 }
+
+#[test]
+fn async_api_validates_arguments() {
+    let mut manager = ConfigManager::new().unwrap();
+
+    // Block required
+    assert!(manager.eval("Toyoterm.async('ping')").is_err());
+    assert!(manager.eval("Toyoterm.async_spawn('ping')").is_err());
+
+    // Empty program rejected
+    assert!(manager.eval("Toyoterm.async('') { |r| }").is_err());
+
+    // NUL bytes rejected
+    assert!(
+        manager
+            .eval("Toyoterm.async(\"p\\x00ing\") { |r| }")
+            .is_err()
+    );
+    assert!(
+        manager
+            .eval("Toyoterm.async('ping', \"1.1.1.\\x00\") { |r| }")
+            .is_err()
+    );
+    assert!(
+        manager
+            .eval("Toyoterm.async('ping', cwd: \"/tmp/\\x00dir\") { |r| }")
+            .is_err()
+    );
+
+    // Empty cwd rejected
+    assert!(
+        manager
+            .eval("Toyoterm.async('ping', cwd: '') { |r| }")
+            .is_err()
+    );
+}
+
+#[test]
+fn async_api_queues_and_drains_requests() {
+    let mut manager = ConfigManager::new().unwrap();
+    manager
+        .eval(
+            r#"
+            $task1 = Toyoterm.async("curl", "-s", "https://wttr.in/?format=1") { |res| $res1 = res }
+            $task2 = Toyoterm.async_spawn("ping", "-c", "1", "1.1.1.1", cwd: "/tmp") { |res| $res2 = res }
+            "#,
+        )
+        .unwrap();
+
+    let requests = manager.drain_async_requests().unwrap();
+    assert_eq!(requests.len(), 2);
+    assert_eq!(requests[0].id, 1);
+    assert_eq!(requests[0].program, "curl");
+    assert_eq!(requests[0].args, vec!["-s", "https://wttr.in/?format=1"]);
+    assert_eq!(requests[0].cwd, None);
+
+    assert_eq!(requests[1].id, 2);
+    assert_eq!(requests[1].program, "ping");
+    assert_eq!(requests[1].args, vec!["-c", "1", "1.1.1.1"]);
+    assert_eq!(requests[1].cwd.as_deref(), Some("/tmp"));
+
+    // Draining again returns empty
+    assert!(manager.drain_async_requests().unwrap().is_empty());
+}
+
+#[test]
+fn async_api_invokes_callback_and_applies_results() {
+    let mut manager = ConfigManager::new().unwrap();
+    manager
+        .eval(
+            r#"
+            Toyoterm.async("curl", "https://example.com") do |res|
+              $received_stdout = res.stdout
+              $received_stderr = res.stderr
+              $received_status = res.exit_status
+              $received_success = res.success?
+              Toyoterm.current_pane.send_text("fetched: #{res.stdout}\n")
+            end
+            "#,
+        )
+        .unwrap();
+
+    let requests = manager.drain_async_requests().unwrap();
+    assert_eq!(requests.len(), 1);
+    let task_id = requests[0].id;
+
+    manager
+        .invoke_async_callback(task_id, b"hello world", b"", 0)
+        .unwrap();
+
+    assert_eq!(manager.eval("$received_stdout").unwrap(), "hello world");
+    assert_eq!(manager.eval("$received_stderr").unwrap(), "");
+    assert_eq!(manager.eval("$received_status").unwrap(), "0");
+    assert_eq!(manager.eval("$received_success").unwrap(), "true");
+
+    let commands = manager.drain_commands(PaneId(42)).unwrap();
+    assert_eq!(
+        commands,
+        vec![NativeCommand::Mux(Command::SendText {
+            pane: PaneId(42),
+            text: "fetched: hello world\n".into(),
+        })]
+    );
+}
+
+#[test]
+fn async_api_callback_exception_rolls_back_mutations() {
+    let mut manager = ConfigManager::new().unwrap();
+    manager
+        .eval(
+            r#"
+            Toyoterm.async("broken") do |res|
+              Toyoterm.current_pane.send_text("must not be sent\n")
+              raise "callback exploded"
+            end
+            "#,
+        )
+        .unwrap();
+
+    let requests = manager.drain_async_requests().unwrap();
+    assert_eq!(requests.len(), 1);
+
+    let error = manager
+        .invoke_async_callback(requests[0].id, b"", b"failed", 1)
+        .unwrap_err();
+    assert!(error.to_string().contains("callback exploded"));
+
+    // The queued send_text must have been rolled back
+    assert!(manager.drain_commands(PaneId(1)).unwrap().is_empty());
+}
+
+#[test]
+fn async_api_works_inside_window_bar_widgets() {
+    let mut manager = ConfigManager::new().unwrap();
+    manager
+        .reload(
+            r#"
+            $status_text = "initial"
+            Toyoterm.configure do |config|
+              config.window.bar :bottom, interval: 1.0 do |bar|
+                bar.add(:left) do
+                  Toyoterm.async("ping", "1.1.1.1") do |res|
+                    $status_text = "updated: #{res.stdout}"
+                  end
+                  $status_text
+                end
+              end
+            end
+            "#,
+        )
+        .unwrap();
+
+    let items = manager.render_bar(StatusBarPosition::Bottom).unwrap();
+    assert_eq!(items[0].text, "initial");
+
+    // The async request queued during bar rendering should be retained and drained
+    let requests = manager.drain_async_requests().unwrap();
+    assert_eq!(requests.len(), 1);
+    assert_eq!(requests[0].program, "ping");
+
+    // Now simulate completion of that async request
+    manager
+        .invoke_async_callback(requests[0].id, b"pong", b"", 0)
+        .unwrap();
+
+    // Next bar render displays the updated value
+    let items = manager.render_bar(StatusBarPosition::Bottom).unwrap();
+    assert_eq!(items[0].text, "updated: pong");
+}

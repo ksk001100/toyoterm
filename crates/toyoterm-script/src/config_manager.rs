@@ -532,6 +532,60 @@ impl ConfigManager {
         })
     }
 
+    pub fn drain_async_requests(&mut self) -> Result<Vec<AsyncSpawnRequest>, ScriptError> {
+        let mut requests = Vec::new();
+        loop {
+            let id_str = self.runtime.eval("Toyoterm.__next_async_request")?;
+            let id = id_str
+                .parse::<u64>()
+                .map_err(|_| ScriptError::new("decode async request", "async id is invalid"))?;
+            if id == 0 {
+                break;
+            }
+            let program = self.runtime.eval("Toyoterm.__current_async_program")?;
+            let arg_count = self.ruby_usize("Toyoterm.__current_async_arg_count")?;
+            let mut args = Vec::with_capacity(arg_count);
+            for index in 0..arg_count {
+                args.push(
+                    self.runtime
+                        .eval(&format!("Toyoterm.__current_async_arg({index})"))?,
+                );
+            }
+            let cwd = self
+                .ruby_bool("Toyoterm.__current_async_has_cwd")?
+                .then(|| self.runtime.eval("Toyoterm.__current_async_cwd"))
+                .transpose()?;
+            requests.push(AsyncSpawnRequest {
+                id,
+                program,
+                args,
+                cwd,
+            });
+        }
+        Ok(requests)
+    }
+
+    pub fn invoke_async_callback(
+        &mut self,
+        id: u64,
+        stdout: &[u8],
+        stderr: &[u8],
+        exit_status: i32,
+    ) -> Result<(), ScriptError> {
+        let started = Instant::now();
+        let name = format!("{id}");
+        let result = self
+            .runtime
+            .invoke_async_callback(id, stdout, stderr, exit_status);
+        record_callback_duration(
+            CallbackKind::AsyncCallback,
+            &name,
+            started.elapsed(),
+            result.is_ok(),
+        );
+        result
+    }
+
     fn ruby_bool(&mut self, source: &str) -> Result<bool, ScriptError> {
         match self.runtime.eval(source)?.as_str() {
             "true" => Ok(true),
@@ -644,6 +698,15 @@ pub(super) fn run_script_request(
                 bar: Some(manager.render_bar(*position)?),
                 ..ScriptRequestOutput::default()
             },
+            ScriptInvocation::AsyncCallback { id, output } => {
+                manager.invoke_async_callback(
+                    *id,
+                    &output.stdout,
+                    &output.stderr,
+                    output.exit_status,
+                )?;
+                ScriptRequestOutput::default()
+            }
         })
     })();
     let ScriptRequestOutput {
@@ -656,6 +719,9 @@ pub(super) fn run_script_request(
             if let Some(checkpoint) = command_checkpoint.as_deref() {
                 manager.rollback_config_transaction(checkpoint)?;
             }
+            let _ = manager
+                .runtime
+                .eval("Toyoterm.__rollback_async_requests(0)");
             return Err(error);
         }
     };
@@ -678,11 +744,13 @@ pub(super) fn run_script_request(
         model.current_tab,
         model.current_pane,
     )?;
+    let async_requests = manager.drain_async_requests()?;
     let result = ScriptResult {
         value,
         bar,
         commands,
         snapshot,
+        async_requests,
     };
     let gc = manager.runtime.gc_stats();
     tracing::trace!(

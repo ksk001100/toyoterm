@@ -89,6 +89,21 @@ pub struct ScriptContext {
     pub clipboard: Option<String>,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AsyncSpawnRequest {
+    pub id: u64,
+    pub program: String,
+    pub args: Vec<String>,
+    pub cwd: Option<String>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AsyncProcessOutput {
+    pub stdout: Vec<u8>,
+    pub stderr: Vec<u8>,
+    pub exit_status: i32,
+}
+
 #[derive(Debug)]
 pub enum ScriptInvocation {
     DrainStartup,
@@ -98,6 +113,7 @@ pub enum ScriptInvocation {
     Eval(String),
     Reload,
     Bar { position: StatusBarPosition },
+    AsyncCallback { id: u64, output: AsyncProcessOutput },
 }
 
 #[derive(Debug)]
@@ -120,6 +136,7 @@ pub struct ScriptResult {
     pub bar: Option<Vec<BarItem>>,
     pub commands: Vec<NativeCommand>,
     pub snapshot: Option<ScriptSnapshot>,
+    pub async_requests: Vec<AsyncSpawnRequest>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

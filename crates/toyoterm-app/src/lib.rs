@@ -22,8 +22,9 @@ use winit::platform::wayland::WindowAttributesExtWayland;
 use winit::platform::windows::WindowAttributesExtWindows;
 
 use toyoterm_script::{
-    BarItem, RubyEvent, RubyObjectModel, RubyPane, RubyTab, RubyWindow, RubyWorkspace,
-    ScriptCompletion, ScriptContext, ScriptInvocation, ScriptRequest, ScriptSnapshot, ScriptThread,
+    AsyncProcessOutput, BarItem, RubyEvent, RubyObjectModel, RubyPane, RubyTab, RubyWindow,
+    RubyWorkspace, ScriptCompletion, ScriptContext, ScriptInvocation, ScriptRequest,
+    ScriptSnapshot, ScriptThread,
 };
 
 mod command_dispatch;
@@ -349,6 +350,10 @@ enum AppEvent {
         response: IpcResponse,
     },
     ScriptCompleted(Box<ScriptCompletion>),
+    AsyncCompleted {
+        id: u64,
+        output: AsyncProcessOutput,
+    },
 }
 
 enum EvalWaiter {
@@ -1270,6 +1275,12 @@ impl ApplicationHandler<AppEvent> for ToyotermApplication {
                 if let Some(window) = self.window.clone() {
                     self.sync_active_renderer(window.scale_factor());
                     window.request_redraw();
+                }
+            }
+            AppEvent::AsyncCompleted { id, output } => {
+                let invocation = ScriptInvocation::AsyncCallback { id, output };
+                if let Err(error) = self.submit_script(invocation) {
+                    tracing::warn!(target: "toyoterm::script", %error, "submit async callback failed");
                 }
             }
         }

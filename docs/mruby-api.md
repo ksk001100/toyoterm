@@ -772,6 +772,33 @@ changes queued by widget callbacks are always discarded. If any widget raises,
 the bar keeps its previous rendered content and is retried after its configured
 interval.
 
+Widgets can launch background asynchronous tasks via `Toyoterm.async` without
+blocking bar evaluation. Asynchronous tasks queued during bar rendering are
+retained when the widget callback succeeds (unlike native mutations, which are
+discarded). When an asynchronous task completes and updates Ruby state, toyoterm
+immediately schedules a bar refresh to update the displayed widgets:
+
+```ruby
+$weather = "Weather: ..."
+$last_weather_fetch = 0
+
+Toyoterm.configure do |config|
+  config.window.bar :bottom, interval: 1.0 do |bar|
+    bar.add(:right) do
+      now = Time.now.to_i
+      if now - $last_weather_fetch > 60
+        $last_weather_fetch = now
+        Toyoterm.async("curl", "-s", "https://wttr.in/Tokyo?format=1") do |result|
+          $weather = result.stdout.strip if result.success?
+        end
+      end
+      $weather
+    end
+  end
+end
+```
+
+
 ## Platform, clipboard, environment, files, and processes
 
 Configuration and plugins are trusted code. These APIs are intentionally not
@@ -793,6 +820,18 @@ sandboxed and carry the authority of the toyoterm process.
   `cwd` is the child process's working directory. Launch failures, including a
   missing or inaccessible working directory, raise `RuntimeError`; nonzero exit
   is a normal result.
+- `Toyoterm.async(program, *args, cwd: nil) { |result| ... }` (aliased as
+  `Toyoterm.async_spawn`) executes a child process asynchronously in a
+  background worker thread without blocking the script thread or GUI. It returns
+  an integer task ID. Omitting the block, supplying an empty `program`, passing
+  NUL bytes, or passing an empty `cwd` raises `ArgumentError` immediately before
+  scheduling. Upon completion, the block is invoked on the script thread with a
+  `Toyoterm::ProcessResult`. Launch failures (such as a missing program) report
+  an exit status of `-1` and capture the error in `stderr` rather than raising a
+  fatal exception. Exceptions raised inside the callback roll back any native
+  commands or badge mutations queued by that callback. If configuration is
+  reloaded while an asynchronous task is in flight, its callback is discarded
+  safely without error.
 
 `Toyoterm::ProcessResult` exposes `stdout`, `stderr`, `exit_status`, and
 `success?`. A process terminated without a portable exit code reports `-1`.
@@ -804,10 +843,16 @@ end
 
 result = Toyoterm.spawn("git", "branch", "--show-current", cwd: "/path/to/repository")
 warn result.stderr unless result.success?
+
+Toyoterm.async("curl", "-s", "https://wttr.in/Tokyo?format=1") do |result|
+  warn result.stderr unless result.success?
+  puts "Weather: #{result.stdout.strip}" if result.success?
+end
 ```
 
-Long-running host calls delay later Ruby callbacks, but not PTY parsing or
-rendering.
+Long-running synchronous host calls delay later Ruby callbacks, but not PTY
+parsing or rendering. Use `Toyoterm.async` for network I/O, ping, or other
+potentially slow commands to prevent blocking the script thread.
 
 ## Plugins and themes
 

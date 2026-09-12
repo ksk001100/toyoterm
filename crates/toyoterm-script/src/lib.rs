@@ -226,6 +226,7 @@ enum CallbackKind {
     Event,
     UserCommand,
     Bar,
+    AsyncCallback,
 }
 
 impl CallbackKind {
@@ -235,6 +236,7 @@ impl CallbackKind {
             Self::Event => "event",
             Self::UserCommand => "user_command",
             Self::Bar => "bar",
+            Self::AsyncCallback => "async_callback",
         }
     }
 }
@@ -368,6 +370,16 @@ unsafe extern "C" {
         error_output: *mut *mut c_char,
     ) -> i32;
     fn toyoterm_mruby_install_host_api(state: *mut c_void);
+    fn toyoterm_mruby_invoke_async_callback(
+        state: *mut c_void,
+        id: u64,
+        stdout_bytes: *const u8,
+        stdout_length: usize,
+        stderr_bytes: *const u8,
+        stderr_length: usize,
+        exit_status: i32,
+        error_output: *mut *mut c_char,
+    ) -> i32;
     fn toyoterm_mruby_gc_stats(
         state: *mut c_void,
         arena_index: *mut usize,
