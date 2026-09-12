@@ -169,7 +169,10 @@ pub unsafe extern "C" fn toyoterm_host_spawn(
         };
         #[cfg(windows)]
         let cwd = normalize_spawn_cwd(cwd);
-        command.current_dir(cwd.as_ref());
+        #[cfg(windows)]
+        command.current_dir(Path::new(&*cwd));
+        #[cfg(not(windows))]
+        command.current_dir(Path::new(cwd));
     }
     #[cfg(windows)]
     command.creation_flags(CREATE_NO_WINDOW);
