@@ -5,7 +5,7 @@ module Toyoterm
   VERSION = "__TOYOTERM_VERSION__".freeze
   API_VERSION = "__TOYOTERM_API_VERSION__".freeze
   CAPABILITIES = [
-    :async_process, :callback_context, :mixed_bar_groups, :registration_handles,
+    :async_process, :bar_sections, :callback_context, :registration_handles,
     :select_overlay, :targeted_actions, :typed_events
   ].freeze
   GLOBAL_ACTIONS = [
@@ -239,26 +239,13 @@ module Toyoterm
       @widgets = []
     end
 
-    def add(position, value = nil, &block)
-      raise ArgumentError, "bar widget position must be :left, :center, or :right" unless position.is_a?(Symbol)
-      unless [:left, :center, :right].include?(position)
-        raise ArgumentError, "bar widget position must be :left, :center, or :right"
-      end
-      if block && !value.nil?
-        raise ArgumentError, "bar widget accepts either a value or a block, not both"
-      end
-      widget = block || value
-      @widgets << [position, widget]
-      widget
-    end
-
-    def group(position, separator: " | ", &block)
+    def section(position, separator: " | ", &block)
       validate_position(position)
-      raise ArgumentError, "bar group requires a block" unless block
-      group = BarGroup.new(separator)
-      block.call(group)
-      @widgets << [position, group]
-      group
+      raise ArgumentError, "bar section requires a block" unless block
+      section = BarSection.new(separator)
+      block.call(section)
+      @widgets << [position, section]
+      section
     end
 
     def __widgets
@@ -287,24 +274,24 @@ module Toyoterm
     private
 
     def validate_position(position)
-      raise ArgumentError, "bar widget position must be :left, :center, or :right" unless position.is_a?(Symbol)
+      raise ArgumentError, "bar section position must be :left, :center, or :right" unless position.is_a?(Symbol)
       unless [:left, :center, :right].include?(position)
-        raise ArgumentError, "bar widget position must be :left, :center, or :right"
+        raise ArgumentError, "bar section position must be :left, :center, or :right"
       end
     end
   end
 
-  class BarGroup
+  class BarSection
     def initialize(separator)
-      raise TypeError, "bar group separator must be a String" unless separator.is_a?(String)
-      raise ArgumentError, "bar group separator cannot contain NUL" if separator.include?("\0")
+      raise TypeError, "bar section separator must be a String" unless separator.is_a?(String)
+      raise ArgumentError, "bar section separator cannot contain NUL" if separator.include?("\0")
       @separator = separator
       @widgets = []
     end
 
     def add(value = nil, &block)
       if block && !value.nil?
-        raise ArgumentError, "bar group widget accepts either a value or a block, not both"
+        raise ArgumentError, "bar section widget accepts either a value or a block, not both"
       end
       @widgets << (block || value)
       self

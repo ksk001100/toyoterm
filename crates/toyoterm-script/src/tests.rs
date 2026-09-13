@@ -25,6 +25,8 @@ fn removed_dsl_methods_and_action_aliases_are_rejected() {
         "Toyoterm.current_pane.focus",
         "Toyoterm.workspace(:old)",
         "Toyoterm.switch_workspace(:old)",
+        "Toyoterm::BarConfig.new.add(:left, 'old')",
+        "Toyoterm::BarConfig.new.group(:left) { |_| }",
     ] {
         let error = manager.eval(source).unwrap_err();
         assert!(
@@ -35,6 +37,13 @@ fn removed_dsl_methods_and_action_aliases_are_rejected() {
     assert!(
         manager
             .eval("Toyoterm::Window")
+            .unwrap_err()
+            .message()
+            .contains("NameError")
+    );
+    assert!(
+        manager
+            .eval("Toyoterm::BarGroup")
             .unwrap_err()
             .message()
             .contains("NameError")
@@ -361,13 +370,15 @@ fn window_bar_uses_typed_context_and_discards_commands() {
             r#"
                 Toyoterm.configure do |config|
                   config.window.bar(:bottom, interval: 0.25) do |bar|
-                    bar.add(:left) do |ctx|
-                      ctx.pane.send_text("must not run")
-                      [ctx.workspace.name, ctx.tab.title, ctx.pane.title].join(" | ")
+                    bar.section(:left, separator: " ") do |section|
+                      section.add do |ctx|
+                        ctx.pane.send_text("must not run")
+                        [ctx.workspace.name, ctx.tab.title, ctx.pane.title].join(" | ")
+                      end
+                      section.add("SECOND")
                     end
-                    bar.add(:left, "SECOND")
-                    bar.add(:center, "中央:表示")
-                    bar.add(:right) { |ctx| ctx.pane.cwd }
+                    bar.section(:center) { |section| section.add("中央:表示") }
+                    bar.section(:right) { |section| section.add { |ctx| ctx.pane.cwd } }
                   end
                 end
                 "#,
@@ -391,11 +402,7 @@ fn window_bar_uses_typed_context_and_discards_commands() {
         vec![
             BarItem {
                 alignment: BarAlignment::Left,
-                text: "Workspace 1 | Tab 3 | Pane 4".into(),
-            },
-            BarItem {
-                alignment: BarAlignment::Left,
-                text: "SECOND".into(),
+                text: "Workspace 1 | Tab 3 | Pane 4 SECOND".into(),
             },
             BarItem {
                 alignment: BarAlignment::Center,
@@ -418,8 +425,8 @@ fn repeated_status_bar_requests_keep_the_gc_arena_bounded() {
             r#"
                 Toyoterm.configure do |config|
                   config.window.bar(:bottom, interval: 0.1) do |bar|
-                    bar.add(:left) { |context| context.workspace.name }
-                    bar.add(:right) { |context| context.pane.cwd }
+                    bar.section(:left) { |section| section.add { |context| context.workspace.name } }
+                    bar.section(:right) { |section| section.add { |context| context.pane.cwd } }
                   end
                 end
             "#,
@@ -595,10 +602,14 @@ fn exposes_api_introspection_logging_and_a_read_only_config_snapshot() {
         "true"
     );
     assert_eq!(
+        manager.eval("Toyoterm.supports?(:bar_sections)").unwrap(),
+        "true"
+    );
+    assert_eq!(
         manager
             .eval("Toyoterm.supports?(:mixed_bar_groups)")
             .unwrap(),
-        "true"
+        "false"
     );
     assert!(
         manager
@@ -711,7 +722,7 @@ fn window_bar_interval_defaults_to_one_second_and_rejects_values_below_100ms() {
     let mut manager = ConfigManager::new().unwrap();
     manager
         .reload(
-            "Toyoterm.configure { |c| c.window.bar(:bottom) { |bar| bar.add(:left, 'ready') } }",
+            "Toyoterm.configure { |c| c.window.bar(:bottom) { |bar| bar.section(:left) { |section| section.add('ready') } } }",
         )
         .unwrap();
     assert_eq!(
@@ -723,7 +734,7 @@ fn window_bar_interval_defaults_to_one_second_and_rejects_values_below_100ms() {
     );
 
     let error = manager
-        .reload("Toyoterm.configure { |c| c.window.bar(:bottom, interval: 0.099) { |bar| bar.add(:left, 'too fast') } }")
+        .reload("Toyoterm.configure { |c| c.window.bar(:bottom, interval: 0.099) { |bar| bar.section(:left) { |section| section.add('too fast') } } }")
         .unwrap_err();
     assert!(error.message().contains("at least 0.1 seconds"));
     assert_eq!(
@@ -742,8 +753,8 @@ fn window_bar_supports_top_and_bottom_only() {
         .reload(
             r#"
                 Toyoterm.configure do |config|
-                  config.window.bar(:top) { |bar| bar.add(:left, "TOP") }
-                  config.window.bar(:bottom, interval: 2.0) { |bar| bar.add(:right, "BOTTOM") }
+                  config.window.bar(:top) { |bar| bar.section(:left) { |section| section.add("TOP") } }
+                  config.window.bar(:bottom, interval: 2.0) { |bar| bar.section(:right) { |section| section.add("BOTTOM") } }
                 end
             "#,
         )
@@ -776,9 +787,9 @@ fn window_bar_supports_top_and_bottom_only() {
     assert_eq!(manager.config().status_bars.len(), 2);
 
     let error = manager
-        .reload("Toyoterm.configure { |c| c.window.bar(:top) { |bar| bar.add(:top, 'invalid') } }")
+        .reload("Toyoterm.configure { |c| c.window.bar(:top) { |bar| bar.section(:top) { |section| section.add('invalid') } } }")
         .unwrap_err();
-    assert!(error.message().contains("widget position"));
+    assert!(error.message().contains("section position"));
     assert_eq!(manager.config().status_bars.len(), 2);
 }
 
@@ -3345,7 +3356,7 @@ fn async_api_validates_arguments() {
     assert!(manager.eval("Toyoterm.async(1)").is_err());
     assert!(
         manager
-            .eval("Toyoterm::BarGroup.new(' ').add_async('echo', initial: 1)")
+            .eval("Toyoterm::BarSection.new(' ').add_async('echo', initial: 1)")
             .is_err()
     );
 }
@@ -3478,11 +3489,13 @@ fn async_api_works_inside_window_bar_widgets() {
             $status_text = "initial"
             Toyoterm.configure do |config|
               config.window.bar :bottom, interval: 1.0 do |bar|
-                bar.add(:left) do
-                  Toyoterm.async("ping", "1.1.1.1") do |res|
-                    $status_text = "updated: #{res.stdout}"
+                bar.section(:left) do |section|
+                  section.add do
+                    Toyoterm.async("ping", "1.1.1.1") do |res|
+                      $status_text = "updated: #{res.stdout}"
+                    end
+                    $status_text
                   end
-                  $status_text
                 end
               end
             end
@@ -3517,9 +3530,11 @@ fn async_task_can_be_retained_in_bar_closure_without_global_state() {
             Toyoterm.configure do |config|
               config.window.bar :bottom, interval: 1.0 do |bar|
                 task = nil
-                bar.add(:left) do
-                  task = Toyoterm.async("printf", "ready") if task.nil?
-                  task.pending? ? "waiting" : task.result.stdout
+                bar.section(:left) do |section|
+                  section.add do
+                    task = Toyoterm.async("printf", "ready") if task.nil?
+                    task.pending? ? "waiting" : task.result.stdout
+                  end
                 end
               end
             end
@@ -3543,18 +3558,18 @@ fn async_task_can_be_retained_in_bar_closure_without_global_state() {
 }
 
 #[test]
-fn async_bar_group_renders_multiple_tasks_with_a_separator() {
+fn async_bar_section_renders_multiple_tasks_with_a_separator() {
     let mut manager = ConfigManager::new().unwrap();
     manager
         .reload(
             r#"
             Toyoterm.configure do |config|
               config.window.bar :bottom, interval: 1.0 do |bar|
-                bar.group(:right, separator: " | ") do |group|
-                  group.add_async("printf", "clock", initial: "clock...") do |result|
+                bar.section(:right, separator: " | ") do |section|
+                  section.add_async("printf", "clock", initial: "clock...") do |result|
                     result.success? ? result.stdout : ""
                   end
-                  group.add_async("printf", "branch", initial: "branch...") do |result|
+                  section.add_async("printf", "branch", initial: "branch...") do |result|
                     result.success? ? result.stdout : ""
                   end
                 end
@@ -3588,25 +3603,25 @@ fn async_bar_group_renders_multiple_tasks_with_a_separator() {
 }
 
 #[test]
-fn bar_group_mixes_synchronous_and_asynchronous_widgets() {
+fn bar_section_mixes_synchronous_and_asynchronous_widgets() {
     let mut manager = ConfigManager::new().unwrap();
     manager
         .reload(
             r#"
             Toyoterm.configure do |config|
               config.window.bar :top, interval: 1.0 do |bar|
-                bar.group(:right, separator: " | ") do |group|
+                bar.section(:right, separator: " | ") do |section|
                   updates = 0
-                  group.add_async("printf", "clock", initial: "clock...") do |result|
+                  section.add_async("printf", "clock", initial: "clock...") do |result|
                     result.success? ? result.stdout : ""
                   end
-                  group.add("host")
-                  group.add do |_context|
+                  section.add("host")
+                  section.add do |_context|
                     updates += 1
                     "battery#{updates}"
                   end
-                  group.add("")
-                  group.add(nil)
+                  section.add("")
+                  section.add(nil)
                 end
               end
             end
@@ -3629,15 +3644,38 @@ fn bar_group_mixes_synchronous_and_asynchronous_widgets() {
 }
 
 #[test]
-fn bar_group_add_rejects_a_value_and_block_together() {
+fn bar_section_add_rejects_a_value_and_block_together() {
     let mut manager = ConfigManager::new().unwrap();
     let error = manager
-        .eval("Toyoterm::BarGroup.new(' ').add('value') { 'block' }")
+        .eval("Toyoterm::BarSection.new(' ').add('value') { 'block' }")
         .unwrap_err();
 
     assert!(
         error
             .to_string()
-            .contains("bar group widget accepts either a value or a block, not both")
+            .contains("bar section widget accepts either a value or a block, not both")
+    );
+}
+
+#[test]
+fn bar_section_validates_its_block_and_separator() {
+    let mut manager = ConfigManager::new().unwrap();
+
+    let missing_block = manager
+        .eval("Toyoterm::BarConfig.new.section(:left)")
+        .unwrap_err();
+    assert!(
+        missing_block
+            .to_string()
+            .contains("bar section requires a block")
+    );
+
+    let invalid_separator = manager
+        .eval("Toyoterm::BarConfig.new.section(:left, separator: 1) { |_| }")
+        .unwrap_err();
+    assert!(
+        invalid_separator
+            .to_string()
+            .contains("bar section separator must be a String")
     );
 }

@@ -1,5 +1,5 @@
-# Example configuration demonstrating asynchronous widgets in the status bar
-# using Toyoterm.async.
+# Example configuration demonstrating asynchronous status bar sections using
+# BarSection#add_async.
 #
 # Network operations (such as fetching weather or pinging a server) run in the
 # background without blocking terminal input, rendering, or Ruby callbacks.
@@ -17,13 +17,15 @@ Toyoterm.configure do |config|
 
   # Configure the bottom status bar with a 1-second update interval.
   config.window.bar :bottom, interval: 1.0 do |bar|
-    bar.add(:left) { |context| context.workspace.name }
-    bar.add(:left, "toyoterm")
+    bar.section(:left, separator: " ") do |section|
+      section.add { |context| context.workspace.name }
+      section.add("toyoterm")
+    end
 
     ping_flag = Toyoterm.platform == :windows ? "-n" : "-c"
-    bar.group(:center, separator: " | ") do |group|
-      group.add_async("ping", ping_flag, "1", "1.1.1.1",
-                      interval: 10.0, initial: "Ping: measuring...") do |result|
+    bar.section(:center, separator: " | ") do |section|
+      section.add_async("ping", ping_flag, "1", "1.1.1.1",
+                        interval: 10.0, initial: "Ping: measuring...") do |result|
         if result.success? && result.stdout =~ /(?:Average = |time=)([\d.]+ ?ms)/i
           "Ping: #{$1}"
         elsif result.success?
@@ -33,8 +35,8 @@ Toyoterm.configure do |config|
         end
       end
 
-      group.add_async("curl", "-s", "https://wttr.in/?format=1",
-                      interval: 300.0, initial: "Weather: fetching...") do |result|
+      section.add_async("curl", "-s", "https://wttr.in/?format=1",
+                        interval: 300.0, initial: "Weather: fetching...") do |result|
         if result.success? && !result.stdout.strip.empty?
           result.stdout.strip
         else
@@ -42,8 +44,8 @@ Toyoterm.configure do |config|
         end
       end
 
-      # Synchronous values can share the same separator-delimited group.
-      group.add { "Host: #{Toyoterm.platform}" }
+      # Synchronous values can share the same separator-delimited section.
+      section.add { "Host: #{Toyoterm.platform}" }
     end
   end
 end

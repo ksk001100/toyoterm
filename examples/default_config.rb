@@ -150,8 +150,8 @@ end
 # Optional top and bottom bars contain independently aligned widgets.
 # Toyoterm.configure do |config|
 #   config.window.bar :bottom, interval: 1.0 do |bar|
-#     bar.add(:left) { |context| context.workspace.name }
-#     bar.add(:right) { |context| context.pane.cwd }
+#     bar.section(:left) { |section| section.add { |context| context.workspace.name } }
+#     bar.section(:right) { |section| section.add { |context| context.pane.cwd } }
 #   end
 # end
 

@@ -823,24 +823,30 @@ duplicate raises `ArgumentError`. The finite numeric interval must be at least
 `config.ui.status_bar_height`. The method returns the configured
 `Toyoterm::BarConfig` object. Omitting the block raises `ArgumentError`.
 
-`bar.add(alignment, value = nil) { |context| ... }` appends a widget.
-`alignment` accepts `:left`, `:center`, or `:right`. Supply either a fixed value
-or a block, not both. `Toyoterm::BarContext` exposes `workspace`, `window`,
-`tab`, and `pane`; each widget result is converted to a string. Widgets with the
-same alignment are rendered in registration order, separated by one space.
-`add` returns the supplied value or block. Invalid alignments and supplying both
-a non-`nil` value and a block raise `ArgumentError`. Widget text containing NUL
-raises `ArgumentError` when rendered.
+`bar.section(alignment, separator: " | ") { |section| ... }` appends an aligned
+section. `alignment` accepts `:left`, `:center`, or `:right`. A section contains
+one or more synchronous values or asynchronous processes and joins its non-empty
+values with `separator`. Multiple sections with the same alignment are rendered
+in registration order, separated by one space. The method returns the configured
+`Toyoterm::BarSection`. Invalid alignments, a missing block, and separators
+containing NUL raise `ArgumentError`; a non-String separator raises `TypeError`.
 
 ```ruby
 Toyoterm.configure do |config|
   config.window.bar :bottom, interval: 1.0 do |bar|
-    bar.add(:left) { |context| context.workspace.name }
-    bar.add(:center, "toyoterm")
-    bar.add(:right) { |context| context.pane.cwd }
+    bar.section(:left) { |section| section.add { |context| context.workspace.name } }
+    bar.section(:center) { |section| section.add("toyoterm") }
+    bar.section(:right) { |section| section.add { |context| context.pane.cwd } }
   end
 end
 ```
+
+`Toyoterm::BarSection#add(value = nil) { |context| ... }` appends a fixed value
+or a synchronous block and returns the section. Supply either a non-`nil` value
+or a block, not both. `Toyoterm::BarContext` exposes `workspace`, `window`,
+`tab`, and `pane`; each result is converted to a string. `nil` and empty results
+are omitted without leaving a separator. Text containing NUL raises
+`ArgumentError` when the bar is rendered.
 
 A position is hidden when no bar is configured for it. Each bar keeps its own
 interval and is run serially on the script thread. Commands and pane badge
@@ -858,40 +864,40 @@ it completes; toyoterm immediately schedules a bar refresh after completion:
 Toyoterm.configure do |config|
   config.window.bar :bottom, interval: 1.0 do |bar|
     weather_task = nil
-    bar.add(:right) do
-      weather_task ||= Toyoterm.async("curl", "-s", "https://wttr.in/Tokyo?format=1")
-      if weather_task.complete? && weather_task.success?
-        weather_task.result.stdout.strip
-      elsif weather_task.complete?
-        "Weather: unavailable"
-      else
-        "Weather: fetching..."
+    bar.section(:right) do |section|
+      section.add do
+        weather_task ||= Toyoterm.async("curl", "-s", "https://wttr.in/Tokyo?format=1")
+        if weather_task.complete? && weather_task.success?
+          weather_task.result.stdout.strip
+        elsif weather_task.complete?
+          "Weather: unavailable"
+        else
+          "Weather: fetching..."
+        end
       end
     end
   end
 end
 ```
 
-To join multiple values in one alignment, use a group. A group accepts static
-values, synchronous blocks, and asynchronous processes in registration order.
-Each `add_async` call owns its result, refresh schedule, and one in-flight
-process. The group joins non-empty values with its separator, so no user-side
-cache variables are required:
+A section accepts static values, synchronous blocks, and asynchronous processes
+in registration order. Each `add_async` call owns its result, refresh schedule,
+and one in-flight process, so no user-side cache variables are required:
 
 ```ruby
-bar.group(:right, separator: " | ") do |group|
-  group.add_async("date", "+%Y-%m-%d %H:%M:%S",
-                  interval: 1.0, initial: "clock...") do |result|
+bar.section(:right, separator: " | ") do |section|
+  section.add_async("date", "+%Y-%m-%d %H:%M:%S",
+                    interval: 1.0, initial: "clock...") do |result|
     result.success? ? result.stdout.strip : ""
   end
 
-  group.add_async("git", "branch", "--show-current",
-                  interval: 2.0, cwd: ->(ctx) { ctx.pane.cwd },
-                  initial: "branch...") do |result|
+  section.add_async("git", "branch", "--show-current",
+                    interval: 2.0, cwd: ->(ctx) { ctx.pane.cwd },
+                    initial: "branch...") do |result|
     result.success? ? "\u{e725} #{result.stdout.strip}" : ""
   end
 
-  group.add do |_ctx|
+  section.add do |_ctx|
     battery = Toyoterm.read_file("/sys/class/power_supply/BAT0/capacity").strip
     battery.empty? ? "" : "#{battery}%"
   rescue
@@ -900,20 +906,16 @@ bar.group(:right, separator: " | ") do |group|
 end
 ```
 
-`BarConfig#group(position, separator: " | ")` registers one grouped widget.
-`BarGroup#add(value = nil) { |context| ... }` registers a synchronous static
-value or block and returns the group. It accepts either a non-`nil` value or a
-block, not both. The block receives the current `BarContext` and is evaluated
-on every bar refresh. `BarGroup#add_async(program, *args, interval: 1.0,
-initial: "", cwd: nil) { |result| ... }` registers one independent asynchronous
-process and returns the group. Its optional block formats the resulting
+`BarSection#add_async(program, *args, interval: 1.0, initial: "", cwd: nil) { |result| ... }`
+registers one independent asynchronous process and returns the section. Its
+optional block formats the resulting
 `ProcessResult`; without a block, stdout is displayed. `cwd` may be a string,
 `nil`, or a context lambda. A new process is not started while the previous
 process for that item is still running. `interval` is the minimum delay between
 process starts and must be at least 0.1 seconds. `initial` and the separator
 must be Strings and may not contain NUL bytes. `nil` and empty displayed results
-are omitted without leaving a separator. Use
-`Toyoterm.supports?(:mixed_bar_groups)` when supporting older toyoterm builds.
+are omitted without leaving a separator. Use `Toyoterm.supports?(:bar_sections)`
+to detect this API.
 
 
 ## Platform, clipboard, environment, files, and processes
