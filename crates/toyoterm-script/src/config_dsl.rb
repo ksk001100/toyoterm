@@ -5,7 +5,7 @@ module Toyoterm
   VERSION = "__TOYOTERM_VERSION__".freeze
   API_VERSION = "__TOYOTERM_API_VERSION__".freeze
   CAPABILITIES = [
-    :async_process, :callback_context, :registration_handles,
+    :async_process, :callback_context, :mixed_bar_groups, :registration_handles,
     :select_overlay, :targeted_actions, :typed_events
   ].freeze
   GLOBAL_ACTIONS = [
@@ -255,7 +255,7 @@ module Toyoterm
     def group(position, separator: " | ", &block)
       validate_position(position)
       raise ArgumentError, "bar group requires a block" unless block
-      group = AsyncBarGroup.new(separator)
+      group = BarGroup.new(separator)
       block.call(group)
       @widgets << [position, group]
       group
@@ -294,12 +294,20 @@ module Toyoterm
     end
   end
 
-  class AsyncBarGroup
+  class BarGroup
     def initialize(separator)
       raise TypeError, "bar group separator must be a String" unless separator.is_a?(String)
       raise ArgumentError, "bar group separator cannot contain NUL" if separator.include?("\0")
       @separator = separator
       @widgets = []
+    end
+
+    def add(value = nil, &block)
+      if block && !value.nil?
+        raise ArgumentError, "bar group widget accepts either a value or a block, not both"
+      end
+      @widgets << (block || value)
+      self
     end
 
     def add_async(program, *args, interval: 1.0, initial: "", cwd: nil, &block)
@@ -313,17 +321,25 @@ module Toyoterm
     end
 
     def call(context)
-      @widgets.map { |widget| widget.call(context) }
+      @widgets.map do |widget|
+        value = widget.respond_to?(:call) ? widget.call(context) : widget
+        value.nil? ? "" : value.to_s
+      end
         .reject { |text| text.nil? || text.empty? }
         .join(@separator)
     end
 
     def __checkpoint
-      @widgets.map(&:__checkpoint)
+      @widgets.map do |widget|
+        widget.respond_to?(:__checkpoint) ? widget.__checkpoint : nil
+      end
     end
 
     def __rollback(checkpoint)
-      @widgets.each_with_index { |widget, index| widget.__rollback(checkpoint[index]) }
+      @widgets.each_with_index do |widget, index|
+        state = checkpoint[index]
+        widget.__rollback(state) if state && widget.respond_to?(:__rollback)
+      end
     end
   end
 

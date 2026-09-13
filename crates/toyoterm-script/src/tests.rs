@@ -594,6 +594,12 @@ fn exposes_api_introspection_logging_and_a_read_only_config_snapshot() {
         manager.eval("Toyoterm.supports?(:select_overlay)").unwrap(),
         "true"
     );
+    assert_eq!(
+        manager
+            .eval("Toyoterm.supports?(:mixed_bar_groups)")
+            .unwrap(),
+        "true"
+    );
     assert!(
         manager
             .eval("Toyoterm.config[:font][:family] << 'x'")
@@ -3339,7 +3345,7 @@ fn async_api_validates_arguments() {
     assert!(manager.eval("Toyoterm.async(1)").is_err());
     assert!(
         manager
-            .eval("Toyoterm::AsyncBarGroup.new(' ').add_async('echo', initial: 1)")
+            .eval("Toyoterm::BarGroup.new(' ').add_async('echo', initial: 1)")
             .is_err()
     );
 }
@@ -3579,4 +3585,59 @@ fn async_bar_group_renders_multiple_tasks_with_a_separator() {
         "12:00 | main"
     );
     assert!(manager.drain_async_requests().unwrap().is_empty());
+}
+
+#[test]
+fn bar_group_mixes_synchronous_and_asynchronous_widgets() {
+    let mut manager = ConfigManager::new().unwrap();
+    manager
+        .reload(
+            r#"
+            Toyoterm.configure do |config|
+              config.window.bar :top, interval: 1.0 do |bar|
+                bar.group(:right, separator: " | ") do |group|
+                  updates = 0
+                  group.add_async("printf", "clock", initial: "clock...") do |result|
+                    result.success? ? result.stdout : ""
+                  end
+                  group.add("host")
+                  group.add do |_context|
+                    updates += 1
+                    "battery#{updates}"
+                  end
+                  group.add("")
+                  group.add(nil)
+                end
+              end
+            end
+            "#,
+        )
+        .unwrap();
+
+    let items = manager.render_bar(StatusBarPosition::Top).unwrap();
+    assert_eq!(items[0].text, "clock... | host | battery1");
+    let requests = manager.drain_async_requests().unwrap();
+    assert_eq!(requests.len(), 1);
+
+    manager
+        .invoke_async_callback(requests[0].id, b"12:00", b"", 0)
+        .unwrap();
+    assert_eq!(
+        manager.render_bar(StatusBarPosition::Top).unwrap()[0].text,
+        "12:00 | host | battery2"
+    );
+}
+
+#[test]
+fn bar_group_add_rejects_a_value_and_block_together() {
+    let mut manager = ConfigManager::new().unwrap();
+    let error = manager
+        .eval("Toyoterm::BarGroup.new(' ').add('value') { 'block' }")
+        .unwrap_err();
+
+    assert!(
+        error
+            .to_string()
+            .contains("bar group widget accepts either a value or a block, not both")
+    );
 }

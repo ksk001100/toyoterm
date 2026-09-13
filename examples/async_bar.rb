@@ -41,6 +41,9 @@ Toyoterm.configure do |config|
           "Weather: unavailable"
         end
       end
+
+      # Synchronous values can share the same separator-delimited group.
+      group.add { "Host: #{Toyoterm.platform}" }
     end
   end
 end

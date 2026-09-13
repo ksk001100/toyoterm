@@ -872,7 +872,8 @@ Toyoterm.configure do |config|
 end
 ```
 
-For multiple independent asynchronous values in one alignment, use a group.
+To join multiple values in one alignment, use a group. A group accepts static
+values, synchronous blocks, and asynchronous processes in registration order.
 Each `add_async` call owns its result, refresh schedule, and one in-flight
 process. The group joins non-empty values with its separator, so no user-side
 cache variables are required:
@@ -889,16 +890,30 @@ bar.group(:right, separator: " | ") do |group|
                   initial: "branch...") do |result|
     result.success? ? "\u{e725} #{result.stdout.strip}" : ""
   end
+
+  group.add do |_ctx|
+    battery = Toyoterm.read_file("/sys/class/power_supply/BAT0/capacity").strip
+    battery.empty? ? "" : "#{battery}%"
+  rescue
+    ""
+  end
 end
 ```
 
-`BarConfig#group(position, separator: " | ")` registers one grouped widget;
-`AsyncBarGroup#add_async(program, *args, interval:, initial:, cwd:)` registers
-one independent asynchronous process. `cwd` may be a string, `nil`, or a
-context lambda. A new process is not started while the previous process for
-that widget is still running. `interval` is the minimum delay between process
-starts and must be at least 0.1 seconds. `initial` and the separator must be
-Strings and may not contain NUL bytes.
+`BarConfig#group(position, separator: " | ")` registers one grouped widget.
+`BarGroup#add(value = nil) { |context| ... }` registers a synchronous static
+value or block and returns the group. It accepts either a non-`nil` value or a
+block, not both. The block receives the current `BarContext` and is evaluated
+on every bar refresh. `BarGroup#add_async(program, *args, interval: 1.0,
+initial: "", cwd: nil) { |result| ... }` registers one independent asynchronous
+process and returns the group. Its optional block formats the resulting
+`ProcessResult`; without a block, stdout is displayed. `cwd` may be a string,
+`nil`, or a context lambda. A new process is not started while the previous
+process for that item is still running. `interval` is the minimum delay between
+process starts and must be at least 0.1 seconds. `initial` and the separator
+must be Strings and may not contain NUL bytes. `nil` and empty displayed results
+are omitted without leaving a separator. Use
+`Toyoterm.supports?(:mixed_bar_groups)` when supporting older toyoterm builds.
 
 
 ## Platform, clipboard, environment, files, and processes
