@@ -48,6 +48,9 @@ startup for both display protocols on every push.
 ## Windows
 
 - Start both PowerShell and `cmd.exe`; verify output, input, resize, and exit.
+- From a toyoterm PowerShell pane, run `toyoterm ruby console`. Submit an empty
+  line and confirm the REPL remains active, then run `exit` and confirm the
+  parent shell accepts input normally.
 - Run `python examples/terminal_images.py --protocol kitty` and `bsky_tui`;
   confirm Kitty images render rather than being filtered by ConPTY.
 - Verify Ctrl shortcuts, AltGr, dead keys, and a Windows IME.

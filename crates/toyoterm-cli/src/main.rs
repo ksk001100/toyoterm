@@ -1,24 +1,24 @@
-#![cfg_attr(windows, windows_subsystem = "windows")]
-
 use std::io::Read;
 use std::panic::{AssertUnwindSafe, catch_unwind};
-use std::path::PathBuf;
 use std::process::ExitCode;
 
-use toyoterm_api::{Command, PaneId, PaneLaunchSpec, SplitDirection};
-use toyoterm_app::{
-    GuiOptions, init_logging, install_panic_hook, run_gui, run_gui_smoke_test, run_gui_with_options,
-};
+#[cfg(test)]
+use toyoterm_api::PaneLaunchSpec;
+use toyoterm_api::{Command, PaneId, SplitDirection};
+use toyoterm_app::{init_logging, install_panic_hook, run_gui, run_gui_smoke_test};
 use toyoterm_ipc::{IpcRequest, request_remote, run_console};
 use toyoterm_mux::Mux;
 use toyoterm_pty::{NativePty, Pty, PtyCommand, PtySize};
 use toyoterm_terminal::{AlacrittyTerminalBackend, TerminalBackend};
 
+mod gui_options;
 mod shell_integration;
 
+#[cfg(test)]
+use gui_options::parse_gui_options;
+use gui_options::{is_gui_option, run_gui_options};
+
 fn main() -> ExitCode {
-    #[cfg(windows)]
-    attach_console();
     if let Err(error) = init_logging() {
         eprintln!("toyoterm: {error}");
         return ExitCode::FAILURE;
@@ -113,114 +113,6 @@ fn run(mut args: impl Iterator<Item = String>) -> Result<(), String> {
         }
         Some(command) => Err(format!("unknown command `{command}`; try `toyoterm help`")),
     }
-}
-
-fn is_gui_option(argument: &str) -> bool {
-    matches!(
-        argument,
-        "--config"
-            | "--title"
-            | "--app-id"
-            | "--working-directory"
-            | "--dir"
-            | "-e"
-            | "--execute"
-            | "--"
-    ) || argument.starts_with("--config=")
-        || argument.starts_with("--title=")
-        || argument.starts_with("--app-id=")
-        || argument.starts_with("--working-directory=")
-        || argument.starts_with("--dir=")
-}
-
-fn run_gui_options(first: &str, remaining: impl Iterator<Item = String>) -> Result<(), String> {
-    let options = parse_gui_options(std::iter::once(first.to_owned()).chain(remaining))?;
-    run_gui_with_options(options).map_err(|error| error.to_string())
-}
-
-fn parse_gui_options(mut args: impl Iterator<Item = String>) -> Result<GuiOptions, String> {
-    let mut options = GuiOptions::default();
-    while let Some(argument) = args.next() {
-        match argument.as_str() {
-            "--config" => options.config_path = Some(required_config_path(&mut args)?),
-            "--title" => options.title = Some(required_option_value("--title", &mut args)?),
-            "--app-id" => options.app_id = Some(required_option_value("--app-id", &mut args)?),
-            "--working-directory" | "--dir" => {
-                let cwd = required_option_value(&argument, &mut args)?;
-                set_launch_cwd(&mut options, cwd);
-            }
-            "-e" | "--execute" | "--" => {
-                let command = args.collect::<Vec<_>>();
-                if command.is_empty() {
-                    return Err(format!("{argument} requires a command"));
-                }
-                let mut command = command.into_iter();
-                options.initial_pane = Some(PaneLaunchSpec {
-                    program: command.next(),
-                    args: command.collect(),
-                    cwd: options.initial_pane.and_then(|launch| launch.cwd),
-                    environment: Vec::new(),
-                });
-                return Ok(options);
-            }
-            _ if argument.starts_with("--config=") => {
-                options.config_path =
-                    Some(PathBuf::from(inline_option_value("--config", &argument)?));
-            }
-            _ if argument.starts_with("--title=") => {
-                options.title = Some(inline_option_value("--title", &argument)?.to_owned());
-            }
-            _ if argument.starts_with("--app-id=") => {
-                options.app_id = Some(inline_option_value("--app-id", &argument)?.to_owned());
-            }
-            _ if argument.starts_with("--working-directory=") => {
-                let cwd = inline_option_value("--working-directory", &argument)?.to_owned();
-                set_launch_cwd(&mut options, cwd);
-            }
-            _ if argument.starts_with("--dir=") => {
-                let cwd = inline_option_value("--dir", &argument)?.to_owned();
-                set_launch_cwd(&mut options, cwd);
-            }
-            _ => return Err(format!("unexpected GUI argument `{argument}`")),
-        }
-    }
-    Ok(options)
-}
-
-fn set_launch_cwd(options: &mut GuiOptions, cwd: String) {
-    options
-        .initial_pane
-        .get_or_insert_with(|| PaneLaunchSpec {
-            program: None,
-            args: Vec::new(),
-            cwd: None,
-            environment: Vec::new(),
-        })
-        .cwd = Some(cwd);
-}
-
-fn required_option_value(
-    option: &str,
-    args: &mut impl Iterator<Item = String>,
-) -> Result<String, String> {
-    args.next()
-        .filter(|value| !value.is_empty())
-        .ok_or_else(|| format!("{option} requires a value"))
-}
-
-fn inline_option_value<'a>(option: &str, argument: &'a str) -> Result<&'a str, String> {
-    argument
-        .split_once('=')
-        .map(|(_, value)| value)
-        .filter(|value| !value.is_empty())
-        .ok_or_else(|| format!("{option} requires a value"))
-}
-
-fn required_config_path(args: &mut impl Iterator<Item = String>) -> Result<PathBuf, String> {
-    args.next()
-        .filter(|path| !path.is_empty())
-        .map(PathBuf::from)
-        .ok_or_else(|| "--config requires a path".into())
 }
 
 fn ensure_no_arguments(args: &mut impl Iterator<Item = String>) -> Result<(), String> {
@@ -402,96 +294,6 @@ fn screen_demo_command() -> PtyCommand {
 #[cfg(windows)]
 fn demo_input() -> &'static str {
     "echo hello from toyoterm PTY\r\nexit\r\n"
-}
-
-#[cfg(windows)]
-fn attach_console() {
-    use std::ffi::c_void;
-    #[link(name = "kernel32")]
-    unsafe extern "system" {
-        fn AttachConsole(dwProcessId: u32) -> i32;
-        fn CreateFileW(
-            lpFileName: *const u16,
-            dwDesiredAccess: u32,
-            dwShareMode: u32,
-            lpSecurityAttributes: *mut c_void,
-            dwCreationDisposition: u32,
-            dwFlagsAndAttributes: u32,
-            hTemplateFile: *mut c_void,
-        ) -> *mut c_void;
-        fn SetStdHandle(nStdHandle: u32, hHandle: *mut c_void) -> i32;
-        fn GetStdHandle(nStdHandle: u32) -> *mut c_void;
-    }
-    const ATTACH_PARENT_PROCESS: u32 = 0xFFFFFFFF;
-    const STD_INPUT_HANDLE: u32 = 0xFFFFFFF6; // -10
-    const STD_OUTPUT_HANDLE: u32 = 0xFFFFFFF5; // -11
-    const STD_ERROR_HANDLE: u32 = 0xFFFFFFF4; // -12
-    const GENERIC_READ: u32 = 0x80000000;
-    const GENERIC_WRITE: u32 = 0x40000000;
-    const FILE_SHARE_READ: u32 = 1;
-    const FILE_SHARE_WRITE: u32 = 2;
-    const OPEN_EXISTING: u32 = 3;
-    const INVALID_HANDLE_VALUE: *mut c_void = -1isize as *mut c_void;
-
-    let attached = unsafe { AttachConsole(ATTACH_PARENT_PROCESS) };
-    if attached != 0 {
-        let conout: Vec<u16> = "CONOUT$\0".encode_utf16().collect();
-        let conin: Vec<u16> = "CONIN$\0".encode_utf16().collect();
-
-        let current_out = unsafe { GetStdHandle(STD_OUTPUT_HANDLE) };
-        if current_out.is_null() || current_out == INVALID_HANDLE_VALUE {
-            let h = unsafe {
-                CreateFileW(
-                    conout.as_ptr(),
-                    GENERIC_READ | GENERIC_WRITE,
-                    FILE_SHARE_READ | FILE_SHARE_WRITE,
-                    std::ptr::null_mut(),
-                    OPEN_EXISTING,
-                    0,
-                    std::ptr::null_mut(),
-                )
-            };
-            if h != INVALID_HANDLE_VALUE {
-                unsafe { SetStdHandle(STD_OUTPUT_HANDLE, h) };
-            }
-        }
-
-        let current_err = unsafe { GetStdHandle(STD_ERROR_HANDLE) };
-        if current_err.is_null() || current_err == INVALID_HANDLE_VALUE {
-            let h = unsafe {
-                CreateFileW(
-                    conout.as_ptr(),
-                    GENERIC_READ | GENERIC_WRITE,
-                    FILE_SHARE_READ | FILE_SHARE_WRITE,
-                    std::ptr::null_mut(),
-                    OPEN_EXISTING,
-                    0,
-                    std::ptr::null_mut(),
-                )
-            };
-            if h != INVALID_HANDLE_VALUE {
-                unsafe { SetStdHandle(STD_ERROR_HANDLE, h) };
-            }
-        }
-
-        let current_in = unsafe { GetStdHandle(STD_INPUT_HANDLE) };
-        if current_in.is_null() || current_in == INVALID_HANDLE_VALUE {
-            let h = unsafe {
-                CreateFileW(
-                    conin.as_ptr(),
-                    GENERIC_READ | GENERIC_WRITE,
-                    FILE_SHARE_READ | FILE_SHARE_WRITE,
-                    std::ptr::null_mut(),
-                    OPEN_EXISTING,
-                    0,
-                    std::ptr::null_mut(),
-                )
-            };
-            if h != INVALID_HANDLE_VALUE {
-                unsafe { SetStdHandle(STD_INPUT_HANDLE, h) };
-            }
-        }
-    }
 }
 
 fn print_help() {

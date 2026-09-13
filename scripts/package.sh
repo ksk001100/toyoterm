@@ -91,6 +91,7 @@ case "$target" in
   *-windows-*)
     copy_common_files "$staging_directory"
     cp "$binary_directory/toyoterm.exe" \
+      "$binary_directory/toyoterm-gui.exe" \
       "$binary_directory/conpty.dll" \
       "$binary_directory/OpenConsole.exe" \
       "$staging_directory/"

@@ -26,7 +26,7 @@ if (-not $KeepStartMenu) {
     Remove-Item -Recurse -Force -ErrorAction SilentlyContinue -LiteralPath $startMenuDirectory
 }
 
-foreach ($installedFile in @("toyoterm.exe", "conpty.dll", "OpenConsole.exe", "Uninstall-Toyoterm.ps1")) {
+foreach ($installedFile in @("toyoterm.exe", "toyoterm-gui.exe", "conpty.dll", "OpenConsole.exe", "Uninstall-Toyoterm.ps1")) {
     $installedPath = Join-Path $resolvedInstallDirectory $installedFile
     for ($attempt = 0; $attempt -lt 10; $attempt++) {
         Remove-Item -Force -ErrorAction SilentlyContinue -LiteralPath $installedPath

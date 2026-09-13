@@ -32,8 +32,9 @@ metadata are derived from it.
   per-user installer/uninstaller, desktop entry, icon, and docs.
 - macOS: `toyoterm-VERSION-TARGET.dmg` and `.tar.gz`, each containing the same
   unsigned `.app` bundle with application metadata and icon.
-- Windows: `toyoterm-VERSION-TARGET.zip`, containing portable `toyoterm.exe`,
-  optional per-user install/uninstall scripts, and docs.
+- Windows: `toyoterm-VERSION-TARGET.zip`, containing portable `toyoterm.exe`
+  for CLI use, `toyoterm-gui.exe` for GUI launch, optional per-user
+  install/uninstall scripts, and docs.
 - Integrity: a `.sha256` sidecar for every artifact and one combined
   `SHA256SUMS` file on the GitHub Release.
 

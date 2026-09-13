@@ -41,8 +41,9 @@ xkbcommon・`pkg-config`などの開発用ライブラリを用意してくだ�
 cargo run --locked
 ```
 
-最適化ビルドは`cargo build --release --locked`で作成し、`target/release/toyoterm`
-（Windowsでは`target/release/toyoterm.exe`）を実行します。
+最適化ビルドは`cargo build --release --locked`で作成し、Linux・macOSでは
+`target/release/toyoterm`を実行します。Windowsではconsoleを表示しないGUI起動に
+`target/release/toyoterm-gui.exe`、CLIコマンドに`target/release/toyoterm.exe`を使用します。
 
 リリース成果物は、Linuxでは`install.sh`付きアーカイブ、macOSではDMGまたはappバンドルの
 アーカイブ、Windowsでは任意のユーザー単位インストーラ付きportable zipです。

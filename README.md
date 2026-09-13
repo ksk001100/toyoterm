@@ -43,8 +43,10 @@ a working Wayland or X11 session and the corresponding development libraries
 cargo run --locked
 ```
 
-Build an optimized binary with `cargo build --release --locked`; run
-`target/release/toyoterm` (`target/release/toyoterm.exe` on Windows).
+Build optimized binaries with `cargo build --release --locked`. Run
+`target/release/toyoterm` on Linux/macOS. On Windows, use
+`target/release/toyoterm-gui.exe` for a console-free GUI launch and
+`target/release/toyoterm.exe` for CLI commands.
 
 For release artifacts, Linux provides an archive with `install.sh`, macOS a DMG
 or app-bundle archive, and Windows a portable zip with an optional per-user

@@ -7,7 +7,7 @@ param(
 
 $ErrorActionPreference = "Stop"
 $sourceDirectory = $PSScriptRoot
-$requiredFiles = @("toyoterm.exe", "conpty.dll", "OpenConsole.exe", "Uninstall-Toyoterm.ps1")
+$requiredFiles = @("toyoterm.exe", "toyoterm-gui.exe", "conpty.dll", "OpenConsole.exe", "Uninstall-Toyoterm.ps1")
 foreach ($requiredFile in $requiredFiles) {
     if (-not (Test-Path -LiteralPath (Join-Path $sourceDirectory $requiredFile) -PathType Leaf)) {
         throw "$requiredFile was not found next to this installer"
@@ -34,7 +34,7 @@ if (-not $NoStartMenu) {
     New-Item -ItemType Directory -Force -Path $startMenuDirectory | Out-Null
     $shell = New-Object -ComObject WScript.Shell
     $shortcut = $shell.CreateShortcut((Join-Path $startMenuDirectory "toyoterm.lnk"))
-    $installedExecutable = Join-Path $resolvedInstallDirectory "toyoterm.exe"
+    $installedExecutable = Join-Path $resolvedInstallDirectory "toyoterm-gui.exe"
     $shortcut.TargetPath = $installedExecutable
     $shortcut.IconLocation = "$installedExecutable,0"
     $shortcut.WorkingDirectory = $env:USERPROFILE

@@ -62,8 +62,13 @@ Run the installed `Uninstall-Toyoterm.ps1` to remove the executable, user PATH
 entry, shortcut, and installer files. The zip remains usable as a portable
 fallback.
 
-The archive and installed directory keep `conpty.dll` and `OpenConsole.exe`
-next to `toyoterm.exe`. This matched Microsoft ConPTY bundle preserves private
+The archive and installed directory contain `toyoterm.exe` for CLI use and
+`toyoterm-gui.exe` as the no-console Start Menu launcher. Both start the same
+terminal application; keeping the CLI executable in the console subsystem makes
+interactive commands such as `toyoterm ruby console` own their input normally.
+
+The installed directory keeps `conpty.dll` and `OpenConsole.exe` next to both
+executables. This matched Microsoft ConPTY bundle preserves private
 terminal control strings such as Kitty graphics APC on Windows; the operating
 system ConPTY may filter them. Do not copy or update only one file from the
 pair.

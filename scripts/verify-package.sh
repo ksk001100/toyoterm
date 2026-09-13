@@ -89,6 +89,7 @@ case "$target" in
   *-windows-*)
     common_prefix=$archive_name
     executable="$archive_name/toyoterm.exe"
+    require_entry "$archive_name/toyoterm-gui.exe"
     require_entry "$archive_name/Install-Toyoterm.ps1"
     require_entry "$archive_name/Uninstall-Toyoterm.ps1"
     require_entry "$archive_name/conpty.dll"
