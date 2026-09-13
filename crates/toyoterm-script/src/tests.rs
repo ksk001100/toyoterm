@@ -2754,6 +2754,46 @@ fn user_command_validation_and_callback_failures_are_isolated() {
 fn interactive_evaluation_returns_inspect_output() {
     let mut manager = ConfigManager::new().unwrap();
     assert_eq!(manager.eval_inspect("[1, 'two']").unwrap(), "[1, \"two\"]");
+    assert_eq!(
+        manager
+            .eval_inspect("# unmatched quote ' and bracket [")
+            .unwrap(),
+        "nil"
+    );
+    assert_eq!(manager.eval_inspect("answer = 40").unwrap(), "40");
+    assert_eq!(manager.eval_inspect("answer + 2").unwrap(), "42");
+    let incomplete = manager.eval_inspect("def console_answer").unwrap_err();
+    assert!(
+        incomplete
+            .message()
+            .contains("syntax error, unexpected end of file")
+    );
+    assert_eq!(
+        manager
+            .eval_inspect("respond_to?(:console_answer)")
+            .unwrap(),
+        "false"
+    );
+    assert_eq!(
+        manager
+            .eval_inspect("def console_answer\n  42\nend")
+            .unwrap(),
+        ":console_answer"
+    );
+    assert_eq!(manager.eval_inspect("console_answer").unwrap(), "42");
+    assert!(
+        manager
+            .eval_inspect("message = <<TEXT")
+            .unwrap_err()
+            .message()
+            .contains("syntax error, unexpected end of file")
+    );
+    assert_eq!(
+        manager
+            .eval_inspect("message = <<TEXT\nhello\nTEXT")
+            .unwrap(),
+        "\"hello\\n\""
+    );
     assert!(
         manager
             .eval_inspect("Toyoterm.current_pane.send_text('leak'); raise 'nope'")

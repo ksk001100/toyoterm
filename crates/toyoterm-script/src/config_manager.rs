@@ -230,10 +230,7 @@ impl ConfigManager {
     /// Evaluates interactive Ruby and returns the value's `inspect` representation.
     pub fn eval_inspect(&mut self, source: &str) -> Result<String, ScriptError> {
         let checkpoint = self.runtime.eval("Toyoterm.__command_checkpoint")?;
-        let result = self.runtime.eval_with_filename(
-            &format!("(begin\n{source}\nend).inspect"),
-            "(toyoterm ruby console)",
-        );
+        let result = self.runtime.eval_console(source);
         if result.is_err() {
             let _ = self
                 .runtime

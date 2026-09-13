@@ -121,7 +121,7 @@ Only these commands connect to an existing GUI over local IPC:
 | --- | --- |
 | `toyoterm list` | Show the GUI's current mux state. |
 | `toyoterm reload` | Reload its selected configuration file. |
-| `toyoterm ruby console` | Open a multiline Ruby REPL in its persistent VM; supports `:history` and `exit`. `toyoterm ruby` is an alias. |
+| `toyoterm ruby console` | Open a Ruby REPL in its persistent VM. mruby parses multiline input, and local variables persist between entries. Supports `:history` and `exit`; `toyoterm ruby` is an alias. |
 | `toyoterm cli list-panes` | List panes. |
 | `toyoterm cli send-text --pane ID TEXT` | Send text to a pane; multiple text arguments are joined with spaces. |
 | `toyoterm cli split [left\|right\|up\|down]` | Split the active pane; defaults to `right`. Also accepts `--direction DIRECTION`. |

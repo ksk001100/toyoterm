@@ -249,6 +249,14 @@ const CONFIG_DSL: &str = include_str!("config_dsl.rb");
 unsafe extern "C" {
     fn toyoterm_mruby_open() -> *mut c_void;
     fn toyoterm_mruby_close(state: *mut c_void);
+    fn toyoterm_mruby_console_context_new(state: *mut c_void) -> *mut c_void;
+    fn toyoterm_mruby_console_context_free(state: *mut c_void, context: *mut c_void);
+    fn toyoterm_mruby_console_eval(
+        state: *mut c_void,
+        context: *mut c_void,
+        source: *const c_char,
+        output: *mut *mut c_char,
+    ) -> i32;
     fn toyoterm_mruby_eval(
         state: *mut c_void,
         source: *const c_char,

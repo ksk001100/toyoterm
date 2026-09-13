@@ -76,7 +76,8 @@ end
 
 設定は`--config`、`TOYOTERM_CONFIG_FILE`、プラットフォーム既定パスの順に選択します。
 Linux・macOS・Windowsのパスとエラー時の復旧は[設定の読込](docs/mruby-api.md#loading-configuration)
-を参照してください。`toyoterm reload`で再読込し、`toyoterm ruby console`でRubyによるライブ変更ができます。
+を参照してください。`toyoterm reload`で再読込し、`toyoterm ruby console`で複数行の定義や
+入力間で保持される変数を使ったRubyのライブ変更ができます。
 
 設定とプラグインは信頼済みコードとして動作し、ファイル・プロセス・環境変数・クリップボードへ
 アクセスできます。サンドボックスではありません。組み込みランタイムはmrubyのため、

@@ -80,7 +80,8 @@ is useful for prompt icons; specify its exact installed family name.
 Configuration is selected by `--config`, then `TOYOTERM_CONFIG_FILE`, then the
 platform default. See [configuration loading](docs/mruby-api.md#loading-configuration)
 for Linux/macOS and Windows paths and error recovery.
-Reload with `toyoterm reload`; use `toyoterm ruby console` for live Ruby updates.
+Reload with `toyoterm reload`; use `toyoterm ruby console` for live Ruby updates,
+including multiline definitions and variables retained between entries.
 
 Configuration and plugins are trusted code with filesystem, process,
 environment, and clipboard access. They are not sandboxed. The embedded runtime

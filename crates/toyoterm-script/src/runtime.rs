@@ -3,6 +3,7 @@ use super::*;
 /// A single-threaded owner for one embedded mruby VM.
 pub struct MrubyRuntime {
     pub(super) state: NonNull<c_void>,
+    console_context: NonNull<c_void>,
     not_send_or_sync: PhantomData<Rc<()>>,
 }
 
@@ -17,8 +18,22 @@ impl MrubyRuntime {
         // SAFETY: The returned state is exclusively owned by this wrapper and closed in Drop.
         let state = NonNull::new(unsafe { toyoterm_mruby_open() })
             .ok_or_else(|| ScriptError::new("initialize mruby", "mrb_open failed"))?;
+        // SAFETY: `state` is a live, exclusively owned mruby VM.
+        let console_context =
+            match NonNull::new(unsafe { toyoterm_mruby_console_context_new(state.as_ptr()) }) {
+                Some(context) => context,
+                None => {
+                    // SAFETY: Construction failed before ownership was transferred to Self.
+                    unsafe { toyoterm_mruby_close(state.as_ptr()) };
+                    return Err(ScriptError::new(
+                        "initialize mruby",
+                        "create console compiler context failed",
+                    ));
+                }
+            };
         Ok(Self {
             state,
+            console_context,
             not_send_or_sync: PhantomData,
         })
     }
@@ -333,6 +348,39 @@ impl MrubyRuntime {
         }
     }
 
+    pub(super) fn eval_console(&mut self, source: &str) -> Result<String, ScriptError> {
+        let source = CString::new(source)
+            .map_err(|_| ScriptError::new("evaluate mruby", "source contains a NUL byte"))?;
+        let mut output = std::ptr::null_mut();
+        // SAFETY: The VM and its console context are live and exclusively borrowed. The source
+        // is NUL terminated, and the shim initializes `output` for every status.
+        let status = unsafe {
+            toyoterm_mruby_console_eval(
+                self.state.as_ptr(),
+                self.console_context.as_ptr(),
+                source.as_ptr(),
+                &mut output,
+            )
+        };
+        let output = NonNull::new(output)
+            .ok_or_else(|| ScriptError::new("evaluate mruby", "failed to allocate result"))?;
+        // SAFETY: The shim returns a NUL-terminated allocation which remains live until freed.
+        let text = unsafe { CStr::from_ptr(output.as_ptr()) }
+            .to_string_lossy()
+            .into_owned();
+        // SAFETY: `output` was allocated by the shim and has not been freed yet.
+        unsafe { toyoterm_mruby_string_free(output.as_ptr()) };
+
+        match status {
+            0 => Ok(text),
+            1 | 3 => Err(ScriptError::new("evaluate mruby", text)),
+            _ => Err(ScriptError::new(
+                "evaluate mruby",
+                "mruby console evaluation failed",
+            )),
+        }
+    }
+
     pub(super) fn invoke_async_callback(
         &mut self,
         id: u64,
@@ -395,7 +443,11 @@ fn optional_string_parts(value: Option<&str>) -> (*const c_char, usize, i32) {
 
 impl Drop for MrubyRuntime {
     fn drop(&mut self) {
-        // SAFETY: This is the only owner, and Drop runs exactly once.
-        unsafe { toyoterm_mruby_close(self.state.as_ptr()) };
+        // SAFETY: These are the only owners, Drop runs once, and the context is freed before the
+        // VM whose allocator owns it.
+        unsafe {
+            toyoterm_mruby_console_context_free(self.state.as_ptr(), self.console_context.as_ptr());
+            toyoterm_mruby_close(self.state.as_ptr());
+        }
     }
 }

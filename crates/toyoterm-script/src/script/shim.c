@@ -35,6 +35,45 @@ void toyoterm_mruby_close(void *state) {
   }
 }
 
+typedef struct {
+  mrb_ccontext *compiler;
+  mrb_value binding;
+} toyoterm_console_context;
+
+void *toyoterm_mruby_console_context_new(void *state) {
+  mrb_state *mrb = (mrb_state *)state;
+  toyoterm_console_context *context = malloc(sizeof(*context));
+  if (context == NULL) {
+    return NULL;
+  }
+  context->compiler = mrb_ccontext_new(mrb);
+  if (context->compiler == NULL) {
+    free(context);
+    return NULL;
+  }
+  context->compiler->capture_errors = TRUE;
+  context->compiler->lineno = 1;
+  mrb_ccontext_filename(mrb, context->compiler, "(toyoterm ruby console)");
+  context->binding = mrb_load_string(mrb, "proc { }.binding");
+  if (mrb->exc != NULL) {
+    mrb->exc = NULL;
+    mrb_ccontext_free(mrb, context->compiler);
+    free(context);
+    return NULL;
+  }
+  mrb_gc_register(mrb, context->binding);
+  return context;
+}
+
+void toyoterm_mruby_console_context_free(void *state, void *context) {
+  if (state != NULL && context != NULL) {
+    toyoterm_console_context *console = (toyoterm_console_context *)context;
+    mrb_gc_unregister((mrb_state *)state, console->binding);
+    mrb_ccontext_free((mrb_state *)state, console->compiler);
+    free(console);
+  }
+}
+
 static char *copy_mruby_string(mrb_value value) {
   mrb_int length = RSTRING_LEN(value);
   char *copy = malloc((size_t)length + 1);
@@ -68,6 +107,112 @@ static mrb_value format_exception(mrb_state *mrb, mrb_value exception) {
   mrb_str_cat_lit(mrb, message, "\n");
   mrb_str_cat_str(mrb, message, joined);
   return message;
+}
+
+/* This follows mruby-bin-mirb's parser-based multiline classification. */
+static mrb_bool console_code_block_open(struct mrb_parser_state *parser) {
+  if (parser->parsing_heredoc != NULL || parser->lex_strterm != NULL) {
+    return TRUE;
+  }
+  if (parser->nerr > 0) {
+    static const char unexpected_end[] =
+        "syntax error, unexpected end of file";
+    static const char unexpected_eoi[] =
+        "syntax error, unexpected end-of-input";
+    const char *message = parser->error_buffer[0].message;
+    return message != NULL &&
+           (strncmp(message, unexpected_end, sizeof(unexpected_end) - 1) == 0 ||
+            strncmp(message, unexpected_eoi, sizeof(unexpected_eoi) - 1) == 0);
+  }
+  switch (parser->lstate) {
+  case EXPR_DOT:
+  case EXPR_CLASS:
+  case EXPR_FNAME:
+  case EXPR_VALUE:
+    return TRUE;
+  default:
+    return FALSE;
+  }
+}
+
+int toyoterm_mruby_console_eval(void *state, void *console_context,
+                                const char *source, char **output) {
+  mrb_state *mrb = (mrb_state *)state;
+  toyoterm_console_context *console =
+      (toyoterm_console_context *)console_context;
+  mrb_ccontext *context = console->compiler;
+  int arena_index = mrb_gc_arena_save(mrb);
+  *output = NULL;
+  mrb->exc = NULL;
+
+  struct mrb_parser_state *parser = mrb_parser_new(mrb);
+  if (parser == NULL) {
+    mrb_gc_arena_restore(mrb, arena_index);
+    return 2;
+  }
+  parser->s = source;
+  parser->send = source + strlen(source);
+  parser->lineno = context->lineno;
+  mrb_parser_parse(parser, context);
+  if (console_code_block_open(parser)) {
+    static const char incomplete[] = "syntax error, unexpected end of file";
+    mrb_parser_free(parser);
+    *output = malloc(sizeof(incomplete));
+    if (*output != NULL) {
+      memcpy(*output, incomplete, sizeof(incomplete));
+    }
+    mrb_gc_arena_restore(mrb, arena_index);
+    return *output == NULL ? 2 : 3;
+  }
+
+  mrb_value value;
+  if (parser->tree == NULL || parser->nerr > 0) {
+    value = mrb_load_exec(mrb, parser, context);
+  } else {
+    mrb_parser_free(parser);
+    mrb_value arguments[] = {
+        mrb_str_new_cstr(mrb, source),
+        mrb_str_new_lit(mrb, "(toyoterm ruby console)"),
+        mrb_int_value(mrb, 1),
+    };
+    value = mrb_funcall_argv(mrb, console->binding, mrb_intern_lit(mrb, "eval"),
+                             3, arguments);
+  }
+  for (const char *cursor = source; *cursor != '\0'; cursor++) {
+    if (*cursor == '\n') {
+      context->lineno++;
+    }
+  }
+  context->lineno++;
+  if (mrb->exc != NULL) {
+    mrb_value exception = mrb_obj_value(mrb->exc);
+    mrb_gc_protect(mrb, exception);
+    mrb->exc = NULL;
+    mrb_value error = format_exception(mrb, exception);
+    *output = copy_mruby_string(error);
+    mrb->exc = NULL;
+    mrb_gc_arena_restore(mrb, arena_index);
+    return *output == NULL ? 2 : 1;
+  }
+
+  value = mrb_funcall_argv(mrb, value, mrb_intern_lit(mrb, "inspect"), 0, NULL);
+  if (mrb->exc != NULL) {
+    mrb_value exception = mrb_obj_value(mrb->exc);
+    mrb_gc_protect(mrb, exception);
+    mrb->exc = NULL;
+    mrb_value error = format_exception(mrb, exception);
+    *output = copy_mruby_string(error);
+    mrb->exc = NULL;
+    mrb_gc_arena_restore(mrb, arena_index);
+    return *output == NULL ? 2 : 1;
+  }
+  if (!mrb_string_p(value)) {
+    value = mrb_obj_as_string(mrb, value);
+  }
+  *output = copy_mruby_string(value);
+  int status = *output == NULL ? 2 : 0;
+  mrb_gc_arena_restore(mrb, arena_index);
+  return status;
 }
 
 static int finish_typed_call(mrb_state *mrb, char **error_output) {

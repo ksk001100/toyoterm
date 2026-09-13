@@ -1069,7 +1069,9 @@ Connect to the running GUI's persistent VM with:
 toyoterm ruby console
 ```
 
-The console supports multiline input, `:history`, and `exit`.
+The console uses mruby's parser to recognize multiline input, including blocks,
+methods, strings, and heredocs. Top-level local variables persist between
+entries. It also supports `:history` and `exit`.
 `Toyoterm.configure` changes are validated and applied immediately. If an
 evaluation leaves the config invalid, the whole evaluation transaction is
 rolled back.

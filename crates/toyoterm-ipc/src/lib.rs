@@ -182,9 +182,6 @@ pub fn run_console() -> Result<(), String> {
             continue;
         }
         source.push_str(&line);
-        if input_incomplete(&source) {
-            continue;
-        }
         let submitted = source.trim_end().to_owned();
         if submitted.is_empty() {
             source.clear();
@@ -596,37 +593,6 @@ fn load_history() -> Vec<String> {
 fn save_history(h: &[String]) {
     let _ = fs::write(history_path(), h.join("\n"));
 }
-fn input_incomplete(source: &str) -> bool {
-    let (mut depth, mut quote, mut escaped) = (0i32, None, false);
-    for c in source.chars() {
-        if escaped {
-            escaped = false;
-            continue;
-        }
-        if c == '\\' {
-            escaped = true;
-            continue;
-        }
-        if let Some(active) = quote {
-            if c == active {
-                quote = None
-            }
-            continue;
-        }
-        match c {
-            '\'' | '"' => quote = Some(c),
-            '(' | '[' | '{' => depth += 1,
-            ')' | ']' | '}' => depth -= 1,
-            _ => {}
-        }
-    }
-    quote.is_some()
-        || depth > 0
-        || source
-            .lines()
-            .last()
-            .is_some_and(|line| line.trim_end().ends_with('\\'))
-}
 pub fn is_incomplete_ruby_error(error: &str) -> bool {
     error.contains("syntax error") && error.contains("unexpected end of file")
 }
@@ -916,8 +882,6 @@ mod tests {
     }
     #[test]
     fn detects_multiline() {
-        assert!(input_incomplete("[1,\n"));
-        assert!(!input_incomplete("[1,2]\n"));
         assert!(is_incomplete_ruby_error(
             "syntax error, unexpected end of file"
         ));
