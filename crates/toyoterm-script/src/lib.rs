@@ -15,8 +15,9 @@ use std::time::{Duration, Instant};
 use std::os::windows::process::CommandExt;
 
 use toyoterm_api::{
-    Command, HandleKind, NativeAction, NativeCommand, NativeHandle, PaneId, PaneLaunchSpec,
-    PaneSearchDirection, SplitDirection, TabId, WindowId, WorkspaceId,
+    ActionContext, Command, HandleKind, NativeAction, NativeCommand, NativeHandle, PaneId,
+    PaneLaunchSpec, PaneSearchDirection, ScriptEventKind, SplitDirection, TabId, WindowId,
+    WorkspaceId,
 };
 use toyoterm_config::home_directory;
 pub use toyoterm_config::{
@@ -378,6 +379,7 @@ unsafe extern "C" {
         stderr_bytes: *const u8,
         stderr_length: usize,
         exit_status: i32,
+        launch_error: i32,
         error_output: *mut *mut c_char,
     ) -> i32;
     fn toyoterm_mruby_gc_stats(

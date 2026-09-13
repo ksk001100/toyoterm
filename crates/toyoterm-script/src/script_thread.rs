@@ -52,7 +52,7 @@ pub struct RubyPane {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct RubyEvent {
-    pub name: &'static str,
+    pub kind: ScriptEventKind,
     pub workspace: Option<WorkspaceId>,
     pub window: Option<WindowId>,
     pub tab: Option<TabId>,
@@ -66,13 +66,13 @@ pub struct RubyEvent {
 pub struct PluginMetadata {
     pub name: String,
     pub version: String,
-    pub requires: String,
+    pub api_requirement: String,
     pub path: PathBuf,
 }
 
 /// Immutable script registry mirrored on the main thread.  It contains no VM
 /// state and is safe to use for native key resolution and palette rendering.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct ScriptSnapshot {
     pub config: ToyotermConfig,
     pub native_actions: HashMap<String, NativeAction>,
@@ -102,6 +102,7 @@ pub struct AsyncProcessOutput {
     pub stdout: Vec<u8>,
     pub stderr: Vec<u8>,
     pub exit_status: i32,
+    pub launch_error: bool,
 }
 
 #[derive(Debug)]
@@ -137,6 +138,14 @@ pub struct ScriptResult {
     pub commands: Vec<NativeCommand>,
     pub snapshot: Option<ScriptSnapshot>,
     pub async_requests: Vec<AsyncSpawnRequest>,
+    pub async_cancellations: Vec<u64>,
+    pub logs: Vec<ScriptLog>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ScriptLog {
+    pub level: String,
+    pub message: String,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -242,9 +251,9 @@ impl Drop for ScriptThread {
 }
 
 impl RubyEvent {
-    pub const fn new(name: &'static str) -> Self {
+    pub const fn new(kind: ScriptEventKind) -> Self {
         Self {
-            name,
+            kind,
             workspace: None,
             window: None,
             tab: None,
@@ -253,6 +262,10 @@ impl RubyEvent {
             cwd: None,
             exit_status: None,
         }
+    }
+
+    pub const fn name(&self) -> &'static str {
+        self.kind.as_str()
     }
 }
 

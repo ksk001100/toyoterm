@@ -1,13 +1,110 @@
 
 module Toyoterm
+  module PluginNamespaces
+  end
+  VERSION = "__TOYOTERM_VERSION__".freeze
+  API_VERSION = "__TOYOTERM_API_VERSION__".freeze
+  CAPABILITIES = [
+    :async_process, :callback_context, :registration_handles,
+    :targeted_actions, :typed_events
+  ].freeze
+  GLOBAL_ACTIONS = [
+    :reload_config, :maximize_window, :toggle_maximize, :minimize_window,
+    :toggle_fullscreen, :new_workspace
+  ].freeze
+
+  NATIVE_EVENTS = [__TOYOTERM_NATIVE_EVENTS__].freeze
+
+  def self.__string(value, label, allow_nil = false, allow_empty = false)
+    return nil if allow_nil && value.nil?
+    raise TypeError, "#{label} must be a String" unless value.is_a?(String)
+    raise ArgumentError, "#{label} cannot be empty" if !allow_empty && value.empty?
+    raise ArgumentError, "#{label} contains a NUL byte" if value.include?("\0")
+    value.dup.freeze
+  end
+
+  def self.__number(value, label, minimum = nil, maximum = nil)
+    raise TypeError, "#{label} must be numeric" unless value.is_a?(Numeric)
+    number = value.to_f
+    raise ArgumentError, "#{label} must be finite" unless number.finite?
+    if !minimum.nil? && number < minimum
+      message = minimum == 0.000001 ? "#{label} must be positive" : "#{label} must be at least #{minimum}"
+      raise ArgumentError, message
+    end
+    if !maximum.nil? && number > maximum
+      raise ArgumentError, "#{label} must be at most #{maximum}"
+    end
+    value
+  end
+
+  def self.__identifier(value, label)
+    unless value.is_a?(String) || value.is_a?(Symbol)
+      raise TypeError, "#{label} must be a String or Symbol"
+    end
+    __string(value.to_s, label)
+  end
+
+  def self.__boolean(value, label)
+    raise TypeError, "#{label} must be true or false" unless value == true || value == false
+    value
+  end
+
+  def self.__color(value, label)
+    value = __string(value, label)
+    unless value.length == 7 && value[0] == "#" && value[1, 6].each_byte.all? { |byte| (48..57).include?(byte) || (65..70).include?(byte) || (97..102).include?(byte) }
+      raise ArgumentError, "#{label} must be a #RRGGBB color"
+    end
+    value
+  end
+
+  def self.__deep_copy(value, freeze_value = false)
+    copy = case value
+           when String then value.dup
+           when Array then value.map { |item| __deep_copy(item, freeze_value) }
+           when Hash
+             result = {}
+             value.each { |key, item| result[__deep_copy(key, freeze_value)] = __deep_copy(item, freeze_value) }
+             result
+           else value
+           end
+    copy.freeze if freeze_value && copy.respond_to?(:freeze)
+    copy
+  end
+
   class FontConfig
-    attr_accessor :family, :fallback, :size, :weight
+    attr_reader :family, :fallback, :size, :weight
 
     def initialize
       @family = "monospace"
       @fallback = []
       @size = 14.0
       @weight = 400
+      self.family = @family
+      self.fallback = @fallback
+    end
+
+    def family=(value)
+      @family = Toyoterm.__string(value, "font family")
+    end
+
+    def fallback=(value)
+      raise TypeError, "font fallback must be an array" unless value.is_a?(Array)
+      raise ArgumentError, "font fallback supports at most 32 families" if value.length > 32
+      families = value.map { |family| Toyoterm.__string(family, "font fallback entry") }
+      if families.include?(@family) || families.uniq.length != families.length
+        raise ArgumentError, "duplicate font family in fallback"
+      end
+      @fallback = families.freeze
+    end
+
+    def size=(value)
+      @size = Toyoterm.__number(value, "font size", 0.000001)
+    end
+
+    def weight=(value)
+      raise TypeError, "font weight must be an Integer" unless value.is_a?(Integer)
+      raise ArgumentError, "font weight must be between 1 and 1000" unless (1..1000).include?(value)
+      @weight = value
     end
 
     def __fallback_count
@@ -22,17 +119,45 @@ module Toyoterm
     end
   end
 
+  class ColorPalette < Array
+    def initialize(values)
+      super()
+      values.each_with_index { |value, index| self[index] = value }
+    end
+
+    def []=(index, value)
+      super(index, Toyoterm.__color(value, "colors.ansi[#{index}]"))
+    end
+  end
+
   class ColorConfig
-    attr_accessor :background, :foreground, :cursor, :selection, :ansi,
-                  :tab_bar, :tab_active, :tab_inactive, :workspace_bar,
-                  :status_bar, :pane_border, :zoomed_pane_border, :search_match, :search_match_active
+    COLOR_NAMES = [
+      :background, :foreground, :cursor, :selection, :tab_bar, :tab_active,
+      :tab_inactive, :workspace_bar, :status_bar, :pane_border,
+      :zoomed_pane_border, :search_match, :search_match_active
+    ].freeze
+    attr_reader :background, :foreground, :cursor, :selection, :ansi,
+                :tab_bar, :tab_active, :tab_inactive, :workspace_bar,
+                :status_bar, :pane_border, :zoomed_pane_border, :search_match, :search_match_active
+
+    COLOR_NAMES.each do |name|
+      define_method("#{name}=") do |value|
+        instance_variable_set("@#{name}", Toyoterm.__color(value, "colors.#{name}"))
+      end
+    end
+
+    def ansi=(value)
+      raise TypeError, "colors.ansi must be an Array" unless value.is_a?(Array)
+      raise ArgumentError, "colors.ansi must contain exactly 16 colors" unless value.length == 16
+      @ansi = ColorPalette.new(value)
+    end
 
     def initialize
       @background = "#090b0e"
       @foreground = "#dce1e8"
       @cursor = "#f5f7fa"
       @selection = "#375891"
-      @ansi = [
+      self.ansi = [
         "#000000", "#cd0000", "#00cd00", "#cdcd00",
         "#0000ee", "#cd00cd", "#00cdcd", "#e5e5e5",
         "#7f7f7f", "#ff0000", "#00ff00", "#ffff00",
@@ -47,6 +172,9 @@ module Toyoterm
       @zoomed_pane_border = "#ffbe3a"
       @search_match = "#c4972f"
       @search_match_active = "#ffbe3a"
+      COLOR_NAMES.each do |name|
+        send("#{name}=", instance_variable_get("@#{name}"))
+      end
     end
 
     def __ansi_count
@@ -63,33 +191,33 @@ module Toyoterm
     def __snapshot
       [
         @background, @foreground, @cursor, @selection,
-        @ansi.is_a?(Array) ? @ansi.dup : @ansi,
+        Toyoterm.__deep_copy(@ansi),
         @tab_bar, @tab_active, @tab_inactive, @workspace_bar, @status_bar,
         @pane_border, @search_match, @search_match_active, @zoomed_pane_border
       ]
     end
 
     def __restore(snapshot)
-      @background = snapshot[0]
-      @foreground = snapshot[1]
-      @cursor = snapshot[2]
-      @selection = snapshot[3]
-      @ansi = snapshot[4].is_a?(Array) ? snapshot[4].dup : snapshot[4]
-      @tab_bar = snapshot[5]
-      @tab_active = snapshot[6]
-      @tab_inactive = snapshot[7]
-      @workspace_bar = snapshot[8]
-      @status_bar = snapshot[9]
-      @pane_border = snapshot[10]
-      @search_match = snapshot[11]
-      @search_match_active = snapshot[12]
-      @zoomed_pane_border = snapshot[13]
+      self.background = snapshot[0]
+      self.foreground = snapshot[1]
+      self.cursor = snapshot[2]
+      self.selection = snapshot[3]
+      self.ansi = snapshot[4]
+      self.tab_bar = snapshot[5]
+      self.tab_active = snapshot[6]
+      self.tab_inactive = snapshot[7]
+      self.workspace_bar = snapshot[8]
+      self.status_bar = snapshot[9]
+      self.pane_border = snapshot[10]
+      self.search_match = snapshot[11]
+      self.search_match_active = snapshot[12]
+      self.zoomed_pane_border = snapshot[13]
       self
     end
 
     def __apply_with_overrides(theme, baseline)
       overrides = __snapshot
-      __restore(theme.__snapshot)
+      __restore(Toyoterm.__deep_copy(theme.__snapshot))
       return self unless baseline
       themed = __snapshot
       overrides.each_with_index do |value, index|
@@ -178,7 +306,7 @@ module Toyoterm
       unless interval.is_a?(Numeric) && interval.to_f.finite? && interval >= 0.1
         raise ArgumentError, "async bar interval must be at least 0.1 seconds"
       end
-      initial = initial.to_s
+      initial = Toyoterm.__string(initial, "async bar initial text", false, true)
       raise ArgumentError, "async bar initial text cannot contain NUL" if initial.include?("\0")
       @widgets << AsyncBarWidget.new(program, args, interval.to_f, initial, cwd, block)
       self
@@ -258,19 +386,33 @@ module Toyoterm
     end
 
     def opacity=(value)
-      raise TypeError, "background image opacity must be a number" unless value.is_a?(Numeric)
-      unless value.to_f.finite? && value >= 0 && value <= 1
-        raise ArgumentError, "background image opacity must be between 0 and 1"
-      end
-      @opacity = value
+      @opacity = Toyoterm.__number(value, "background image opacity", 0, 1)
     end
 
   end
 
   class WindowConfig
     attr_reader :opacity
-    attr_accessor :width, :height, :min_width, :min_height,
-                  :decorations, :resizable, :always_on_top, :title
+    attr_reader :width, :height, :min_width, :min_height,
+                :decorations, :resizable, :always_on_top, :title
+
+    [:width, :height, :min_width, :min_height].each do |name|
+      define_method("#{name}=") do |value|
+        instance_variable_set("@#{name}", Toyoterm.__number(value, "window.#{name}", 0.000001))
+      end
+    end
+
+    [:decorations, :resizable, :always_on_top].each do |name|
+      define_method("#{name}=") do |value|
+        instance_variable_set("@#{name}", Toyoterm.__boolean(value, "window.#{name}"))
+      end
+    end
+
+    def title=(value)
+      @title = Toyoterm.__string(value, "window.title")
+      raise ArgumentError, "window.title cannot be blank" if @title.strip.empty?
+      @title
+    end
 
     def image(&block)
       block.call(@image) if block
@@ -294,6 +436,7 @@ module Toyoterm
       @resizable = true
       @always_on_top = false
       @title = "toyoterm"
+      self.title = @title
     end
 
     def bar(position, interval: 1.0, &block)
@@ -302,11 +445,30 @@ module Toyoterm
   end
 
   class UiConfig
-    attr_accessor :padding_x, :padding_y, :line_height,
-                  :tab_bar, :tab_bar_height, :tab_width,
-                  :workspace_bar, :workspace_bar_height, :workspace_width,
-                  :status_bar_height, :pane_divider_width,
-                  :active_pane_border_width
+    attr_reader :padding_x, :padding_y, :line_height,
+                :tab_bar, :tab_bar_height, :tab_width,
+                :workspace_bar, :workspace_bar_height, :workspace_width,
+                :status_bar_height, :pane_divider_width,
+                :active_pane_border_width
+
+    [:padding_x, :padding_y, :pane_divider_width, :active_pane_border_width].each do |name|
+      define_method("#{name}=") do |value|
+        instance_variable_set("@#{name}", Toyoterm.__number(value, "ui.#{name}", 0))
+      end
+    end
+
+    [:line_height, :tab_bar_height, :tab_width, :workspace_bar_height,
+     :workspace_width, :status_bar_height].each do |name|
+      define_method("#{name}=") do |value|
+        instance_variable_set("@#{name}", Toyoterm.__number(value, "ui.#{name}", 0.000001))
+      end
+    end
+
+    [:tab_bar, :workspace_bar].each do |name|
+      define_method("#{name}=") do |value|
+        instance_variable_set("@#{name}", Toyoterm.__boolean(value, "ui.#{name}"))
+      end
+    end
 
     def initialize
       @padding_x = 8
@@ -325,8 +487,19 @@ module Toyoterm
   end
 
   class BehaviorConfig
-    attr_accessor :scroll_lines, :copy_on_select, :allow_osc52_copy, :allow_osc_notifications,
-                  :allow_osc_attention_requests, :allow_osc_open_url
+    attr_reader :scroll_lines, :copy_on_select, :allow_osc52_copy, :allow_osc_notifications,
+                :allow_osc_attention_requests, :allow_osc_open_url
+
+    def scroll_lines=(value)
+      @scroll_lines = Toyoterm.__number(value, "behavior.scroll_lines", 0.000001)
+    end
+
+    [:copy_on_select, :allow_osc52_copy, :allow_osc_notifications,
+     :allow_osc_attention_requests, :allow_osc_open_url].each do |name|
+      define_method("#{name}=") do |value|
+        instance_variable_set("@#{name}", Toyoterm.__boolean(value, "behavior.#{name}"))
+      end
+    end
 
     def initialize
       @scroll_lines = 3
@@ -338,27 +511,27 @@ module Toyoterm
     end
   end
 
-  class KeyBindingContext
+  class CallbackContext
     attr_reader :workspace, :window, :tab, :pane
 
-    def initialize(pane)
-      @workspace = Toyoterm.current_workspace
-      @window = Toyoterm.current_window
-      @tab = Toyoterm.current_tab
-      @pane = pane
+    def initialize(pane, workspace = nil, window = nil, tab = nil)
+      @workspace, @window, @tab, @pane = Toyoterm.__resolve_context(
+        pane, workspace, window, tab
+      )
+    end
+
+    def actions
+      @actions ||= ActionProxy.new(self)
     end
   end
 
-  CommandContext = KeyBindingContext
+  KeyBindingContext = CallbackContext
 
-  class BarContext
-    attr_reader :workspace, :window, :tab, :pane
+  CommandContext = CallbackContext
 
+  class BarContext < CallbackContext
     def initialize(workspace, window, tab, pane)
-      @workspace = workspace
-      @window = window
-      @tab = tab
-      @pane = pane
+      super(pane, workspace, window, tab)
     end
   end
 
@@ -371,9 +544,52 @@ module Toyoterm
       @window = window
       @tab = tab
       @pane = pane
-      @title = title
-      @cwd = cwd
+      @title = title && title.dup.freeze
+      @cwd = cwd && cwd.dup.freeze
       @exit_status = exit_status
+    end
+
+    def context
+      @context ||= CallbackContext.new(
+        @pane || Toyoterm.current_pane,
+        @workspace || Toyoterm.current_workspace,
+        @window || Toyoterm.current_window,
+        @tab || Toyoterm.current_tab
+      )
+    end
+
+    def subject
+      @pane || @tab || @window || @workspace
+    end
+  end
+
+  class ActionProxy
+    def initialize(context)
+      @context = context
+    end
+
+    def action(name, argument = nil)
+      Toyoterm.__queue_action(name, argument, @context)
+    end
+
+  end
+
+  class Registration
+    attr_reader :kind, :name, :id
+
+    def initialize(kind, name, id)
+      @kind = kind
+      @name = name.freeze
+      @id = id
+    end
+
+    def active?
+      Toyoterm.__registration_active?(@kind, @name, @id)
+    end
+
+    def remove
+      return false unless active?
+      Toyoterm.__remove_registration(@kind, @name, @id)
     end
   end
 
@@ -422,8 +638,17 @@ module Toyoterm
     end
 
     def command(name)
+      name = Toyoterm.__identifier(name, "user command name")
       @config.__register_static(@key, :user_command, name)
       self
+    end
+  end
+
+  StaticBinding::ACTIONS.each do |name, arguments|
+    if arguments
+      ActionProxy.define_method(name) { |argument| action(name, argument) }
+    else
+      ActionProxy.define_method(name) { action(name) }
     end
   end
 
@@ -475,24 +700,40 @@ module Toyoterm
     end
 
     def key(key)
-      StaticBinding.new(@config, key.to_s.upcase)
+      StaticBinding.new(@config, Toyoterm.__string(key, "key").upcase)
     end
 
     def physical(key, mods = "")
-      prefix = mods.to_s.upcase
+      key = Toyoterm.__string(key, "physical key")
+      prefix = Toyoterm.__string(mods, "physical modifiers", false, true).upcase
       prefix = "#{prefix}+" unless prefix.empty?
-      StaticBinding.new(@config, "#{prefix}PHYSICAL:#{key.to_s.upcase}")
+      StaticBinding.new(@config, "#{prefix}PHYSICAL:#{key.upcase}")
+    end
+
+    def unbind(key)
+      @config.__unbind(key)
     end
 
     private
 
     def binding(key, mods)
-      StaticBinding.new(@config, "#{mods}+#{key.to_s.upcase}")
+      key = Toyoterm.__string(key, "key")
+      StaticBinding.new(@config, "#{mods}+#{key.upcase}")
     end
   end
 
   class Config
-    attr_accessor :default_shell, :scrollback_lines
+    attr_reader :default_shell, :scrollback_lines
+
+    def default_shell=(value)
+      @default_shell = Toyoterm.__string(value, "default_shell", true, true)
+    end
+
+    def scrollback_lines=(value)
+      raise TypeError, "scrollback_lines must be an Integer" unless value.is_a?(Integer)
+      raise ArgumentError, "scrollback_lines must be non-negative" if value < 0
+      @scrollback_lines = value
+    end
 
     def initialize
       @font = FontConfig.new
@@ -525,8 +766,7 @@ module Toyoterm
     end
 
     def theme=(name)
-      name = name.to_s
-      raise ArgumentError, "theme name cannot be empty" if name.empty?
+      name = Toyoterm.__identifier(name, "theme name")
       @theme = name
       @theme_color_checkpoint = @colors.__snapshot
       __apply_theme(Toyoterm.__theme(name))
@@ -555,17 +795,54 @@ module Toyoterm
       @behavior
     end
 
+    def to_h
+      colors = {}
+      ColorConfig::COLOR_NAMES.each { |name| colors[name] = @colors.send(name) }
+      colors[:ansi] = @colors.ansi
+      Toyoterm.__deep_copy({
+        font: { family: @font.family, fallback: @font.fallback, size: @font.size, weight: @font.weight },
+        colors: colors,
+        window: {
+          opacity: @window.opacity, width: @window.width, height: @window.height,
+          min_width: @window.min_width, min_height: @window.min_height,
+          decorations: @window.decorations, resizable: @window.resizable,
+          always_on_top: @window.always_on_top, title: @window.title,
+          image: { path: @window.image.path, opacity: @window.image.opacity }
+        },
+        ui: {
+          padding_x: @ui.padding_x, padding_y: @ui.padding_y, line_height: @ui.line_height,
+          tab_bar: @ui.tab_bar, tab_bar_height: @ui.tab_bar_height, tab_width: @ui.tab_width,
+          workspace_bar: @ui.workspace_bar, workspace_bar_height: @ui.workspace_bar_height,
+          workspace_width: @ui.workspace_width, status_bar_height: @ui.status_bar_height,
+          pane_divider_width: @ui.pane_divider_width,
+          active_pane_border_width: @ui.active_pane_border_width
+        },
+        behavior: {
+          scroll_lines: @behavior.scroll_lines, copy_on_select: @behavior.copy_on_select,
+          allow_osc52_copy: @behavior.allow_osc52_copy,
+          allow_osc_notifications: @behavior.allow_osc_notifications,
+          allow_osc_attention_requests: @behavior.allow_osc_attention_requests,
+          allow_osc_open_url: @behavior.allow_osc_open_url
+        },
+        default_shell: @default_shell, scrollback_lines: @scrollback_lines,
+        theme: @theme
+      }, true)
+    end
+
     def __checkpoint
       [
-        [@font.family, @font.fallback.dup, @font.size, @font.weight],
-        [@colors.background, @colors.foreground, @colors.cursor, @colors.selection,
-         @colors.ansi.dup, @colors.tab_bar, @colors.tab_active, @colors.tab_inactive,
+        [Toyoterm.__deep_copy(@font.family), Toyoterm.__deep_copy(@font.fallback), @font.size, @font.weight],
+        [Toyoterm.__deep_copy(@colors.background), Toyoterm.__deep_copy(@colors.foreground),
+         Toyoterm.__deep_copy(@colors.cursor), Toyoterm.__deep_copy(@colors.selection),
+         Toyoterm.__deep_copy(@colors.ansi), Toyoterm.__deep_copy(@colors.tab_bar),
+         Toyoterm.__deep_copy(@colors.tab_active), Toyoterm.__deep_copy(@colors.tab_inactive),
          @colors.workspace_bar, @colors.status_bar, @colors.pane_border,
          @colors.search_match, @colors.search_match_active, @colors.zoomed_pane_border],
         [@window.opacity, @window.width, @window.height, @window.min_width,
          @window.min_height, @window.decorations, @window.resizable,
-         @window.always_on_top, @window.title, @default_shell, @scrollback_lines,
-         @window.image.path, @window.image.opacity],
+         @window.always_on_top, Toyoterm.__deep_copy(@window.title),
+         Toyoterm.__deep_copy(@default_shell), @scrollback_lines,
+         Toyoterm.__deep_copy(@window.image.path), @window.image.opacity],
         [@ui.padding_x, @ui.padding_y, @ui.line_height, @ui.tab_bar,
          @ui.tab_bar_height, @ui.tab_width, @ui.workspace_bar,
          @ui.workspace_bar_height, @ui.workspace_width, @ui.status_bar_height,
@@ -638,10 +915,10 @@ module Toyoterm
 
     def __register_dynamic(key, &block)
       raise ArgumentError, "key binding requires a block" unless block
-      key = key.to_s.upcase
+      key = Toyoterm.__string(key, "key binding").upcase
       raise ArgumentError, "key binding cannot be empty" if key.empty?
       raise ArgumentError, "duplicate key binding: #{key}" if @bindings.key?(key) || @static_bindings.key?(key)
-      @bindings[key] = block
+      @bindings[key] = [block, Toyoterm.__registration_owner]
     end
 
     def keys(&block)
@@ -652,9 +929,10 @@ module Toyoterm
     end
 
     def leader(key:, mods: "", timeout: 1000)
-      key = key.to_s.upcase
-      raise ArgumentError, "leader key cannot be empty" if key.empty?
-      mods = mods.to_s.upcase
+      key = Toyoterm.__string(key, "leader key").upcase
+      mods = Toyoterm.__string(mods, "leader modifiers", false, true).upcase
+      raise TypeError, "leader timeout must be an Integer" unless timeout.is_a?(Integer)
+      raise ArgumentError, "leader timeout must be positive" if timeout <= 0
       @leader_key = mods.empty? ? key : "#{mods}+#{key}"
       @leader_timeout = timeout
       self
@@ -669,9 +947,15 @@ module Toyoterm
     end
 
     def __register_static(key, action, argument)
-      key = key.to_s.upcase
+      key = Toyoterm.__string(key, "key binding").upcase
       raise ArgumentError, "duplicate key binding: #{key}" if @bindings.key?(key) || @static_bindings.key?(key)
-      @static_bindings[key] = [action, argument]
+      @static_bindings[key] = [action, argument, Toyoterm.__registration_owner]
+    end
+
+    def __unbind(key)
+      key = Toyoterm.__string(key, "key binding").upcase
+      removed = @bindings.delete(key) || @static_bindings.delete(key)
+      !removed.nil?
     end
 
     def __static_binding_count
@@ -699,8 +983,9 @@ module Toyoterm
     end
 
     def __trigger_binding(key, pane)
-      callback = @bindings[key.to_s.upcase]
-      return false unless callback
+      entry = @bindings[key.to_s.upcase]
+      return false unless entry
+      callback = entry[0]
       checkpoint = Toyoterm.__command_checkpoint
       badge_checkpoint = Toyoterm.__badge_checkpoint
       async_checkpoint = Toyoterm.__async_request_checkpoint
@@ -779,12 +1064,12 @@ module Toyoterm
   class Workspace < NativeHandle
     def name
       validate!
-      Toyoterm.__object_data(:workspace, @id)[0]
+      Toyoterm.__object_data(:workspace, @id)[0].dup.freeze
     end
 
     def windows
       validate!
-      Toyoterm.__object_data(:workspace, @id)[1].map { |id| Window.new(id) }
+      Toyoterm.__object_data(:workspace, @id)[1].map { |id| MuxWindow.new(id) }
     end
 
     def activate
@@ -797,7 +1082,7 @@ module Toyoterm
       validate!
       launch = Toyoterm.__normalize_launch(command, cwd, env)
       Toyoterm.__queue_command(launch ? :create_window_with_launch : :create_window, @id, nil, launch)
-      self
+      nil
     end
 
 
@@ -805,7 +1090,7 @@ module Toyoterm
     def __native_kind; :workspace; end
   end
 
-  class Window < NativeHandle
+  class MuxWindow < NativeHandle
     def tabs
       validate!
       Toyoterm.__object_data(:window, @id)[0].map { |id| Tab.new(id) }
@@ -815,7 +1100,7 @@ module Toyoterm
       validate!
       launch = Toyoterm.__normalize_launch(command, cwd, env)
       Toyoterm.__queue_command(launch ? :new_tab_with_launch : :new_tab, @id, nil, launch)
-      self
+      nil
     end
 
     def close
@@ -838,7 +1123,7 @@ module Toyoterm
   class Tab < NativeHandle
     def title
       validate!
-      Toyoterm.__object_data(:tab, @id)[0]
+      Toyoterm.__object_data(:tab, @id)[0].dup.freeze
     end
 
     def panes
@@ -872,17 +1157,19 @@ module Toyoterm
 
     def title
       validate!
-      Toyoterm.__object_data(:pane, @id)[0]
+      Toyoterm.__object_data(:pane, @id)[0].dup.freeze
     end
 
     def icon_title
       validate!
-      Toyoterm.__object_data(:pane, @id)[11]
+      value = Toyoterm.__object_data(:pane, @id)[11]
+      value && value.dup.freeze
     end
 
     def cwd
       validate!
-      Toyoterm.__object_data(:pane, @id)[1]
+      value = Toyoterm.__object_data(:pane, @id)[1]
+      value && value.dup.freeze
     end
 
     def pid
@@ -892,12 +1179,13 @@ module Toyoterm
 
     def remote_host
       validate!
-      Toyoterm.__object_data(:pane, @id)[2]
+      value = Toyoterm.__object_data(:pane, @id)[2]
+      value && value.dup.freeze
     end
 
     def user_vars
       validate!
-      Toyoterm.__object_data(:pane, @id)[5].dup
+      Toyoterm.__deep_copy(Toyoterm.__object_data(:pane, @id)[5])
     end
 
     def shell_integration_version
@@ -907,7 +1195,8 @@ module Toyoterm
 
     def shell_integration_shell
       validate!
-      Toyoterm.__object_data(:pane, @id)[4]
+      value = Toyoterm.__object_data(:pane, @id)[4]
+      value && value.dup.freeze
     end
 
     def command_running?
@@ -932,13 +1221,13 @@ module Toyoterm
 
     def split(direction, command: nil, cwd: nil, env: nil)
       validate!
-      direction = direction.to_s.downcase
+      direction = Toyoterm.__identifier(direction, "split direction").downcase
       unless ["left", "right", "up", "down"].include?(direction)
         raise ArgumentError, "split direction must be left, right, up, or down"
       end
       launch = Toyoterm.__normalize_launch(command, cwd, env)
       Toyoterm.__queue_command(launch ? :split_with_launch : :split, @id, direction, launch)
-      self
+      nil
     end
 
     def close
@@ -960,25 +1249,22 @@ module Toyoterm
 
     def badge=(value)
       validate!
-      value = value.nil? ? nil : value.to_s
+      value = value.nil? ? nil : Toyoterm.__string(value, "pane badge", false, true)
       Toyoterm.__set_pane_badge(@id, value)
       Toyoterm.__queue_command(value.nil? ? :clear_pane_badge : :set_pane_badge, @id, value)
     end
 
     def send_text(text)
       validate!
-      text = text.to_s
-      raise ArgumentError, "text contains a NUL byte" if text.index("\0")
+      text = Toyoterm.__string(text, "text", false, true)
       Toyoterm.__queue_command(:send_text, @id, text)
       self
     end
 
     def search(query, direction: :next)
       validate!
-      query = query.to_s
-      raise ArgumentError, "search query cannot be empty" if query.empty?
-      raise ArgumentError, "search query contains a NUL byte" if query.index("\0")
-      direction = direction.to_s.downcase
+      query = Toyoterm.__string(query, "search query")
+      direction = Toyoterm.__identifier(direction, "search direction").downcase
       unless ["next", "previous"].include?(direction)
         raise ArgumentError, "search direction must be next or previous"
       end
@@ -1002,8 +1288,7 @@ module Toyoterm
     end
 
     def write(text)
-      text = text.to_s
-      raise ArgumentError, "clipboard text contains a NUL byte" if text.index("\0")
+      text = Toyoterm.__string(text, "clipboard text", false, true)
       Toyoterm.__queue_command(:clipboard_write, 0, text)
       self
     end
@@ -1014,16 +1299,21 @@ module Toyoterm
   end
 
   class ProcessResult
-    attr_reader :stdout, :stderr, :exit_status
+    attr_reader :stdout, :stderr, :exit_status, :error_kind
 
-    def initialize(stdout, stderr, exit_status)
-      @stdout = stdout
-      @stderr = stderr
+    def initialize(stdout, stderr, exit_status, error_kind = nil)
+      @stdout = stdout.dup.freeze
+      @stderr = stderr.dup.freeze
       @exit_status = exit_status
+      @error_kind = error_kind
     end
 
     def success?
-      @exit_status == 0
+      @error_kind.nil? && @exit_status == 0
+    end
+
+    def launch_error?
+      @error_kind == :launch
     end
   end
 
@@ -1031,43 +1321,83 @@ module Toyoterm
   # retain in a widget closure, so callers do not need global variables just
   # to render the latest result.
   class AsyncTask
-    attr_reader :id
+    attr_reader :id, :context
 
-    def initialize(id)
+    def initialize(id, context)
       @id = id
+      @context = context
+      @result = nil
+      @cancelled = false
     end
 
     def pending?
-      Toyoterm.__async_result(@id).nil?
+      @result.nil? && !@cancelled
     end
 
     def complete?
-      !pending?
+      @cancelled || !@result.nil?
     end
 
     def result
-      Toyoterm.__async_result(@id)
+      @result
     end
 
     def success?
       value = result
       !value.nil? && value.success?
     end
+
+    def error
+      return nil unless @result && !@result.success?
+      @result.stderr
+    end
+
+    def value!
+      raise RuntimeError, "asynchronous task is pending" if pending?
+      raise RuntimeError, "asynchronous task was cancelled" if cancelled?
+      raise RuntimeError, (error.nil? || error.empty? ? "process exited with status #{@result.exit_status}" : error) if !success?
+      @result
+    end
+
+    def cancel
+      return false unless pending?
+      @cancelled = true
+      Toyoterm.__cancel_async(@id)
+      true
+    end
+
+    def cancelled?
+      @cancelled
+    end
+
+    def __complete(result)
+      @result = result unless @cancelled
+      self
+    end
   end
 
   class Plugin
     class Definition
-      attr_reader :name
-      attr_accessor :version, :requires
+      attr_reader :name, :version, :api_requirement
 
       def initialize(name)
-        @name = name.to_s
+        @name = Toyoterm.__identifier(name, "plugin name")
         @version = nil
-        @requires = nil
+        @api_requirement = nil
       end
 
-      def command(name, &block)
-        Toyoterm.command(name, &block)
+      def version=(value)
+        @version = Toyoterm.__string(value, "plugin version")
+      end
+
+      def api_requirement=(value)
+        @api_requirement = Toyoterm.__string(
+          value, "plugin API requirement", true, true
+        )
+      end
+
+      def command(name, replace: false, &block)
+        Toyoterm.command(name, replace: replace, &block)
       end
 
       def on(name, &block)
@@ -1082,15 +1412,14 @@ module Toyoterm
         raise ArgumentError, "theme definition requires a block" unless block_given?
         theme = ColorConfig.new
         yield theme
-        Toyoterm.__register_theme(name, theme)
+        Toyoterm.__register_theme(name, ColorConfig.new.__restore(theme.__snapshot))
         theme
       end
 
       def __validate!
         raise ArgumentError, "plugin name cannot be empty" if @name.empty?
-        raise ArgumentError, "plugin version is required" if @version.nil? || @version.to_s.empty?
-        @version = @version.to_s
-        @requires = @requires.nil? ? "" : @requires.to_s
+        raise ArgumentError, "plugin version is required" if @version.nil?
+        @api_requirement = "".freeze if @api_requirement.nil?
       end
     end
 
@@ -1101,6 +1430,7 @@ module Toyoterm
       yield definition
       definition.__validate!
       Toyoterm.__register_plugin(definition)
+      definition.freeze
       definition
     end
   end
@@ -1108,7 +1438,7 @@ module Toyoterm
   @config = Config.new
   @current_pane = Pane.new(0)
   @current_tab = Tab.new(0)
-  @current_window = Window.new(0)
+  @current_window = MuxWindow.new(0)
   @current_workspace = Workspace.new(0)
   @clipboard = Clipboard.new
   @env = {}
@@ -1131,14 +1461,53 @@ module Toyoterm
   @current_plugin_path = nil
   @async_task_id = 0
   @async_callbacks = {}
-  @async_results = {}
+  @async_tasks = {}
   @async_requests = []
+  @async_cancellations = []
   @current_async_request = nil
+  @registration_id = 0
+  @logs = []
+  @plugin_namespace_id = 0
 
   def self.configure(&block)
     raise ArgumentError, "configuration requires a block" unless block
     block.call(@config)
     @config
+  end
+
+  def self.version
+    VERSION
+  end
+
+  def self.api_version
+    API_VERSION
+  end
+
+  def self.supports?(capability)
+    CAPABILITIES.include?(__identifier(capability, "capability").to_sym)
+  end
+
+  def self.config
+    @config.to_h
+  end
+
+  def self.log(level, message)
+    level = __identifier(level, "log level").to_sym
+    unless [:debug, :info, :warn, :error].include?(level)
+      raise ArgumentError, "log level must be :debug, :info, :warn, or :error"
+    end
+    message = Toyoterm.__string(message, "log message", false, true)
+    @logs << [level, message]
+    nil
+  end
+
+  def self.__next_log
+    @current_log = @logs.shift
+    @current_log ? @current_log[0].to_s : ""
+  end
+
+  def self.__current_log_message
+    @current_log[1]
   end
 
   def self.__config
@@ -1161,43 +1530,70 @@ module Toyoterm
     @current_workspace
   end
 
+  def self.__resolve_context(pane, workspace = nil, window = nil, tab = nil)
+    pane ||= @current_pane
+    if tab.nil? && pane
+      pair = @object_data[:tab].find { |_id, data| data[1].include?(pane.id) }
+      tab = Tab.new(pair[0]) if pair
+    end
+    if window.nil? && tab
+      pair = @object_data[:window].find { |_id, data| data[0].include?(tab.id) }
+      window = MuxWindow.new(pair[0]) if pair
+    end
+    if workspace.nil? && window
+      pair = @object_data[:workspace].find { |_id, data| data[1].include?(window.id) }
+      workspace = Workspace.new(pair[0]) if pair
+    end
+    [workspace || @current_workspace, window || @current_window,
+     tab || @current_tab, pane]
+  end
+
   def self.windows
-    @object_data[:window].keys.sort.map { |id| Window.new(id) }
+    @object_data[:window].keys.sort.map { |id| MuxWindow.new(id) }
   end
 
   def self.workspaces
     @object_data[:workspace].keys.sort.map { |id| Workspace.new(id) }
   end
 
-  def self.workspace(name)
-    pair = @object_data[:workspace].find { |_id, data| data[0] == name.to_s }
+  def self.find_workspace(name)
+    name = __identifier(name, "workspace name")
+    pair = @object_data[:workspace].find { |_id, data| data[0] == name }
     pair ? Workspace.new(pair[0]) : nil
   end
 
-  def self.switch_workspace(name)
-    name = name.to_s
-    raise ArgumentError, "workspace name cannot be empty" if name.empty?
-    raise ArgumentError, "workspace name contains a NUL byte" if name.index("\0")
+  def self.open_workspace(name)
+    name = Toyoterm.__identifier(name, "workspace name")
     __queue_command(:switch_workspace, 0, name)
     nil
   end
 
   def self.action(name, argument = nil)
+    __queue_action(name, argument, CallbackContext.new(current_pane))
+  end
+
+  def self.__queue_action(name, argument, context)
     name, argument = __normalize_action(name, argument)
-    __queue_command(:invoke_action, 0, name, argument)
+    unless GLOBAL_ACTIONS.include?(name.to_sym)
+      [context.workspace, context.window, context.tab, context.pane].each(&:validate!)
+    end
+    target = [context.workspace.id, context.window.id, context.tab.id, context.pane.id]
+    __queue_command(:invoke_action, context.pane.id, name, argument, target)
     nil
   end
 
   def self.__normalize_action(name, argument)
-    name = name.to_s.downcase
-    raise ArgumentError, "action name cannot be empty" if name.empty?
+    name = __identifier(name, "action name").downcase
     name = name.to_sym
     unless StaticBinding::ACTIONS.key?(name)
       raise ArgumentError, "unsupported action: #{name}"
     end
     choices = StaticBinding::ACTIONS[name]
     if choices
-      argument = argument.to_s.downcase
+      if argument.nil?
+        raise ArgumentError, "action #{name} requires #{choices[0...-1].join(', ')}, or #{choices[-1]}"
+      end
+      argument = __identifier(argument, "action argument").downcase
       unless choices.include?(argument.to_sym)
         raise ArgumentError, "action #{name} requires #{choices[0...-1].join(', ')}, or #{choices[-1]}"
       end
@@ -1213,7 +1609,7 @@ module Toyoterm
 
   # Returns a snapshot. Mutating it never changes the host process environment.
   def self.env
-    @env.dup
+    __deep_copy(@env)
   end
 
   def self.platform
@@ -1221,22 +1617,15 @@ module Toyoterm
   end
 
   def self.read_file(path)
-    path = path.to_s
-    raise ArgumentError, "path contains a NUL byte" if path.index("\0")
+    path = __string(path, "path")
     __host_read_file(path)
   end
 
   def self.spawn(program, *args, cwd: nil)
-    program = program.to_s
-    raise ArgumentError, "program cannot be empty" if program.empty?
-    values = [program] + args.map { |arg| arg.to_s }
-    if values.any? { |value| value.index("\0") }
-      raise ArgumentError, "program and arguments cannot contain NUL bytes"
-    end
+    program = __string(program, "program")
+    values = [program] + args.map { |arg| __string(arg, "process argument", false, true) }
     unless cwd.nil?
-      cwd = cwd.to_s
-      raise ArgumentError, "cwd cannot be empty" if cwd.empty?
-      raise ArgumentError, "cwd cannot contain a NUL byte" if cwd.index("\0")
+      cwd = __string(cwd, "cwd")
     end
     ProcessResult.new(*__host_spawn(values, cwd))
   end
@@ -1246,29 +1635,24 @@ module Toyoterm
   end
 
   def self.async_spawn(program, *args, cwd: nil, &block)
-    program = program.to_s
-    raise ArgumentError, "program cannot be empty" if program.empty?
-    values = [program] + args.map { |arg| arg.to_s }
-    if values.any? { |value| value.index("\0") }
-      raise ArgumentError, "program and arguments cannot contain NUL bytes"
-    end
+    program = __string(program, "program")
+    values = [program] + args.map { |arg| __string(arg, "process argument", false, true) }
     unless cwd.nil?
-      cwd = cwd.to_s
-      raise ArgumentError, "cwd cannot be empty" if cwd.empty?
-      raise ArgumentError, "cwd cannot contain a NUL byte" if cwd.index("\0")
+      cwd = __string(cwd, "cwd")
     end
 
     @async_task_id += 1
     task_id = @async_task_id
-    @async_callbacks[task_id] = block
+    context = CallbackContext.new(current_pane)
+    @async_callbacks[task_id] = [block, context]
     @async_requests << [task_id, program, values[1..-1], cwd]
-    AsyncTask.new(task_id)
+    task = AsyncTask.new(task_id, context)
+    @async_tasks[task_id] = task
+    task
   end
 
   def self.plugin(path)
-    path = path.to_s
-    raise ArgumentError, "plugin path cannot be empty" if path.empty?
-    raise ArgumentError, "plugin path contains a NUL byte" if path.index("\0")
+    path = __string(path, "plugin path")
     @plugin_requests << [path, @current_plugin_path]
     nil
   end
@@ -1286,8 +1670,7 @@ module Toyoterm
   end
 
   def self.__register_theme(name, theme)
-    name = name.to_s
-    raise ArgumentError, "theme name cannot be empty" if name.empty?
+    name = __identifier(name, "theme name")
     raise ArgumentError, "duplicate theme name: #{name}" if @themes.key?(name)
     @themes[name] = theme
     @config.__apply_theme(theme) if @config.theme == name
@@ -1302,6 +1685,10 @@ module Toyoterm
 
   def self.__loading_plugin?
     !@current_plugin_path.nil?
+  end
+
+  def self.__next_plugin_namespace_id
+    @plugin_namespace_id += 1
   end
 
   def self.__begin_plugin(path)
@@ -1370,7 +1757,7 @@ module Toyoterm
   end
 
   def self.__plugin_requires(index)
-    @plugins[index].requires
+    @plugins[index].api_requirement
   end
 
   def self.__replace_env(entries)
@@ -1400,16 +1787,21 @@ module Toyoterm
   def self.__begin_config_transaction
     bars = {}
     @window_bars.each { |position, entry| bars[position] = [entry[0], entry[1].__copy] }
-    @config_transaction = [@config.__checkpoint, bars, @pane_badges.dup]
+    @config_transaction = [
+      __plugin_checkpoint, bars, @pane_badges.dup,
+      __async_request_checkpoint, @logs.length
+    ]
     nil
   end
 
   def self.__rollback_config_transaction
     checkpoint = @config_transaction
     return nil unless checkpoint
-    @config.__restore(checkpoint[0])
+    __rollback_plugin(checkpoint[0])
     @window_bars = checkpoint[1]
     @pane_badges = checkpoint[2]
+    __rollback_async_requests(checkpoint[3])
+    @logs.pop while @logs.length > checkpoint[4]
     @config_transaction = nil
     nil
   end
@@ -1419,21 +1811,62 @@ module Toyoterm
     nil
   end
 
-  def self.on(name, &block)
-    raise ArgumentError, "event handler requires a block" unless block
-    name = name.to_s
-    raise ArgumentError, "event name cannot be empty" if name.empty?
-    (@event_handlers[name] ||= []) << block
-    block
+  def self.__registration_owner
+    @current_plugin_path
   end
 
-  def self.command(name, &block)
+  def self.on(name, &block)
+    raise ArgumentError, "event handler requires a block" unless block
+    name = Toyoterm.__identifier(name, "event name")
+    unless NATIVE_EVENTS.include?(name.to_sym)
+      raise ArgumentError, "unknown event: #{name}"
+    end
+    @registration_id += 1
+    (@event_handlers[name] ||= []) << [@registration_id, block, __registration_owner]
+    Registration.new(:event, name, @registration_id)
+  end
+
+  def self.command(name, replace: false, &block)
     raise ArgumentError, "user command requires a block" unless block
-    name = name.to_s
-    raise ArgumentError, "user command name cannot be empty" if name.empty?
-    raise ArgumentError, "duplicate user command: #{name}" if @user_commands.key?(name)
-    @user_commands[name] = block
-    block
+    name = Toyoterm.__identifier(name, "user command name")
+    if @user_commands.key?(name) && !replace
+      raise ArgumentError, "duplicate user command: #{name}"
+    end
+    @registration_id += 1
+    @user_commands[name] = [@registration_id, block, __registration_owner]
+    Registration.new(:command, name, @registration_id)
+  end
+
+  def self.__remove_registration(kind, name, id)
+    case kind
+    when :event
+      handlers = @event_handlers[name]
+      return false unless handlers
+      before = handlers.length
+      handlers.delete_if { |entry| entry[0] == id }
+      @event_handlers.delete(name) if handlers.empty?
+      handlers.length != before
+    when :command
+      entry = @user_commands[name]
+      return false unless entry && entry[0] == id
+      @user_commands.delete(name)
+      true
+    else
+      false
+    end
+  end
+
+  def self.__registration_active?(kind, name, id)
+    case kind
+    when :event
+      handlers = @event_handlers[name]
+      !handlers.nil? && handlers.any? { |entry| entry[0] == id }
+    when :command
+      entry = @user_commands[name]
+      !entry.nil? && entry[0] == id
+    else
+      false
+    end
   end
 
   def self.__register_window_bar(position, interval, &block)
@@ -1443,6 +1876,8 @@ module Toyoterm
       raise ArgumentError, "window bar position must be :top or :bottom"
     end
     raise ArgumentError, "window bar is already configured for #{position}" if @window_bars.key?(position)
+    interval = __number(interval, "window bar interval")
+    raise ArgumentError, "window bar interval must be at least 0.1 seconds" if interval < 0.1
     bar = BarConfig.new
     block.call(bar)
     @window_bars[position] = [interval, bar]
@@ -1503,8 +1938,9 @@ module Toyoterm
   end
 
   def self.__invoke_command(name, pane)
-    callback = @user_commands[name.to_s]
-    raise ArgumentError, "undefined user command: #{name}" unless callback
+    entry = @user_commands[name.to_s]
+    raise ArgumentError, "undefined user command: #{name}" unless entry
+    callback = entry[1]
     checkpoint = __command_checkpoint
     badge_checkpoint = __badge_checkpoint
     async_checkpoint = __async_request_checkpoint
@@ -1535,7 +1971,7 @@ module Toyoterm
     event = Event.new(
       name.to_sym,
       workspace_id.nil? ? nil : Workspace.new(workspace_id),
-      window_id.nil? ? nil : Window.new(window_id),
+      window_id.nil? ? nil : MuxWindow.new(window_id),
       tab_id.nil? ? nil : Tab.new(tab_id),
       pane_id.nil? ? nil : Pane.new(pane_id),
       title,
@@ -1548,18 +1984,35 @@ module Toyoterm
   def self.__dispatch_event(name, event)
     handlers = @event_handlers[name.to_s]
     return false unless handlers
-    checkpoint = __command_checkpoint
-    badge_checkpoint = __badge_checkpoint
-    async_checkpoint = __async_request_checkpoint
-    begin
-      handlers.each { |handler| handler.call(event) }
-    rescue => error
-      __rollback_commands(checkpoint)
-      __rollback_badges(badge_checkpoint)
-      __rollback_async_requests(async_checkpoint)
-      raise error
+    handlers.dup.each do |entry|
+      checkpoint = __callback_checkpoint
+      begin
+        entry[1].call(event)
+      rescue => error
+        __rollback_callback(checkpoint)
+        Toyoterm.log(:error, "event handler #{name} failed: #{error}")
+      end
     end
     true
+  end
+
+  def self.__callback_checkpoint
+    bars = {}
+    @window_bars.each { |position, entry| bars[position] = [entry[0], entry[1].__copy] }
+    [
+      __command_checkpoint, __badge_checkpoint, __async_request_checkpoint,
+      __plugin_checkpoint, bars, @logs.length
+    ]
+  end
+
+  def self.__rollback_callback(checkpoint)
+    __rollback_commands(checkpoint[0])
+    __rollback_badges(checkpoint[1])
+    __rollback_async_requests(checkpoint[2])
+    __rollback_plugin(checkpoint[3])
+    @window_bars = checkpoint[4]
+    @logs.pop while @logs.length > checkpoint[5]
+    nil
   end
 
   def self.__set_current_pane(id)
@@ -1569,7 +2022,7 @@ module Toyoterm
 
   def self.__reset_object_model(workspace, window, tab, pane)
     @current_workspace = Workspace.new(workspace)
-    @current_window = Window.new(window)
+    @current_window = MuxWindow.new(window)
     @current_tab = Tab.new(tab)
     @current_pane = Pane.new(pane)
     @object_data = { workspace: {}, window: {}, tab: {}, pane: {} }
@@ -1669,8 +2122,8 @@ module Toyoterm
     [program, args, cwd, env]
   end
 
-  def self.__queue_command(type, pane_id, payload, launch = nil)
-    @commands << [type, pane_id, payload, launch]
+  def self.__queue_command(type, pane_id, payload, launch = nil, context = nil)
+    @commands << [type, pane_id, payload, launch, context]
   end
 
   def self.__command_checkpoint
@@ -1700,6 +2153,10 @@ module Toyoterm
 
   def self.__current_command_argument
     @current_command[3]
+  end
+
+  def self.__current_command_context(index)
+    @current_command[4][index]
   end
 
   def self.__current_launch_has_program
@@ -1742,16 +2199,19 @@ module Toyoterm
     @current_command[3][3].values[index]
   end
 
-  def self.__invoke_async_callback(id, stdout, stderr, exit_status)
-    result = ProcessResult.new(stdout, stderr, exit_status)
-    @async_results[id] = result
-    callback = @async_callbacks.delete(id)
-    return true unless callback
+  def self.__invoke_async_callback(id, stdout, stderr, exit_status, launch_error = false)
+    task = @async_tasks.delete(id)
+    return true unless task
+    result = ProcessResult.new(stdout, stderr, exit_status, launch_error ? :launch : nil)
+    task.__complete(result)
+    callback_entry = @async_callbacks.delete(id)
+    return true unless callback_entry && callback_entry[0] && !task.cancelled?
+    callback, context = callback_entry
     checkpoint = __command_checkpoint
     badge_checkpoint = __badge_checkpoint
     async_checkpoint = __async_request_checkpoint
     begin
-      callback.call(result)
+      callback.call(result, context)
     rescue => error
       __rollback_commands(checkpoint)
       __rollback_badges(badge_checkpoint)
@@ -1761,8 +2221,20 @@ module Toyoterm
     true
   end
 
-  def self.__async_result(id)
-    @async_results[id]
+  def self.__cancel_async(id)
+    @async_callbacks.delete(id)
+    @async_tasks.delete(id)
+    request = @async_requests.find { |entry| entry[0] == id }
+    if request
+      @async_requests.delete(request)
+    else
+      @async_cancellations << id
+    end
+    nil
+  end
+
+  def self.__next_async_cancellation
+    @async_cancellations.shift || 0
   end
 
   def self.__async_request_checkpoint
@@ -1772,7 +2244,10 @@ module Toyoterm
   def self.__rollback_async_requests(checkpoint)
     while @async_requests.length > checkpoint
       req = @async_requests.pop
-      @async_callbacks.delete(req[0]) if req
+      if req
+        @async_callbacks.delete(req[0])
+        @async_tasks.delete(req[0])
+      end
     end
   end
 

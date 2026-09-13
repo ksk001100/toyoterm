@@ -94,6 +94,11 @@ returns an `AsyncTask` that can be retained in a widget closure without global
 state; pass `cwd:` to run a command in a specific working directory.
 For status bars, `bar.group(...).add_async(...)` manages multiple independent
 tasks and joins their displayed values with a separator.
+The scripting API exposes `Toyoterm.version`, `Toyoterm.api_version`, feature
+detection, native logging, removable registrations, context-bound actions, and
+a read-only configuration snapshot. Async tasks release completed results from
+the VM registry and support callback/result cancellation. See the API reference
+for the pre-release `find_workspace` / `open_workspace` and `MuxWindow` names.
 
 ## Usage and documentation
 

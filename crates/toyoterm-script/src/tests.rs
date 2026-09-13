@@ -1,5 +1,17 @@
 use super::*;
 
+fn invoked_action(action: NativeAction, pane: PaneId) -> NativeCommand {
+    NativeCommand::InvokeAction {
+        action,
+        context: ActionContext {
+            workspace: WorkspaceId(0),
+            window: WindowId(0),
+            tab: TabId(0),
+            pane,
+        },
+    }
+}
+
 #[test]
 fn removed_dsl_methods_and_action_aliases_are_rejected() {
     let mut manager = ConfigManager::new().unwrap();
@@ -11,6 +23,8 @@ fn removed_dsl_methods_and_action_aliases_are_rejected() {
         "Toyoterm.current_window.focus",
         "Toyoterm.current_tab.focus",
         "Toyoterm.current_pane.focus",
+        "Toyoterm.workspace(:old)",
+        "Toyoterm.switch_workspace(:old)",
     ] {
         let error = manager.eval(source).unwrap_err();
         assert!(
@@ -18,6 +32,13 @@ fn removed_dsl_methods_and_action_aliases_are_rejected() {
             "{source}: {error}"
         );
     }
+    assert!(
+        manager
+            .eval("Toyoterm::Window")
+            .unwrap_err()
+            .message()
+            .contains("NameError")
+    );
     assert!(
         manager
             .eval("Toyoterm.configure { |c| c.theme('moon') }")
@@ -115,7 +136,7 @@ fn static_and_runtime_actions_share_names_and_arguments() {
             .unwrap();
         assert_eq!(
             manager.drain_commands(PaneId(0)).unwrap(),
-            vec![NativeCommand::InvokeAction(expected)],
+            vec![invoked_action(expected, PaneId(0))],
             "{name}"
         );
     }
@@ -447,6 +468,222 @@ fn repeated_status_bar_requests_keep_the_gc_arena_bounded() {
 }
 
 #[test]
+fn rollback_restores_in_place_mutations_of_nested_config_values() {
+    let mut manager = ConfigManager::new().unwrap();
+    manager
+        .reload(
+            r##"Toyoterm.configure { |c| c.font.family = "Mono"; c.font.fallback = ["Emoji"]; c.colors.background = "#112233"; c.colors.ansi[0] = "#010203"; c.window.title = "Before" }"##,
+        )
+        .unwrap();
+    let checkpoint = manager.begin_config_transaction().unwrap();
+    let error = manager.eval("Toyoterm.__config.colors.ansi[0] = '#445566'; raise 'rollback'");
+    assert!(error.is_err());
+    manager.rollback_config_transaction(&checkpoint).unwrap();
+    assert_eq!(
+        manager.eval("Toyoterm.__config.font.family").unwrap(),
+        "Mono"
+    );
+    assert_eq!(
+        manager.eval("Toyoterm.__config.font.fallback[0]").unwrap(),
+        "Emoji"
+    );
+    assert_eq!(
+        manager.eval("Toyoterm.__config.colors.background").unwrap(),
+        "#112233"
+    );
+    assert_eq!(
+        manager.eval("Toyoterm.__config.colors.ansi[0]").unwrap(),
+        "#010203"
+    );
+    assert_eq!(
+        manager.eval("Toyoterm.__config.window.title").unwrap(),
+        "Before"
+    );
+}
+
+#[test]
+fn async_tasks_release_runtime_registry_entries_and_can_be_cancelled() {
+    let mut manager = ConfigManager::new().unwrap();
+    manager
+        .eval("$task = Toyoterm.async('printf', 'ok')")
+        .unwrap();
+    let request = manager.drain_async_requests().unwrap().remove(0);
+    manager
+        .invoke_async_callback(request.id, b"ok", b"", 0)
+        .unwrap();
+    assert_eq!(manager.eval("$task.result.stdout").unwrap(), "ok");
+    assert_eq!(
+        manager
+            .eval("Toyoterm.instance_variable_get(:@async_tasks).length")
+            .unwrap(),
+        "0"
+    );
+
+    manager
+        .eval("$cancelled = Toyoterm.async('sleep', '10')")
+        .unwrap();
+    assert_eq!(manager.eval("$cancelled.cancel").unwrap(), "true");
+    assert_eq!(manager.eval("$cancelled.cancelled?").unwrap(), "true");
+    assert_eq!(manager.eval("$cancelled.complete?").unwrap(), "true");
+    assert!(manager.drain_async_requests().unwrap().is_empty());
+
+    manager
+        .eval("$running = Toyoterm.async('sleep', '10')")
+        .unwrap();
+    let running = manager.drain_async_requests().unwrap().remove(0);
+    assert_eq!(manager.eval("$running.cancel").unwrap(), "true");
+    assert_eq!(
+        manager.drain_async_cancellations().unwrap(),
+        vec![running.id]
+    );
+}
+
+#[test]
+fn registration_handles_support_removal_replacement_and_event_validation() {
+    let mut manager = ConfigManager::new().unwrap();
+    manager
+        .eval("$subscription = Toyoterm.on(:bell) { }; $command = Toyoterm.command(:build) { }")
+        .unwrap();
+    manager.refresh_config_snapshot().unwrap();
+    assert!(manager.event_names.contains("bell"));
+    assert!(manager.user_command_names.contains("build"));
+
+    manager
+        .eval("$subscription.remove; $replacement = Toyoterm.command(:build, replace: true) { |ctx| ctx.pane.send_text('new') }")
+        .unwrap();
+    manager.refresh_config_snapshot().unwrap();
+    assert!(!manager.event_names.contains("bell"));
+    assert_eq!(manager.eval("$subscription.active?").unwrap(), "false");
+    assert_eq!(manager.eval("$command.active?").unwrap(), "false");
+    assert_eq!(manager.eval("$replacement.active?").unwrap(), "true");
+    manager.trigger_user_command("build", PaneId(7)).unwrap();
+    assert_eq!(
+        manager.drain_commands(PaneId(7)).unwrap(),
+        vec![NativeCommand::Mux(Command::SendText {
+            pane: PaneId(7),
+            text: "new".into(),
+        })]
+    );
+    assert!(manager.eval("Toyoterm.on(:pane_focusd) { }").is_err());
+
+    manager.eval("$restored = Toyoterm.on(:bell) { }").unwrap();
+    let checkpoint = manager.begin_config_transaction().unwrap();
+    assert!(manager.eval("$restored.remove; raise 'rollback'").is_err());
+    manager.rollback_config_transaction(&checkpoint).unwrap();
+    assert_eq!(manager.eval("$restored.active?").unwrap(), "true");
+}
+
+#[test]
+fn exposes_api_introspection_logging_and_a_read_only_config_snapshot() {
+    let mut manager = ConfigManager::new().unwrap();
+    assert_eq!(
+        manager.eval("Toyoterm.version").unwrap(),
+        env!("CARGO_PKG_VERSION")
+    );
+    assert_eq!(
+        manager.eval("Toyoterm.api_version").unwrap(),
+        PLUGIN_API_VERSION
+    );
+    assert_eq!(
+        manager
+            .eval("Toyoterm.supports?(:targeted_actions)")
+            .unwrap(),
+        "true"
+    );
+    assert!(
+        manager
+            .eval("Toyoterm.config[:font][:family] << 'x'")
+            .is_err()
+    );
+    manager.eval("Toyoterm.log(:info, 'ready')").unwrap();
+    assert_eq!(
+        manager.drain_logs().unwrap(),
+        vec![ScriptLog {
+            level: "info".into(),
+            message: "ready".into(),
+        }]
+    );
+}
+
+#[test]
+fn dynamic_actions_capture_the_callback_object_context() {
+    let mut manager = ConfigManager::new().unwrap();
+    manager.eval("Toyoterm.action(:toggle_zoom)").unwrap();
+    assert_eq!(
+        manager
+            .drain_commands_with_context(WorkspaceId(10), WindowId(20), TabId(30), PaneId(40))
+            .unwrap(),
+        vec![NativeCommand::InvokeAction {
+            action: NativeAction::ToggleZoom,
+            context: ActionContext {
+                workspace: WorkspaceId(10),
+                window: WindowId(20),
+                tab: TabId(30),
+                pane: PaneId(40),
+            },
+        }]
+    );
+}
+
+#[test]
+fn async_callbacks_receive_origin_context_and_launch_error_metadata() {
+    let mut manager = ConfigManager::new().unwrap();
+    manager
+        .eval("Toyoterm.async('missing') { |result, context| $async_result = result; $async_context = context }")
+        .unwrap();
+    let request = manager.drain_async_requests().unwrap().remove(0);
+    manager
+        .invoke_async_callback_with_launch_error(request.id, b"", b"not found", -1, true)
+        .unwrap();
+    assert_eq!(
+        manager.eval("$async_context.class").unwrap(),
+        "Toyoterm::CallbackContext"
+    );
+    assert_eq!(manager.eval("$async_result.launch_error?").unwrap(), "true");
+    assert_eq!(manager.eval("$async_result.error_kind").unwrap(), "launch");
+}
+
+#[test]
+fn plugins_are_evaluated_in_generated_namespaces() {
+    let directory = temporary_test_directory("plugin-namespace");
+    let failed_plugin = directory.join("failed.rb");
+    let plugin = directory.join("namespaced.rb");
+    std::fs::write(
+        &failed_plugin,
+        "PLUGIN_LOCAL_CONSTANT = 41\nraise 'failed plugin'",
+    )
+    .unwrap();
+    std::fs::write(
+        &plugin,
+        "PLUGIN_LOCAL_CONSTANT = 42\nToyoterm::Plugin.define('namespaced') { |p| p.version = '0.1.0' }",
+    )
+    .unwrap();
+    let mut manager = ConfigManager::new().unwrap();
+    assert!(load_plugin(&mut manager.runtime, &failed_plugin).is_err());
+    let metadata = load_plugin(&mut manager.runtime, &plugin).unwrap();
+    assert_eq!(metadata.name, "namespaced");
+    assert_eq!(
+        manager
+            .eval("Object.const_defined?(:PLUGIN_LOCAL_CONSTANT)")
+            .unwrap(),
+        "false"
+    );
+    assert_eq!(
+        manager
+            .eval("Toyoterm::PluginNamespaces::Plugin1::PLUGIN_LOCAL_CONSTANT")
+            .unwrap(),
+        "41"
+    );
+    assert_eq!(
+        manager
+            .eval("Toyoterm::PluginNamespaces::Plugin2::PLUGIN_LOCAL_CONSTANT")
+            .unwrap(),
+        "42"
+    );
+    std::fs::remove_dir_all(directory).unwrap();
+}
+
+#[test]
 fn eval_errors_restore_the_gc_arena_after_copying_the_exception() {
     let mut runtime = MrubyRuntime::new().unwrap();
     let baseline = runtime.gc_stats().arena_index;
@@ -700,7 +937,7 @@ fn loads_local_plugins_with_metadata_and_registrations() {
         r#"
             Toyoterm::Plugin.define "git-tools" do |plugin|
               plugin.version = "0.1.0"
-              plugin.requires = ">= 0.1.0, < 0.2.0"
+              plugin.api_requirement = ">= 0.1.0, < 0.2.0"
               plugin.command(:git_root) { |ctx| ctx.pane.send_text("git root\n") }
               plugin.on(:bell) { |event| event.pane.badge = "bell" }
               plugin.keys.key("CTRL+G").run { |ctx| ctx.pane.send_text("git status\n") }
@@ -717,7 +954,7 @@ fn loads_local_plugins_with_metadata_and_registrations() {
         [PluginMetadata {
             name: "git-tools".into(),
             version: "0.1.0".into(),
-            requires: ">= 0.1.0, < 0.2.0".into(),
+            api_requirement: ">= 0.1.0, < 0.2.0".into(),
             path: plugin.clone(),
         }]
     );
@@ -823,7 +1060,7 @@ fn plugin_failures_are_isolated_and_rolled_back() {
         r#"
             Toyoterm::Plugin.define "future" do |plugin|
               plugin.version = "1.0.0"
-              plugin.requires = ">= 1.0.0"
+              plugin.api_requirement = ">= 1.0.0"
               plugin.command(:also_leaked) { }
             end
             "#,
@@ -1019,7 +1256,8 @@ fn rejects_invalid_colors_without_replacing_the_config() {
         .reload(r#"Toyoterm.configure { |config| config.colors.cursor = "red" }"#)
         .unwrap_err();
 
-    assert_eq!(error.operation(), "validate config");
+    assert_eq!(error.operation(), "evaluate mruby");
+    assert!(error.message().contains("#RRGGBB"));
     assert_eq!(manager.config().colors.cursor, "#123456");
 }
 
@@ -1267,7 +1505,9 @@ fn exposes_the_synced_ruby_object_model() {
         "backend"
     );
     assert_eq!(
-        manager.eval("Toyoterm.workspace('backend').id").unwrap(),
+        manager
+            .eval("Toyoterm.find_workspace('backend').id")
+            .unwrap(),
         "10"
     );
     assert_eq!(
@@ -1356,7 +1596,10 @@ fn exposes_the_synced_ruby_object_model() {
         manager.eval("Toyoterm.current_pane.screen_text").unwrap(),
         "build started\ncompiling toyoterm"
     );
-    assert_eq!(manager.eval("Toyoterm.workspace('missing')").unwrap(), "");
+    assert_eq!(
+        manager.eval("Toyoterm.find_workspace('missing')").unwrap(),
+        ""
+    );
 
     manager.eval("Toyoterm.current_pane.badge = 'dev'").unwrap();
     assert_eq!(manager.eval("Toyoterm.current_pane.badge").unwrap(), "dev");
@@ -1388,7 +1631,7 @@ fn converts_object_model_operations_to_native_commands() {
                       Toyoterm.current_workspace.new_window].map(&:inspect)",
             )
             .unwrap(),
-        "[\"#<Toyoterm::Pane:0>\", \"#<Toyoterm::Window:0>\", \"#<Toyoterm::Workspace:0>\"]"
+        "[\"nil\", \"nil\", \"nil\"]"
     );
     manager
         .eval(
@@ -1417,10 +1660,10 @@ fn converts_object_model_operations_to_native_commands() {
 }
 
 #[test]
-fn switches_to_a_named_workspace_through_a_native_command() {
+fn opens_a_named_workspace_through_a_native_command() {
     let mut manager = ConfigManager::new().unwrap();
     assert_eq!(
-        manager.eval("Toyoterm.switch_workspace(:backend)").unwrap(),
+        manager.eval("Toyoterm.open_workspace(:backend)").unwrap(),
         ""
     );
     assert_eq!(
@@ -1432,11 +1675,11 @@ fn switches_to_a_named_workspace_through_a_native_command() {
 
     for (source, message) in [
         (
-            "Toyoterm.switch_workspace('')",
+            "Toyoterm.open_workspace('')",
             "workspace name cannot be empty",
         ),
         (
-            "Toyoterm.switch_workspace(\"bad\\0name\")",
+            "Toyoterm.open_workspace(\"bad\\0name\")",
             "workspace name contains a NUL byte",
         ),
     ] {
@@ -1465,14 +1708,15 @@ fn queues_builtin_actions_from_ruby_callbacks() {
     assert_eq!(
         manager.drain_commands(PaneId(40)).unwrap(),
         vec![
-            NativeCommand::InvokeAction(NativeAction::ToggleFullscreen),
-            NativeCommand::InvokeAction(NativeAction::Search),
-            NativeCommand::InvokeAction(NativeAction::YankSelection),
-            NativeCommand::InvokeAction(NativeAction::Split(SplitDirection::Down)),
-            NativeCommand::InvokeAction(NativeAction::ActivatePane(SplitDirection::Left)),
-            NativeCommand::InvokeAction(NativeAction::MoveVisualSelection(
-                toyoterm_api::SelectionMotion::LineEnd,
-            )),
+            invoked_action(NativeAction::ToggleFullscreen, PaneId(40)),
+            invoked_action(NativeAction::Search, PaneId(40)),
+            invoked_action(NativeAction::YankSelection, PaneId(40)),
+            invoked_action(NativeAction::Split(SplitDirection::Down), PaneId(40)),
+            invoked_action(NativeAction::ActivatePane(SplitDirection::Left), PaneId(40)),
+            invoked_action(
+                NativeAction::MoveVisualSelection(toyoterm_api::SelectionMotion::LineEnd,),
+                PaneId(40)
+            ),
         ]
     );
 }
@@ -1601,6 +1845,10 @@ fn validates_custom_pane_launch_options() {
         (
             "Toyoterm.current_pane.split(:right, command: [])",
             "command array cannot be empty",
+        ),
+        (
+            "Toyoterm.current_pane.split(1)",
+            "split direction must be a String or Symbol",
         ),
         (
             "Toyoterm.current_pane.split(:right, command: ['sh', 1])",
@@ -1922,7 +2170,7 @@ fn spawn_rejects_invalid_working_directories_before_launch() {
     let nul = manager
         .eval(r#"Toyoterm.spawn("unused", cwd: "bad\0cwd")"#)
         .unwrap_err();
-    assert!(nul.message().contains("cwd cannot contain a NUL byte"));
+    assert!(nul.message().contains("cwd contains a NUL byte"));
 }
 
 #[test]
@@ -2294,9 +2542,17 @@ fn emits_registered_events_with_the_current_pane() {
         )
         .unwrap();
 
-    assert!(!manager.emit_event("config_reloaded", PaneId(12)).unwrap());
+    assert!(
+        !manager
+            .emit_event(ScriptEventKind::ConfigReloaded, PaneId(12))
+            .unwrap()
+    );
     assert_eq!(manager.eval("$event_count").unwrap(), "0");
-    assert!(manager.emit_event("app_started", PaneId(12)).unwrap());
+    assert!(
+        manager
+            .emit_event(ScriptEventKind::AppStarted, PaneId(12))
+            .unwrap()
+    );
     assert_eq!(manager.eval("$event_count").unwrap(), "1");
     assert_eq!(manager.eval("$event_name").unwrap(), "app_started");
     assert_eq!(manager.eval("$event_pane").unwrap(), "12");
@@ -2326,7 +2582,7 @@ fn emits_typed_native_event_payloads() {
         )
         .unwrap();
     let event = RubyEvent {
-        name: "title_changed",
+        kind: ScriptEventKind::TitleChanged,
         workspace: Some(WorkspaceId(1)),
         window: Some(WindowId(2)),
         tab: Some(TabId(3)),
@@ -2355,30 +2611,48 @@ fn unregistered_native_events_do_not_call_the_ruby_vm() {
 
     assert!(
         !manager
-            .emit_native_event(&RubyEvent::new("pane_created"))
+            .emit_native_event(&RubyEvent::new(ScriptEventKind::PaneCreated))
             .unwrap()
     );
 }
 
 #[test]
-fn ruby_event_errors_roll_back_commands() {
+fn ruby_event_errors_are_isolated_per_handler() {
     let mut manager = ConfigManager::new().unwrap();
     manager
         .reload(
             r#"
                 Toyoterm.on :config_reloaded do |event|
                   event.pane.send_text("must not run\n")
+                  Toyoterm.log(:info, "must not survive")
                   raise "broken event"
+                end
+                Toyoterm.on :config_reloaded do |event|
+                  event.pane.send_text("later handler ran\n")
                 end
                 "#,
         )
         .unwrap();
 
-    let error = manager
-        .emit_event("config_reloaded", PaneId(3))
-        .unwrap_err();
-    assert!(error.message().contains("broken event"));
-    assert!(manager.drain_commands(PaneId(3)).unwrap().is_empty());
+    assert!(
+        manager
+            .emit_event(ScriptEventKind::ConfigReloaded, PaneId(3))
+            .unwrap()
+    );
+    assert_eq!(
+        manager.drain_commands(PaneId(3)).unwrap(),
+        vec![NativeCommand::Mux(Command::SendText {
+            pane: PaneId(3),
+            text: "later handler ran\n".into(),
+        })]
+    );
+    assert_eq!(
+        manager.drain_logs().unwrap(),
+        vec![ScriptLog {
+            level: "error".into(),
+            message: "event handler config_reloaded failed: broken event".into(),
+        }]
+    );
     assert_eq!(manager.eval("21 * 2").unwrap(), "42");
 }
 
@@ -2740,6 +3014,19 @@ fn invalid_interactive_config_mutations_are_rolled_back() {
     assert!(error.message().contains("font size must be positive"));
     assert_eq!(manager.config().font.size, 14.0);
     assert_eq!(manager.eval("Toyoterm.__config.font.size").unwrap(), "14");
+
+    let error = run_script_request(
+        &mut manager,
+        &script_test_context(),
+        &ScriptInvocation::Eval(
+            "Toyoterm.async('echo'); Toyoterm.log(:info, 'discard'); Toyoterm.configure { |config| config.theme = :missing }"
+                .into(),
+        ),
+    )
+    .unwrap_err();
+    assert!(error.message().contains("unknown theme"));
+    assert!(manager.drain_async_requests().unwrap().is_empty());
+    assert!(manager.drain_logs().unwrap().is_empty());
 }
 
 #[test]
@@ -2848,6 +3135,14 @@ fn async_api_validates_arguments() {
     assert!(
         manager
             .eval("Toyoterm.async('ping', cwd: '') { |r| }")
+            .is_err()
+    );
+
+    // Text values are not implicitly stringified.
+    assert!(manager.eval("Toyoterm.async(1)").is_err());
+    assert!(
+        manager
+            .eval("Toyoterm::AsyncBarGroup.new(' ').add_async('echo', initial: 1)")
             .is_err()
     );
 }

@@ -121,12 +121,17 @@ pub(super) fn load_plugin(
         .eval("Toyoterm.__plugin_count")?
         .parse::<usize>()
         .map_err(|_| ScriptError::new("load plugin", "plugin count is invalid"))?;
+    let namespace_id = runtime
+        .eval("Toyoterm.__next_plugin_namespace_id")?
+        .parse::<usize>()
+        .map_err(|_| ScriptError::new("load plugin", "plugin namespace ID is invalid"))?;
     runtime.eval("$__toyoterm_plugin_checkpoint = Toyoterm.__plugin_checkpoint")?;
     runtime.eval(&format!(
         "Toyoterm.__begin_plugin({})",
         ruby_string_literal(&path.display().to_string())
     ))?;
-    let evaluated = runtime.eval_with_filename(&source, &path.display().to_string());
+    let wrapped = format!("module Toyoterm::PluginNamespaces::Plugin{namespace_id}\n{source}\nend");
+    let evaluated = runtime.eval_with_filename(&wrapped, &path.display().to_string());
     let _ = runtime.eval("Toyoterm.__end_plugin");
     if let Err(error) = evaluated {
         let _ = runtime.eval("Toyoterm.__rollback_plugin($__toyoterm_plugin_checkpoint)");
@@ -148,22 +153,24 @@ pub(super) fn load_plugin(
         }
         let name = runtime.eval(&format!("Toyoterm.__plugin_name({before})"))?;
         let version = runtime.eval(&format!("Toyoterm.__plugin_version({before})"))?;
-        let requires = runtime.eval(&format!("Toyoterm.__plugin_requires({before})"))?;
+        let api_requirement = runtime.eval(&format!("Toyoterm.__plugin_requires({before})"))?;
         parse_semver(&version).map_err(|message| {
             ScriptError::new("load plugin", format!("plugin {name} has {message}"))
         })?;
-        if !requires.is_empty() && !version_requirement_matches(&requires, PLUGIN_API_VERSION)? {
+        if !api_requirement.is_empty()
+            && !version_requirement_matches(&api_requirement, PLUGIN_API_VERSION)?
+        {
             return Err(ScriptError::new(
                 "load plugin",
                 format!(
-                    "plugin {name} requires toyoterm plugin API `{requires}`, current version is {PLUGIN_API_VERSION}"
+                    "plugin {name} requires toyoterm plugin API `{api_requirement}`, current version is {PLUGIN_API_VERSION}"
                 ),
             ));
         }
         Ok(PluginMetadata {
             name,
             version,
-            requires,
+            api_requirement,
             path: path.to_owned(),
         })
     })();

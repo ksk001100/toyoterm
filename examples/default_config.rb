@@ -185,7 +185,7 @@ Toyoterm.command :monitor_window do |context|
 end
 
 Toyoterm.command :backend_workspace do
-  Toyoterm.switch_workspace(:backend)
+  Toyoterm.open_workspace(:backend)
 end
 
 Toyoterm.command :presentation_mode do

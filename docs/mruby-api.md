@@ -119,12 +119,19 @@ a fresh VM; if it fails, the previous configuration remains active. Run
 
 - Settings use property getters and `=` setters. Section blocks receive an
   explicit object; `config.keys` additionally supports the concise block form.
+- Setting setters validate their individual type and range immediately. Values
+  shared with the VM are copied, and configuration strings are frozen; invalid
+  cross-field combinations are rejected when the request commits.
 - Configure both native actions and Ruby callbacks under `config.keys`:
   `keys.ctrl("t").new_tab` or `keys.ctrl("h").run { |context| ... }`.
 - Built-in action names and argument validation are identical in
   bindings and `Toyoterm.action`. Native bindings still bypass Ruby on key press.
 - Use `activate` on any workspace, window, tab, or pane. Use `new_window` and
   `new_tab` to create children, and `split` to create a pane.
+- Dynamic actions are bound to the callback's object snapshot. If focus changes
+  while Ruby is running, the action still targets the originating context.
+- Identifiers accept only String or Symbol. Text, paths, process programs, and
+  process arguments accept only String; the API does not silently call `to_s`.
 - Key, command, and bar contexts all expose `workspace`, `window`, `tab`, and
   `pane`. Events retain their event-specific fields; absent fields remain `nil`.
 
@@ -156,6 +163,12 @@ expression. Code that used that expression as the result should capture it
 explicitly. `configure` requires a block and raises `ArgumentError` without one;
 section getters may omit it. Blocks retain their caller's `self`. Exceptions
 propagate and normal configuration/callback transaction rules apply.
+
+The removed `Toyoterm.workspace` and `Toyoterm.switch_workspace` methods are
+replaced by `Toyoterm.find_workspace` and `Toyoterm.open_workspace`. The latter
+name makes its activate-or-create behavior explicit. The removed
+`Toyoterm::Window` class is now `Toyoterm::MuxWindow`, making clear that it is
+not an operating-system window.
 
 `Toyoterm.configure { |config| ... }` yields a `Toyoterm::Config`. Nested
 sections work either with a block or as an object:
@@ -300,6 +313,11 @@ infinity raise `ArgumentError`, leaving the stored value unchanged. Clamping
 applies during startup, reload, and callbacks. Runtime changes reach the native
 window only after the request succeeds and the complete configuration passes
 validation; a failed transaction restores the previous opacity as well.
+
+All other scalar setting assignments perform the table's type and range checks
+at assignment time. `colors.ansi` is a validation-aware array, so indexed
+assignment also rejects invalid colors immediately. Returned setting strings
+and font fallback arrays are frozen to prevent mutation outside their setters.
 
 These bindings stop at each limit, even with repeated presses, and immediately
 respond to a press in the opposite direction:
@@ -453,11 +471,16 @@ end
 ### Dynamic bindings
 
 `config.keys.key(chord).run { |context| ... }` invokes Ruby with a
-`Toyoterm::KeyBindingContext`. `Toyoterm::CommandContext` is an alias of the same
-class. Both expose `context.workspace`, `context.window`, `context.tab`, and
+`Toyoterm::CallbackContext`. `Toyoterm::KeyBindingContext` and
+`Toyoterm::CommandContext` are aliases of the same class. They expose
+`context.workspace`, `context.window`, `context.tab`, and
 `context.pane`, captured when the callback starts. The first three identify the
 current objects in the request snapshot; `pane` is the callback's target pane.
 They are snapshot handles, not live mutable native objects.
+
+`context.actions` exposes the same built-in methods as a static binding, plus
+`action(name, argument = nil)`. These actions are tied to this captured context.
+`Toyoterm.action` also captures the current callback context.
 
 Every key helper supports `run`, including `primary`, `leader`, and `physical`.
 `run { |context| ... }` registers the block and returns the binding object;
@@ -465,6 +488,9 @@ omitting the block raises `ArgumentError`. Static and dynamic bindings share
 duplicate detection: registering the same chord more than once raises
 `ArgumentError`. Callback failures discard their queued commands and clipboard
 writes. `plugin.keys` supports the same syntax and plugin registration rollback.
+Use `config.keys.unbind(chord)` to remove an existing static or dynamic binding;
+it returns whether a binding was removed. Successful live-console registry
+changes are mirrored to the native key resolver immediately.
 
 `binding.action(name, argument = nil)` registers a static built-in action and
 returns the binding object. It uses the same names, accepted arguments,
@@ -490,13 +516,13 @@ Every callback sees a snapshot of the native object model:
 | Module method | Return value |
 | --- | --- |
 | `Toyoterm.current_workspace` | Current `Toyoterm::Workspace` |
-| `Toyoterm.current_window` | Current `Toyoterm::Window` |
+| `Toyoterm.current_window` | Current `Toyoterm::MuxWindow` |
 | `Toyoterm.current_tab` | Current `Toyoterm::Tab` |
 | `Toyoterm.current_pane` | Current `Toyoterm::Pane` |
 | `Toyoterm.workspaces` | All workspaces, ordered by ID |
 | `Toyoterm.windows` | All windows, ordered by ID |
-| `Toyoterm.workspace(name)` | Matching workspace, or `nil` |
-| `Toyoterm.switch_workspace(name)` | Queues activation or creation of a named workspace and returns `nil` |
+| `Toyoterm.find_workspace(name)` | Matching workspace, or `nil` |
+| `Toyoterm.open_workspace(name)` | Queues activation or creation of a named workspace and returns `nil` |
 | `Toyoterm.action(name, argument = nil)` | Queues a built-in action and returns `nil` |
 
 All native objects inherit from `Toyoterm::NativeHandle`. They expose a
@@ -509,8 +535,8 @@ Mutating methods enqueue native work. Commands are applied only after the Ruby
 callback returns successfully, so the callback continues to see its input
 snapshot.
 
-`Toyoterm.switch_workspace(name)` converts `name` with `to_s` and rejects an
-empty name or NUL byte. If the name already exists it is activated; otherwise a
+`Toyoterm.open_workspace(name)` accepts a String or Symbol and rejects an empty
+name or NUL byte. If the name already exists it is activated; otherwise a
 complete workspace, window, tab, and pane hierarchy is created and activated.
 The new objects are not visible in the current callback snapshot. The command
 and its resulting `workspace_changed` and focus events are discarded if the
@@ -518,7 +544,7 @@ callback raises before returning.
 
 ```ruby
 Toyoterm.command :backend do
-  Toyoterm.switch_workspace(:backend)
+  Toyoterm.open_workspace(:backend)
 end
 ```
 
@@ -533,9 +559,9 @@ raises `ArgumentError` before anything is queued.
 
 The `command(name)` static-binding action is intentionally excluded; call
 shared Ruby code directly instead. Actions run in queue order only after the
-callback succeeds, and are discarded if it raises. They operate on the active
-pane, tab, workspace, or native window at application time; use a handle method
-when an operation must target a specific snapshot object. Actions that depend
+callback succeeds, and are discarded if it raises. They resolve against the
+workspace, mux window, tab, and pane captured when the callback began; a stale
+target rejects the operation. Actions that depend
 on UI state retain their ordinary behavior: for example `search` opens the
 interactive search bar and `yank_selection` does nothing unless a visual
 selection is active.
@@ -555,20 +581,20 @@ end
 | Member | Result |
 | --- | --- |
 | `name` | Workspace name. |
-| `windows` | Child `Window` handles. |
+| `windows` | Child `MuxWindow` handles. |
 | `activate` | Queues activation and returns `self`. |
-| `new_window(command: nil, cwd: nil, env: nil)` | Queues a new window in this workspace and returns `self`. |
+| `new_window(command: nil, cwd: nil, env: nil)` | Queues a new mux window in this workspace and returns `nil`. |
 
-### `Toyoterm::Window`
+### `Toyoterm::MuxWindow`
 
-`Window` is a mux object. The GUI displays the active mux window in a single OS
+`MuxWindow` is a mux object. The GUI displays the active mux window in a single OS
 window; `Workspace#new_window` does not create another OS window. Multiple OS
 windows remain deferred.
 
 | Member | Result |
 | --- | --- |
 | `tabs` | Child `Tab` handles. |
-| `new_tab(command: nil, cwd: nil, env: nil)` | Queues a new tab in this window and returns `self`. |
+| `new_tab(command: nil, cwd: nil, env: nil)` | Queues a new tab in this mux window and returns `nil`. |
 | `close` | Queues closing this window and returns `self`. |
 | `activate` | Queues activation and returns `self`. |
 
@@ -598,7 +624,7 @@ windows remain deferred.
 | `last_exit_status` | Last reported exit status or `nil`. |
 | `screen_text` | Visible terminal rows joined with newlines. |
 | `zoomed?` | Whether this pane is the tab's current zoom target. |
-| `split(direction, command: nil, cwd: nil, env: nil)` | Queues `:left`, `:right`, `:up`, or `:down`; returns `self`. |
+| `split(direction, command: nil, cwd: nil, env: nil)` | Queues `:left`, `:right`, `:up`, or `:down`; returns `nil`. |
 | `close` | Queues closing the pane and returns `self`. |
 | `activate` | Queues activation and returns `self`. |
 | `send_text(text)` | Queues text for the PTY and returns `self`; rejects NUL bytes. |
@@ -681,7 +707,10 @@ Toyoterm.configure do |config|
 end
 ```
 
-Command names must be non-empty and unique. A command callback receives a
+Command names must be non-empty and unique. Pass `replace: true` to intentionally
+replace one. `Toyoterm.command` returns a `Toyoterm::Registration`; call
+`remove` to unregister it and use `active?` to inspect the handle. Replacing a
+command makes its previous registration handle inactive. A callback receives a
 `CommandContext` with `workspace`, `window`, `tab`, and `pane`.
 Its queued mutations are rolled back if it raises.
 
@@ -690,6 +719,11 @@ Its queued mutations are rolled back if it raises.
 Register handlers with `Toyoterm.on(name) { |event| ... }`. `Toyoterm::Event`
 exposes `name`, `workspace`, `window`, `tab`, `pane`, `title`, `cwd`, and
 `exit_status`; unrelated fields are `nil`.
+
+Unknown event names raise `ArgumentError` during registration. `Toyoterm.on`
+returns a `Toyoterm::Registration` supporting `active?` and `remove`.
+`event.context` returns the common callback context, while `event.subject`
+returns the most specific populated native handle.
 
 | Event | Populated fields |
 | --- | --- |
@@ -722,10 +756,11 @@ upper-right corner; assigning `nil` removes it, and configuration reload clears
 badges owned by the replaced VM.
 
 Closed-object events retain the deleted object's typed ID, but dereferencing it
-raises `Toyoterm::InvalidHandleError`. Events are processed in FIFO order. One
-handler runs to completion and its commands are applied before the next event;
-callbacks are never entered recursively. If a handler raises, its queued
-commands are discarded.
+raises `Toyoterm::InvalidHandleError`. Events are processed in FIFO order and
+callbacks are never entered recursively. Each handler has its own transaction.
+If one raises, its configuration, commands, badges, and newly queued
+asynchronous work are rolled back, the error is logged, and later handlers for
+the same event still run.
 
 Events without a registered handler are skipped before invoking Ruby. Delivery
 is limited to 1,024 events per application turn to bound self-generated loops.
@@ -821,13 +856,21 @@ end
 one independent asynchronous process. `cwd` may be a string, `nil`, or a
 context lambda. A new process is not started while the previous process for
 that widget is still running. `interval` is the minimum delay between process
-starts and must be at least 0.1 seconds.
+starts and must be at least 0.1 seconds. `initial` and the separator must be
+Strings and may not contain NUL bytes.
 
 
 ## Platform, clipboard, environment, files, and processes
 
 Configuration and plugins are trusted code. These APIs are intentionally not
 sandboxed and carry the authority of the toyoterm process.
+
+- `Toyoterm.version` and `Toyoterm.api_version` return the application and Ruby
+  API versions. `Toyoterm.supports?(capability)` performs feature detection.
+- `Toyoterm.config` returns a deeply copied, frozen Hash snapshot of the active
+  Ruby configuration.
+- `Toyoterm.log(level, message)` sends `:debug`, `:info`, `:warn`, or `:error`
+  output through the native `toyoterm::script::ruby` logger.
 
 - `Toyoterm.clipboard.read` returns a copy of the text clipboard snapshot and
   raises `RuntimeError` if the clipboard is unavailable.
@@ -840,8 +883,8 @@ sandboxed and carry the authority of the toyoterm process.
 - `Toyoterm.read_file(path)` returns a byte-preserving String. The UTF-8 path
   must not contain NUL; I/O failures raise `RuntimeError`.
 - `Toyoterm.spawn(program, *args, cwd: nil)` runs synchronously on the script
-  thread and captures byte-preserving output. Arguments and a non-`nil` `cwd`
-  are stringified and cannot contain NUL; `cwd` must not be empty. When supplied,
+  thread and captures byte-preserving output. The program, arguments, and a
+  non-`nil` `cwd` must be Strings and cannot contain NUL; `cwd` must not be empty. When supplied,
   `cwd` is the child process's working directory. Launch failures, including a
   missing or inaccessible working directory, raise `RuntimeError`; nonzero exit
   is a normal result.
@@ -853,18 +896,25 @@ sandboxed and carry the authority of the toyoterm process.
   global state. Supplying an empty `program`, passing
   NUL bytes, or passing an empty `cwd` raises `ArgumentError` immediately before
   scheduling. Upon completion, the block is invoked on the script thread with a
-  `Toyoterm::ProcessResult`. Launch failures (such as a missing program) report
+  `Toyoterm::ProcessResult` and the task's originating `CallbackContext`; a
+  one-argument block may ignore the context. Launch failures report
   an exit status of `-1` and capture the error in `stderr` rather than raising a
   fatal exception. Exceptions raised inside the callback roll back any native
   commands or badge mutations queued by that callback. If configuration is
   reloaded while an asynchronous task is in flight, its callback is discarded
   safely without error.
 
-`Toyoterm::AsyncTask` exposes `id`, `pending?`, `complete?`, `result`, and
-`success?`. `result` is `nil` while the process is pending and otherwise is a
+`Toyoterm::AsyncTask` exposes `id`, `context`, `pending?`, `complete?`,
+`cancelled?`, `cancel`, `result`, `error`, `value!`, and `success?`. `cancel`
+prevents callback delivery and discards the result; a process already executing
+may continue in its worker until it exits. Cancellation is a terminal task state,
+so `complete?` becomes true while `success?` remains false. Completed tasks remove their runtime
+registry entry, so periodic bar tasks do not accumulate results. `result` is
+`nil` while the process is pending and otherwise is a
 `Toyoterm::ProcessResult`. `Toyoterm::ProcessResult` exposes `stdout`,
-`stderr`, `exit_status`, and `success?`. A process terminated without a
-portable exit code reports `-1`.
+`stderr`, `exit_status`, `error_kind`, `launch_error?`, and `success?`.
+`error_kind` is `:launch` when the child could not be started. A process
+terminated without a portable exit code reports `-1` without a launch error.
 
 ```ruby
 Toyoterm.configure do |config|
@@ -909,7 +959,7 @@ Each plugin file must define exactly one plugin:
 ```ruby
 Toyoterm::Plugin.define "git-tools" do |plugin|
   plugin.version = "0.1.0"
-  plugin.requires = ">= 0.1.0, < 0.2.0"
+  plugin.api_requirement = ">= 0.1.0, < 0.2.0"
 
   plugin.command(:git_root) do |context|
     context.pane.send_text("git rev-parse --show-toplevel\n")
@@ -920,8 +970,8 @@ Toyoterm::Plugin.define "git-tools" do |plugin|
 end
 ```
 
-The name must be non-empty and unique, and `version` is required. `requires` is
-optional and constrains plugin API version `0.1.0` with comma-separated `=`,
+The name must be non-empty and unique, and the String `version` is required.
+`api_requirement` is an optional String and constrains `Toyoterm.api_version` with comma-separated `=`,
 `<`, `<=`, `>`, or `>=` clauses. Invalid metadata, incompatible requirements,
 duplicate registrations, unreadable files, and Ruby exceptions disable only
 that plugin and roll back its registrations.
@@ -946,7 +996,12 @@ selected theme rejects the config.
 
 Plugins share the main configuration's VM and filesystem, process, environment,
 and clipboard authority. Loading a plugin is equivalent to allowing its source
-to execute as the toyoterm process.
+to execute as the toyoterm process. Each file is evaluated under a generated
+`Toyoterm::PluginNamespaces` module to prevent accidental top-level constant and
+class collisions; explicit mutation of global objects remains possible because
+plugins are trusted. Plugins may register commands, events, keys, and themes,
+but extending the configuration DSL is not a supported contract: the main
+configuration is evaluated before plugins are loaded.
 
 ## Live Ruby console
 
@@ -960,6 +1015,10 @@ The console supports multiline input, `:history`, and `exit`.
 `Toyoterm.configure` changes are validated and applied immediately. If an
 evaluation leaves the config invalid, the whole evaluation transaction is
 rolled back.
+
+Commands, event handlers, and key bindings added, removed, or replaced by a
+successful console evaluation are mirrored to the native dispatcher in the
+same transaction.
 
 Live setting changes update the current window, renderer, and terminals without
 rewriting the config file. Initial window dimensions only apply at creation;

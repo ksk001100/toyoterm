@@ -46,8 +46,8 @@ use ui_geometry::*;
 pub use lifecycle::install_panic_hook;
 pub use logging::init_logging;
 pub use toyoterm_api::{
-    Command, CommandResult, Event as MuxEvent, NativeAction, NativeCommand, PaneId, PaneLaunchSpec,
-    PaneSearchDirection, SelectionMotion, SplitDirection,
+    ActionContext, Command, CommandResult, Event as MuxEvent, NativeAction, NativeCommand, PaneId,
+    PaneLaunchSpec, PaneSearchDirection, ScriptEventKind, SelectionMotion, SplitDirection,
 };
 pub use toyoterm_config::{StatusBarPosition, ToyotermConfig};
 pub use toyoterm_ipc::{IpcRequest, IpcResponse, IpcServer};
@@ -552,6 +552,7 @@ struct ToyotermApplication {
     bar_items: HashMap<StatusBarPosition, Vec<BarItem>>,
     bar_pending: Option<StatusBarPosition>,
     next_bar_at: HashMap<StatusBarPosition, Instant>,
+    cancelled_async_tasks: HashSet<u64>,
     terminal_render_pending: bool,
     mux: Mux,
     render_style: RenderStyle,
@@ -565,18 +566,18 @@ struct ToyotermApplication {
 fn ruby_event_from_terminal_event(pane: PaneId, event: TerminalEvent) -> Option<RubyEvent> {
     let mut event = match event {
         TerminalEvent::TitleChanged(title) => {
-            let mut event = RubyEvent::new("title_changed");
+            let mut event = RubyEvent::new(ScriptEventKind::TitleChanged);
             event.title = Some(title);
             event
         }
         TerminalEvent::TitleReset => {
-            let mut event = RubyEvent::new("title_changed");
+            let mut event = RubyEvent::new(ScriptEventKind::TitleChanged);
             event.title = Some(format!("Pane {}", pane.0));
             event
         }
         TerminalEvent::IconTitleChanged(_) => return None,
         TerminalEvent::CwdChanged(cwd) => {
-            let mut event = RubyEvent::new("cwd_changed");
+            let mut event = RubyEvent::new(ScriptEventKind::CwdChanged);
             event.cwd = Some(cwd);
             event
         }
@@ -589,11 +590,11 @@ fn ruby_event_from_terminal_event(pane: PaneId, event: TerminalEvent) -> Option<
         TerminalEvent::OpenUrlRequested(_) => return None,
         TerminalEvent::UserVarChanged { .. } => return None,
         TerminalEvent::MarkSet => return None,
-        TerminalEvent::PromptStarted => RubyEvent::new("prompt_started"),
-        TerminalEvent::CommandLineStarted => RubyEvent::new("command_line_started"),
-        TerminalEvent::CommandStarted => RubyEvent::new("command_started"),
+        TerminalEvent::PromptStarted => RubyEvent::new(ScriptEventKind::PromptStarted),
+        TerminalEvent::CommandLineStarted => RubyEvent::new(ScriptEventKind::CommandLineStarted),
+        TerminalEvent::CommandStarted => RubyEvent::new(ScriptEventKind::CommandStarted),
         TerminalEvent::CommandFinished(exit_status) => {
-            let mut event = RubyEvent::new("command_finished");
+            let mut event = RubyEvent::new(ScriptEventKind::CommandFinished);
             event.exit_status = exit_status;
             event
         }
@@ -615,7 +616,7 @@ fn ruby_event_from_terminal_event(pane: PaneId, event: TerminalEvent) -> Option<
         | TerminalEvent::ClipboardCaptureEnd => return None,
         TerminalEvent::Notification { .. } | TerminalEvent::NotificationClose(_) => return None,
         TerminalEvent::PtyWrite(_) => return None,
-        TerminalEvent::Bell => RubyEvent::new("bell"),
+        TerminalEvent::Bell => RubyEvent::new(ScriptEventKind::Bell),
     };
     event.pane = Some(pane);
     Some(event)
@@ -702,7 +703,7 @@ impl ApplicationHandler<AppEvent> for ToyotermApplication {
             self.fail(event_loop, error);
             return;
         }
-        if let Err(error) = self.emit_script_event("app_started") {
+        if let Err(error) = self.emit_script_event(ScriptEventKind::AppStarted) {
             self.fail(event_loop, error);
             return;
         }
@@ -1278,6 +1279,9 @@ impl ApplicationHandler<AppEvent> for ToyotermApplication {
                 }
             }
             AppEvent::AsyncCompleted { id, output } => {
+                if self.cancelled_async_tasks.remove(&id) {
+                    return;
+                }
                 let invocation = ScriptInvocation::AsyncCallback { id, output };
                 if let Err(error) = self.submit_script(invocation) {
                     tracing::warn!(target: "toyoterm::script", %error, "submit async callback failed");
@@ -1423,6 +1427,7 @@ impl ToyotermApplication {
             bar_items: HashMap::new(),
             bar_pending: None,
             next_bar_at: HashMap::new(),
+            cancelled_async_tasks: HashSet::new(),
             terminal_render_pending: false,
             mux,
             render_style,
@@ -1555,22 +1560,22 @@ mod tests {
     fn maps_shell_command_lifecycle_to_ruby_events() {
         let pane = PaneId(7);
         let prompt = ruby_event_from_terminal_event(pane, TerminalEvent::PromptStarted).unwrap();
-        assert_eq!(prompt.name, "prompt_started");
+        assert_eq!(prompt.name(), "prompt_started");
         assert_eq!(prompt.pane, Some(pane));
 
         let command_line =
             ruby_event_from_terminal_event(pane, TerminalEvent::CommandLineStarted).unwrap();
-        assert_eq!(command_line.name, "command_line_started");
+        assert_eq!(command_line.name(), "command_line_started");
         assert_eq!(command_line.pane, Some(pane));
 
         let started = ruby_event_from_terminal_event(pane, TerminalEvent::CommandStarted).unwrap();
-        assert_eq!(started.name, "command_started");
+        assert_eq!(started.name(), "command_started");
         assert_eq!(started.pane, Some(pane));
         assert_eq!(started.exit_status, None);
 
         let finished =
             ruby_event_from_terminal_event(pane, TerminalEvent::CommandFinished(Some(23))).unwrap();
-        assert_eq!(finished.name, "command_finished");
+        assert_eq!(finished.name(), "command_finished");
         assert_eq!(finished.pane, Some(pane));
         assert_eq!(finished.exit_status, Some(23));
     }

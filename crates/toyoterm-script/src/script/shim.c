@@ -500,19 +500,20 @@ int toyoterm_mruby_invoke_async_callback(
     void *state, uint64_t id,
     const uint8_t *stdout_bytes, size_t stdout_length,
     const uint8_t *stderr_bytes, size_t stderr_length,
-    int32_t exit_status, char **error_output) {
+    int32_t exit_status, int32_t launch_error, char **error_output) {
   mrb_state *mrb = (mrb_state *)state;
   int arena_index = mrb_gc_arena_save(mrb);
   *error_output = NULL;
   mrb->exc = NULL;
-  mrb_value arguments[4] = {
+  mrb_value arguments[5] = {
       mrb_int_value(mrb, (mrb_int)id),
       mrb_str_new(mrb, stdout_bytes == NULL ? "" : (const char *)stdout_bytes, (mrb_int)stdout_length),
       mrb_str_new(mrb, stderr_bytes == NULL ? "" : (const char *)stderr_bytes, (mrb_int)stderr_length),
       mrb_int_value(mrb, (mrb_int)exit_status),
+      mrb_bool_value(launch_error != 0),
   };
   mrb_funcall_argv(mrb, toyoterm_module(mrb),
-                   mrb_intern_lit(mrb, "__invoke_async_callback"), 4, arguments);
+                   mrb_intern_lit(mrb, "__invoke_async_callback"), 5, arguments);
   return finish_arena_call(mrb, arena_index, error_output);
 }
 

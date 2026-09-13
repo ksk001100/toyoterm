@@ -9,15 +9,18 @@ enum PendingScriptEnqueue {
     Dropped,
 }
 
-fn is_coalescible_event(name: &str) -> bool {
+fn is_coalescible_event(kind: ScriptEventKind) -> bool {
     matches!(
-        name,
-        "title_changed" | "cwd_changed" | "pane_focused" | "workspace_changed"
+        kind,
+        ScriptEventKind::TitleChanged
+            | ScriptEventKind::CwdChanged
+            | ScriptEventKind::PaneFocused
+            | ScriptEventKind::WorkspaceChanged
     )
 }
 
 fn same_event_target(left: &RubyEvent, right: &RubyEvent) -> bool {
-    left.name == right.name
+    left.kind == right.kind
         && left.workspace == right.workspace
         && left.window == right.window
         && left.tab == right.tab
@@ -33,7 +36,7 @@ fn enqueue_pending_script(
         queue.push_back((id, invocation));
         return PendingScriptEnqueue::Queued;
     };
-    if is_coalescible_event(event.name)
+    if is_coalescible_event(event.kind)
         && let Some((_, ScriptInvocation::Event(queued))) = queue.iter_mut().rev().find(
             |(_, invocation)| {
                 matches!(invocation, ScriptInvocation::Event(queued) if same_event_target(queued, &event))
@@ -75,7 +78,7 @@ impl ToyotermApplication {
         let id = self.next_script_request;
         self.next_script_request = self.next_script_request.wrapping_add(1).max(1);
         let event_name = match &invocation {
-            ScriptInvocation::Event(event) => Some(event.name),
+            ScriptInvocation::Event(event) => Some(event.name()),
             _ => None,
         };
         match enqueue_pending_script(&mut self.pending_script, id, invocation) {
@@ -194,6 +197,16 @@ impl ToyotermApplication {
                 self.next_bar_at.insert(position, Instant::now() + interval);
             }
         }
+        for log in std::mem::take(&mut result.logs) {
+            match log.level.as_str() {
+                "debug" => {
+                    tracing::debug!(target: "toyoterm::script::ruby", message = %log.message)
+                }
+                "info" => tracing::info!(target: "toyoterm::script::ruby", message = %log.message),
+                "warn" => tracing::warn!(target: "toyoterm::script::ruby", message = %log.message),
+                _ => tracing::error!(target: "toyoterm::script::ruby", message = %log.message),
+            }
+        }
         let value = result.value.unwrap_or_default();
         let apply_result: Result<(), String> = (|| {
             if is_reload {
@@ -214,10 +227,15 @@ impl ToyotermApplication {
                             command,
                         )?;
                     }
-                    NativeCommand::InvokeAction(NativeAction::ReloadConfig) => {
+                    NativeCommand::InvokeAction {
+                        action: NativeAction::ReloadConfig,
+                        ..
+                    } => {
                         reload_requested = true;
                     }
-                    NativeCommand::InvokeAction(action) => self.execute_native_action(action)?,
+                    NativeCommand::InvokeAction { action, context } => {
+                        self.execute_context_action(action, context)?
+                    }
                     NativeCommand::CreateWindowWithLaunch { workspace, launch } => {
                         let pane = command_dispatch::dispatch_pane_creation(
                             &mut self.mux,
@@ -269,18 +287,31 @@ impl ToyotermApplication {
             self.deliver_runtime_events()?;
             for request in result.async_requests {
                 let proxy = self.event_proxy.clone();
+                let worker_proxy = proxy.clone();
                 let id = request.id;
                 let program = request.program;
                 let args = request.args;
                 let cwd = request.cwd;
-                std::thread::Builder::new()
+                if let Err(error) = std::thread::Builder::new()
                     .name(format!("toyoterm-async-{id}"))
                     .spawn(move || {
                         let output = execute_async_spawn(&program, &args, cwd.as_deref());
-                        let _ = proxy.send_event(AppEvent::AsyncCompleted { id, output });
+                        let _ = worker_proxy.send_event(AppEvent::AsyncCompleted { id, output });
                     })
-                    .map_err(|error| format!("spawn async thread: {error}"))?;
+                {
+                    let output = AsyncProcessOutput {
+                        stdout: Vec::new(),
+                        stderr: format!("spawn async worker: {error}").into_bytes(),
+                        exit_status: -1,
+                        launch_error: true,
+                    };
+                    proxy
+                        .send_event(AppEvent::AsyncCompleted { id, output })
+                        .map_err(|error| format!("report async worker launch failure: {error}"))?;
+                }
             }
+            self.cancelled_async_tasks
+                .extend(result.async_cancellations);
             if matches!(
                 completion.invocation,
                 ScriptInvocation::AsyncCallback { .. }
@@ -376,11 +407,13 @@ fn execute_async_spawn(program: &str, args: &[String], cwd: Option<&str>) -> Asy
             stdout: output.stdout,
             stderr: output.stderr,
             exit_status: output.status.code().unwrap_or(-1),
+            launch_error: false,
         },
         Err(err) => AsyncProcessOutput {
             stdout: Vec::new(),
             stderr: format!("spawn {program}: {err}").into_bytes(),
             exit_status: -1,
+            launch_error: true,
         },
     }
 }
@@ -389,8 +422,8 @@ fn execute_async_spawn(program: &str, args: &[String], cwd: Option<&str>) -> Asy
 mod tests {
     use super::*;
 
-    fn event(name: &'static str, pane: u64, title: &str) -> ScriptInvocation {
-        let mut event = RubyEvent::new(name);
+    fn event(kind: ScriptEventKind, pane: u64, title: &str) -> ScriptInvocation {
+        let mut event = RubyEvent::new(kind);
         event.pane = Some(PaneId(pane));
         event.title = Some(title.to_owned());
         ScriptInvocation::Event(event)
@@ -401,23 +434,35 @@ mod tests {
         let mut queue = VecDeque::new();
         for id in 0..MAX_PENDING_SCRIPT_EVENTS as u64 {
             assert_eq!(
-                enqueue_pending_script(&mut queue, id, event("bell", id, "old")),
+                enqueue_pending_script(&mut queue, id, event(ScriptEventKind::Bell, id, "old")),
                 PendingScriptEnqueue::Queued
             );
         }
         assert_eq!(
-            enqueue_pending_script(&mut queue, 2_000, event("bell", 2_000, "new")),
+            enqueue_pending_script(
+                &mut queue,
+                2_000,
+                event(ScriptEventKind::Bell, 2_000, "new"),
+            ),
             PendingScriptEnqueue::Dropped
         );
         assert_eq!(queue.len(), MAX_PENDING_SCRIPT_EVENTS);
 
         queue.pop_back();
         assert_eq!(
-            enqueue_pending_script(&mut queue, 3_000, event("title_changed", 7, "old")),
+            enqueue_pending_script(
+                &mut queue,
+                3_000,
+                event(ScriptEventKind::TitleChanged, 7, "old"),
+            ),
             PendingScriptEnqueue::Queued
         );
         assert_eq!(
-            enqueue_pending_script(&mut queue, 3_001, event("title_changed", 7, "new")),
+            enqueue_pending_script(
+                &mut queue,
+                3_001,
+                event(ScriptEventKind::TitleChanged, 7, "new"),
+            ),
             PendingScriptEnqueue::Coalesced
         );
         assert_eq!(queue.len(), MAX_PENDING_SCRIPT_EVENTS);
@@ -430,7 +475,7 @@ mod tests {
     #[test]
     fn pending_event_limit_never_drops_non_event_requests() {
         let mut queue = (0..MAX_PENDING_SCRIPT_EVENTS as u64)
-            .map(|id| (id, event("bell", id, "event")))
+            .map(|id| (id, event(ScriptEventKind::Bell, id, "event")))
             .collect::<VecDeque<_>>();
         assert_eq!(
             enqueue_pending_script(&mut queue, 9_000, ScriptInvocation::Eval("42".into())),
@@ -448,6 +493,7 @@ mod tests {
         // Test non-existent command returns error and -1 status
         let output = execute_async_spawn("this-command-does-not-exist-toyoterm", &[], None);
         assert_eq!(output.exit_status, -1);
+        assert!(output.launch_error);
         assert!(output.stdout.is_empty());
         assert!(!output.stderr.is_empty());
     }

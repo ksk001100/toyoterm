@@ -21,9 +21,12 @@ asynchronous child processes requested via `Toyoterm.async` and report output
 back to the main thread through the winit event loop.
 
 Script requests carry an immutable mux/object-model snapshot and clipboard
-snapshot. Script completions carry inspected values, `NativeCommand`s,
-asynchronous spawn requests, and validated configuration snapshots when
-settings change, including immutable image pixels.
+snapshot. Script completions carry inspected values, context-bound
+`NativeCommand`s, asynchronous spawn and cancellation requests, script log
+records, and validated configuration snapshots or registries when they change,
+including immutable image pixels. Before applying a non-global action, the main
+thread validates its captured workspace/window/tab/pane IDs and activates that
+hierarchy. Stale contexts fail before partially activating that hierarchy.
 The main thread serializes requests, applies returned commands, reconciles PTY
 runtimes, spawns background workers for asynchronous tasks, then submits the
 next request. This preserves event and re-entrant command ordering without
@@ -33,7 +36,10 @@ Ruby evaluation is asynchronous from the GUI's point of view. A slow or stuck
 callback delays later script requests, but it does not prevent PTY output from
 being parsed or frames from being scheduled and rendered. Asynchronous tasks
 (`Toyoterm.async`) execute outside both the main and script threads, keeping
-long-running external calls from blocking either subsystem.
+long-running external calls from blocking either subsystem. Cancelling an async
+task suppresses its callback and discards its eventual result. A process that
+has already started may continue in the background; cancellation is deliberately
+not presented as an operating-system process-kill guarantee.
 
 The main-thread request queue bounds only Ruby runtime events: at most 1,024
 event requests may wait behind the active callback. State notifications for the

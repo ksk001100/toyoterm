@@ -106,6 +106,71 @@ pub enum PaneSearchDirection {
     Previous,
 }
 
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub enum ScriptEventKind {
+    AppStarted,
+    ConfigReloaded,
+    WorkspaceChanged,
+    WindowCreated,
+    WindowClosed,
+    TabCreated,
+    TabClosed,
+    PaneCreated,
+    PaneClosed,
+    PaneFocused,
+    TitleChanged,
+    CwdChanged,
+    PromptStarted,
+    CommandLineStarted,
+    CommandStarted,
+    CommandFinished,
+    Bell,
+}
+
+impl ScriptEventKind {
+    pub const ALL: [Self; 17] = [
+        Self::AppStarted,
+        Self::ConfigReloaded,
+        Self::WorkspaceChanged,
+        Self::WindowCreated,
+        Self::WindowClosed,
+        Self::TabCreated,
+        Self::TabClosed,
+        Self::PaneCreated,
+        Self::PaneClosed,
+        Self::PaneFocused,
+        Self::TitleChanged,
+        Self::CwdChanged,
+        Self::PromptStarted,
+        Self::CommandLineStarted,
+        Self::CommandStarted,
+        Self::CommandFinished,
+        Self::Bell,
+    ];
+
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::AppStarted => "app_started",
+            Self::ConfigReloaded => "config_reloaded",
+            Self::WorkspaceChanged => "workspace_changed",
+            Self::WindowCreated => "window_created",
+            Self::WindowClosed => "window_closed",
+            Self::TabCreated => "tab_created",
+            Self::TabClosed => "tab_closed",
+            Self::PaneCreated => "pane_created",
+            Self::PaneClosed => "pane_closed",
+            Self::PaneFocused => "pane_focused",
+            Self::TitleChanged => "title_changed",
+            Self::CwdChanged => "cwd_changed",
+            Self::PromptStarted => "prompt_started",
+            Self::CommandLineStarted => "command_line_started",
+            Self::CommandStarted => "command_started",
+            Self::CommandFinished => "command_finished",
+            Self::Bell => "bell",
+        }
+    }
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum NativeAction {
     NewTab,
@@ -144,6 +209,14 @@ pub enum NativeAction {
     ToggleZoom,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ActionContext {
+    pub workspace: WorkspaceId,
+    pub window: WindowId,
+    pub tab: TabId,
+    pub pane: PaneId,
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct PaneLaunchSpec {
     pub program: Option<String>,
@@ -155,7 +228,10 @@ pub struct PaneLaunchSpec {
 #[derive(Clone, Debug, PartialEq)]
 pub enum NativeCommand {
     Mux(Command),
-    InvokeAction(NativeAction),
+    InvokeAction {
+        action: NativeAction,
+        context: ActionContext,
+    },
     CreateWindowWithLaunch {
         workspace: WorkspaceId,
         launch: PaneLaunchSpec,
@@ -240,5 +316,12 @@ mod tests {
         assert_eq!(pane.downcast::<PaneId>(), Some(PaneId(7)));
         assert_eq!(pane.downcast::<TabId>(), None);
         assert_ne!(pane, TabId(7).handle());
+    }
+
+    #[test]
+    fn script_event_names_are_unique() {
+        let names = ScriptEventKind::ALL.map(ScriptEventKind::as_str);
+        let unique = names.into_iter().collect::<std::collections::HashSet<_>>();
+        assert_eq!(unique.len(), ScriptEventKind::ALL.len());
     }
 }

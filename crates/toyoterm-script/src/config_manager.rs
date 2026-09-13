@@ -78,11 +78,61 @@ impl ConfigManager {
             self.source_path.as_deref().and_then(Path::parent),
             Some(&self.config),
         )?;
-        if config == self.config {
-            return Ok(None);
-        }
+        let previous = self.snapshot();
         self.config = config;
-        Ok(Some(self.snapshot()))
+        self.refresh_registrations()?;
+        let current = self.snapshot();
+        Ok((current != previous).then_some(current))
+    }
+
+    fn refresh_registrations(&mut self) -> Result<(), ScriptError> {
+        let dynamic_count = self.ruby_usize("Toyoterm.__config.__binding_count")?;
+        let mut keybindings = HashSet::with_capacity(dynamic_count);
+        for index in 0..dynamic_count {
+            keybindings.insert(
+                self.runtime
+                    .eval(&format!("Toyoterm.__config.__binding_key({index})"))?,
+            );
+        }
+
+        let static_count = self.ruby_usize("Toyoterm.__config.__static_binding_count")?;
+        let mut native_actions = HashMap::with_capacity(static_count);
+        for index in 0..static_count {
+            let key = self
+                .runtime
+                .eval(&format!("Toyoterm.__config.__static_binding_key({index})"))?;
+            let action = self.runtime.eval(&format!(
+                "Toyoterm.__config.__static_binding_action({index})"
+            ))?;
+            let argument = self.runtime.eval(&format!(
+                "Toyoterm.__config.__static_binding_argument({index})"
+            ))?;
+            native_actions.insert(key, decode_native_action(&action, &argument)?);
+        }
+
+        let event_count = self.ruby_usize("Toyoterm.__event_count")?;
+        let mut event_names = HashSet::with_capacity(event_count);
+        for index in 0..event_count {
+            event_names.insert(
+                self.runtime
+                    .eval(&format!("Toyoterm.__event_name({index})"))?,
+            );
+        }
+
+        let command_count = self.ruby_usize("Toyoterm.__command_count")?;
+        let mut user_command_names = HashSet::with_capacity(command_count);
+        for index in 0..command_count {
+            user_command_names.insert(
+                self.runtime
+                    .eval(&format!("Toyoterm.__command_name({index})"))?,
+            );
+        }
+
+        self.keybindings = keybindings;
+        self.native_actions = native_actions;
+        self.event_names = event_names;
+        self.user_command_names = user_command_names;
+        Ok(())
     }
 
     pub(super) fn snapshot(&self) -> ScriptSnapshot {
@@ -305,7 +355,12 @@ impl ConfigManager {
     }
 
     /// Emits an event only when Ruby registered at least one handler for it.
-    pub fn emit_event(&mut self, name: &str, current_pane: PaneId) -> Result<bool, ScriptError> {
+    pub fn emit_event(
+        &mut self,
+        kind: ScriptEventKind,
+        current_pane: PaneId,
+    ) -> Result<bool, ScriptError> {
+        let name = kind.as_str();
         if !self.event_names.contains(name) {
             return Ok(false);
         }
@@ -324,14 +379,14 @@ impl ConfigManager {
     }
 
     pub fn emit_native_event(&mut self, event: &RubyEvent) -> Result<bool, ScriptError> {
-        if !self.event_names.contains(event.name) {
+        if !self.event_names.contains(event.name()) {
             return Ok(false);
         }
         let started = Instant::now();
         let result = self.runtime.emit_event(event);
         record_callback_duration(
             CallbackKind::Event,
-            event.name,
+            event.name(),
             started.elapsed(),
             result.is_ok(),
         );
@@ -395,7 +450,32 @@ impl ConfigManager {
                             "user commands cannot be invoked as native actions",
                         ));
                     }
-                    commands.push(NativeCommand::InvokeAction(action));
+                    let mut context_value = |index| {
+                        self.runtime
+                            .eval(&format!("Toyoterm.__current_command_context({index})"))?
+                            .parse::<u64>()
+                            .map_err(|_| {
+                                ScriptError::new(
+                                    "decode mruby command",
+                                    "action context is invalid",
+                                )
+                            })
+                    };
+                    commands.push(NativeCommand::InvokeAction {
+                        action,
+                        context: ActionContext {
+                            workspace: WorkspaceId(resolve_bootstrap_id(
+                                context_value(0)?,
+                                current_workspace.0,
+                            )),
+                            window: WindowId(resolve_bootstrap_id(
+                                context_value(1)?,
+                                current_window.0,
+                            )),
+                            tab: TabId(resolve_bootstrap_id(context_value(2)?, current_tab.0)),
+                            pane: PaneId(resolve_bootstrap_id(context_value(3)?, current_pane.0)),
+                        },
+                    });
                 }
                 "send_text" => commands.push(NativeCommand::Mux(Command::SendText {
                     pane,
@@ -565,6 +645,39 @@ impl ConfigManager {
         Ok(requests)
     }
 
+    pub fn drain_async_cancellations(&mut self) -> Result<Vec<u64>, ScriptError> {
+        let mut cancellations = Vec::new();
+        loop {
+            let id = self
+                .runtime
+                .eval("Toyoterm.__next_async_cancellation")?
+                .parse::<u64>()
+                .map_err(|_| {
+                    ScriptError::new("decode async cancellation", "async id is invalid")
+                })?;
+            if id == 0 {
+                break;
+            }
+            cancellations.push(id);
+        }
+        Ok(cancellations)
+    }
+
+    pub fn drain_logs(&mut self) -> Result<Vec<ScriptLog>, ScriptError> {
+        let mut logs = Vec::new();
+        loop {
+            let level = self.runtime.eval("Toyoterm.__next_log")?;
+            if level.is_empty() {
+                break;
+            }
+            logs.push(ScriptLog {
+                level,
+                message: self.runtime.eval("Toyoterm.__current_log_message")?,
+            });
+        }
+        Ok(logs)
+    }
+
     pub fn invoke_async_callback(
         &mut self,
         id: u64,
@@ -572,11 +685,22 @@ impl ConfigManager {
         stderr: &[u8],
         exit_status: i32,
     ) -> Result<(), ScriptError> {
+        self.invoke_async_callback_with_launch_error(id, stdout, stderr, exit_status, false)
+    }
+
+    pub fn invoke_async_callback_with_launch_error(
+        &mut self,
+        id: u64,
+        stdout: &[u8],
+        stderr: &[u8],
+        exit_status: i32,
+        launch_error: bool,
+    ) -> Result<(), ScriptError> {
         let started = Instant::now();
         let name = format!("{id}");
-        let result = self
-            .runtime
-            .invoke_async_callback(id, stdout, stderr, exit_status);
+        let result =
+            self.runtime
+                .invoke_async_callback(id, stdout, stderr, exit_status, launch_error);
         record_callback_duration(
             CallbackKind::AsyncCallback,
             &name,
@@ -699,11 +823,12 @@ pub(super) fn run_script_request(
                 ..ScriptRequestOutput::default()
             },
             ScriptInvocation::AsyncCallback { id, output } => {
-                manager.invoke_async_callback(
+                manager.invoke_async_callback_with_launch_error(
                     *id,
                     &output.stdout,
                     &output.stderr,
                     output.exit_status,
+                    output.launch_error,
                 )?;
                 ScriptRequestOutput::default()
             }
@@ -719,9 +844,6 @@ pub(super) fn run_script_request(
             if let Some(checkpoint) = command_checkpoint.as_deref() {
                 manager.rollback_config_transaction(checkpoint)?;
             }
-            let _ = manager
-                .runtime
-                .eval("Toyoterm.__rollback_async_requests(0)");
             return Err(error);
         }
     };
@@ -745,12 +867,16 @@ pub(super) fn run_script_request(
         model.current_pane,
     )?;
     let async_requests = manager.drain_async_requests()?;
+    let async_cancellations = manager.drain_async_cancellations()?;
+    let logs = manager.drain_logs()?;
     let result = ScriptResult {
         value,
         bar,
         commands,
         snapshot,
         async_requests,
+        async_cancellations,
+        logs,
     };
     let gc = manager.runtime.gc_stats();
     tracing::trace!(
@@ -814,7 +940,17 @@ pub(super) fn load_config(
     let mut runtime = MrubyRuntime::new()?;
     let config_dsl = CONFIG_DSL
         .replace("__TOYOTERM_PRIMARY_MODIFIER__", platform_primary_modifier())
-        .replace("__TOYOTERM_PLATFORM__", platform_name());
+        .replace("__TOYOTERM_PLATFORM__", platform_name())
+        .replace("__TOYOTERM_VERSION__", env!("CARGO_PKG_VERSION"))
+        .replace("__TOYOTERM_API_VERSION__", PLUGIN_API_VERSION)
+        .replace(
+            "__TOYOTERM_NATIVE_EVENTS__",
+            &ScriptEventKind::ALL
+                .iter()
+                .map(|event| format!(":{}", event.as_str()))
+                .collect::<Vec<_>>()
+                .join(", "),
+        );
     runtime.eval_with_filename(&config_dsl, "(toyoterm DSL)")?;
     // SAFETY: The DSL has created the Toyoterm module in this exclusively owned VM.
     unsafe { toyoterm_mruby_install_host_api(runtime.state.as_ptr()) };

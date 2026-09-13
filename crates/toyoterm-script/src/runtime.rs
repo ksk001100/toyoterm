@@ -267,6 +267,7 @@ impl MrubyRuntime {
     }
 
     pub(super) fn emit_event(&mut self, event: &RubyEvent) -> Result<(), ScriptError> {
+        let name = event.name();
         let (title, title_length, title_available) = optional_string_parts(event.title.as_deref());
         let (cwd, cwd_length, cwd_available) = optional_string_parts(event.cwd.as_deref());
         let mut error = std::ptr::null_mut();
@@ -274,8 +275,8 @@ impl MrubyRuntime {
         let status = unsafe {
             toyoterm_mruby_emit_event(
                 self.state.as_ptr(),
-                event.name.as_ptr().cast(),
-                event.name.len(),
+                name.as_ptr().cast(),
+                name.len(),
                 event.workspace.map_or(u64::MAX, |id| id.0),
                 event.window.map_or(u64::MAX, |id| id.0),
                 event.tab.map_or(u64::MAX, |id| id.0),
@@ -338,6 +339,7 @@ impl MrubyRuntime {
         stdout: &[u8],
         stderr: &[u8],
         exit_status: i32,
+        launch_error: bool,
     ) -> Result<(), ScriptError> {
         let mut error = std::ptr::null_mut();
         // SAFETY: Buffers remain live for the duration of the call.
@@ -350,6 +352,7 @@ impl MrubyRuntime {
                 stderr.as_ptr(),
                 stderr.len(),
                 exit_status,
+                i32::from(launch_error),
                 &mut error,
             )
         };

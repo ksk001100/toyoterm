@@ -7,6 +7,39 @@ enum KeybindingDispatch {
     Unassigned,
 }
 
+fn action_is_global(action: &NativeAction) -> bool {
+    matches!(
+        action,
+        NativeAction::ReloadConfig
+            | NativeAction::MaximizeWindow
+            | NativeAction::ToggleMaximize
+            | NativeAction::MinimizeWindow
+            | NativeAction::ToggleFullscreen
+            | NativeAction::NewWorkspace
+    )
+}
+
+fn context_activation_commands(action: &NativeAction, context: ActionContext) -> Vec<Command> {
+    if action_is_global(action) {
+        return Vec::new();
+    }
+    vec![
+        Command::ActivateWorkspace(context.workspace),
+        Command::ActivateWindow(context.window),
+        Command::ActivateTab(context.tab),
+        Command::ActivatePane(context.pane),
+    ]
+}
+
+fn action_context_is_valid(mux: &Mux, context: ActionContext) -> bool {
+    mux.workspace_windows(context.workspace)
+        .is_some_and(|windows| windows.contains(&context.window))
+        && mux
+            .tabs(context.window)
+            .is_some_and(|tabs| tabs.contains(&context.tab))
+        && mux.pane_tab(context.pane) == Some(context.tab)
+}
+
 fn resolve_keybinding(
     snapshot: &ScriptSnapshot,
     keys: impl IntoIterator<Item = String>,
@@ -51,42 +84,42 @@ fn visual_line_end_column(snapshot: &toyoterm_terminal::TerminalSnapshot, row: u
 fn ruby_event_from_mux_event(event: MuxEvent) -> Option<RubyEvent> {
     match event {
         MuxEvent::WorkspaceChanged { workspace } => {
-            let mut event = RubyEvent::new("workspace_changed");
+            let mut event = RubyEvent::new(ScriptEventKind::WorkspaceChanged);
             event.workspace = Some(workspace);
             Some(event)
         }
         MuxEvent::WindowCreated { window } => {
-            let mut event = RubyEvent::new("window_created");
+            let mut event = RubyEvent::new(ScriptEventKind::WindowCreated);
             event.window = Some(window);
             Some(event)
         }
         MuxEvent::WindowClosed { window } => {
-            let mut event = RubyEvent::new("window_closed");
+            let mut event = RubyEvent::new(ScriptEventKind::WindowClosed);
             event.window = Some(window);
             Some(event)
         }
         MuxEvent::TabCreated { tab } => {
-            let mut event = RubyEvent::new("tab_created");
+            let mut event = RubyEvent::new(ScriptEventKind::TabCreated);
             event.tab = Some(tab);
             Some(event)
         }
         MuxEvent::TabClosed { tab } => {
-            let mut event = RubyEvent::new("tab_closed");
+            let mut event = RubyEvent::new(ScriptEventKind::TabClosed);
             event.tab = Some(tab);
             Some(event)
         }
         MuxEvent::PaneCreated { pane } => {
-            let mut event = RubyEvent::new("pane_created");
+            let mut event = RubyEvent::new(ScriptEventKind::PaneCreated);
             event.pane = Some(pane);
             Some(event)
         }
         MuxEvent::PaneClosed { pane } => {
-            let mut event = RubyEvent::new("pane_closed");
+            let mut event = RubyEvent::new(ScriptEventKind::PaneClosed);
             event.pane = Some(pane);
             Some(event)
         }
         MuxEvent::PaneFocused { pane } => {
-            let mut event = RubyEvent::new("pane_focused");
+            let mut event = RubyEvent::new(ScriptEventKind::PaneFocused);
             event.pane = Some(pane);
             Some(event)
         }
@@ -415,6 +448,20 @@ impl ToyotermApplication {
         }
     }
 
+    pub(super) fn execute_context_action(
+        &mut self,
+        action: NativeAction,
+        context: ActionContext,
+    ) -> Result<(), String> {
+        if !action_is_global(&action) && !action_context_is_valid(&self.mux, context) {
+            return Err("callback action target hierarchy is no longer valid".to_owned());
+        }
+        for command in context_activation_commands(&action, context) {
+            self.dispatch_gui_command(command)?;
+        }
+        self.execute_native_action(action)
+    }
+
     pub(super) fn maximize_window(&mut self) -> Result<(), String> {
         let window = self
             .window
@@ -681,7 +728,7 @@ impl ToyotermApplication {
                 self.dispatch_gui_command(command)?;
                 self.flush_mux_input()?;
             }
-            NativeCommand::InvokeAction(_) => {
+            NativeCommand::InvokeAction { .. } => {
                 return Err("native action commands are not exposed over IPC".to_owned());
             }
             NativeCommand::ReloadConfig => self.reload_config_with_notification()?,
@@ -856,21 +903,16 @@ impl ToyotermApplication {
             self.sync_active_renderer(window.scale_factor());
             window.request_redraw();
         }
-        self.emit_script_event("config_reloaded")?;
+        self.emit_script_event(ScriptEventKind::ConfigReloaded)?;
         Ok(())
     }
 
-    pub(super) fn emit_script_event(&mut self, name: &str) -> Result<(), String> {
+    pub(super) fn emit_script_event(&mut self, kind: ScriptEventKind) -> Result<(), String> {
         let pane = self
             .mux
             .current_pane()
             .ok_or_else(|| "mux has no current pane".to_owned())?;
-        let name = match name {
-            "app_started" => "app_started",
-            "config_reloaded" => "config_reloaded",
-            _ => return Err(format!("unsupported application event {name}")),
-        };
-        let mut event = RubyEvent::new(name);
+        let mut event = RubyEvent::new(kind);
         event.pane = Some(pane);
         self.runtime_events.push_back(event);
         self.deliver_runtime_events()
@@ -893,7 +935,7 @@ impl ToyotermApplication {
             if delivered > MAX_EVENTS_PER_TURN {
                 return Err("Ruby runtime event delivery exceeded 1024 events".to_owned());
             }
-            if !self.script_snapshot.event_names.contains(event.name) {
+            if !self.script_snapshot.event_names.contains(event.name()) {
                 continue;
             }
             self.submit_script(ScriptInvocation::Event(event))?;
@@ -906,8 +948,49 @@ impl ToyotermApplication {
 mod tests {
     use super::*;
 
+    #[test]
+    fn callback_actions_reactivate_their_origin_context() {
+        let context = ActionContext {
+            workspace: toyoterm_api::WorkspaceId(1),
+            window: toyoterm_api::WindowId(2),
+            tab: toyoterm_api::TabId(3),
+            pane: PaneId(4),
+        };
+        assert_eq!(
+            context_activation_commands(&NativeAction::ToggleZoom, context),
+            vec![
+                Command::ActivateWorkspace(context.workspace),
+                Command::ActivateWindow(context.window),
+                Command::ActivateTab(context.tab),
+                Command::ActivatePane(context.pane),
+            ]
+        );
+        assert!(context_activation_commands(&NativeAction::ToggleFullscreen, context).is_empty());
+
+        let mut mux = Mux::new();
+        let valid = ActionContext {
+            workspace: mux.current_workspace(),
+            window: mux.current_window().unwrap(),
+            tab: mux.current_tab().unwrap(),
+            pane: mux.current_pane().unwrap(),
+        };
+        assert!(action_context_is_valid(&mux, valid));
+        let first_pane = valid.pane;
+        let CommandResult::Tab(second_tab) = mux.dispatch(Command::NewTab).unwrap() else {
+            panic!("new tab did not return a tab");
+        };
+        assert!(!action_context_is_valid(
+            &mux,
+            ActionContext {
+                tab: second_tab,
+                pane: first_pane,
+                ..valid
+            }
+        ));
+    }
+
     fn event_names(events: &VecDeque<RubyEvent>) -> Vec<&'static str> {
-        events.iter().map(|event| event.name).collect()
+        events.iter().map(RubyEvent::name).collect()
     }
 
     #[test]
@@ -1026,10 +1109,10 @@ mod tests {
     #[test]
     fn runtime_events_stay_fifo_across_reload_and_callback_commands() {
         let mut mux = Mux::new();
-        let mut events = VecDeque::from([RubyEvent::new("title_changed")]);
+        let mut events = VecDeque::from([RubyEvent::new(ScriptEventKind::TitleChanged)]);
 
         dispatch_coordinator_command(&mut mux, &mut events, Command::NewTab).unwrap();
-        events.push_back(RubyEvent::new("config_reloaded"));
+        events.push_back(RubyEvent::new(ScriptEventKind::ConfigReloaded));
         let pane = mux.current_pane().unwrap();
         dispatch_coordinator_command(
             &mut mux,
