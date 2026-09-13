@@ -119,6 +119,13 @@ pub struct SearchRenderData<'a> {
 }
 
 #[derive(Clone, Copy, Debug)]
+pub struct SelectorRenderData<'a> {
+    pub rect: PaneRect,
+    pub text: &'a str,
+    pub selected_rect: Option<PaneRect>,
+}
+
+#[derive(Clone, Copy, Debug)]
 pub struct StatusBarRenderData<'a> {
     pub rect: PaneRect,
     pub items: &'a [StatusBarRenderItem<'a>],

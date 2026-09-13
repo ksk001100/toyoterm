@@ -255,6 +255,11 @@ pub enum NativeCommand {
         query: String,
         direction: PaneSearchDirection,
     },
+    OpenSelector {
+        id: u64,
+        title: String,
+        items: Vec<String>,
+    },
     ReloadConfig,
 }
 

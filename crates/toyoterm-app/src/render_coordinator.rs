@@ -222,6 +222,17 @@ impl ToyotermApplication {
                 height,
             )
         });
+        let selector_view = self.selector.as_ref().and_then(|selector| {
+            self.window.as_ref().map(|window| {
+                selector_render_view(
+                    selector,
+                    self.ime_preedit.as_deref(),
+                    window.inner_size(),
+                    layout,
+                    scale_factor,
+                )
+            })
+        });
         if let Some(renderer) = self.renderer.as_mut() {
             renderer.update_panes(&panes, layout);
             renderer.update_tabs(&tabs, layout);
@@ -231,6 +242,16 @@ impl ToyotermApplication {
                     rect: search_rect.unwrap_or_default(),
                     text: &search_text,
                 }),
+                layout,
+            );
+            renderer.update_selector(
+                selector_view
+                    .as_ref()
+                    .map(|(text, rect, selected_rect)| SelectorRenderData {
+                        rect: *rect,
+                        text,
+                        selected_rect: *selected_rect,
+                    }),
                 layout,
             );
             let window_size = self
@@ -380,6 +401,75 @@ impl ToyotermApplication {
     }
 }
 
+fn selector_render_view(
+    selector: &SelectorOverlay,
+    preedit: Option<&str>,
+    size: PhysicalSize<u32>,
+    layout: TextLayout,
+    scale_factor: f64,
+) -> (String, PaneRect, Option<PaneRect>) {
+    let margin = (24.0 * scale_factor.max(0.1)).round() as u32;
+    let maximum_width = (720.0 * scale_factor.max(0.1)).round() as u32;
+    let width = maximum_width.min(size.width.saturating_sub(margin.saturating_mul(2)));
+    let line_height = layout.line_height.ceil().max(1.0) as u32;
+    let maximum_height = size.height.saturating_sub(margin.saturating_mul(2));
+    let max_items = maximum_height
+        .saturating_sub(24)
+        .checked_div(line_height)
+        .unwrap_or(0)
+        .saturating_sub(5)
+        .clamp(1, 12) as usize;
+    let lines = selector.render_lines(max_items);
+    let visible_count = lines.items.len().max(1);
+    let height = line_height
+        .saturating_mul(visible_count.saturating_add(5) as u32)
+        .saturating_add(24)
+        .min(maximum_height);
+    let rect = PaneRect::new(
+        size.width.saturating_sub(width) / 2,
+        size.height.saturating_sub(height) / 2,
+        width,
+        height,
+    );
+
+    let title = if selector.title.is_empty() {
+        "Select"
+    } else {
+        selector.title.as_str()
+    };
+    let mut text = format!(
+        "{title}\n> {}{}▏\n\n",
+        selector.query,
+        preedit.unwrap_or("")
+    );
+    if lines.items.is_empty() {
+        text.push_str("  No matches\n");
+    } else {
+        for item in &lines.items {
+            text.push_str("  ");
+            text.push_str(item);
+            text.push('\n');
+        }
+    }
+    text.push('\n');
+    text.push_str(&format!(
+        "{} matches   ↑↓ move   Enter select   Esc cancel",
+        lines.total
+    ));
+
+    let selected_rect = lines.selected.map(|selected| {
+        PaneRect::new(
+            rect.x.saturating_add(8),
+            rect.y
+                .saturating_add(12)
+                .saturating_add(line_height.saturating_mul(selected.saturating_add(3) as u32)),
+            rect.width.saturating_sub(16),
+            line_height,
+        )
+    });
+    (text, rect, selected_rect)
+}
+
 fn progress_title_suffix(progress: TerminalProgress) -> String {
     match progress {
         TerminalProgress::Hidden => String::new(),
@@ -413,5 +503,30 @@ mod tests {
             " · warning 7%"
         );
         assert!(progress_title_suffix(TerminalProgress::Hidden).is_empty());
+    }
+
+    #[test]
+    fn selector_view_is_centered_and_bounds_visible_results() {
+        let selector = SelectorOverlay::new(
+            1,
+            "Theme".into(),
+            (0..30).map(|index| format!("Theme {index}")).collect(),
+        );
+        let layout = TextLayout {
+            font_size: 14.0,
+            line_height: 20.0,
+            cell_width: 9.0,
+            horizontal_padding: 0.0,
+            vertical_padding: 0.0,
+        };
+        let (text, rect, selected) =
+            selector_render_view(&selector, None, PhysicalSize::new(1000, 600), layout, 1.0);
+        assert_eq!(rect.x, 140);
+        assert_eq!(rect.y, 118);
+        assert_eq!(rect.width, 720);
+        assert_eq!(rect.height, 364);
+        assert!(text.contains("Theme 0"));
+        assert!(!text.contains("Theme 12\n"));
+        assert!(selected.is_some_and(|selected| selected.y > rect.y));
     }
 }

@@ -6,7 +6,7 @@ module Toyoterm
   API_VERSION = "__TOYOTERM_API_VERSION__".freeze
   CAPABILITIES = [
     :async_process, :callback_context, :registration_handles,
-    :targeted_actions, :typed_events
+    :select_overlay, :targeted_actions, :typed_events
   ].freeze
   GLOBAL_ACTIONS = [
     :reload_config, :maximize_window, :toggle_maximize, :minimize_window,
@@ -1468,6 +1468,8 @@ module Toyoterm
   @registration_id = 0
   @logs = []
   @plugin_namespace_id = 0
+  @select_id = 0
+  @select_callbacks = {}
 
   def self.configure(&block)
     raise ArgumentError, "configuration requires a block" unless block
@@ -1649,6 +1651,34 @@ module Toyoterm
     task = AsyncTask.new(task_id, context)
     @async_tasks[task_id] = task
     task
+  end
+
+  def self.select(title: "Select", items:, &block)
+    raise ArgumentError, "select requires a block" unless block
+    raise RuntimeError, "select cannot be used while loading a plugin" if __loading_plugin?
+    title = __string(title, "select title", false, true)
+    raise ArgumentError, "select title is too long" if title.bytesize > 256
+    raise ArgumentError, "select title cannot contain a line break" if title.include?("\n") || title.include?("\r")
+    raise TypeError, "select items must be an Array" unless items.is_a?(Array)
+    raise ArgumentError, "select items cannot be empty" if items.empty?
+    raise ArgumentError, "select supports at most 4096 items" if items.length > 4096
+    total_bytes = 0
+    values = items.map do |item|
+      item = __string(item, "select item")
+      raise ArgumentError, "select item is too long" if item.bytesize > 4096
+      raise ArgumentError, "select item cannot contain a line break" if item.include?("\n") || item.include?("\r")
+      total_bytes += item.bytesize
+      item
+    end
+    raise ArgumentError, "select items exceed 4 MiB" if total_bytes > 4 * 1024 * 1024
+    raise RuntimeError, "a selection is already pending" unless @select_callbacks.empty?
+    values.freeze
+
+    @select_id += 1
+    id = @select_id
+    @select_callbacks[id] = [block, CallbackContext.new(current_pane), values]
+    __queue_command(:open_selector, 0, id.to_s, [title, values])
+    nil
   end
 
   def self.plugin(path)
@@ -2131,7 +2161,10 @@ module Toyoterm
   end
 
   def self.__rollback_commands(checkpoint)
-    @commands.pop while @commands.length > checkpoint
+    while @commands.length > checkpoint
+      command = @commands.pop
+      @select_callbacks.delete(command[2].to_i) if command && command[0] == :open_selector
+    end
   end
 
   def self.__next_command
@@ -2149,6 +2182,39 @@ module Toyoterm
 
   def self.__current_command_search_direction
     @current_command[3]
+  end
+
+  def self.__current_selector_title
+    @current_command[3][0]
+  end
+
+  def self.__current_selector_item_count
+    @current_command[3][1].length
+  end
+
+  def self.__current_selector_item(index)
+    @current_command[3][1][index]
+  end
+
+  def self.__invoke_select_callback(id, selection)
+    entry = @select_callbacks.delete(id)
+    return false unless entry
+    callback, context, items = entry
+    unless selection.nil? || items.include?(selection)
+      raise ArgumentError, "select result is not one of the requested items"
+    end
+    checkpoint = __command_checkpoint
+    badge_checkpoint = __badge_checkpoint
+    async_checkpoint = __async_request_checkpoint
+    begin
+      callback.call(selection, context)
+    rescue => error
+      __rollback_commands(checkpoint)
+      __rollback_badges(badge_checkpoint)
+      __rollback_async_requests(async_checkpoint)
+      raise error
+    end
+    true
   end
 
   def self.__current_command_argument

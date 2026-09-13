@@ -115,6 +115,7 @@ pub enum ScriptInvocation {
     Reload,
     Bar { position: StatusBarPosition },
     AsyncCallback { id: u64, output: AsyncProcessOutput },
+    SelectCallback { id: u64, selection: Option<String> },
 }
 
 #[derive(Debug)]

@@ -20,7 +20,7 @@ This is a personal project built for my own use and an experimental toy.
 - UTF-8 and IME input, scrollback that returns to the bottom on input, search, selection, and clipboard copy/paste
 - OSC titles (including separate icon-title metadata), palette/dynamic color controls and color stacks (including iTerm2 session, ANSI, link, selection, cursor-text, underline, and Display P3 colors), OSC 8 links, tab colors, bounded pane badges, progress and session-status indicators, opt-in bounded clipboard copies, URL launches, policy-aware desktop notifications and attention hints, plain-URL detection, and shell integration for cwd, command-status markers, remote-host/version context, prompt navigation, and iTerm2 mark navigation ([support matrix](docs/osc-support.md))
 - Inline images on Linux, macOS, and Windows using 7/8-bit Sixel, Kitty graphics (including Unicode placeholders used by TUI frameworks), and iTerm2 OSC 1337; child sessions discard stale outer-terminal capability hints so TUI image libraries can detect toyoterm correctly ([supported subset and example](docs/image-protocols.md))
-- Embedded mruby 4.0 configuration, native and Ruby key bindings, events, commands, plugins, and themes
+- Embedded mruby 4.0 configuration, native and Ruby key bindings, events, commands, plugins, themes, and searchable selection overlays
 - Atomic configuration reload, a live Ruby console, local IPC, and configurable window bars and wallpaper
 
 ## Current status

@@ -623,6 +623,60 @@ impl ToyotermApplication {
         }
     }
 
+    pub(super) fn open_selector(&mut self, id: u64, title: String, items: Vec<String>) {
+        self.close_search();
+        self.exit_visual_mode();
+        self.leader_deadline = None;
+        self.ime_preedit = None;
+        self.selector = Some(SelectorOverlay::new(id, title, items));
+    }
+
+    pub(super) fn handle_selector_key(
+        &mut self,
+        event: &KeyEvent,
+        modifiers: ModifiersState,
+    ) -> Result<(), String> {
+        let mut completion = None;
+        let Some(selector) = self.selector.as_mut() else {
+            return Ok(());
+        };
+        match &event.logical_key {
+            Key::Named(NamedKey::Escape) => completion = Some(None),
+            Key::Named(NamedKey::Enter) => {
+                if let Some(selection) = selector.selected_item() {
+                    completion = Some(Some(selection));
+                }
+            }
+            Key::Named(NamedKey::ArrowUp) => selector.move_previous(),
+            Key::Named(NamedKey::ArrowDown) => selector.move_next(),
+            Key::Named(NamedKey::PageUp) => selector.page_previous(),
+            Key::Named(NamedKey::PageDown) => selector.page_next(),
+            Key::Named(NamedKey::Home) => selector.move_first(),
+            Key::Named(NamedKey::End) => selector.move_last(),
+            Key::Named(NamedKey::Backspace) => selector.pop_query(),
+            Key::Character(text) if !modifiers.control_key() && !modifiers.super_key() => {
+                selector.append_query(event.text.as_deref().unwrap_or(text));
+            }
+            _ => {}
+        }
+        if let Some(selection) = completion {
+            self.complete_selector(selection)?;
+        }
+        Ok(())
+    }
+
+    pub(super) fn complete_selector(&mut self, selection: Option<String>) -> Result<(), String> {
+        let Some(selector) = self.selector.take() else {
+            return Ok(());
+        };
+        self.ime_preedit = None;
+        self.submit_script(ScriptInvocation::SelectCallback {
+            id: selector.id,
+            selection,
+        })?;
+        Ok(())
+    }
+
     pub(super) fn execute_user_command(&mut self, name: &str) -> Result<(), String> {
         let pane = self
             .mux
@@ -742,6 +796,9 @@ impl ToyotermApplication {
             }
             NativeCommand::SearchPane { .. } => {
                 return Err("pane search commands are not exposed over IPC".to_owned());
+            }
+            NativeCommand::OpenSelector { .. } => {
+                return Err("selector commands are not exposed over IPC".to_owned());
             }
             NativeCommand::ClipboardWrite(_) => {
                 return Err("clipboard commands are not exposed over IPC".to_owned());

@@ -12,6 +12,11 @@ main thread         --ScriptRequest--------------> toyoterm-script
 toyoterm-script     --ScriptCompletion-----------> main thread
 ```
 
+The main thread also owns searchable selection overlays requested by Ruby.
+Choosing or cancelling an item enqueues a typed `SelectCallback` request; the
+saved block is resumed only on the script thread and never from winit input or
+rendering code.
+
 The main thread owns the winit event loop, terminal backends, mux, renderer, and
 PTY session handles. Each PTY reader owns only its blocking reader. The named
 `toyoterm-script` thread constructs, calls, reloads, and drops the single mruby

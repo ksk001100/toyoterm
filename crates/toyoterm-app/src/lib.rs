@@ -36,11 +36,13 @@ mod object_model;
 mod pane_lifecycle;
 mod render_coordinator;
 mod runtime_events;
+mod selector;
 mod ui_geometry;
 
 use input::*;
 use notifications::{DesktopNotification, NotificationSender};
 use object_model::*;
+use selector::*;
 use ui_geometry::*;
 
 pub use lifecycle::install_panic_hook;
@@ -55,9 +57,9 @@ pub use toyoterm_mux::Mux;
 pub use toyoterm_pty::{NativePty, Pty, PtyCommand, PtyError, PtyExitStatus, PtySession, PtySize};
 pub use toyoterm_render::{
     ConfigErrorLayout, ConfigErrorRenderData, GpuRenderer, PaneLayout, PaneRect, PaneRenderData,
-    RenderOutcome, RenderStyle, SearchRenderData, StatusBarAlignment, StatusBarEdge,
-    StatusBarRenderData, StatusBarRenderItem, TabRenderData, TabStripLayout, TextLayout,
-    WorkspaceRenderData, WorkspaceStripLayout,
+    RenderOutcome, RenderStyle, SearchRenderData, SelectorRenderData, StatusBarAlignment,
+    StatusBarEdge, StatusBarRenderData, StatusBarRenderItem, TabRenderData, TabStripLayout,
+    TextLayout, WorkspaceRenderData, WorkspaceStripLayout,
 };
 pub use toyoterm_script::ConfigManager;
 pub use toyoterm_terminal::{
@@ -524,6 +526,7 @@ struct ToyotermApplication {
     search_open: bool,
     search_query: String,
     search_result: SearchResult,
+    selector: Option<SelectorOverlay>,
     _ipc_server: Option<IpcServer>,
     config_error_layout: ConfigErrorLayout,
     config_error_notice: Option<ConfigErrorNotice>,
@@ -800,10 +803,14 @@ impl ApplicationHandler<AppEvent> for ToyotermApplication {
                 button: MouseButton::Left,
                 ..
             } => {
-                self.handle_left_mouse(&window, state);
+                if self.selector.is_none() {
+                    self.handle_left_mouse(&window, state);
+                }
             }
             WindowEvent::MouseWheel { delta, .. } => {
-                self.handle_mouse_wheel(event_loop, &window, delta);
+                if self.selector.is_none() {
+                    self.handle_mouse_wheel(event_loop, &window, delta);
+                }
             }
             WindowEvent::KeyboardInput { event, .. } => {
                 if matches!(event.logical_key, Key::Named(NamedKey::AltGraph)) {
@@ -823,6 +830,14 @@ impl ApplicationHandler<AppEvent> for ToyotermApplication {
                     {
                         self.fail(event_loop, error);
                         return;
+                    }
+                    self.sync_active_renderer(window.scale_factor());
+                    window.request_redraw();
+                    return;
+                }
+                if self.selector.is_some() {
+                    if let Err(error) = self.handle_selector_key(&event, modifiers) {
+                        tracing::warn!(target: "toyoterm::script", %error, "selector callback submission failed");
                     }
                     self.sync_active_renderer(window.scale_factor());
                     window.request_redraw();
@@ -886,6 +901,12 @@ impl ApplicationHandler<AppEvent> for ToyotermApplication {
             WindowEvent::Ime(Ime::Commit(text)) => {
                 self.leader_deadline = None;
                 self.ime_preedit = None;
+                if let Some(selector) = self.selector.as_mut() {
+                    selector.append_query(&text);
+                    self.sync_active_renderer(window.scale_factor());
+                    window.request_redraw();
+                    return;
+                }
                 if self.visual_selection.is_some() {
                     return;
                 }
@@ -1385,6 +1406,7 @@ impl ToyotermApplication {
             search_open: false,
             search_query: String::new(),
             search_result: SearchResult::default(),
+            selector: None,
             _ipc_server: ipc_server,
             config_error_layout: ConfigErrorLayout::default(),
             config_error_notice: startup_config_error.map(|message| ConfigErrorNotice {

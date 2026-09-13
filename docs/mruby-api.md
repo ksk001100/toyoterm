@@ -16,6 +16,7 @@ See the [usage guide](usage.md) for CLI commands and troubleshooting, or the
 - [Configuration DSL](#configuration-dsl)
 - [Key bindings](#key-bindings)
 - [Commands and object model](#commands-and-object-model)
+- [Selection overlays](#selection-overlays)
 - [Runtime events](#runtime-events)
 - [Window bars](#window-bars)
 - [Host APIs](#platform-clipboard-environment-files-and-processes)
@@ -713,6 +714,46 @@ replace one. `Toyoterm.command` returns a `Toyoterm::Registration`; call
 command makes its previous registration handle inactive. A callback receives a
 `CommandContext` with `workspace`, `window`, `tab`, and `pane`.
 Its queued mutations are rolled back if it raises.
+
+## Selection overlays
+
+`Toyoterm.select(title: "Select", items:) { |selection, context| ... }` opens a
+searchable selection overlay centered in the application window. `items` must
+be a non-empty Array containing no more than 4,096 non-empty Strings. Each item
+is limited to 4 KiB and all items together are limited to 4 MiB. The optional
+String title is limited to 256 bytes. Titles
+and items reject NUL bytes and line breaks. The method requires a block, queues
+the overlay, and returns `nil`.
+
+Typing filters items by a case-insensitive substring match. Up/Down move through
+the filtered results with wraparound, PageUp/PageDown move by ten entries, and
+Home/End select the first or last result. Enter closes the overlay and invokes
+the block with the selected String. Escape cancels it and invokes the block with
+`nil`. The optional second block argument is the `CallbackContext` captured when
+the overlay was requested:
+
+```ruby
+Toyoterm.command :choose_theme do
+  Toyoterm.select(title: "Select theme", items: Toyoterm.themes) do |theme, context|
+    next if theme.nil?
+
+    Toyoterm.configure { |config| config.theme = theme }
+    context.pane.badge = theme
+  end
+end
+```
+
+Only one selection may be pending in a VM. A second call raises `RuntimeError`.
+`Toyoterm.select` is a runtime operation and cannot be called while a plugin
+file itself is loading; register it inside a command, key, event, or asynchronous
+callback instead.
+The overlay captures keyboard and IME input while open, so typed characters are
+not sent to the PTY. Reloading configuration closes an open overlay because it
+replaces the VM and its callback. The result callback runs later on the single
+script thread; its configuration changes and native commands use the normal
+atomic callback transaction. A callback exception discards its queued work and
+is logged without stopping the terminal. Use
+`Toyoterm.supports?(:select_overlay)` when supporting older toyoterm builds.
 
 ## Runtime events
 

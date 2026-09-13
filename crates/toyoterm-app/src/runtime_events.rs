@@ -212,6 +212,7 @@ impl ToyotermApplication {
             if is_reload {
                 // Reload replaces the mruby VM, so its callback-owned badge state is gone too.
                 self.pane_badges.clear();
+                self.selector = None;
             }
             if let Some(snapshot) = result.snapshot {
                 self.config_error_notice = None;
@@ -278,6 +279,9 @@ impl ToyotermApplication {
                         query,
                         direction,
                     } => self.search_pane(pane, query, direction)?,
+                    NativeCommand::OpenSelector { id, title, items } => {
+                        self.open_selector(id, title, items)
+                    }
                     NativeCommand::ReloadConfig => reload_requested = true,
                 }
             }

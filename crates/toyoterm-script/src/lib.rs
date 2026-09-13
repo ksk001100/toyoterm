@@ -228,6 +228,7 @@ enum CallbackKind {
     UserCommand,
     Bar,
     AsyncCallback,
+    SelectCallback,
 }
 
 impl CallbackKind {
@@ -238,6 +239,7 @@ impl CallbackKind {
             Self::UserCommand => "user_command",
             Self::Bar => "bar",
             Self::AsyncCallback => "async_callback",
+            Self::SelectCallback => "select_callback",
         }
     }
 }

@@ -557,6 +557,30 @@ impl ConfigManager {
                         direction,
                     });
                 }
+                "open_selector" => {
+                    let id = payload.parse::<u64>().map_err(|_| {
+                        ScriptError::new("decode mruby command", "selector id is invalid")
+                    })?;
+                    let title = self.runtime.eval("Toyoterm.__current_selector_title")?;
+                    let item_count = self
+                        .runtime
+                        .eval("Toyoterm.__current_selector_item_count")?
+                        .parse::<usize>()
+                        .map_err(|_| {
+                            ScriptError::new(
+                                "decode mruby command",
+                                "selector item count is invalid",
+                            )
+                        })?;
+                    let mut items = Vec::with_capacity(item_count);
+                    for index in 0..item_count {
+                        items.push(
+                            self.runtime
+                                .eval(&format!("Toyoterm.__current_selector_item({index})"))?,
+                        );
+                    }
+                    commands.push(NativeCommand::OpenSelector { id, title, items });
+                }
                 "reload_config" => commands.push(NativeCommand::ReloadConfig),
                 other => {
                     return Err(ScriptError::new(
@@ -710,6 +734,23 @@ impl ConfigManager {
         result
     }
 
+    pub fn invoke_select_callback(
+        &mut self,
+        id: u64,
+        selection: Option<&str>,
+    ) -> Result<(), ScriptError> {
+        let name = id.to_string();
+        let selection = selection.map_or_else(|| "nil".to_owned(), ruby_string_literal);
+        let source = format!("Toyoterm.__invoke_select_callback({id}, {selection})");
+        match self.eval_callback(CallbackKind::SelectCallback, &name, &source)? {
+            value if value == "true" || value == "false" => Ok(()),
+            _ => Err(ScriptError::new(
+                "invoke select callback",
+                "callback returned an invalid state",
+            )),
+        }
+    }
+
     fn ruby_bool(&mut self, source: &str) -> Result<bool, ScriptError> {
         match self.runtime.eval(source)?.as_str() {
             "true" => Ok(true),
@@ -830,6 +871,10 @@ pub(super) fn run_script_request(
                     output.exit_status,
                     output.launch_error,
                 )?;
+                ScriptRequestOutput::default()
+            }
+            ScriptInvocation::SelectCallback { id, selection } => {
+                manager.invoke_select_callback(*id, selection.as_deref())?;
                 ScriptRequestOutput::default()
             }
         })

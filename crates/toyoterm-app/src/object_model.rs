@@ -162,6 +162,7 @@ pub(super) fn dispatch_script_commands(
             | NativeCommand::SplitWithLaunch { .. } => {}
             NativeCommand::SetPaneBadge { .. } => {}
             NativeCommand::SearchPane { .. } => {}
+            NativeCommand::OpenSelector { .. } => {}
             NativeCommand::ReloadConfig => effects.reload_requested = true,
         }
     }

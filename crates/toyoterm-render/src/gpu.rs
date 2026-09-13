@@ -83,12 +83,14 @@ pub struct GpuRenderer {
     viewport: Viewport,
     text_atlas: TextAtlas,
     text_renderer: TextRenderer,
+    selector_text_renderer: TextRenderer,
     ui_pipeline: RenderPipeline,
     background: Option<background::GpuBackground>,
     panes: HashMap<PaneId, PaneBuffers>,
     tabs: HashMap<TabId, TabBuffer>,
     workspaces: HashMap<WorkspaceId, TabBuffer>,
     search: OverlayBuffer,
+    selector: SelectorBuffer,
     status_bars: Vec<StatusBarBuffer>,
     config_error: ConfigErrorBuffers,
     preedit: Buffer,
@@ -107,6 +109,12 @@ struct TabBuffer {
 struct OverlayBuffer {
     text: Buffer,
     rect: Option<PaneRect>,
+}
+
+struct SelectorBuffer {
+    text: Buffer,
+    rect: Option<PaneRect>,
+    selected_rect: Option<PaneRect>,
 }
 
 struct StatusBarBuffer {
@@ -384,11 +392,19 @@ impl GpuRenderer {
             wgpu::MultisampleState::default(),
             None,
         );
+        let selector_text_renderer = TextRenderer::new(
+            &mut text_atlas,
+            &device,
+            wgpu::MultisampleState::default(),
+            None,
+        );
         let ui_pipeline = create_ui_pipeline(&device, configuration.format);
         let mut preedit = Buffer::new(&mut font_system, Metrics::new(14.0, 18.0));
         preedit.set_wrap(Wrap::None);
         let mut search_text = Buffer::new(&mut font_system, Metrics::new(14.0, 18.0));
         search_text.set_wrap(Wrap::None);
+        let mut selector_text = Buffer::new(&mut font_system, Metrics::new(14.0, 18.0));
+        selector_text.set_wrap(Wrap::None);
         let mut config_error_buffer = || {
             let mut buffer = Buffer::new(&mut font_system, Metrics::new(14.0, 18.0));
             buffer.set_wrap(Wrap::None);
@@ -421,6 +437,7 @@ impl GpuRenderer {
             viewport,
             text_atlas,
             text_renderer,
+            selector_text_renderer,
             ui_pipeline,
             background,
             panes: HashMap::new(),
@@ -429,6 +446,11 @@ impl GpuRenderer {
             search: OverlayBuffer {
                 text: search_text,
                 rect: None,
+            },
+            selector: SelectorBuffer {
+                text: selector_text,
+                rect: None,
+                selected_rect: None,
             },
             status_bars: Vec::new(),
             config_error,
@@ -516,6 +538,13 @@ impl GpuRenderer {
         self.search = OverlayBuffer {
             text: search_text,
             rect: None,
+        };
+        let mut selector_text = Buffer::new(&mut self.font_system, Metrics::new(14.0, 18.0));
+        selector_text.set_wrap(Wrap::None);
+        self.selector = SelectorBuffer {
+            text: selector_text,
+            rect: None,
+            selected_rect: None,
         };
         self.status_bars.clear();
 
@@ -952,6 +981,37 @@ impl GpuRenderer {
             .shape_until_scroll(&mut self.font_system, false);
     }
 
+    pub fn update_selector(
+        &mut self,
+        selector: Option<SelectorRenderData<'_>>,
+        layout: TextLayout,
+    ) {
+        let Some(selector) = selector else {
+            self.selector.rect = None;
+            self.selector.selected_rect = None;
+            return;
+        };
+        self.selector.rect = Some(selector.rect);
+        self.selector.selected_rect = selector.selected_rect;
+        let metrics = Metrics::new(layout.font_size.max(1.0), layout.line_height.max(1.0));
+        self.selector.text.set_metrics_and_size(
+            metrics,
+            Some(selector.rect.width.saturating_sub(32) as f32),
+            Some(selector.rect.height.saturating_sub(24) as f32),
+        );
+        self.selector.text.set_text(
+            selector.text,
+            &Attrs::new()
+                .family(resolve_font_family(&self.style.font_family))
+                .weight(Weight(self.style.font_weight)),
+            Shaping::Advanced,
+            None,
+        );
+        self.selector
+            .text
+            .shape_until_scroll(&mut self.font_system, false);
+    }
+
     pub fn update_status_bars(&mut self, statuses: &[StatusBarRenderData<'_>], layout: TextLayout) {
         let metrics = Metrics::new(
             (layout.font_size * 0.85).max(1.0),
@@ -1280,7 +1340,7 @@ impl GpuRenderer {
                     });
                 }
             }
-            if pane.active && self.has_preedit {
+            if pane.active && self.has_preedit && self.selector.rect.is_none() {
                 text_areas.push(TextArea {
                     buffer: &self.preedit,
                     left: placement.cursor_left,
@@ -1314,6 +1374,27 @@ impl GpuRenderer {
                 &mut self.swash_cache,
             )
             .map_err(|error| RenderError::new("prepare terminal text", error))?;
+        if let Some(rect) = self.selector.rect {
+            self.selector_text_renderer
+                .prepare(
+                    &self.device,
+                    &self.queue,
+                    &mut self.font_system,
+                    &mut self.text_atlas,
+                    &self.viewport,
+                    [TextArea {
+                        buffer: &self.selector.text,
+                        left: rect.x as f32 + 16.0,
+                        top: rect.y as f32 + 12.0,
+                        scale: 1.0,
+                        bounds: pane_bounds(rect),
+                        default_color: glyph_color(self.style.foreground, 255),
+                        custom_glyphs: &[],
+                    }],
+                    &mut self.swash_cache,
+                )
+                .map_err(|error| RenderError::new("prepare selector text", error))?;
+        }
 
         let (frame, suboptimal) = match self.surface.get_current_texture() {
             CurrentSurfaceTexture::Success(frame) => (frame, false),
@@ -1354,6 +1435,15 @@ impl GpuRenderer {
                 .create_buffer_init(&wgpu::util::BufferInitDescriptor {
                     label: Some("toyoterm UI vertices"),
                     contents: bytemuck::cast_slice(&ui_vertices),
+                    usage: BufferUsages::VERTEX,
+                })
+        });
+        let selector_vertices = self.selector_vertices();
+        let selector_buffer = (!selector_vertices.is_empty()).then(|| {
+            self.device
+                .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                    label: Some("toyoterm selector vertices"),
+                    contents: bytemuck::cast_slice(&selector_vertices),
                     usage: BufferUsages::VERTEX,
                 })
         });
@@ -1415,6 +1505,14 @@ impl GpuRenderer {
             self.text_renderer
                 .render(&self.text_atlas, &self.viewport, &mut pass)
                 .map_err(|error| RenderError::new("render terminal text", error))?;
+            if let Some(selector_buffer) = selector_buffer.as_ref() {
+                pass.set_pipeline(&self.ui_pipeline);
+                pass.set_vertex_buffer(0, selector_buffer.slice(..));
+                pass.draw(0..selector_vertices.len() as u32, 0..1);
+                self.selector_text_renderer
+                    .render(&self.text_atlas, &self.viewport, &mut pass)
+                    .map_err(|error| RenderError::new("render selector text", error))?;
+            }
         }
         self.queue.submit([encoder.finish()]);
         self.queue.present(frame);
@@ -1632,6 +1730,61 @@ impl GpuRenderer {
                 self.configuration.width,
                 self.configuration.height,
             );
+        }
+
+        vertices
+    }
+
+    fn selector_vertices(&self) -> Vec<UiVertex> {
+        let mut vertices = Vec::new();
+        if let Some(rect) = self.selector.rect {
+            push_ui_rect(
+                &mut vertices,
+                PaneRect::new(0, 0, self.configuration.width, self.configuration.height),
+                [0.0, 0.0, 0.0, 0.58],
+                self.configuration.width,
+                self.configuration.height,
+            );
+            push_ui_rect(
+                &mut vertices,
+                rect,
+                rgba(self.style.background, 0.99),
+                self.configuration.width,
+                self.configuration.height,
+            );
+            if let Some(selected) = self.selector.selected_rect {
+                push_ui_rect(
+                    &mut vertices,
+                    selected,
+                    rgba(self.style.selection, 0.48),
+                    self.configuration.width,
+                    self.configuration.height,
+                );
+            }
+            for border in [
+                PaneRect::new(rect.x, rect.y, rect.width, 1),
+                PaneRect::new(
+                    rect.x,
+                    rect.y.saturating_add(rect.height.saturating_sub(1)),
+                    rect.width,
+                    1,
+                ),
+                PaneRect::new(rect.x, rect.y, 1, rect.height),
+                PaneRect::new(
+                    rect.x.saturating_add(rect.width.saturating_sub(1)),
+                    rect.y,
+                    1,
+                    rect.height,
+                ),
+            ] {
+                push_ui_rect(
+                    &mut vertices,
+                    border,
+                    rgba(self.style.foreground, 0.32),
+                    self.configuration.width,
+                    self.configuration.height,
+                );
+            }
         }
 
         vertices

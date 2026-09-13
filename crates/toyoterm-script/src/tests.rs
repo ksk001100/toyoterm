@@ -590,6 +590,10 @@ fn exposes_api_introspection_logging_and_a_read_only_config_snapshot() {
             .unwrap(),
         "true"
     );
+    assert_eq!(
+        manager.eval("Toyoterm.supports?(:select_overlay)").unwrap(),
+        "true"
+    );
     assert!(
         manager
             .eval("Toyoterm.config[:font][:family] << 'x'")
@@ -2992,6 +2996,199 @@ fn interactive_config_mutations_return_a_new_native_snapshot() {
     assert_eq!(config.font.size, 18.0);
     assert_eq!(config.window.opacity, 0.8);
     assert_eq!(manager.config().font.family, "New Font");
+}
+
+#[test]
+fn select_queues_a_native_overlay_and_resumes_its_callback() {
+    let mut manager = ConfigManager::new().unwrap();
+    let result = run_script_request(
+        &mut manager,
+        &script_test_context(),
+        &ScriptInvocation::Eval(
+            r#"Toyoterm.select(title: "Theme", items: ["Ayu", "Solarized Dark"]) { |choice, context| context.pane.badge = choice }"#
+                .into(),
+        ),
+    )
+    .unwrap();
+    assert_eq!(
+        result.commands,
+        vec![NativeCommand::OpenSelector {
+            id: 1,
+            title: "Theme".into(),
+            items: vec!["Ayu".into(), "Solarized Dark".into()],
+        }]
+    );
+
+    let result = run_script_request(
+        &mut manager,
+        &script_test_context(),
+        &ScriptInvocation::SelectCallback {
+            id: 1,
+            selection: Some("Solarized Dark".into()),
+        },
+    )
+    .unwrap();
+    assert_eq!(
+        result.commands,
+        vec![NativeCommand::SetPaneBadge {
+            pane: PaneId(4),
+            badge: Some("Solarized Dark".into()),
+        }]
+    );
+}
+
+#[test]
+fn select_callback_can_apply_a_plugin_theme() {
+    let directory = temporary_test_directory("theme-selector");
+    let plugin = directory.join("themes.rb");
+    std::fs::write(
+        &plugin,
+        r##"
+            Toyoterm::Plugin.define "selectable-themes" do |plugin|
+              plugin.version = "0.1.0"
+              plugin.theme("night") { |colors| colors.background = "#101010" }
+              plugin.theme("day") { |colors| colors.background = "#fafafa" }
+              plugin.command :choose_theme do
+                Toyoterm.select(title: "Theme", items: Toyoterm.themes) do |theme|
+                  Toyoterm.configure { |config| config.theme = theme } unless theme.nil?
+                end
+              end
+            end
+        "##,
+    )
+    .unwrap();
+    let mut manager = ConfigManager::new().unwrap();
+    manager
+        .reload(&format!(
+            "Toyoterm.plugin({})",
+            ruby_string_literal(&plugin.display().to_string())
+        ))
+        .unwrap();
+    let opened = run_script_request(
+        &mut manager,
+        &script_test_context(),
+        &ScriptInvocation::UserCommand {
+            name: "choose_theme".into(),
+            pane: PaneId(4),
+        },
+    )
+    .unwrap();
+    let id = match &opened.commands[0] {
+        NativeCommand::OpenSelector { id, items, .. } => {
+            assert_eq!(items, &["night", "day"]);
+            *id
+        }
+        command => panic!("expected selector command, got {command:?}"),
+    };
+    let selected = run_script_request(
+        &mut manager,
+        &script_test_context(),
+        &ScriptInvocation::SelectCallback {
+            id,
+            selection: Some("day".into()),
+        },
+    )
+    .unwrap();
+    assert_eq!(
+        selected.snapshot.unwrap().config.colors.background,
+        "#fafafa"
+    );
+    std::fs::remove_dir_all(directory).unwrap();
+}
+
+#[test]
+fn select_cancel_passes_nil_and_releases_the_pending_slot() {
+    let mut manager = ConfigManager::new().unwrap();
+    let open = |manager: &mut ConfigManager| {
+        run_script_request(
+            manager,
+            &script_test_context(),
+            &ScriptInvocation::Eval(
+                "Toyoterm.select(items: ['one']) { |choice| $selection = choice }".into(),
+            ),
+        )
+    };
+    let first = open(&mut manager).unwrap();
+    let id = match &first.commands[0] {
+        NativeCommand::OpenSelector { id, .. } => *id,
+        command => panic!("expected selector command, got {command:?}"),
+    };
+    run_script_request(
+        &mut manager,
+        &script_test_context(),
+        &ScriptInvocation::SelectCallback {
+            id,
+            selection: None,
+        },
+    )
+    .unwrap();
+    assert_eq!(manager.eval("$selection.nil?").unwrap(), "true");
+    assert!(open(&mut manager).is_ok());
+}
+
+#[test]
+fn select_validates_input_and_rolls_back_pending_callbacks() {
+    let mut manager = ConfigManager::new().unwrap();
+    for source in [
+        "Toyoterm.select(items: ['one'])",
+        "Toyoterm.select(items: []) {}",
+        "Toyoterm.select(items: 'one') {}",
+        "Toyoterm.select(items: ['']) {}",
+        "Toyoterm.select(items: [1]) {}",
+        "Toyoterm.select(title: \"bad\\nname\", items: ['one']) {}",
+        "Toyoterm.select(title: 'x' * 257, items: ['one']) {}",
+        "Toyoterm.select(items: ['x' * 4097]) {}",
+        "Toyoterm.select(items: Array.new(4097, 'x')) {}",
+        "Toyoterm.select(items: Array.new(1025, 'x' * 4096)) {}",
+    ] {
+        assert!(
+            run_script_request(
+                &mut manager,
+                &script_test_context(),
+                &ScriptInvocation::Eval(source.into()),
+            )
+            .is_err(),
+            "{source}"
+        );
+    }
+    assert!(
+        run_script_request(
+            &mut manager,
+            &script_test_context(),
+            &ScriptInvocation::Eval(
+                "Toyoterm.select(items: ['one']) {}; raise 'rollback selector'".into(),
+            ),
+        )
+        .is_err()
+    );
+    let result = run_script_request(
+        &mut manager,
+        &script_test_context(),
+        &ScriptInvocation::Eval("Toyoterm.select(items: ['two']) {}".into()),
+    )
+    .unwrap();
+    let id = match result.commands[0] {
+        NativeCommand::OpenSelector { id, .. } => id,
+        ref command => panic!("expected selector command, got {command:?}"),
+    };
+    let error = run_script_request(
+        &mut manager,
+        &script_test_context(),
+        &ScriptInvocation::SelectCallback {
+            id,
+            selection: Some("not requested".into()),
+        },
+    )
+    .unwrap_err();
+    assert!(error.message().contains("not one of the requested items"));
+    assert!(
+        run_script_request(
+            &mut manager,
+            &script_test_context(),
+            &ScriptInvocation::Eval("Toyoterm.select(items: ['three']) {}".into()),
+        )
+        .is_ok()
+    );
 }
 
 #[test]
