@@ -78,29 +78,37 @@ const MAX_OSC_REPORT_VARIABLE_VALUE_BYTES: usize = 4 * 1024;
 const MAX_PENDING_PTY_OUTPUT_BYTES: usize = 1024 * 1024;
 
 #[derive(Debug, Default)]
+struct PtyOutputState {
+    bytes: Vec<u8>,
+    spare: Vec<u8>,
+}
+
+#[derive(Debug, Default)]
 struct PtyOutputBuffer {
-    bytes: Mutex<Vec<u8>>,
+    state: Mutex<PtyOutputState>,
     drained: Condvar,
 }
 
 impl PtyOutputBuffer {
     fn append(&self, mut input: &[u8], mut notify_ready: impl FnMut() -> bool) -> bool {
         while !input.is_empty() {
-            let mut bytes = self
-                .bytes
+            let mut state = self
+                .state
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner());
-            while bytes.len() == MAX_PENDING_PTY_OUTPUT_BYTES {
-                bytes = self
+            while state.bytes.len() == MAX_PENDING_PTY_OUTPUT_BYTES {
+                state = self
                     .drained
-                    .wait(bytes)
+                    .wait(state)
                     .unwrap_or_else(|poisoned| poisoned.into_inner());
             }
-            let notify = bytes.is_empty();
-            let count = input.len().min(MAX_PENDING_PTY_OUTPUT_BYTES - bytes.len());
-            bytes.extend_from_slice(&input[..count]);
+            let notify = state.bytes.is_empty();
+            let count = input
+                .len()
+                .min(MAX_PENDING_PTY_OUTPUT_BYTES - state.bytes.len());
+            state.bytes.extend_from_slice(&input[..count]);
             input = &input[count..];
-            drop(bytes);
+            drop(state);
             if notify && !notify_ready() {
                 return false;
             }
@@ -109,14 +117,26 @@ impl PtyOutputBuffer {
     }
 
     fn take(&self) -> Vec<u8> {
-        let bytes = std::mem::take(
-            &mut *self
-                .bytes
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner()),
-        );
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let PtyOutputState { bytes, spare } = &mut *state;
+        std::mem::swap(bytes, spare);
+        let bytes = std::mem::take(spare);
         self.drained.notify_one();
         bytes
+    }
+
+    fn recycle(&self, mut bytes: Vec<u8>) {
+        bytes.clear();
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if bytes.capacity() > state.spare.capacity() {
+            state.spare = bytes;
+        }
     }
 }
 
@@ -1241,6 +1261,10 @@ impl ApplicationHandler<AppEvent> for ToyotermApplication {
                         }
                     }
                 }
+                // The terminal parser has consumed the batch. Retain its
+                // allocation for a later PTY read instead of repeatedly
+                // allocating and freeing buffers during sustained output.
+                pending.recycle(bytes);
                 if mouse_cursor_changed && let Some(window) = self.window.as_ref() {
                     self.update_mouse_cursor(window);
                 }
@@ -1542,6 +1566,27 @@ mod tests {
             true
         }));
         assert_eq!(wakeups, 2);
+    }
+
+    #[test]
+    fn pty_output_reuses_drained_buffer_allocations() {
+        let pending = PtyOutputBuffer::default();
+        let payload = vec![b'x'; 64 * 1024];
+
+        assert!(pending.append(&payload, || true));
+        let first = pending.take();
+        let first_allocation = first.as_ptr();
+        pending.recycle(first);
+
+        // Two allocations allow the reader and main thread to operate on
+        // separate buffers. The third batch should rotate back to the first.
+        assert!(pending.append(&payload, || true));
+        let second = pending.take();
+        pending.recycle(second);
+        assert!(pending.append(&payload, || true));
+        let third = pending.take();
+
+        assert_eq!(third.as_ptr(), first_allocation);
     }
 
     #[test]
