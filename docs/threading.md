@@ -4,7 +4,7 @@ The GUI uses the main thread, PTY reader workers, a script thread, and an IPC
 listener thread:
 
 ```text
-PTY reader workers --AppEvent::Output/Eof/Error--> main thread
+PTY reader workers --bounded Output/Eof/Error----> main thread
 IPC listener        --typed IPC requests---------> main thread
 Async workers       --AppEvent::AsyncCompleted---> main thread
 main thread         --terminal input/state-------> PTY sessions
@@ -24,6 +24,13 @@ VM. `MrubyRuntime` remains `!Send + !Sync`, so the C API cannot cross the owner
 thread through Rust's safe type system. Dedicated background threads execute
 asynchronous child processes requested via `Toyoterm.async` and report output
 back to the main thread through the winit event loop.
+
+Each pane's PTY reader coalesces consecutive reads behind one winit wakeup. Its
+pending userspace output is capped at 1 MiB; when the main thread falls behind,
+the reader waits for the buffer to drain and lets the operating-system PTY
+provide backpressure. This prevents high-volume output from creating an
+unbounded queue of separately allocated 8 KiB application events while
+preserving byte order and EOF ordering.
 
 Script requests carry an immutable mux/object-model snapshot and clipboard
 snapshot. Script completions carry inspected values, context-bound

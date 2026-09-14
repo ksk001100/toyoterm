@@ -540,6 +540,22 @@ fn kitty_zero_placement_ids_do_not_replace_each_other() {
 }
 
 #[test]
+fn kitty_virtual_placements_are_bounded() {
+    let mut t = terminal();
+    t.advance(&kitty("a=t,f=24,s=1,v=1,i=7", &[255, 0, 0]));
+    for placement in 1..=256 {
+        t.advance(format!("\x1b_Ga=p,i=7,p={placement},U=1,c=1,r=1;\x1b\\").as_bytes());
+    }
+
+    // The oldest placeholder refers to an evicted virtual placement, while the
+    // newest one remains resolvable. This also guards the metadata allocation.
+    t.advance("\x1b[H\x1b[38;2;0;0;7;58;2;0;0;1m\u{10eeee}\u{0305}\x1b[0m".as_bytes());
+    assert!(t.snapshot().images.is_empty());
+    t.advance("\x1b[H\x1b[38;2;0;0;7;58;2;0;1;0m\u{10eeee}\u{0305}\x1b[0m".as_bytes());
+    assert_eq!(t.snapshot().images.len(), 1);
+}
+
+#[test]
 fn kitty_retransmission_replaces_data_and_all_old_placements() {
     let mut t = terminal();
     t.advance(&kitty("a=T,f=24,s=1,v=1,i=7,p=1,C=1", &[255, 0, 0]));

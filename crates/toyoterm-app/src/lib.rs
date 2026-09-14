@@ -2,8 +2,8 @@ use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::fmt;
 use std::io::Read;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
 use std::sync::mpsc;
+use std::sync::{Arc, Condvar, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -75,6 +75,50 @@ const OSC_NOTIFICATION_INTERVAL: Duration = Duration::from_secs(2);
 const OSC_OPEN_URL_INTERVAL: Duration = Duration::from_secs(2);
 const MAX_OSC_USER_VARS: usize = 64;
 const MAX_OSC_REPORT_VARIABLE_VALUE_BYTES: usize = 4 * 1024;
+const MAX_PENDING_PTY_OUTPUT_BYTES: usize = 1024 * 1024;
+
+#[derive(Debug, Default)]
+struct PtyOutputBuffer {
+    bytes: Mutex<Vec<u8>>,
+    drained: Condvar,
+}
+
+impl PtyOutputBuffer {
+    fn append(&self, mut input: &[u8], mut notify_ready: impl FnMut() -> bool) -> bool {
+        while !input.is_empty() {
+            let mut bytes = self
+                .bytes
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            while bytes.len() == MAX_PENDING_PTY_OUTPUT_BYTES {
+                bytes = self
+                    .drained
+                    .wait(bytes)
+                    .unwrap_or_else(|poisoned| poisoned.into_inner());
+            }
+            let notify = bytes.is_empty();
+            let count = input.len().min(MAX_PENDING_PTY_OUTPUT_BYTES - bytes.len());
+            bytes.extend_from_slice(&input[..count]);
+            input = &input[count..];
+            drop(bytes);
+            if notify && !notify_ready() {
+                return false;
+            }
+        }
+        true
+    }
+
+    fn take(&self) -> Vec<u8> {
+        let bytes = std::mem::take(
+            &mut *self
+                .bytes
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner()),
+        );
+        self.drained.notify_one();
+        bytes
+    }
+}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 struct ClickTarget {
@@ -338,7 +382,7 @@ fn run_gui_inner(options: GuiOptions, exit_after_startup: bool) -> Result<(), Ap
 enum AppEvent {
     Output {
         pane: PaneId,
-        bytes: Vec<u8>,
+        pending: Arc<PtyOutputBuffer>,
     },
     Eof {
         pane: PaneId,
@@ -1010,7 +1054,8 @@ impl ApplicationHandler<AppEvent> for ToyotermApplication {
 
     fn user_event(&mut self, event_loop: &ActiveEventLoop, event: AppEvent) {
         match event {
-            AppEvent::Output { pane, bytes } => {
+            AppEvent::Output { pane, pending } => {
+                let bytes = pending.take();
                 let mut terminal_events = Vec::new();
                 let mut mouse_cursor_changed = false;
                 let mut osc52_copies = Vec::new();
@@ -1476,6 +1521,50 @@ impl ToyotermApplication {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn pty_output_coalesces_wakeups_until_the_buffer_is_drained() {
+        let pending = PtyOutputBuffer::default();
+        let mut wakeups = 0;
+        assert!(pending.append(b"one", || {
+            wakeups += 1;
+            true
+        }));
+        assert!(pending.append(b"two", || {
+            wakeups += 1;
+            true
+        }));
+
+        assert_eq!(wakeups, 1);
+        assert_eq!(pending.take(), b"onetwo");
+        assert!(pending.append(b"three", || {
+            wakeups += 1;
+            true
+        }));
+        assert_eq!(wakeups, 2);
+    }
+
+    #[test]
+    fn pty_output_applies_backpressure_at_the_memory_limit() {
+        let pending = Arc::new(PtyOutputBuffer::default());
+        assert!(pending.append(&vec![0; MAX_PENDING_PTY_OUTPUT_BYTES], || true));
+        let (ready_tx, ready_rx) = mpsc::channel();
+        let (started_tx, started_rx) = mpsc::channel();
+        let worker_pending = pending.clone();
+        let worker = thread::spawn(move || {
+            started_tx.send(()).unwrap();
+            worker_pending.append(b"x", || ready_tx.send(()).is_ok())
+        });
+
+        started_rx.recv().unwrap();
+        assert!(ready_rx.recv_timeout(Duration::from_millis(20)).is_err());
+        assert_eq!(pending.take().len(), MAX_PENDING_PTY_OUTPUT_BYTES);
+        ready_rx
+            .recv_timeout(Duration::from_secs(1))
+            .expect("draining should release the PTY reader");
+        assert!(worker.join().unwrap());
+        assert_eq!(pending.take(), b"x");
+    }
 
     #[test]
     fn tab_color_requires_all_components_and_resets_atomically() {

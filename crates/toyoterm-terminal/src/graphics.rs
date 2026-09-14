@@ -664,6 +664,9 @@ impl Graphics {
                     rows: rows as u16,
                     revision: self.serial,
                 });
+                if self.virtual_placements.len() > MAX_IMAGES {
+                    self.virtual_placements.remove(0);
+                }
                 return Ok(());
             }
             let display = match (keys.contains_key("c"), keys.contains_key("r")) {

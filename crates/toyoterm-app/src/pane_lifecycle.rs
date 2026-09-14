@@ -737,6 +737,7 @@ fn spawn_pty_reader(
     mut reader: Box<dyn Read + Send>,
     event_proxy: EventLoopProxy<AppEvent>,
 ) -> Result<(), String> {
+    let pending = Arc::new(PtyOutputBuffer::default());
     thread::Builder::new()
         .name("toyoterm-pty-reader".into())
         .spawn(move || {
@@ -748,13 +749,15 @@ fn spawn_pty_reader(
                         break;
                     }
                     Ok(count) => {
-                        if event_proxy
-                            .send_event(AppEvent::Output {
-                                pane,
-                                bytes: buffer[..count].to_vec(),
-                            })
-                            .is_err()
-                        {
+                        let pending_event = pending.clone();
+                        if !pending.append(&buffer[..count], || {
+                            event_proxy
+                                .send_event(AppEvent::Output {
+                                    pane,
+                                    pending: pending_event.clone(),
+                                })
+                                .is_ok()
+                        }) {
                             break;
                         }
                     }
