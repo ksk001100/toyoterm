@@ -73,21 +73,44 @@ pub(super) fn keybinding_names(event: &KeyEvent, modifiers: ModifiersState) -> V
         PhysicalKey::Code(code) => Some(format!("{code:?}")),
         PhysicalKey::Unidentified(_) => None,
     };
-    binding_candidates(physical, logical_binding_key(&event.logical_key), modifiers)
+    let logical = logical_binding_key(&event.logical_key);
+    let shifted_symbol = matches!(&event.logical_key, Key::Character(text) if modifiers.shift && !has_cased_character(text));
+    binding_candidates(physical, logical, modifiers, shifted_symbol)
 }
 
 pub(super) fn binding_candidates(
     physical: Option<String>,
     logical: Option<String>,
     modifiers: KeyModifiers,
+    shifted_symbol: bool,
 ) -> Vec<String> {
-    physical
-        .map(|key| KeyChord::new(BindingKey::Physical(key), modifiers).canonical_name())
-        .into_iter()
-        .chain(
-            logical.map(|key| KeyChord::new(BindingKey::Logical(key), modifiers).canonical_name()),
-        )
-        .collect()
+    let mut candidates: Vec<_> =
+        physical
+            .map(|key| KeyChord::new(BindingKey::Physical(key), modifiers).canonical_name())
+            .into_iter()
+            .chain(logical.as_ref().map(|key| {
+                KeyChord::new(BindingKey::Logical(key.clone()), modifiers).canonical_name()
+            }))
+            .collect();
+    if shifted_symbol && let Some(key) = logical {
+        candidates.push(
+            KeyChord::new(
+                BindingKey::Logical(key),
+                KeyModifiers {
+                    shift: false,
+                    ..modifiers
+                },
+            )
+            .canonical_name(),
+        );
+    }
+    candidates
+}
+
+fn has_cased_character(text: &str) -> bool {
+    text.chars().any(|character| {
+        character.to_lowercase().collect::<String>() != character.to_uppercase().collect::<String>()
+    })
 }
 
 #[cfg(test)]

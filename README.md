@@ -77,7 +77,9 @@ end
 
 Use [minimal_config.rb](examples/minimal_config.rb) or
 [default_config.rb](examples/default_config.rb) as a starting point. A Nerd Font
-is useful for prompt icons; specify its exact installed family name.
+is useful for prompt icons; specify its exact installed family name. Logical
+symbol bindings use the produced character, so `key("$")` matches `$` even
+though typing it requires Shift on many keyboard layouts.
 
 Configuration is selected by `--config`, then `TOYOTERM_CONFIG_FILE`, then the
 platform default. See [configuration loading](docs/mruby-api.md#loading-configuration)

@@ -74,6 +74,8 @@ end
 
 [minimal_config.rb](examples/minimal_config.rb)または[default_config.rb](examples/default_config.rb)
 を出発点にできます。プロンプトのアイコン表示にはNerd Fontが便利です。インストール済みの正確なファミリー名を指定してください。
+論理記号のバインドには入力後の文字を使うため、多くのキーボード配列でShiftが必要でも
+`key("$")`は`$`に一致します。
 
 設定は`--config`、`TOYOTERM_CONFIG_FILE`、プラットフォーム既定パスの順に選択します。
 Linux・macOS・Windowsのパスとエラー時の復旧は[設定の読込](docs/mruby-api.md#loading-configuration)

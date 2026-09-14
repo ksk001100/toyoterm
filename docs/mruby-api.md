@@ -400,7 +400,9 @@ end
 
 Key and modifier names are case-insensitive. Named keys include `ENTER`, `TAB`,
 `SPACE`, `ESCAPE`, arrow and navigation keys, and `F1` through `F12`. Physical
-bindings take priority over logical bindings.
+bindings take priority over logical bindings. For a shifted symbol such as `$`,
+`key("$")` matches the produced logical symbol; an explicit `SHIFT+$` binding
+still takes priority.
 
 Each helper returns a binding with one of these actions:
 

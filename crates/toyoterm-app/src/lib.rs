@@ -2124,8 +2124,41 @@ mod tests {
                     control: true,
                     ..KeyModifiers::default()
                 },
+                false,
             ),
             vec!["CTRL+PHYSICAL:KEYY", "CTRL+Z"]
+        );
+    }
+
+    #[test]
+    fn shifted_symbols_also_match_their_logical_key_without_shift() {
+        assert_eq!(
+            binding_candidates(
+                Some("Digit4".into()),
+                Some("$".into()),
+                KeyModifiers {
+                    shift: true,
+                    ..KeyModifiers::default()
+                },
+                true,
+            ),
+            vec!["SHIFT+PHYSICAL:DIGIT4", "SHIFT+$", "$"]
+        );
+    }
+
+    #[test]
+    fn shifted_letters_do_not_fall_back_to_unmodified_bindings() {
+        assert_eq!(
+            binding_candidates(
+                Some("KeyH".into()),
+                Some("H".into()),
+                KeyModifiers {
+                    shift: true,
+                    ..KeyModifiers::default()
+                },
+                false,
+            ),
+            vec!["SHIFT+PHYSICAL:KEYH", "SHIFT+H"]
         );
     }
 
