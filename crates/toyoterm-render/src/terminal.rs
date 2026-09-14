@@ -188,21 +188,6 @@ pub(super) fn pane_bounds(rect: PaneRect) -> TextBounds {
     }
 }
 
-pub(super) fn terminal_cursor_x(
-    buffer: &Buffer,
-    snapshot: &TerminalSnapshot,
-    cursor: CursorState,
-) -> Option<f32> {
-    let text_cursor = TextCursor::new(
-        usize::from(cursor.row),
-        terminal_cursor_byte_index(snapshot, cursor),
-    );
-    buffer
-        .layout_runs()
-        .find(|run| run.line_i == usize::from(cursor.row))
-        .and_then(|run| run.cursor_position(&text_cursor))
-}
-
 pub(super) fn selection_highlight_rects(
     snapshot: &TerminalSnapshot,
     pane: PaneRect,
@@ -297,43 +282,12 @@ pub(super) fn command_zone_marker_rects(
         .collect()
 }
 
-pub(super) fn pane_cursor_x(
-    buffer: &Buffer,
-    snapshot: &TerminalSnapshot,
-    cursor: CursorState,
-    cell_width: f32,
-    cursor_uses_grid: bool,
-) -> f32 {
-    if cursor_uses_grid {
-        f32::from(cursor.column) * cell_width
-    } else {
-        terminal_cursor_x(buffer, snapshot, cursor)
-            .unwrap_or_else(|| f32::from(cursor.column) * cell_width)
-    }
-}
-
-pub(super) fn terminal_cursor_byte_index(
-    snapshot: &TerminalSnapshot,
-    cursor: CursorState,
-) -> usize {
-    let Some(cells) = snapshot.cells.get(usize::from(cursor.row)) else {
-        return usize::from(cursor.column);
-    };
-    let mut byte_index = 0;
-    let mut column = 0;
-    for cell in cells {
-        if cursor.column <= cell.column {
-            return byte_index + usize::from(cursor.column.saturating_sub(column));
-        }
-        byte_index += usize::from(cell.column.saturating_sub(column));
-        let cell_end = cell.column.saturating_add(u16::from(cell.width.max(1)));
-        if cursor.column < cell_end {
-            return byte_index;
-        }
-        byte_index += cell.text.len();
-        column = cell_end;
-    }
-    byte_index + usize::from(cursor.column.saturating_sub(column))
+pub(super) fn pane_cursor_x(cursor: CursorState, cell_width: f32) -> f32 {
+    // The terminal, selections, backgrounds, and hit testing all use a fixed
+    // cell grid. Shaped glyph positions can differ from that grid after a
+    // window resize or font-size change due to font fallback and fractional
+    // advance rounding, so they must not determine the cursor origin.
+    f32::from(cursor.column) * cell_width
 }
 
 pub(super) fn terminal_backgrounds(

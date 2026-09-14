@@ -4,7 +4,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Mutex, OnceLock};
 
-use glyphon::cosmic_text::{Align, Cursor as TextCursor, Fallback, PlatformFallback};
+use glyphon::cosmic_text::{Align, Fallback, PlatformFallback};
 use glyphon::{
     Attrs, Buffer, Cache as GlyphCache, Color as GlyphColor, Family, FontSystem, Metrics,
     Resolution, Shaping, Style, SwashCache, TextArea, TextAtlas, TextBounds, TextRenderer,
@@ -56,7 +56,6 @@ pub struct PaneRenderData<'a> {
     pub pane: PaneId,
     pub snapshot: &'a TerminalSnapshot,
     pub cursor: CursorState,
-    pub cursor_uses_grid: bool,
     pub cursor_line_highlight: bool,
     pub rect: PaneRect,
     pub active: bool,
@@ -530,13 +529,46 @@ mod tests {
         );
         buffer.shape_until_scroll(&mut font_system, false);
 
-        let rendered_cursor_x = terminal_cursor_x(&buffer, &snapshot, cursor)
-            .expect("cursor row and byte index are laid out");
-        assert!(
-            (rendered_cursor_x - f32::from(cursor.column) * cell_width).abs() < 0.01,
-            "cursor x {rendered_cursor_x} did not match column {} at {cell_width}px",
-            cursor.column,
+        assert_eq!(
+            pane_cursor_x(cursor, cell_width),
+            f32::from(cursor.column) * cell_width,
         );
+    }
+
+    #[test]
+    fn cursor_ignores_shaped_advances_when_cell_metrics_change() {
+        let snapshot = TerminalSnapshot {
+            images: Vec::new(),
+            columns: 20,
+            rows: 1,
+            lines: vec!["iiiiiiii".into()],
+            cells: Vec::new(),
+            selection: Vec::new(),
+            search_matches: Vec::new(),
+            command_zones: Vec::new(),
+        };
+        let cursor = CursorState {
+            column: 8,
+            row: 0,
+            visible: true,
+            shape: CursorShape::Block,
+        };
+        let mut font_system = configured_font_system(&[]);
+        let mut buffer = Buffer::new(&mut font_system, Metrics::new(14.0, 18.0));
+        buffer.set_text(
+            &snapshot.lines.join("\n"),
+            &Attrs::new().family(Family::SansSerif),
+            Shaping::Advanced,
+            None,
+        );
+        buffer.shape_until_scroll(&mut font_system, false);
+
+        for cell_width in [7.25, 9.0, 13.5] {
+            assert_eq!(
+                pane_cursor_x(cursor, cell_width),
+                f32::from(cursor.column) * cell_width,
+            );
+        }
     }
 
     #[test]
@@ -747,7 +779,7 @@ mod tests {
         buffer.shape_until_scroll(&mut font_system, false);
 
         assert_eq!(
-            pane_cursor_x(&buffer, &snapshot, cursor, cell_width, true),
+            pane_cursor_x(cursor, cell_width),
             f32::from(cursor.column) * cell_width
         );
     }

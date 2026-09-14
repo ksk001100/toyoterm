@@ -719,13 +719,7 @@ impl GpuRenderer {
                     .shape_until_scroll(&mut self.font_system, false);
                 buffers.cached_cells.clone_from(&pane.snapshot.cells);
             }
-            buffers.cursor_x = pane_cursor_x(
-                &buffers.text,
-                pane.snapshot,
-                pane.cursor,
-                layout.cell_width,
-                pane.cursor_uses_grid || use_cell_runs,
-            );
+            buffers.cursor_x = pane_cursor_x(pane.cursor, layout.cell_width);
 
             let cell_runs = if use_cell_runs {
                 terminal_cell_runs(pane.snapshot)

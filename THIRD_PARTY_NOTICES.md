@@ -37,7 +37,7 @@ DEALINGS IN THE SOFTWARE.
 
 The original license is also preserved at `vendor/mruby/LICENSE`.
 
-## Microsoft Windows Console ConPTY 1.24.260710001
+## Microsoft Windows Console ConPTY 1.25.260710002-preview
 
 Project: [Microsoft Terminal](https://github.com/microsoft/terminal)
 

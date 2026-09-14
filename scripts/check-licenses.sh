@@ -36,7 +36,7 @@ grep -Fq "$permission" vendor/mruby/LICENSE
 grep -Fq "$permission" THIRD_PARTY_NOTICES.md
 grep -Fq 'mruby 4.0.0' vendor/mruby/README.md
 grep -Fq '831da26b9021de0369d17b71b5667e2941a1a32d' vendor/mruby/README.md
-grep -Fq 'Microsoft.Windows.Console.ConPTY 1.24.260710001' vendor/conpty/README.md
+grep -Fq 'Microsoft.Windows.Console.ConPTY 1.25.260710002-preview' vendor/conpty/README.md
 grep -Fq 'Copyright (c) Microsoft Corporation' vendor/conpty/LICENSE
 grep -Fq 'Microsoft Windows Console ConPTY' THIRD_PARTY_NOTICES.md
 
@@ -49,8 +49,8 @@ file_hash() {
 }
 
 test "$(file_hash vendor/conpty/win-x64/conpty.dll)" = \
-  '39FBA2713E2495117B1591AE8C32A3B904BEA7AA66069CF7815E2844C76D75D8'
+  'E2FE87E2258C4E46FFC5157F727218CC25F34A174902F72EB8A5B49EDD9A6458'
 test "$(file_hash vendor/conpty/win-x64/OpenConsole.exe)" = \
-  'B7FD936C2668B87B9ECF7B3366DC6568AFC1C6F981874CBA3E955A1C35CF8160'
+  '2525C351AA136D555E5DF9A3C9D6CE9BE43F785E37E3C993B8F23B3F0A53C7FA'
 
 echo "license check: project, mruby, and ConPTY notices and binaries are verified"

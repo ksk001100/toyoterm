@@ -55,9 +55,9 @@ impl ToyotermApplication {
             .filter_map(|placement| {
                 self.pane_runtimes.get(&placement.pane).map(|runtime| {
                     let is_active = active == Some(placement.pane);
-                    let cursor_uses_grid = is_active && self.visual_selection.is_some();
+                    let visual_cursor = is_active && self.visual_selection.is_some();
                     let mut cursor = runtime.terminal.cursor();
-                    if cursor_uses_grid && let Some(visual) = self.visual_selection {
+                    if visual_cursor && let Some(visual) = self.visual_selection {
                         cursor.column = visual.current.column;
                         cursor.row = visual.current.row;
                         cursor.visible = true;
@@ -68,7 +68,6 @@ impl ToyotermApplication {
                         runtime.terminal.snapshot(),
                         runtime.terminal.render_colors(),
                         cursor,
-                        cursor_uses_grid,
                         runtime.cursor_line_highlight,
                         placement.rect,
                         is_active,
@@ -83,27 +82,18 @@ impl ToyotermApplication {
         let panes = snapshots
             .iter()
             .map(
-                |(
-                    pane,
-                    snapshot,
-                    colors,
-                    cursor,
-                    cursor_uses_grid,
-                    cursor_line_highlight,
-                    rect,
-                    active,
-                    badge,
-                )| PaneRenderData {
-                    pane: *pane,
-                    snapshot,
-                    colors: *colors,
-                    cursor: *cursor,
-                    cursor_uses_grid: *cursor_uses_grid,
-                    cursor_line_highlight: *cursor_line_highlight,
-                    rect: *rect,
-                    active: *active,
-                    badge: badge.as_deref(),
-                    zoomed: zoomed == Some(*pane),
+                |(pane, snapshot, colors, cursor, cursor_line_highlight, rect, active, badge)| {
+                    PaneRenderData {
+                        pane: *pane,
+                        snapshot,
+                        colors: *colors,
+                        cursor: *cursor,
+                        cursor_line_highlight: *cursor_line_highlight,
+                        rect: *rect,
+                        active: *active,
+                        badge: badge.as_deref(),
+                        zoomed: zoomed == Some(*pane),
+                    }
                 },
             )
             .collect::<Vec<_>>();
