@@ -95,6 +95,8 @@ pub struct GpuRenderer {
     config_error: ConfigErrorBuffers,
     preedit: Buffer,
     has_preedit: bool,
+    preedit_text: String,
+    preedit_layout: Option<TextLayout>,
     style: RenderStyle,
 }
 
@@ -104,6 +106,10 @@ struct TabBuffer {
     active: bool,
     background: Option<[u8; 3]>,
     indicator: Option<[u8; 3]>,
+    cached_title: String,
+    cached_status: Option<String>,
+    cached_status_color: Option<[u8; 3]>,
+    cached_layout: Option<TextLayout>,
 }
 
 struct OverlayBuffer {
@@ -121,6 +127,8 @@ struct StatusBarBuffer {
     edge: StatusBarEdge,
     rect: PaneRect,
     sections: Vec<Buffer>,
+    cached_text: [String; 3],
+    cached_layout: Option<TextLayout>,
 }
 
 struct ConfigErrorBuffers {
@@ -456,6 +464,8 @@ impl GpuRenderer {
             config_error,
             preedit,
             has_preedit: false,
+            preedit_text: String::new(),
+            preedit_layout: None,
             style,
         })
     }
@@ -497,6 +507,13 @@ impl GpuRenderer {
                 run.cells.clear();
             }
         }
+        for tab in self.tabs.values_mut().chain(self.workspaces.values_mut()) {
+            tab.cached_layout = None;
+        }
+        for status in &mut self.status_bars {
+            status.cached_layout = None;
+        }
+        self.preedit_layout = None;
         if alpha_mode_changed && !self.suspended {
             self.surface.configure(&self.device, &self.configuration);
         }
@@ -532,6 +549,8 @@ impl GpuRenderer {
         preedit.set_wrap(Wrap::None);
         self.preedit = preedit;
         self.has_preedit = false;
+        self.preedit_text.clear();
+        self.preedit_layout = None;
 
         let mut search_text = Buffer::new(&mut self.font_system, Metrics::new(14.0, 18.0));
         search_text.set_wrap(Wrap::None);
@@ -858,6 +877,10 @@ impl GpuRenderer {
                         active: tab.active,
                         background: tab.background,
                         indicator: tab.indicator,
+                        cached_title: String::new(),
+                        cached_status: None,
+                        cached_status_color: None,
+                        cached_layout: None,
                     },
                 );
             }
@@ -865,10 +888,19 @@ impl GpuRenderer {
                 .tabs
                 .get_mut(&tab.tab)
                 .expect("tab buffer was inserted");
+            let text_unchanged = buffer.cached_layout == Some(layout)
+                && buffer.rect == tab.rect
+                && buffer.indicator.is_some() == tab.indicator.is_some()
+                && buffer.cached_title == tab.title
+                && buffer.cached_status.as_deref() == tab.status
+                && buffer.cached_status_color == tab.status_color;
             buffer.rect = tab.rect;
             buffer.active = tab.active;
             buffer.background = tab.background;
             buffer.indicator = tab.indicator;
+            if text_unchanged {
+                continue;
+            }
             let text_inset = if tab.indicator.is_some() { 28 } else { 16 };
             buffer.text.set_metrics_and_size(
                 metrics,
@@ -899,6 +931,11 @@ impl GpuRenderer {
                     .set_text(tab.title, &default_attrs, Shaping::Advanced, None);
             }
             buffer.text.shape_until_scroll(&mut self.font_system, false);
+            buffer.cached_title.clear();
+            buffer.cached_title.push_str(tab.title);
+            buffer.cached_status = tab.status.map(str::to_owned);
+            buffer.cached_status_color = tab.status_color;
+            buffer.cached_layout = Some(layout);
         }
     }
 
@@ -929,6 +966,10 @@ impl GpuRenderer {
                         active: workspace.active,
                         background: None,
                         indicator: None,
+                        cached_title: String::new(),
+                        cached_status: None,
+                        cached_status_color: None,
+                        cached_layout: None,
                     },
                 );
             }
@@ -936,9 +977,15 @@ impl GpuRenderer {
                 .workspaces
                 .get_mut(&workspace.workspace)
                 .expect("workspace buffer was inserted");
+            let text_unchanged = buffer.cached_layout == Some(layout)
+                && buffer.rect == workspace.rect
+                && buffer.cached_title == workspace.name;
             buffer.rect = workspace.rect;
             buffer.active = workspace.active;
             buffer.background = None;
+            if text_unchanged {
+                continue;
+            }
             buffer.text.set_metrics_and_size(
                 metrics,
                 Some(workspace.rect.width.saturating_sub(12) as f32),
@@ -953,6 +1000,11 @@ impl GpuRenderer {
                 None,
             );
             buffer.text.shape_until_scroll(&mut self.font_system, false);
+            buffer.cached_title.clear();
+            buffer.cached_title.push_str(workspace.name);
+            buffer.cached_status = None;
+            buffer.cached_status_color = None;
+            buffer.cached_layout = Some(layout);
         }
     }
 
@@ -1028,10 +1080,14 @@ impl GpuRenderer {
                 edge: StatusBarEdge::Bottom,
                 rect: PaneRect::default(),
                 sections,
+                cached_text: Default::default(),
+                cached_layout: None,
             });
         }
         self.status_bars.truncate(statuses.len());
         for (buffer, status) in self.status_bars.iter_mut().zip(statuses) {
+            let layout_unchanged =
+                buffer.cached_layout == Some(layout) && buffer.rect == status.rect;
             buffer.edge = status.edge;
             buffer.rect = status.rect;
             for (index, alignment) in [
@@ -1043,6 +1099,9 @@ impl GpuRenderer {
             .enumerate()
             {
                 let text = status_bar_section_text(status.items, alignment);
+                if layout_unchanged && buffer.cached_text[index] == text {
+                    continue;
+                }
                 let section = &mut buffer.sections[index];
                 section.set_metrics_and_size(
                     metrics,
@@ -1065,7 +1124,9 @@ impl GpuRenderer {
                     }));
                 }
                 section.shape_until_scroll(&mut self.font_system, false);
+                buffer.cached_text[index] = text;
             }
+            buffer.cached_layout = Some(layout);
         }
     }
 
@@ -1150,6 +1211,9 @@ impl GpuRenderer {
     pub fn update_preedit(&mut self, text: Option<&str>, layout: TextLayout) {
         let text = text.unwrap_or_default();
         self.has_preedit = !text.is_empty();
+        if self.preedit_layout == Some(layout) && self.preedit_text == text {
+            return;
+        }
         let metrics = Metrics::new(layout.font_size.max(1.0), layout.line_height.max(1.0));
         self.preedit.set_metrics_and_size(metrics, None, None);
         self.preedit.set_text(
@@ -1162,6 +1226,9 @@ impl GpuRenderer {
         );
         self.preedit
             .shape_until_scroll(&mut self.font_system, false);
+        self.preedit_text.clear();
+        self.preedit_text.push_str(text);
+        self.preedit_layout = Some(layout);
     }
 
     pub fn resize(&mut self, size: PhysicalSize<u32>) {
