@@ -127,6 +127,8 @@ pub struct TerminalColors {
 /// Adapter boundary for a VT implementation such as `alacritty_terminal`.
 pub trait TerminalBackend: Send {
     fn advance(&mut self, bytes: &[u8]);
+    fn synchronized_update_deadline(&self) -> Option<std::time::Instant>;
+    fn stop_synchronized_update(&mut self);
     fn resize(&mut self, columns: u16, rows: u16);
     fn snapshot(&self) -> TerminalSnapshot;
     fn visible_text(&self) -> String;

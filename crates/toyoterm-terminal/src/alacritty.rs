@@ -2093,6 +2093,23 @@ impl TerminalBackend for AlacrittyTerminalBackend {
         }
     }
 
+    fn synchronized_update_deadline(&self) -> Option<std::time::Instant> {
+        self.processor.sync_timeout().sync_timeout()
+    }
+
+    fn stop_synchronized_update(&mut self) {
+        self.processor.stop_sync(&mut GraphicsHandler {
+            terminal: &mut self.terminal,
+            graphics: &mut self.graphics,
+            semantic_markers: &mut self.semantic_markers,
+            mouse_cursor_stacks: &mut self.mouse_cursor_stacks,
+            clipboard_capture: &mut self.clipboard_capture,
+            output: &self.event_sender,
+            default_colors: &self.default_colors,
+            allow_osc52_copy: self.allow_osc52_copy,
+        });
+    }
+
     fn resize(&mut self, columns: u16, rows: u16) {
         if self.dimensions() != (columns, rows) {
             self.graphics.clear(false, i32::MIN, i32::MAX);
@@ -3200,6 +3217,21 @@ mod tests {
         assert!(!mode.application_keypad);
         assert!(!mode.focus_reporting);
         assert!(!mode.alternate_screen);
+    }
+
+    #[test]
+    fn exposes_and_flushes_unterminated_synchronized_updates() {
+        let mut backend = AlacrittyTerminalBackend::new(80, 24);
+        backend.advance(b"ready");
+        backend.advance(b"\x1b[?2026h held");
+
+        assert!(backend.synchronized_update_deadline().is_some());
+        assert!(!backend.visible_text().contains("held"));
+
+        backend.stop_synchronized_update();
+
+        assert!(backend.synchronized_update_deadline().is_none());
+        assert!(backend.visible_text().contains("ready held"));
     }
 
     #[test]

@@ -1022,16 +1022,45 @@ impl ApplicationHandler<AppEvent> for ToyotermApplication {
     }
 
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
+        let now = Instant::now();
+        let expired_sync_panes = self
+            .pane_runtimes
+            .iter()
+            .filter_map(|(pane, runtime)| {
+                runtime
+                    .terminal
+                    .synchronized_update_deadline()
+                    .filter(|deadline| *deadline <= now)
+                    .map(|_| *pane)
+            })
+            .collect::<Vec<_>>();
+        for pane in expired_sync_panes {
+            if let Some(runtime) = self.pane_runtimes.get_mut(&pane) {
+                runtime.terminal.stop_synchronized_update();
+                // Re-enter the regular output path so terminal events emitted
+                // while releasing the synchronized bytes retain their normal
+                // ordering and side effects (including PTY replies).
+                let _ = self.event_proxy.send_event(AppEvent::Output {
+                    pane,
+                    pending: Arc::new(PtyOutputBuffer::default()),
+                });
+            }
+        }
+        let next_sync_at = self
+            .pane_runtimes
+            .values()
+            .filter_map(|runtime| runtime.terminal.synchronized_update_deadline())
+            .min();
+
         if self.script_snapshot.config.status_bars.is_empty() {
             self.next_bar_at.clear();
-            event_loop.set_control_flow(ControlFlow::Wait);
+            set_wait_control_flow(event_loop, next_sync_at);
             return;
         }
         if self.bar_pending.is_some() || self.window.is_none() {
-            event_loop.set_control_flow(ControlFlow::Wait);
+            set_wait_control_flow(event_loop, next_sync_at);
             return;
         }
-        let now = Instant::now();
         for bar in &self.script_snapshot.config.status_bars {
             self.next_bar_at.entry(bar.position).or_insert(now);
         }
@@ -1047,23 +1076,30 @@ impl ApplicationHandler<AppEvent> for ToyotermApplication {
             })
             .min_by_key(|(_, deadline, _)| *deadline)
         else {
-            event_loop.set_control_flow(ControlFlow::Wait);
+            set_wait_control_flow(event_loop, next_sync_at);
             return;
         };
         if now < deadline {
-            event_loop.set_control_flow(ControlFlow::WaitUntil(deadline));
+            set_wait_control_flow(
+                event_loop,
+                Some(next_sync_at.map_or(deadline, |sync| sync.min(deadline))),
+            );
             return;
         }
         match self.submit_script(ScriptInvocation::Bar { position }) {
             Ok(_) => {
                 self.bar_pending = Some(position);
                 self.next_bar_at.remove(&position);
-                event_loop.set_control_flow(ControlFlow::Wait);
+                set_wait_control_flow(event_loop, next_sync_at);
             }
             Err(error) => {
                 tracing::warn!(target: "toyoterm::script", %error, "submit bar callback failed");
-                self.next_bar_at.insert(position, now + interval);
-                event_loop.set_control_flow(ControlFlow::WaitUntil(now + interval));
+                let deadline = now + interval;
+                self.next_bar_at.insert(position, deadline);
+                set_wait_control_flow(
+                    event_loop,
+                    Some(next_sync_at.map_or(deadline, |sync| sync.min(deadline))),
+                );
             }
         }
     }
@@ -1378,6 +1414,13 @@ impl ApplicationHandler<AppEvent> for ToyotermApplication {
                 }
             }
         }
+    }
+}
+
+fn set_wait_control_flow(event_loop: &ActiveEventLoop, deadline: Option<Instant>) {
+    match deadline {
+        Some(deadline) => event_loop.set_control_flow(ControlFlow::WaitUntil(deadline)),
+        None => event_loop.set_control_flow(ControlFlow::Wait),
     }
 }
 
