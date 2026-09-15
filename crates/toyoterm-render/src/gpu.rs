@@ -36,6 +36,43 @@ pub(super) enum SurfaceRecoveryAction {
     Fail,
 }
 
+pub(super) struct AcquiredFrame<T> {
+    pub(super) texture: T,
+    pub(super) suboptimal: bool,
+}
+
+pub(super) enum FrameStart<T> {
+    Acquired(AcquiredFrame<T>),
+    Unavailable(SurfaceRecoveryAction),
+}
+
+fn surface_frame_start(status: CurrentSurfaceTexture) -> FrameStart<wgpu::SurfaceTexture> {
+    match status {
+        CurrentSurfaceTexture::Success(texture) => FrameStart::Acquired(AcquiredFrame {
+            texture,
+            suboptimal: false,
+        }),
+        CurrentSurfaceTexture::Suboptimal(texture) => FrameStart::Acquired(AcquiredFrame {
+            texture,
+            suboptimal: true,
+        }),
+        status => FrameStart::Unavailable(
+            surface_recovery_action(&status)
+                .expect("non-frame surface status has a recovery action"),
+        ),
+    }
+}
+
+pub(super) fn after_surface_acquisition<T, R>(
+    start: FrameStart<T>,
+    render: impl FnOnce(AcquiredFrame<T>) -> R,
+) -> Result<R, SurfaceRecoveryAction> {
+    match start {
+        FrameStart::Acquired(frame) => Ok(render(frame)),
+        FrameStart::Unavailable(action) => Err(action),
+    }
+}
+
 #[derive(Debug)]
 pub struct RenderError {
     operation: &'static str,
@@ -148,7 +185,7 @@ struct ConfigErrorRenderLayout {
 }
 
 struct PaneBuffers {
-    images: Vec<(toyoterm_terminal::TerminalImage, graphics::GpuImage)>,
+    images: Vec<(toyoterm_terminal::TerminalImage, Option<graphics::GpuImage>)>,
     text: Buffer,
     cell_runs: Vec<CellRunBuffer>,
     cursor_glyph: Buffer,
@@ -425,9 +462,9 @@ impl GpuRenderer {
             dismiss: config_error_buffer(),
             layout: None,
         };
-        let background = style.background_image.as_ref().map(|image| {
-            background::GpuBackground::new(&device, &queue, configuration.format, image)
-        });
+        // Image uploads are deliberately deferred until a surface texture has
+        // been acquired for the frame that will submit them.
+        let background = None;
         let initial_alpha_mode = configuration.alpha_mode;
         Ok(Self {
             instance,
@@ -481,14 +518,9 @@ impl GpuRenderer {
             _ => false,
         };
         if !same_image {
-            self.background = style.background_image.as_ref().map(|image| {
-                background::GpuBackground::new(
-                    &self.device,
-                    &self.queue,
-                    self.configuration.format,
-                    image,
-                )
-            });
+            // Do not upload here: style updates may arrive while the surface is
+            // occluded. The next acquired frame creates and submits the image.
+            self.background = None;
         }
         if self.style.font_fallback != style.font_fallback {
             self.reset_font_system(&style.font_fallback);
@@ -629,12 +661,9 @@ impl GpuRenderer {
                 }) {
                     cached.swap_remove(index).1
                 } else {
-                    graphics::GpuImage::new(
-                        &self.device,
-                        &self.queue,
-                        self.configuration.format,
-                        image,
-                    )
+                    // Defer the texture upload until render has acquired a
+                    // SurfaceTexture that can consume the queue write.
+                    None
                 };
                 buffers.images.push((image.clone(), gpu));
             }
@@ -1251,6 +1280,57 @@ impl GpuRenderer {
             return Ok(RenderOutcome::Skipped);
         }
 
+        let start = surface_frame_start(self.surface.get_current_texture());
+        match after_surface_acquisition(start, |frame| self.render_acquired_frame(frame)) {
+            Ok(result) => result,
+            Err(SurfaceRecoveryAction::Skip) => Ok(RenderOutcome::Skipped),
+            Err(SurfaceRecoveryAction::Reconfigure) => {
+                self.surface.configure(&self.device, &self.configuration);
+                Ok(RenderOutcome::Skipped)
+            }
+            Err(SurfaceRecoveryAction::Recreate) => {
+                self.recreate_surface()?;
+                Ok(RenderOutcome::Skipped)
+            }
+            Err(SurfaceRecoveryAction::Fail) => Err(RenderError::new(
+                "acquire GPU frame",
+                "surface validation failed",
+            )),
+        }
+    }
+
+    fn render_acquired_frame(
+        &mut self,
+        acquired: AcquiredFrame<wgpu::SurfaceTexture>,
+    ) -> Result<RenderOutcome, RenderError> {
+        let AcquiredFrame {
+            texture: frame,
+            suboptimal,
+        } = acquired;
+
+        if self.background.is_none()
+            && let Some(image) = self.style.background_image.as_ref()
+        {
+            self.background = Some(background::GpuBackground::new(
+                &self.device,
+                &self.queue,
+                self.configuration.format,
+                image,
+            ));
+        }
+        for pane in self.panes.values_mut() {
+            for (image, gpu) in &mut pane.images {
+                if gpu.is_none() {
+                    *gpu = Some(graphics::GpuImage::new(
+                        &self.device,
+                        &self.queue,
+                        self.configuration.format,
+                        image,
+                    ));
+                }
+            }
+        }
+
         self.viewport.update(
             &self.queue,
             Resolution {
@@ -1457,30 +1537,6 @@ impl GpuRenderer {
                 .map_err(|error| RenderError::new("prepare selector text", error))?;
         }
 
-        let (frame, suboptimal) = match self.surface.get_current_texture() {
-            CurrentSurfaceTexture::Success(frame) => (frame, false),
-            CurrentSurfaceTexture::Suboptimal(frame) => (frame, true),
-            status => match surface_recovery_action(&status)
-                .expect("non-frame surface status has a recovery action")
-            {
-                SurfaceRecoveryAction::Skip => return Ok(RenderOutcome::Skipped),
-                SurfaceRecoveryAction::Reconfigure => {
-                    self.surface.configure(&self.device, &self.configuration);
-                    return Ok(RenderOutcome::Skipped);
-                }
-                SurfaceRecoveryAction::Recreate => {
-                    self.recreate_surface()?;
-                    return Ok(RenderOutcome::Skipped);
-                }
-                SurfaceRecoveryAction::Fail => {
-                    return Err(RenderError::new(
-                        "acquire GPU frame",
-                        "surface validation failed",
-                    ));
-                }
-            },
-        };
-
         let view = frame.texture.create_view(&TextureViewDescriptor::default());
         let mut encoder = self
             .device
@@ -1552,6 +1608,9 @@ impl GpuRenderer {
                     bottom - pane.rect.y,
                 );
                 for (image, gpu) in &pane.images {
+                    let gpu = gpu
+                        .as_ref()
+                        .expect("terminal images are uploaded after surface acquisition");
                     gpu.update(
                         &self.queue,
                         image,

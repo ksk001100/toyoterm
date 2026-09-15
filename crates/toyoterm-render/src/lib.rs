@@ -1188,6 +1188,46 @@ mod tests {
     }
 
     #[test]
+    fn unavailable_surface_never_starts_frame_preparation() {
+        for action in [
+            SurfaceRecoveryAction::Skip,
+            SurfaceRecoveryAction::Reconfigure,
+            SurfaceRecoveryAction::Recreate,
+            SurfaceRecoveryAction::Fail,
+        ] {
+            let mut prepared = false;
+            let result = after_surface_acquisition(FrameStart::<()>::Unavailable(action), |_| {
+                prepared = true;
+            });
+
+            assert_eq!(result, Err(action));
+            assert!(!prepared, "GPU preparation ran for {action:?}");
+        }
+    }
+
+    #[test]
+    fn successful_frame_lifecycle_acquires_before_prepare_submit_and_present() {
+        let mut lifecycle = vec!["acquire"];
+        let outcome = after_surface_acquisition(
+            FrameStart::Acquired(AcquiredFrame {
+                texture: (),
+                suboptimal: false,
+            }),
+            |frame| {
+                assert!(!frame.suboptimal);
+                lifecycle.extend(["prepare", "encode", "submit", "present"]);
+                RenderOutcome::Presented
+            },
+        );
+
+        assert_eq!(outcome, Ok(RenderOutcome::Presented));
+        assert_eq!(
+            lifecycle,
+            ["acquire", "prepare", "encode", "submit", "present"]
+        );
+    }
+
+    #[test]
     fn selects_a_supported_transparency_mode() {
         let supported = [
             CompositeAlphaMode::Opaque,

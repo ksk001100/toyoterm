@@ -578,10 +578,28 @@ impl Drop for PaneRuntime {
     }
 }
 
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+struct WindowOcclusion {
+    occluded: bool,
+}
+
+impl WindowOcclusion {
+    fn update(&mut self, occluded: bool) -> bool {
+        let became_visible = self.occluded && !occluded;
+        self.occluded = occluded;
+        became_visible
+    }
+
+    fn should_render(self) -> bool {
+        !self.occluded
+    }
+}
+
 struct ToyotermApplication {
     event_proxy: EventLoopProxy<AppEvent>,
     window: Option<Arc<Window>>,
     renderer: Option<GpuRenderer>,
+    occlusion: WindowOcclusion,
     pane_runtimes: HashMap<PaneId, PaneRuntime>,
     pending_pane_launches: HashMap<PaneId, PaneLaunchSpec>,
     pane_layout: PaneLayout,
@@ -804,6 +822,11 @@ impl ApplicationHandler<AppEvent> for ToyotermApplication {
 
         match event {
             WindowEvent::CloseRequested => event_loop.exit(),
+            WindowEvent::Occluded(occluded) => {
+                if self.occlusion.update(occluded) {
+                    window.request_redraw();
+                }
+            }
             WindowEvent::Resized(size) => {
                 if let Some(renderer) = self.renderer.as_mut() {
                     renderer.resize(size);
@@ -994,6 +1017,9 @@ impl ApplicationHandler<AppEvent> for ToyotermApplication {
                 window.request_redraw();
             }
             WindowEvent::RedrawRequested => {
+                if !self.occlusion.should_render() {
+                    return;
+                }
                 if self.terminal_render_pending {
                     self.terminal_render_pending = false;
                     self.sync_active_renderer(window.scale_factor());
@@ -1510,6 +1536,7 @@ impl ToyotermApplication {
             event_proxy,
             window: None,
             renderer: None,
+            occlusion: WindowOcclusion::default(),
             pane_runtimes: HashMap::new(),
             pending_pane_launches,
             pane_layout: PaneLayout::default(),
@@ -1609,6 +1636,20 @@ mod tests {
             true
         }));
         assert_eq!(wakeups, 2);
+    }
+
+    #[test]
+    fn occlusion_suppresses_rendering_until_the_window_becomes_visible() {
+        let mut state = WindowOcclusion::default();
+        assert!(state.should_render());
+
+        assert!(!state.update(true));
+        assert!(!state.should_render());
+        assert!(!state.update(true));
+
+        assert!(state.update(false));
+        assert!(state.should_render());
+        assert!(!state.update(false));
     }
 
     #[test]
