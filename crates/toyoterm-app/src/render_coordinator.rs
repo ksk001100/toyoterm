@@ -464,9 +464,11 @@ fn progress_title_suffix(progress: TerminalProgress) -> String {
     match progress {
         TerminalProgress::Hidden => String::new(),
         TerminalProgress::Normal(value) => format!(" · {value}%"),
-        TerminalProgress::Error(value) => format!(" · error {value}%"),
+        TerminalProgress::Error(Some(value)) => format!(" · error {value}%"),
+        TerminalProgress::Error(None) => " · error".to_owned(),
         TerminalProgress::Indeterminate => " · working".to_owned(),
-        TerminalProgress::Warning(value) => format!(" · warning {value}%"),
+        TerminalProgress::Warning(Some(value)) => format!(" · warning {value}%"),
+        TerminalProgress::Warning(None) => " · warning".to_owned(),
     }
 }
 
@@ -481,7 +483,7 @@ mod tests {
             " · 42%"
         );
         assert_eq!(
-            progress_title_suffix(TerminalProgress::Error(100)),
+            progress_title_suffix(TerminalProgress::Error(Some(100))),
             " · error 100%"
         );
         assert_eq!(
@@ -489,8 +491,16 @@ mod tests {
             " · working"
         );
         assert_eq!(
-            progress_title_suffix(TerminalProgress::Warning(7)),
+            progress_title_suffix(TerminalProgress::Warning(Some(7))),
             " · warning 7%"
+        );
+        assert_eq!(
+            progress_title_suffix(TerminalProgress::Error(None)),
+            " · error"
+        );
+        assert_eq!(
+            progress_title_suffix(TerminalProgress::Warning(None)),
+            " · warning"
         );
         assert!(progress_title_suffix(TerminalProgress::Hidden).is_empty());
     }

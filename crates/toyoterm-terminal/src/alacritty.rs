@@ -69,6 +69,7 @@ pub enum TerminalEvent {
     MouseCursorChanged(CursorIcon),
     MouseCursorControl(String),
     ColorControl(String),
+    ItermDefaultColorQuery(i8),
     ItermUiColorChanged {
         role: ItermUiColorRole,
         color: [u8; 3],
@@ -126,9 +127,9 @@ pub struct SessionStatusUpdate {
 pub enum TerminalProgress {
     Hidden,
     Normal(u8),
-    Error(u8),
+    Error(Option<u8>),
     Indeterminate,
-    Warning(u8),
+    Warning(Option<u8>),
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -283,7 +284,8 @@ impl ShellIntegrationParser {
                     if byte == b';'
                         && matches!(
                             command.as_slice(),
-                            b"1" | b"6"
+                            b"1" | b"4"
+                                | b"6"
                                 | b"7"
                                 | b"9"
                                 | b"17"
@@ -396,6 +398,8 @@ fn parse_shell_integration_payload(
         {
             events.push(TerminalEvent::IconTitleChanged(title.to_owned()));
         }
+    } else if let Some(control) = payload.strip_prefix(b"4;") {
+        parse_iterm_default_color_queries(control, events);
     } else if let Some(control) = payload.strip_prefix(b"6;") {
         parse_osc6_tab_color(control, events);
     } else if let Some(payload) = payload.strip_prefix(b"7;") {
@@ -816,21 +820,43 @@ fn osc9_progress(message: &[u8]) -> Option<TerminalProgress> {
     let parameters = message.strip_prefix(b"4;")?;
     let mut parameters = parameters.split(|byte| *byte == b';');
     let state = parameters.next()?;
-    let value = parameters
-        .next()
-        .and_then(|value| std::str::from_utf8(value).ok())
-        .and_then(|value| value.parse::<u8>().ok())
-        .filter(|value| *value <= 100);
+    let value = parameters.next().map(|value| {
+        std::str::from_utf8(value)
+            .ok()?
+            .parse::<u8>()
+            .ok()
+            .filter(|value| *value <= 100)
+    });
     if parameters.next().is_some() {
         return None;
     }
+    let value = match value {
+        Some(Some(value)) => Some(value),
+        Some(None) => return None,
+        None => None,
+    };
     match state {
         b"0" => Some(TerminalProgress::Hidden),
         b"1" => value.map(TerminalProgress::Normal),
-        b"2" => value.map(TerminalProgress::Error),
+        b"2" => Some(TerminalProgress::Error(value)),
         b"3" => Some(TerminalProgress::Indeterminate),
-        b"4" => value.map(TerminalProgress::Warning),
+        b"4" => Some(TerminalProgress::Warning(value)),
         _ => None,
+    }
+}
+
+fn parse_iterm_default_color_queries(control: &[u8], events: &mut Vec<TerminalEvent>) {
+    let mut fields = control.split(|byte| *byte == b';');
+    while let (Some(index), Some(value)) = (fields.next(), fields.next()) {
+        if value != b"?" {
+            continue;
+        }
+        let index = match index {
+            b"-1" => -1,
+            b"-2" => -2,
+            _ => continue,
+        };
+        events.push(TerminalEvent::ItermDefaultColorQuery(index));
     }
 }
 
@@ -1717,6 +1743,25 @@ impl AlacrittyTerminalBackend {
         }
         if let TerminalEvent::ColorControl(control) = &event {
             self.apply_color_control(control);
+            return;
+        }
+        if let TerminalEvent::ItermDefaultColorQuery(index) = event {
+            let color_index = match index {
+                -1 => NamedColor::Foreground as usize,
+                -2 => NamedColor::Background as usize,
+                _ => return,
+            };
+            let Some(Rgb {
+                r: red,
+                g: green,
+                b: blue,
+            }) = resolved_color(&self.terminal, &self.default_colors, color_index)
+            else {
+                return;
+            };
+            self.pending_events.push(TerminalEvent::PtyWrite(format!(
+                "\x1b]4;{index};rgb:{red:02x}{red:02x}/{green:02x}{green:02x}/{blue:02x}{blue:02x}\x1b\\"
+            )));
             return;
         }
         if let TerminalEvent::ItermUiColorChanged { role, color } = &event {
@@ -2900,6 +2945,38 @@ mod tests {
     }
 
     #[test]
+    fn answers_iterm_default_foreground_and_background_alias_queries() {
+        let mut backend = AlacrittyTerminalBackend::new(20, 2);
+        backend.set_default_colors(
+            [0x11, 0x22, 0x33],
+            [0x44, 0x55, 0x66],
+            [0x77, 0x88, 0x99],
+            [0xaa, 0xbb, 0xcc],
+            [[0, 0, 0]; 16],
+        );
+
+        backend.advance(b"\x1b]4;-1;?\x07\x1b]4;-2;?\x1b\\");
+
+        assert_eq!(
+            backend.drain_events(),
+            vec![
+                TerminalEvent::PtyWrite("\x1b]4;-1;rgb:1111/2222/3333\x1b\\".into()),
+                TerminalEvent::PtyWrite("\x1b]4;-2;rgb:4444/5555/6666\x1b\\".into()),
+            ]
+        );
+
+        backend.advance(b"\x1b]10;#abcdef\x07\x1b]11;#123456\x07");
+        backend.advance(b"\x1b]4;-1;?;-2;?\x1b\\");
+        assert_eq!(
+            backend.drain_events(),
+            vec![
+                TerminalEvent::PtyWrite("\x1b]4;-1;rgb:abab/cdcd/efef\x1b\\".into()),
+                TerminalEvent::PtyWrite("\x1b]4;-2;rgb:1212/3434/5656\x1b\\".into()),
+            ]
+        );
+    }
+
+    #[test]
     fn supports_xterm_selection_color_controls() {
         let mut backend = AlacrittyTerminalBackend::new(20, 2);
         let ansi = [[0, 0, 0]; 16];
@@ -3334,7 +3411,7 @@ mod tests {
     fn parses_osc9_progress_states_and_rejects_invalid_values() {
         let mut backend = AlacrittyTerminalBackend::new(20, 2);
         backend.advance(
-            b"\x1b]9;4;1;42\x07\x1b]9;4;2;100\x1b\\\x1b]9;4;3\x07\x1b]9;4;4;7\x1b\\\x1b]9;4\x07",
+            b"\x1b]9;4;1;42\x07\x1b]9;4;2;100\x1b\\\x1b]9;4;2\x07\x1b]9;4;3\x07\x1b]9;4;4;7\x1b\\\x1b]9;4;4\x07\x1b]9;4\x07",
         );
         backend.advance(b"\x1b]9;4;1;101\x07\x1b]9;4;1;50;extra\x07\x1b]9;4;bogus\x07");
 
@@ -3342,9 +3419,11 @@ mod tests {
             backend.drain_events(),
             vec![
                 TerminalEvent::ProgressChanged(TerminalProgress::Normal(42)),
-                TerminalEvent::ProgressChanged(TerminalProgress::Error(100)),
+                TerminalEvent::ProgressChanged(TerminalProgress::Error(Some(100))),
+                TerminalEvent::ProgressChanged(TerminalProgress::Error(None)),
                 TerminalEvent::ProgressChanged(TerminalProgress::Indeterminate),
-                TerminalEvent::ProgressChanged(TerminalProgress::Warning(7)),
+                TerminalEvent::ProgressChanged(TerminalProgress::Warning(Some(7))),
+                TerminalEvent::ProgressChanged(TerminalProgress::Warning(None)),
                 TerminalEvent::ProgressChanged(TerminalProgress::Hidden),
             ]
         );

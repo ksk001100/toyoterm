@@ -467,6 +467,28 @@ impl TabColorState {
     }
 }
 
+fn apply_terminal_progress(
+    current: Option<TerminalProgress>,
+    update: TerminalProgress,
+) -> Option<TerminalProgress> {
+    match update {
+        TerminalProgress::Hidden => None,
+        TerminalProgress::Warning(None) => {
+            let value = current.and_then(|progress| match progress {
+                TerminalProgress::Normal(value)
+                | TerminalProgress::Error(Some(value))
+                | TerminalProgress::Warning(Some(value)) => Some(value),
+                TerminalProgress::Hidden
+                | TerminalProgress::Error(None)
+                | TerminalProgress::Indeterminate
+                | TerminalProgress::Warning(None) => None,
+            });
+            Some(TerminalProgress::Warning(value))
+        }
+        progress => Some(progress),
+    }
+}
+
 #[derive(Default)]
 struct SessionStatusState {
     indicator: Option<[u8; 3]>,
@@ -689,6 +711,7 @@ fn ruby_event_from_terminal_event(pane: PaneId, event: TerminalEvent) -> Option<
         | TerminalEvent::ItermUiColorChanged { .. }
         | TerminalEvent::ItermUiColorReset(_)
         | TerminalEvent::ItermUiColorQuery { .. }
+        | TerminalEvent::ItermDefaultColorQuery(_)
         | TerminalEvent::ColorStackPush
         | TerminalEvent::ColorStackPop
         | TerminalEvent::TabColorChanged { .. }
@@ -1238,6 +1261,7 @@ impl ApplicationHandler<AppEvent> for ToyotermApplication {
                             }
                             TerminalEvent::MouseCursorControl(_) => {}
                             TerminalEvent::ColorControl(_)
+                            | TerminalEvent::ItermDefaultColorQuery(_)
                             | TerminalEvent::ItermUiColorChanged { .. }
                             | TerminalEvent::ItermUiColorReset(_)
                             | TerminalEvent::ItermUiColorQuery { .. }
@@ -1258,7 +1282,7 @@ impl ApplicationHandler<AppEvent> for ToyotermApplication {
                             }
                             TerminalEvent::ProgressChanged(progress) => {
                                 runtime.progress =
-                                    (*progress != TerminalProgress::Hidden).then_some(*progress);
+                                    apply_terminal_progress(runtime.progress, *progress);
                             }
                             TerminalEvent::ClipboardStore(text) => {
                                 osc52_copies.push(text.clone());
@@ -1705,6 +1729,38 @@ mod tests {
         assert_eq!(color.complete(), Some([12, 34, 56]));
         color = TabColorState::default();
         assert_eq!(color.complete(), None);
+    }
+
+    #[test]
+    fn value_less_paused_progress_keeps_the_current_percentage() {
+        assert_eq!(
+            apply_terminal_progress(
+                Some(TerminalProgress::Normal(42)),
+                TerminalProgress::Warning(None),
+            ),
+            Some(TerminalProgress::Warning(Some(42)))
+        );
+        assert_eq!(
+            apply_terminal_progress(
+                Some(TerminalProgress::Indeterminate),
+                TerminalProgress::Warning(None),
+            ),
+            Some(TerminalProgress::Warning(None))
+        );
+        assert_eq!(
+            apply_terminal_progress(
+                Some(TerminalProgress::Normal(42)),
+                TerminalProgress::Error(None),
+            ),
+            Some(TerminalProgress::Error(None))
+        );
+        assert_eq!(
+            apply_terminal_progress(
+                Some(TerminalProgress::Warning(Some(42))),
+                TerminalProgress::Hidden,
+            ),
+            None
+        );
     }
 
     #[test]
