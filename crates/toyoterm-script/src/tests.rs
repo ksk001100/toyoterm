@@ -2353,6 +2353,8 @@ fn compiles_static_key_dsl_to_native_actions() {
                     key("v").toggle_visual_mode
                     key("ESCAPE").end_visual_selection
                     key("h").move_visual_selection(:left)
+                    key("w").move_visual_selection(:word_forward)
+                    key("b").move_visual_selection(:word_backward)
                     key("0").move_visual_selection(:line_start)
                     key("$").move_visual_selection(:line_end)
                     key("y").yank_selection
@@ -2386,6 +2388,18 @@ fn compiles_static_key_dsl_to_native_actions() {
         manager.native_action("H"),
         Some(NativeAction::MoveVisualSelection(
             toyoterm_api::SelectionMotion::Left
+        ))
+    );
+    assert_eq!(
+        manager.native_action("W"),
+        Some(NativeAction::MoveVisualSelection(
+            toyoterm_api::SelectionMotion::WordForward
+        ))
+    );
+    assert_eq!(
+        manager.native_action("B"),
+        Some(NativeAction::MoveVisualSelection(
+            toyoterm_api::SelectionMotion::WordBackward
         ))
     );
     assert_eq!(

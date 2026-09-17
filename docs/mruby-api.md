@@ -420,7 +420,7 @@ Each helper returns a binding with one of these actions:
 | `select_next_command_output`, `select_previous_command_output` | None; cyclically selects complete OSC 133 `C`–`D` ranges. No complete range is a no-op. |
 | `copy_selection`, `paste_clipboard` | None |
 | `start_visual_mode`, `toggle_visual_mode`, `start_visual_selection`, `select_visual_selection`, `end_visual_selection` | None |
-| `move_visual_selection(direction)` | `:left`, `:right`, `:up`, `:down`, `:line_start`, or `:line_end` |
+| `move_visual_selection(direction)` | `:left`, `:right`, `:up`, `:down`, `:line_start`, `:line_end`, `:word_forward`, or `:word_backward` |
 | `yank_selection` | None |
 | `command(name)` | Name registered with `Toyoterm.command` |
 
@@ -467,6 +467,8 @@ config.keys do
   key("j").move_visual_selection(:down)
   key("k").move_visual_selection(:up)
   key("l").move_visual_selection(:right)
+  key("w").move_visual_selection(:word_forward)
+  key("b").move_visual_selection(:word_backward)
   key("y").yank_selection
 end
 ```
@@ -555,7 +557,7 @@ end
 static-binding table available inside dynamic bindings, commands, and event
 handlers. Action names can be Strings or Symbols and are normalized to
 lowercase. `split` and `activate_pane` require `:left`, `:right`, `:up`, or
-`:down`; `move_visual_selection` requires one of its six documented motions.
+`:down`; `move_visual_selection` requires one of its eight documented motions.
 All other actions take no argument. An empty or unknown action, a missing or
 invalid required argument, or an argument supplied to a no-argument action
 raises `ArgumentError` before anything is queued.

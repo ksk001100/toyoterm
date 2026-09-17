@@ -98,6 +98,8 @@ pub enum SelectionMotion {
     Down,
     LineStart,
     LineEnd,
+    WordForward,
+    WordBackward,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

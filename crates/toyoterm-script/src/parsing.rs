@@ -60,6 +60,8 @@ fn parse_selection_motion(motion: &str) -> Result<toyoterm_api::SelectionMotion,
         "down" => Ok(toyoterm_api::SelectionMotion::Down),
         "line_start" => Ok(toyoterm_api::SelectionMotion::LineStart),
         "line_end" => Ok(toyoterm_api::SelectionMotion::LineEnd),
+        "word_forward" => Ok(toyoterm_api::SelectionMotion::WordForward),
+        "word_backward" => Ok(toyoterm_api::SelectionMotion::WordBackward),
         _ => Err(ScriptError::new(
             "load key bindings",
             format!("invalid visual selection motion `{motion}`"),

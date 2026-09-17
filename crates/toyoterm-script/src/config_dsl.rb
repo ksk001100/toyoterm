@@ -619,7 +619,7 @@ module Toyoterm
       end_visual_selection: nil, yank_selection: nil,
       split: [:left, :right, :up, :down],
       activate_pane: [:left, :right, :up, :down],
-      move_visual_selection: [:left, :right, :up, :down, :line_start, :line_end]
+      move_visual_selection: [:left, :right, :up, :down, :line_start, :line_end, :word_forward, :word_backward]
     }.freeze
     ACTIONS.each do |name, arguments|
       if arguments

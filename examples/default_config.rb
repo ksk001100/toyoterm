@@ -98,6 +98,8 @@ Toyoterm.configure do |config|
     key("j").move_visual_selection(:down)
     key("k").move_visual_selection(:up)
     key("l").move_visual_selection(:right)
+    key("w").move_visual_selection(:word_forward)
+    key("b").move_visual_selection(:word_backward)
     key("LEFT").move_visual_selection(:left)
     key("RIGHT").move_visual_selection(:right)
     key("UP").move_visual_selection(:up)

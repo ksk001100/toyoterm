@@ -151,6 +151,149 @@ fn visual_prev_column(
     0
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum CharCategory {
+    Whitespace,
+    Word,
+    Punctuation,
+}
+
+fn cell_category(cell: &toyoterm_terminal::TerminalCell) -> CharCategory {
+    let Some(first_char) = cell.text.chars().next() else {
+        return CharCategory::Whitespace;
+    };
+    if first_char.is_whitespace() {
+        CharCategory::Whitespace
+    } else if first_char.is_alphanumeric() || first_char == '_' {
+        CharCategory::Word
+    } else {
+        CharCategory::Punctuation
+    }
+}
+
+fn cell_index_at_column(cells: &[toyoterm_terminal::TerminalCell], col: u16) -> Option<usize> {
+    for (idx, cell) in cells.iter().enumerate() {
+        let width = u16::from(cell.width.max(1));
+        if col >= cell.column && col < cell.column.saturating_add(width) {
+            return Some(idx);
+        }
+    }
+    None
+}
+
+fn visual_next_word(
+    snapshot: &toyoterm_terminal::TerminalSnapshot,
+    row: u16,
+    col: u16,
+) -> (u16, u16) {
+    let current_row = row;
+    let current_col = col;
+
+    if let Some(cells) = snapshot.cells.get(usize::from(current_row))
+        && !cells.is_empty()
+        && let Some(start_idx) = cell_index_at_column(cells, current_col)
+    {
+        let start_cat = cell_category(&cells[start_idx]);
+        if start_cat == CharCategory::Whitespace {
+            if let Some(target_idx) = cells[start_idx..]
+                .iter()
+                .position(|c| cell_category(c) != CharCategory::Whitespace)
+            {
+                return (cells[start_idx + target_idx].column, current_row);
+            }
+        } else {
+            // Advance past the current word/punctuation run.
+            if let Some(after_idx) = cells[start_idx..]
+                .iter()
+                .position(|c| cell_category(c) != start_cat)
+            {
+                let actual_idx = start_idx + after_idx;
+                let after_cat = cell_category(&cells[actual_idx]);
+                if after_cat != CharCategory::Whitespace {
+                    return (cells[actual_idx].column, current_row);
+                }
+                // Advance past any trailing whitespace on the same line.
+                if let Some(target_idx) = cells[actual_idx..]
+                    .iter()
+                    .position(|c| cell_category(c) != CharCategory::Whitespace)
+                {
+                    return (cells[actual_idx + target_idx].column, current_row);
+                }
+            }
+        }
+    }
+
+    // Advance to subsequent rows looking for the next word.
+    for r in (current_row + 1)..snapshot.rows {
+        let Some(cells) = snapshot.cells.get(usize::from(r)) else {
+            return (0, r);
+        };
+        if cells.is_empty() {
+            // An empty line counts as a word boundary in Vim.
+            return (0, r);
+        }
+        if let Some(cell) = cells
+            .iter()
+            .find(|c| cell_category(c) != CharCategory::Whitespace)
+        {
+            return (cell.column, r);
+        }
+    }
+
+    (current_col, current_row)
+}
+
+fn visual_prev_word(
+    snapshot: &toyoterm_terminal::TerminalSnapshot,
+    row: u16,
+    col: u16,
+) -> (u16, u16) {
+    let current_row = row;
+    let current_col = col;
+
+    if let Some(cells) = snapshot.cells.get(usize::from(current_row))
+        && !cells.is_empty()
+        && let Some(p_idx) = cells.iter().rposition(|c| c.column < current_col)
+        && let Some((non_ws_idx, cell)) = cells[..=p_idx]
+            .iter()
+            .enumerate()
+            .rev()
+            .find(|(_, c)| cell_category(c) != CharCategory::Whitespace)
+    {
+        let target_cat = cell_category(cell);
+        let mut start_idx = non_ws_idx;
+        while start_idx > 0 && cell_category(&cells[start_idx - 1]) == target_cat {
+            start_idx -= 1;
+        }
+        return (cells[start_idx].column, current_row);
+    }
+
+    // Look backwards across preceding lines.
+    for r in (0..current_row).rev() {
+        let Some(cells) = snapshot.cells.get(usize::from(r)) else {
+            return (0, r);
+        };
+        if cells.is_empty() {
+            return (0, r);
+        }
+        if let Some((non_ws_idx, cell)) = cells
+            .iter()
+            .enumerate()
+            .rev()
+            .find(|(_, c)| cell_category(c) != CharCategory::Whitespace)
+        {
+            let target_cat = cell_category(cell);
+            let mut start_idx = non_ws_idx;
+            while start_idx > 0 && cell_category(&cells[start_idx - 1]) == target_cat {
+                start_idx -= 1;
+            }
+            return (cells[start_idx].column, r);
+        }
+    }
+
+    (0, 0)
+}
+
 fn ruby_event_from_mux_event(event: MuxEvent) -> Option<RubyEvent> {
     match event {
         MuxEvent::WorkspaceChanged { workspace } => {
@@ -341,6 +484,18 @@ impl ToyotermApplication {
             SelectionMotion::LineEnd => {
                 selection.current.column =
                     visual_last_cell_column(&snapshot, selection.current.row);
+            }
+            SelectionMotion::WordForward => {
+                let (col, row) =
+                    visual_next_word(&snapshot, selection.current.row, selection.current.column);
+                selection.current.column = col;
+                selection.current.row = row;
+            }
+            SelectionMotion::WordBackward => {
+                let (col, row) =
+                    visual_prev_word(&snapshot, selection.current.row, selection.current.column);
+                selection.current.column = col;
+                selection.current.row = row;
             }
         }
         if let Some(terminal) = self.active_terminal_mut()
@@ -1362,5 +1517,53 @@ mod tests {
         assert_eq!(visual_last_cell_column(&snapshot, 0), 4);
         assert_eq!(visual_last_cell_column(&snapshot, 1), 8);
         assert_eq!(visual_last_cell_column(&snapshot, 2), 0);
+    }
+
+    #[test]
+    fn visual_word_navigation_navigates_words_punctuation_empty_lines_and_wide_chars() {
+        let mut terminal = AlacrittyTerminalBackend::new(30, 4);
+        // Line 0: "hello   world foo.bar"
+        // Line 1: "" (empty)
+        // Line 2: "  wide: 猫 犬" (with 猫 at col 8, 犬 at col 11)
+        terminal.advance(b"hello   world foo.bar\r\n\r\n  wide: \xe7\x8c\xab \xe7\x8a\xac");
+        let snapshot = terminal.snapshot();
+
+        // Forward word navigation on line 0
+        assert_eq!(visual_next_word(&snapshot, 0, 0), (8, 0)); // "hello" -> "world"
+        assert_eq!(visual_next_word(&snapshot, 0, 2), (8, 0)); // inside "hello" -> "world"
+        assert_eq!(visual_next_word(&snapshot, 0, 5), (8, 0)); // whitespace -> "world"
+        assert_eq!(visual_next_word(&snapshot, 0, 8), (14, 0)); // "world" -> "foo"
+        assert_eq!(visual_next_word(&snapshot, 0, 14), (17, 0)); // "foo" -> "."
+        assert_eq!(visual_next_word(&snapshot, 0, 17), (18, 0)); // "." -> "bar"
+
+        // Across lines: from end of line 0 -> line 1 (empty line)
+        assert_eq!(visual_next_word(&snapshot, 0, 18), (0, 1));
+        assert_eq!(visual_next_word(&snapshot, 0, 20), (0, 1));
+
+        // From empty line 1 -> line 2 first word "wide" (col 2 after leading spaces)
+        assert_eq!(visual_next_word(&snapshot, 1, 0), (2, 2));
+
+        // Line 2: "wide" -> ":" -> "猫" -> "犬"
+        assert_eq!(visual_next_word(&snapshot, 2, 2), (6, 2));
+        assert_eq!(visual_next_word(&snapshot, 2, 6), (8, 2));
+        assert_eq!(visual_next_word(&snapshot, 2, 8), (11, 2));
+
+        // Across line 2 -> line 3 (empty line 3 in 4-row terminal)
+        assert_eq!(visual_next_word(&snapshot, 2, 11), (0, 3));
+        assert_eq!(visual_next_word(&snapshot, 3, 0), (0, 3));
+
+        // Backward word navigation
+        assert_eq!(visual_prev_word(&snapshot, 3, 0), (11, 2)); // from line 3 -> "犬"
+        assert_eq!(visual_prev_word(&snapshot, 2, 11), (8, 2)); // from "犬" -> "猫"
+        assert_eq!(visual_prev_word(&snapshot, 2, 8), (6, 2)); // from "猫" -> ":"
+        assert_eq!(visual_prev_word(&snapshot, 2, 6), (2, 2)); // from ":" -> "wide"
+        assert_eq!(visual_prev_word(&snapshot, 2, 2), (0, 1)); // from "wide" -> empty line 1
+        assert_eq!(visual_prev_word(&snapshot, 1, 0), (18, 0)); // from line 1 -> "bar"
+        assert_eq!(visual_prev_word(&snapshot, 0, 20), (18, 0)); // inside "bar" -> start of "bar"
+        assert_eq!(visual_prev_word(&snapshot, 0, 18), (17, 0)); // from "bar" -> "."
+        assert_eq!(visual_prev_word(&snapshot, 0, 17), (14, 0)); // from "." -> "foo"
+        assert_eq!(visual_prev_word(&snapshot, 0, 14), (8, 0)); // from "foo" -> "world"
+        assert_eq!(visual_prev_word(&snapshot, 0, 8), (0, 0)); // from "world" -> "hello"
+        assert_eq!(visual_prev_word(&snapshot, 0, 0), (0, 0)); // start clamping
     }
 }
