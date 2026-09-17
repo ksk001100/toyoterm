@@ -1,6 +1,32 @@
 use super::*;
 
 pub(super) fn create_ui_pipeline(device: &Device, format: wgpu::TextureFormat) -> RenderPipeline {
+    create_ui_pipeline_with_blend(
+        device,
+        format,
+        BlendState::ALPHA_BLENDING,
+        "toyoterm UI pipeline",
+    )
+}
+
+pub(super) fn create_ui_replace_pipeline(
+    device: &Device,
+    format: wgpu::TextureFormat,
+) -> RenderPipeline {
+    create_ui_pipeline_with_blend(
+        device,
+        format,
+        BlendState::REPLACE,
+        "toyoterm transparent-cell pipeline",
+    )
+}
+
+fn create_ui_pipeline_with_blend(
+    device: &Device,
+    format: wgpu::TextureFormat,
+    blend: BlendState,
+    label: &'static str,
+) -> RenderPipeline {
     let shader = device.create_shader_module(ShaderModuleDescriptor {
         label: Some("toyoterm UI shader"),
         source: ShaderSource::Wgsl(
@@ -32,7 +58,7 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
         ),
     });
     device.create_render_pipeline(&RenderPipelineDescriptor {
-        label: Some("toyoterm UI pipeline"),
+        label: Some(label),
         layout: None,
         vertex: VertexState {
             module: &shader,
@@ -52,7 +78,7 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
             compilation_options: PipelineCompilationOptions::default(),
             targets: &[Some(ColorTargetState {
                 format,
-                blend: Some(BlendState::ALPHA_BLENDING),
+                blend: Some(blend),
                 write_mask: ColorWrites::ALL,
             })],
         }),
@@ -176,5 +202,98 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    #[ignore = "requires a working GPU or software adapter"]
+    fn replace_pipeline_writes_transparent_cell_alpha() {
+        pollster::block_on(async {
+            let instance = Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
+            let adapter = instance.request_adapter(&Default::default()).await.unwrap();
+            let (device, queue) = adapter
+                .request_device(&DeviceDescriptor::default())
+                .await
+                .unwrap();
+            let format = wgpu::TextureFormat::Rgba8Unorm;
+            let pipeline = create_ui_replace_pipeline(&device, format);
+            let target = device.create_texture(&wgpu::TextureDescriptor {
+                label: Some("transparent cell test target"),
+                size: wgpu::Extent3d {
+                    width: 1,
+                    height: 1,
+                    depth_or_array_layers: 1,
+                },
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format,
+                usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+                view_formats: &[],
+            });
+            let view = target.create_view(&Default::default());
+            let mut vertices = Vec::new();
+            push_ui_rect(
+                &mut vertices,
+                PaneRect::new(0, 0, 1, 1),
+                [0.5, 0.0, 0.0, 0.5],
+                1,
+                1,
+            );
+            let vertex_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("transparent cell test vertices"),
+                contents: bytemuck::cast_slice(&vertices),
+                usage: BufferUsages::VERTEX,
+            });
+            let readback = device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("transparent cell test readback"),
+                size: 256,
+                usage: BufferUsages::MAP_READ | BufferUsages::COPY_DST,
+                mapped_at_creation: false,
+            });
+            let mut encoder = device.create_command_encoder(&Default::default());
+            {
+                let attachments = [Some(RenderPassColorAttachment {
+                    view: &view,
+                    depth_slice: None,
+                    resolve_target: None,
+                    ops: Operations {
+                        load: LoadOp::Clear(Color::BLUE),
+                        store: StoreOp::Store,
+                    },
+                })];
+                let mut pass = encoder.begin_render_pass(&RenderPassDescriptor {
+                    color_attachments: &attachments,
+                    ..Default::default()
+                });
+                pass.set_pipeline(&pipeline);
+                pass.set_vertex_buffer(0, vertex_buffer.slice(..));
+                pass.draw(0..vertices.len() as u32, 0..1);
+            }
+            encoder.copy_texture_to_buffer(
+                target.as_image_copy(),
+                wgpu::TexelCopyBufferInfo {
+                    buffer: &readback,
+                    layout: wgpu::TexelCopyBufferLayout {
+                        offset: 0,
+                        bytes_per_row: Some(256),
+                        rows_per_image: Some(1),
+                    },
+                },
+                target.size(),
+            );
+            queue.submit([encoder.finish()]);
+            let (sender, receiver) = std::sync::mpsc::channel();
+            readback
+                .slice(..)
+                .map_async(wgpu::MapMode::Read, move |result| {
+                    sender.send(result).unwrap()
+                });
+            device.poll(wgpu::PollType::wait_indefinitely()).unwrap();
+            receiver.recv().unwrap().unwrap();
+            let bytes = readback.slice(..).get_mapped_range().unwrap();
+            for (actual, expected) in bytes[..4].iter().zip([128, 0, 0, 128]) {
+                assert!(i32::from(*actual).abs_diff(expected) <= 1);
+            }
+        });
     }
 }

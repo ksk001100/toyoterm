@@ -143,7 +143,10 @@ impl ToyotermApplication {
             session_status: SessionStatusState::default(),
             mouse_cursor: CursorIcon::Default,
             last_notification_at: None,
+            active_notifications: BTreeMap::new(),
             last_open_url_at: None,
+            visual_bell_deadline: None,
+            cursor_fireworks_deadline: None,
             exited: false,
         })
     }

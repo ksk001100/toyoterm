@@ -67,6 +67,7 @@ fn resolve_keybinding(
     KeybindingDispatch::Unassigned
 }
 
+#[cfg(test)]
 fn visual_line_end_column(snapshot: &toyoterm_terminal::TerminalSnapshot, row: u16) -> u16 {
     snapshot
         .cells
@@ -79,6 +80,75 @@ fn visual_line_end_column(snapshot: &toyoterm_terminal::TerminalSnapshot, row: u
         })
         .unwrap_or(0)
         .min(snapshot.columns.saturating_sub(1))
+}
+
+fn visual_last_cell_column(snapshot: &toyoterm_terminal::TerminalSnapshot, row: u16) -> u16 {
+    snapshot
+        .cells
+        .get(usize::from(row))
+        .and_then(|cells| cells.last())
+        .map(|cell| cell.column)
+        .unwrap_or(0)
+        .min(snapshot.columns.saturating_sub(1))
+}
+
+fn snap_to_cell_start(snapshot: &toyoterm_terminal::TerminalSnapshot, row: u16, col: u16) -> u16 {
+    let Some(cells) = snapshot.cells.get(usize::from(row)) else {
+        return 0;
+    };
+    if cells.is_empty() {
+        return 0;
+    }
+    for cell in cells {
+        let width = u16::from(cell.width.max(1));
+        if col >= cell.column && col < cell.column.saturating_add(width) {
+            return cell.column;
+        }
+    }
+    if let Some(last) = cells.last()
+        && col >= last.column
+    {
+        return last.column;
+    }
+    0
+}
+
+fn visual_next_column(
+    snapshot: &toyoterm_terminal::TerminalSnapshot,
+    row: u16,
+    current_col: u16,
+) -> u16 {
+    let Some(cells) = snapshot.cells.get(usize::from(row)) else {
+        return 0;
+    };
+    if cells.is_empty() {
+        return 0;
+    }
+    for cell in cells {
+        if cell.column > current_col {
+            return cell.column;
+        }
+    }
+    cells.last().map(|c| c.column).unwrap_or(0)
+}
+
+fn visual_prev_column(
+    snapshot: &toyoterm_terminal::TerminalSnapshot,
+    row: u16,
+    current_col: u16,
+) -> u16 {
+    let Some(cells) = snapshot.cells.get(usize::from(row)) else {
+        return 0;
+    };
+    if cells.is_empty() {
+        return 0;
+    }
+    for cell in cells.iter().rev() {
+        if cell.column < current_col {
+            return cell.column;
+        }
+    }
+    0
 }
 
 fn ruby_event_from_mux_event(event: MuxEvent) -> Option<RubyEvent> {
@@ -188,9 +258,10 @@ impl ToyotermApplication {
         else {
             return;
         };
+        let row = cursor.row.min(snapshot.rows.saturating_sub(1));
         let position = VisualPosition {
-            column: cursor.column.min(snapshot.columns.saturating_sub(1)),
-            row: cursor.row.min(snapshot.rows.saturating_sub(1)),
+            column: snap_to_cell_start(&snapshot, row, cursor.column),
+            row,
         };
         if let Some(terminal) = self.active_terminal_mut() {
             terminal.clear_selection();
@@ -231,22 +302,27 @@ impl ToyotermApplication {
         let Some(snapshot) = self.active_terminal().map(TerminalBackend::snapshot) else {
             return;
         };
-        let max_column = snapshot.columns.saturating_sub(1);
         let max_row = snapshot.rows.saturating_sub(1);
         let mut scroll = 0;
         match motion {
             SelectionMotion::Left => {
-                selection.current.column = selection.current.column.saturating_sub(1)
+                selection.current.column =
+                    visual_prev_column(&snapshot, selection.current.row, selection.current.column);
             }
             SelectionMotion::Right => {
                 selection.current.column =
-                    selection.current.column.saturating_add(1).min(max_column)
+                    visual_next_column(&snapshot, selection.current.row, selection.current.column);
             }
             SelectionMotion::Up => {
                 if selection.current.row == 0 {
                     scroll = 1;
                 } else {
                     selection.current.row -= 1;
+                    selection.current.column = snap_to_cell_start(
+                        &snapshot,
+                        selection.current.row,
+                        selection.current.column,
+                    );
                 }
             }
             SelectionMotion::Down => {
@@ -254,11 +330,17 @@ impl ToyotermApplication {
                     scroll = -1;
                 } else {
                     selection.current.row += 1;
+                    selection.current.column = snap_to_cell_start(
+                        &snapshot,
+                        selection.current.row,
+                        selection.current.column,
+                    );
                 }
             }
             SelectionMotion::LineStart => selection.current.column = 0,
             SelectionMotion::LineEnd => {
-                selection.current.column = visual_line_end_column(&snapshot, selection.current.row);
+                selection.current.column =
+                    visual_last_cell_column(&snapshot, selection.current.row);
             }
         }
         if let Some(terminal) = self.active_terminal_mut()
@@ -1249,5 +1331,36 @@ mod tests {
 
         assert_eq!(visual_line_end_column(&snapshot, 0), 4);
         assert_eq!(visual_line_end_column(&snapshot, 1), 7);
+    }
+
+    #[test]
+    fn visual_navigation_navigates_wide_characters_and_clamps_boundaries() {
+        let mut terminal = AlacrittyTerminalBackend::new(20, 3);
+        terminal.advance(b"short\r\nwide: \xe7\x8c\xab\xe7\x8a\xac\r\n");
+        let snapshot = terminal.snapshot();
+
+        assert_eq!(snap_to_cell_start(&snapshot, 1, 6), 6);
+        assert_eq!(snap_to_cell_start(&snapshot, 1, 7), 6);
+        assert_eq!(snap_to_cell_start(&snapshot, 1, 8), 8);
+        assert_eq!(snap_to_cell_start(&snapshot, 1, 9), 8);
+        assert_eq!(snap_to_cell_start(&snapshot, 1, 15), 8);
+        assert_eq!(snap_to_cell_start(&snapshot, 2, 5), 0);
+
+        assert_eq!(visual_next_column(&snapshot, 0, 0), 1);
+        assert_eq!(visual_next_column(&snapshot, 0, 3), 4);
+        assert_eq!(visual_next_column(&snapshot, 0, 4), 4);
+        assert_eq!(visual_next_column(&snapshot, 1, 5), 6);
+        assert_eq!(visual_next_column(&snapshot, 1, 6), 8);
+        assert_eq!(visual_next_column(&snapshot, 1, 8), 8);
+
+        assert_eq!(visual_prev_column(&snapshot, 0, 4), 3);
+        assert_eq!(visual_prev_column(&snapshot, 0, 1), 0);
+        assert_eq!(visual_prev_column(&snapshot, 0, 0), 0);
+        assert_eq!(visual_prev_column(&snapshot, 1, 8), 6);
+        assert_eq!(visual_prev_column(&snapshot, 1, 6), 5);
+
+        assert_eq!(visual_last_cell_column(&snapshot, 0), 4);
+        assert_eq!(visual_last_cell_column(&snapshot, 1), 8);
+        assert_eq!(visual_last_cell_column(&snapshot, 2), 0);
     }
 }

@@ -2901,6 +2901,7 @@ version = "0.0.1"
 dependencies = [
  "arboard",
  "base64 0.23.1",
+ "image",
  "notify-rust",
  "pollster",
  "sys-locale",

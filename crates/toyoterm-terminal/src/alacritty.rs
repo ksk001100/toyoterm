@@ -3,7 +3,9 @@ use super::graphics::{
     handler::{GraphicsHandler, SemanticMarkerKind, SemanticMarkers},
     stream::{Stream, Token},
 };
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
+use std::io::Cursor;
+use std::sync::Arc;
 use std::sync::mpsc::{self, Receiver, Sender};
 
 use alacritty_terminal::Term;
@@ -22,7 +24,8 @@ use cursor_icon::CursorIcon;
 use super::{
     CellAttributes, CellColor, CommandZoneSpan, CursorShape, CursorState, SearchDirection,
     SearchMatchSpan, SearchResult, SelectionKind, SelectionSpan, TerminalBackend, TerminalCell,
-    TerminalColors, TerminalMode, TerminalSnapshot,
+    TerminalColors, TerminalMode, TerminalSnapshot, TerminalSpecialColors,
+    TerminalTransparentColor,
 };
 
 pub const DEFAULT_SCROLLBACK_LINES: usize = 10_000;
@@ -37,6 +40,11 @@ pub const MAX_OSC_SESSION_STATUS_BYTES: usize = 1024;
 pub const MAX_OSC_URL_BYTES: usize = 2 * 1024;
 pub const MAX_OSC_USER_VAR_NAME_BYTES: usize = 128;
 pub const MAX_OSC_USER_VAR_VALUE_BYTES: usize = 4 * 1024;
+pub const MAX_OSC_NOTIFICATION_ICON_BYTES: usize = 1024 * 1024;
+// alacritty_terminal deliberately ignores SGR 5/6/25, but its cell flag
+// storage still has one unused bit. Keeping blink there makes the attribute
+// follow normal cell copies, scrollback, alternate screens, and reflow.
+pub(crate) const BLINK_FLAG_BITS: u16 = 1 << 15;
 const MAX_SHELL_INTEGRATION_PAYLOAD_BYTES: usize = 8 * 1024;
 const MAX_ITERM_COPY_BASE64_BYTES: usize = MAX_OSC52_COPY_BYTES.div_ceil(3) * 4;
 const ITERM_COPY_PREFIX: &[u8] = b"1337;Copy=:";
@@ -66,9 +74,20 @@ pub enum TerminalEvent {
     CommandLineStarted,
     CommandStarted,
     CommandFinished(Option<i32>),
+    CapturedOutputCleared,
     MouseCursorChanged(CursorIcon),
     MouseCursorControl(String),
     ColorControl(String),
+    XtermSpecialColorSet {
+        index: u8,
+        color: [u8; 3],
+    },
+    XtermSpecialColorQuery(u8),
+    XtermSpecialColorReset(Option<u8>),
+    XtermSpecialColorMode {
+        index: u8,
+        enabled: bool,
+    },
     ItermDefaultColorQuery(i8),
     ItermUiColorChanged {
         role: ItermUiColorRole,
@@ -101,10 +120,29 @@ pub enum TerminalEvent {
         timeout_ms: Option<u32>,
         sound: NotificationSound,
         icon_name: Option<String>,
+        icon: Option<NotificationIcon>,
+        buttons: Vec<String>,
+        reporting: NotificationReporting,
     },
     NotificationClose(String),
+    NotificationAliveQuery(String),
     PtyWrite(String),
-    Bell,
+    Bell {
+        visual_bell: Option<[u8; 3]>,
+    },
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct NotificationIcon {
+    pub width: u16,
+    pub height: u16,
+    pub rgba: Arc<[u8]>,
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct NotificationReporting {
+    pub activation: bool,
+    pub close: bool,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -114,6 +152,24 @@ pub enum ItermUiColorRole {
     Underline,
     SelectionBackground,
     SelectionForeground,
+    VisualBell,
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+enum DynamicUiColor {
+    #[default]
+    Default,
+    Dynamic,
+    Explicit([u8; 3]),
+}
+
+impl DynamicUiColor {
+    fn explicit(self) -> Option<[u8; 3]> {
+        match self {
+            Self::Explicit(color) => Some(color),
+            Self::Default | Self::Dynamic => None,
+        }
+    }
 }
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
@@ -144,6 +200,7 @@ pub enum TerminalAttention {
     Indefinite,
     Once,
     Cancel,
+    Fireworks,
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -195,6 +252,21 @@ struct ShellIntegrationParser {
 #[derive(Default)]
 struct NotificationAssemblies {
     pending: HashMap<String, PendingNotification>,
+    pending_icons: HashMap<String, PendingNotificationIcon>,
+    icons: HashMap<String, CachedNotificationIcon>,
+    icon_order: VecDeque<String>,
+}
+
+#[derive(Default)]
+struct PendingNotificationIcon {
+    encoded_chunks: Vec<Vec<u8>>,
+    encoded_len: usize,
+}
+
+#[derive(Clone, Default)]
+struct CachedNotificationIcon {
+    name: Option<String>,
+    image: Option<NotificationIcon>,
 }
 
 #[derive(Default)]
@@ -206,6 +278,36 @@ struct PendingNotification {
     timeout_ms: Option<u32>,
     sound: NotificationSound,
     icon_name: Option<String>,
+    icon_cache_id: Option<String>,
+    button_text: String,
+    reporting: NotificationReporting,
+}
+
+impl NotificationAssemblies {
+    fn cache_icon(&mut self, id: String, entry: CachedNotificationIcon) {
+        self.icon_order.retain(|cached| cached != &id);
+        if !self.icons.contains_key(&id)
+            && self.icons.len() >= 16
+            && let Some(oldest) = self.icon_order.pop_front()
+        {
+            self.icons.remove(&oldest);
+        }
+        self.icons.insert(id.clone(), entry);
+        self.icon_order.push_back(id);
+    }
+
+    fn cached_icon(&mut self, id: &str) -> Option<CachedNotificationIcon> {
+        let icon = self.icons.get(id)?.clone();
+        self.icon_order.retain(|cached| cached != id);
+        self.icon_order.push_back(id.to_owned());
+        Some(icon)
+    }
+
+    fn remove_icon(&mut self, id: &str) {
+        self.pending_icons.remove(id);
+        self.icons.remove(id);
+        self.icon_order.retain(|cached| cached != id);
+    }
 }
 
 #[derive(Default)]
@@ -285,6 +387,7 @@ impl ShellIntegrationParser {
                         && matches!(
                             command.as_slice(),
                             b"1" | b"4"
+                                | b"5"
                                 | b"6"
                                 | b"7"
                                 | b"9"
@@ -293,6 +396,8 @@ impl ShellIntegrationParser {
                                 | b"21"
                                 | b"22"
                                 | b"99"
+                                | b"105"
+                                | b"106"
                                 | b"133"
                                 | b"777"
                                 | b"1337"
@@ -400,8 +505,11 @@ fn parse_shell_integration_payload(
         }
     } else if let Some(control) = payload.strip_prefix(b"4;") {
         parse_iterm_default_color_queries(control, events);
+    } else if let Some(control) = payload.strip_prefix(b"5;") {
+        parse_xterm_special_color_control(5, control, events);
     } else if let Some(control) = payload.strip_prefix(b"6;") {
         parse_osc6_tab_color(control, events);
+        parse_xterm_special_color_control(106, control, events);
     } else if let Some(payload) = payload.strip_prefix(b"7;") {
         if let Some(path) = osc7_path(payload) {
             events.push(TerminalEvent::CwdChanged(path));
@@ -440,6 +548,9 @@ fn parse_shell_integration_payload(
                 timeout_ms: None,
                 sound: NotificationSound::System,
                 icon_name: None,
+                icon: None,
+                buttons: Vec::new(),
+                reporting: NotificationReporting::default(),
             });
         }
     } else if let Some(payload) = payload.strip_prefix(b"777;notify;") {
@@ -458,10 +569,17 @@ fn parse_shell_integration_payload(
                 timeout_ms: None,
                 sound: NotificationSound::System,
                 icon_name: None,
+                icon: None,
+                buttons: Vec::new(),
+                reporting: NotificationReporting::default(),
             });
         }
     } else if let Some(payload) = payload.strip_prefix(b"99;") {
         parse_osc99_notification(payload, events, notifications);
+    } else if let Some(control) = payload.strip_prefix(b"105;") {
+        parse_xterm_special_color_control(105, control, events);
+    } else if let Some(control) = payload.strip_prefix(b"106;") {
+        parse_xterm_special_color_control(106, control, events);
     } else if let Some(payload) = payload.strip_prefix(b"21337;") {
         if let Some(update) = osc21337_session_status(payload) {
             events.push(TerminalEvent::SessionStatusChanged(update));
@@ -504,6 +622,7 @@ fn parse_shell_integration_payload(
             b"yes" => Some(TerminalAttention::Indefinite),
             b"once" => Some(TerminalAttention::Once),
             b"no" => Some(TerminalAttention::Cancel),
+            b"fireworks" => Some(TerminalAttention::Fireworks),
             _ => None,
         };
         if let Some(request) = request {
@@ -545,6 +664,8 @@ fn parse_shell_integration_payload(
         }
     } else if payload == b"1337;SetMark" {
         events.push(TerminalEvent::MarkSet);
+    } else if payload == b"1337;ClearCapturedOutput" {
+        events.push(TerminalEvent::CapturedOutputCleared);
     } else if osc133_marker(payload, b'A') {
         events.push(TerminalEvent::PromptStarted);
     } else if osc133_marker(payload, b'B') {
@@ -860,6 +981,55 @@ fn parse_iterm_default_color_queries(control: &[u8], events: &mut Vec<TerminalEv
     }
 }
 
+fn parse_xterm_special_color_control(osc: u16, control: &[u8], events: &mut Vec<TerminalEvent>) {
+    if control.len() > 1024 {
+        return;
+    }
+    let Ok(control) = std::str::from_utf8(control) else {
+        return;
+    };
+    let fields = control.split(';').collect::<Vec<_>>();
+    match osc {
+        5 if fields.len() % 2 == 0 => {
+            for pair in fields.as_chunks::<2>().0 {
+                let Some(index) = pair[0].parse::<u8>().ok().filter(|index| *index < 5) else {
+                    continue;
+                };
+                if pair[1] == "?" {
+                    events.push(TerminalEvent::XtermSpecialColorQuery(index));
+                } else if let Some(Rgb { r, g, b }) = parse_kitty_color(pair[1]) {
+                    events.push(TerminalEvent::XtermSpecialColorSet {
+                        index,
+                        color: [r, g, b],
+                    });
+                }
+            }
+        }
+        105 if control.is_empty() => {
+            events.push(TerminalEvent::XtermSpecialColorReset(None));
+        }
+        105 => events.extend(
+            fields
+                .into_iter()
+                .filter_map(|index| index.parse::<u8>().ok())
+                .filter(|index| *index < 5)
+                .map(|index| TerminalEvent::XtermSpecialColorReset(Some(index))),
+        ),
+        106 if fields.len() % 2 == 0 => {
+            for pair in fields.as_chunks::<2>().0 {
+                let (Some(index), Some(enabled)) = (
+                    pair[0].parse::<u8>().ok().filter(|index| *index <= 5),
+                    pair[1].parse::<i64>().ok().map(|value| value != 0),
+                ) else {
+                    continue;
+                };
+                events.push(TerminalEvent::XtermSpecialColorMode { index, enabled });
+            }
+        }
+        _ => {}
+    }
+}
+
 fn bare_osc_event(command: &[u8]) -> Option<TerminalEvent> {
     match command {
         b"117" => Some(TerminalEvent::ItermUiColorReset(
@@ -868,6 +1038,7 @@ fn bare_osc_event(command: &[u8]) -> Option<TerminalEvent> {
         b"119" => Some(TerminalEvent::ItermUiColorReset(
             ItermUiColorRole::SelectionForeground,
         )),
+        b"105" => Some(TerminalEvent::XtermSpecialColorReset(None)),
         b"30001" => Some(TerminalEvent::ColorStackPush),
         b"30101" => Some(TerminalEvent::ColorStackPop),
         _ => None,
@@ -961,20 +1132,35 @@ fn kitty_ui_color_role(key: &str) -> Option<ItermUiColorRole> {
         "selection_background" => Some(ItermUiColorRole::SelectionBackground),
         "selection_foreground" => Some(ItermUiColorRole::SelectionForeground),
         "cursor_text" => Some(ItermUiColorRole::CursorForeground),
+        "visual_bell" => Some(ItermUiColorRole::VisualBell),
         _ => None,
     }
 }
 
-fn parse_kitty_color(value: &str) -> Option<Rgb> {
-    let value = if let Some((color, alpha)) = value.split_once('@') {
-        let alpha = alpha.parse::<f64>().ok()?;
-        if !alpha.is_finite() || color.contains('@') {
-            return None;
-        }
-        color
-    } else {
-        value
+fn transparent_background_index(key: &str) -> Option<usize> {
+    let index = key
+        .strip_prefix("transparent_background_color")?
+        .parse::<u8>()
+        .ok()?;
+    (1..=7).contains(&index).then(|| usize::from(index - 1))
+}
+
+fn split_kitty_color_alpha(value: &str) -> Option<(&str, Option<f32>)> {
+    let Some((color, alpha)) = value.split_once('@') else {
+        return Some((value, None));
     };
+    if color.contains('@') || alpha.contains('@') || color.is_empty() || alpha.is_empty() {
+        return None;
+    }
+    let alpha = alpha.parse::<f64>().ok()?;
+    if !alpha.is_finite() {
+        return None;
+    }
+    Some((color, (alpha >= 0.0).then(|| alpha.clamp(0.0, 1.0) as f32)))
+}
+
+fn parse_kitty_color(value: &str) -> Option<Rgb> {
+    let (value, _) = split_kitty_color_alpha(value)?;
     if let Some(hex) = value.strip_prefix('#') {
         if hex.len() % 3 != 0 || !(3..=12).contains(&hex.len()) {
             return None;
@@ -1048,6 +1234,26 @@ fn parse_kitty_color(value: &str) -> Option<Rgb> {
     Some(Rgb { r, g, b })
 }
 
+fn parse_transparent_background(value: &str) -> Option<TerminalTransparentColor> {
+    let (color, opacity) = split_kitty_color_alpha(value)?;
+    let Rgb { r, g, b } = parse_kitty_color(color)?;
+    Some(TerminalTransparentColor {
+        color: [r, g, b],
+        opacity,
+    })
+}
+
+fn format_transparent_background(value: TerminalTransparentColor) -> String {
+    let [red, green, blue] = value.color;
+    let mut response = format!("rgb:{red:02x}/{green:02x}/{blue:02x}");
+    if let Some(opacity) = value.opacity {
+        let formatted = format!("{opacity:.6}");
+        response.push('@');
+        response.push_str(formatted.trim_end_matches('0').trim_end_matches('.'));
+    }
+    response
+}
+
 fn parse_osc99_notification(
     payload: &[u8],
     events: &mut Vec<TerminalEvent>,
@@ -1068,6 +1274,9 @@ fn parse_osc99_notification(
     let mut timeout_ms = None;
     let mut sound = None;
     let mut icon_name = None;
+    let mut icon_cache_id = None;
+    let mut report_activation = None;
+    let mut report_close = None;
     for item in metadata.split(':').filter(|item| !item.is_empty()) {
         let Some((key, value)) = item.split_once('=') else {
             return;
@@ -1151,16 +1360,43 @@ fn parse_osc99_notification(
                 };
                 icon_name = Some(value);
             }
+            "g" => {
+                if !valid_notification_id(value) {
+                    return;
+                }
+                icon_cache_id = Some(value);
+            }
+            "a" => {
+                let mut report = false;
+                for action in value.split(',') {
+                    match action {
+                        "report" => report = true,
+                        "-report" => report = false,
+                        "focus" | "-focus" => {}
+                        _ => return,
+                    }
+                }
+                report_activation = Some(report && cfg!(windows));
+            }
+            "c" => {
+                report_close = Some(match value {
+                    "0" => false,
+                    "1" => cfg!(windows),
+                    _ => return,
+                });
+            }
             _ => {}
         }
     }
 
+    let payload = &payload[separator + 1..];
+
     if payload_type == "?" {
         let id = id.unwrap_or("0");
         let payload_types = if cfg!(windows) {
-            "title,body"
+            "title,body,icon,buttons,alive"
         } else {
-            "title,body,close"
+            "title,body,close,icon,buttons,alive"
         };
         let sounds = if cfg!(all(unix, not(target_os = "macos"))) {
             "system,silent,error,warn,warning,info,question"
@@ -1168,8 +1404,9 @@ fn parse_osc99_notification(
             "system,silent"
         };
         let expiry = if cfg!(windows) { "" } else { ":w=1" };
+        let reports = if cfg!(windows) { ":a=report:c=1" } else { "" };
         events.push(TerminalEvent::PtyWrite(format!(
-            "\x1b]99;i={id}:p=?;o=always,unfocused,invisible:p={payload_types}:s={sounds}:u=0,1,2{expiry}\x1b\\"
+            "\x1b]99;i={id}:p=?;o=always,unfocused,invisible:p={payload_types}:s={sounds}:u=0,1,2{expiry}{reports}\x1b\\"
         )));
         return;
     }
@@ -1180,11 +1417,27 @@ fn parse_osc99_notification(
         }
         return;
     }
-    if !matches!(payload_type, "title" | "body") {
+    if payload_type == "alive" {
+        events.push(TerminalEvent::NotificationAliveQuery(
+            id.unwrap_or("0").to_owned(),
+        ));
+        return;
+    }
+    if payload_type == "icon" {
+        apply_notification_icon_chunk(
+            notifications,
+            icon_cache_id.or(id),
+            icon_name,
+            encoded,
+            done,
+            payload,
+        );
+        return;
+    }
+    if !matches!(payload_type, "title" | "body" | "buttons") {
         return;
     }
 
-    let payload = &payload[separator + 1..];
     if payload.len() > 4096 {
         return;
     }
@@ -1227,10 +1480,24 @@ fn parse_osc99_notification(
     if let Some(icon_name) = icon_name {
         notification.icon_name = Some(icon_name);
     }
-    let target = if payload_type == "body" {
-        &mut notification.body
-    } else {
-        &mut notification.title
+    if let Some(icon_cache_id) = icon_cache_id {
+        notification.icon_cache_id = Some(icon_cache_id.to_owned());
+        if let Some(icon_name) = notification.icon_name.clone() {
+            let mut cached = notifications.cached_icon(icon_cache_id).unwrap_or_default();
+            cached.name = Some(icon_name);
+            notifications.cache_icon(icon_cache_id.to_owned(), cached);
+        }
+    }
+    if let Some(report_activation) = report_activation {
+        notification.reporting.activation = report_activation;
+    }
+    if let Some(report_close) = report_close {
+        notification.reporting.close = report_close;
+    }
+    let target = match payload_type {
+        "body" => &mut notification.body,
+        "buttons" => &mut notification.button_text,
+        _ => &mut notification.title,
     };
     if target.len().saturating_add(text.len()) > MAX_OSC_NOTIFICATION_BYTES {
         return;
@@ -1249,6 +1516,30 @@ fn parse_osc99_notification(
     if notification.title.is_empty() && notification.body.is_empty() {
         return;
     }
+    let buttons = if notification.button_text.is_empty() {
+        Vec::new()
+    } else {
+        let buttons = notification
+            .button_text
+            .split('\u{2028}')
+            .map(str::to_owned)
+            .collect::<Vec<_>>();
+        if buttons.len() > 3
+            || buttons
+                .iter()
+                .any(|button| button.is_empty() || button.len() > 128)
+        {
+            return;
+        }
+        buttons
+    };
+    let cached_icon = notification
+        .icon_cache_id
+        .as_deref()
+        .and_then(|id| notifications.cached_icon(id));
+    if notification.icon_name.is_none() {
+        notification.icon_name = cached_icon.as_ref().and_then(|icon| icon.name.clone());
+    }
     events.push(TerminalEvent::Notification {
         id: id.map(str::to_owned),
         title: (!notification.title.is_empty()).then_some(notification.title),
@@ -1258,7 +1549,118 @@ fn parse_osc99_notification(
         timeout_ms: notification.timeout_ms,
         sound: notification.sound,
         icon_name: notification.icon_name,
+        icon: cached_icon.and_then(|icon| icon.image),
+        buttons,
+        reporting: notification.reporting,
     });
+}
+
+fn apply_notification_icon_chunk(
+    notifications: &mut NotificationAssemblies,
+    cache_id: Option<&str>,
+    icon_name: Option<String>,
+    encoded: bool,
+    done: bool,
+    payload: &[u8],
+) {
+    const MAX_ENCODED_BYTES: usize = MAX_OSC_NOTIFICATION_ICON_BYTES.div_ceil(3) * 4 + 4;
+    let Some(cache_id) = cache_id else {
+        return;
+    };
+    if payload.is_empty() {
+        notifications.remove_icon(cache_id);
+        if let Some(icon_name) = icon_name {
+            notifications.cache_icon(
+                cache_id.to_owned(),
+                CachedNotificationIcon {
+                    name: Some(icon_name),
+                    image: None,
+                },
+            );
+        }
+        return;
+    }
+    if !encoded || payload.len() > 4096 {
+        notifications.pending_icons.remove(cache_id);
+        return;
+    }
+
+    let pending = notifications
+        .pending_icons
+        .entry(cache_id.to_owned())
+        .or_default();
+    if pending.encoded_chunks.len() >= 256
+        || pending.encoded_len.saturating_add(payload.len()) > MAX_ENCODED_BYTES
+    {
+        notifications.pending_icons.remove(cache_id);
+        return;
+    }
+    pending.encoded_len += payload.len();
+    pending.encoded_chunks.push(payload.to_vec());
+    if !done {
+        return;
+    }
+
+    let Some(pending) = notifications.pending_icons.remove(cache_id) else {
+        return;
+    };
+    let Some(bytes) = decode_notification_icon_chunks(&pending.encoded_chunks) else {
+        return;
+    };
+    let Some(image) = decode_notification_icon(&bytes) else {
+        return;
+    };
+    notifications.cache_icon(
+        cache_id.to_owned(),
+        CachedNotificationIcon {
+            name: icon_name,
+            image: Some(image),
+        },
+    );
+}
+
+fn decode_notification_icon_chunks(chunks: &[Vec<u8>]) -> Option<Vec<u8>> {
+    let combined = chunks.concat();
+    if let Some(decoded) = decode_standard_base64(&combined)
+        && decoded.len() <= MAX_OSC_NOTIFICATION_ICON_BYTES
+    {
+        return Some(decoded);
+    }
+    let mut decoded = Vec::new();
+    for chunk in chunks {
+        let bytes = decode_standard_base64(chunk)?;
+        if decoded.len().saturating_add(bytes.len()) > MAX_OSC_NOTIFICATION_ICON_BYTES {
+            return None;
+        }
+        decoded.extend_from_slice(&bytes);
+    }
+    Some(decoded)
+}
+
+fn decode_notification_icon(bytes: &[u8]) -> Option<NotificationIcon> {
+    if bytes.is_empty() || bytes.len() > MAX_OSC_NOTIFICATION_ICON_BYTES {
+        return None;
+    }
+    let mut reader = image::ImageReader::new(Cursor::new(bytes))
+        .with_guessed_format()
+        .ok()?;
+    if !matches!(
+        reader.format(),
+        Some(image::ImageFormat::Png | image::ImageFormat::Jpeg | image::ImageFormat::Gif)
+    ) {
+        return None;
+    }
+    let mut limits = image::Limits::default();
+    limits.max_image_width = Some(512);
+    limits.max_image_height = Some(512);
+    limits.max_alloc = Some(2 * MAX_OSC_NOTIFICATION_ICON_BYTES as u64);
+    reader.limits(limits);
+    let pixels = reader.decode().ok()?.into_rgba8();
+    Some(NotificationIcon {
+        width: pixels.width().try_into().ok()?,
+        height: pixels.height().try_into().ok()?,
+        rgba: Arc::from(pixels.into_raw()),
+    })
 }
 
 fn notification_icon_name(value: &str) -> Option<String> {
@@ -1458,7 +1860,7 @@ impl EventListener for TerminalEventSender {
             AlacrittyEvent::Title(title) => Some(TerminalEvent::TitleChanged(title)),
             AlacrittyEvent::ResetTitle => Some(TerminalEvent::TitleReset),
             AlacrittyEvent::PtyWrite(text) => Some(TerminalEvent::PtyWrite(text)),
-            AlacrittyEvent::Bell => Some(TerminalEvent::Bell),
+            AlacrittyEvent::Bell => Some(TerminalEvent::Bell { visual_bell: None }),
             _ => None,
         };
         if let Some(event) = event {
@@ -1481,6 +1883,8 @@ pub struct AlacrittyTerminalBackend {
     semantic_markers: SemanticMarkers,
     mouse_cursor_stacks: MouseCursorStacks,
     iterm_ui_colors: ItermUiColors,
+    special_colors: TerminalSpecialColors,
+    cursor_dynamic: bool,
     color_stack: Vec<ColorStackEntry>,
     clipboard_capture: Option<ClipboardCapture>,
     pending_events: Vec<TerminalEvent>,
@@ -1488,18 +1892,22 @@ pub struct AlacrittyTerminalBackend {
     search: SearchState,
 }
 
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
 struct ItermUiColors {
     link: Option<[u8; 3]>,
-    cursor_foreground: Option<[u8; 3]>,
+    cursor_foreground: DynamicUiColor,
     underline: Option<[u8; 3]>,
-    selection_background: Option<[u8; 3]>,
-    selection_foreground: Option<[u8; 3]>,
+    selection_background: DynamicUiColor,
+    selection_foreground: DynamicUiColor,
+    visual_bell: DynamicUiColor,
+    transparent_backgrounds: [Option<TerminalTransparentColor>; 7],
 }
 
 struct ColorStackEntry {
     terminal: Vec<Option<alacritty_terminal::vte::ansi::Rgb>>,
     iterm_ui: ItermUiColors,
+    special: TerminalSpecialColors,
+    cursor_dynamic: bool,
 }
 
 #[derive(Clone, Copy)]
@@ -1577,6 +1985,8 @@ impl AlacrittyTerminalBackend {
             semantic_markers: SemanticMarkers::default(),
             mouse_cursor_stacks: MouseCursorStacks::default(),
             iterm_ui_colors: ItermUiColors::default(),
+            special_colors: TerminalSpecialColors::default(),
+            cursor_dynamic: false,
             color_stack: Vec::new(),
             clipboard_capture: None,
             pending_events: Vec::new(),
@@ -1586,9 +1996,20 @@ impl AlacrittyTerminalBackend {
     }
 
     pub fn drain_events(&mut self) -> Vec<TerminalEvent> {
-        let mut events = std::mem::take(&mut self.pending_events);
-        events.extend(self.events.try_iter());
-        events
+        self.collect_vt_events();
+        std::mem::take(&mut self.pending_events)
+    }
+
+    fn collect_vt_events(&mut self) {
+        let visual_bell = self.render_colors().visual_bell;
+        self.pending_events
+            .extend(self.events.try_iter().map(|event| {
+                if matches!(event, TerminalEvent::Bell { .. }) {
+                    TerminalEvent::Bell { visual_bell }
+                } else {
+                    event
+                }
+            }));
     }
 
     fn advance_vt(&mut self, bytes: &[u8]) {
@@ -1745,6 +2166,40 @@ impl AlacrittyTerminalBackend {
             self.apply_color_control(control);
             return;
         }
+        match event {
+            TerminalEvent::XtermSpecialColorSet { index, color } => {
+                *self.special_color_mut(usize::from(index)) = Some(color);
+                return;
+            }
+            TerminalEvent::XtermSpecialColorQuery(index) => {
+                let [red, green, blue] = self.resolved_special_color(usize::from(index));
+                self.pending_events.push(TerminalEvent::PtyWrite(format!(
+                    "\x1b]5;{index};rgb:{red:02x}{red:02x}/{green:02x}{green:02x}/{blue:02x}{blue:02x}\x1b\\"
+                )));
+                return;
+            }
+            TerminalEvent::XtermSpecialColorReset(index) => {
+                if let Some(index) = index {
+                    *self.special_color_mut(usize::from(index)) = None;
+                } else {
+                    self.special_colors.bold = None;
+                    self.special_colors.underline = None;
+                    self.special_colors.blink = None;
+                    self.special_colors.reverse = None;
+                    self.special_colors.italic = None;
+                }
+                return;
+            }
+            TerminalEvent::XtermSpecialColorMode { index: 5, enabled } => {
+                self.special_colors.override_ansi = enabled;
+                return;
+            }
+            TerminalEvent::XtermSpecialColorMode { index, enabled } => {
+                self.special_colors.enabled[usize::from(index)] = enabled;
+                return;
+            }
+            _ => {}
+        }
         if let TerminalEvent::ItermDefaultColorQuery(index) = event {
             let color_index = match index {
                 -1 => NamedColor::Foreground as usize,
@@ -1787,6 +2242,11 @@ impl AlacrittyTerminalBackend {
             self.pop_color_stack();
             return;
         }
+        if event == TerminalEvent::CapturedOutputCleared {
+            self.semantic_markers.clear_commands();
+            self.pending_events.push(event);
+            return;
+        }
         let kind = match &event {
             TerminalEvent::MarkSet => Some(SemanticMarkerKind::Mark),
             TerminalEvent::PromptStarted => Some(SemanticMarkerKind::Prompt),
@@ -1819,6 +2279,18 @@ impl AlacrittyTerminalBackend {
             let (key, value, reset) = assignment
                 .split_once('=')
                 .map_or((assignment, "", true), |(key, value)| (key, value, false));
+            if let Some(index) = transparent_background_index(key) {
+                if value == "?" {
+                    let response = self.iterm_ui_colors.transparent_backgrounds[index]
+                        .map_or_else(String::new, format_transparent_background);
+                    responses.push(format!("{key}={response}"));
+                } else if reset || value.is_empty() {
+                    self.iterm_ui_colors.transparent_backgrounds[index] = None;
+                } else if let Some(color) = parse_transparent_background(value) {
+                    self.iterm_ui_colors.transparent_backgrounds[index] = Some(color);
+                }
+                continue;
+            }
             if let Some(role) = kitty_ui_color_role(key) {
                 if value == "?" {
                     let response = self
@@ -1829,10 +2301,34 @@ impl AlacrittyTerminalBackend {
                     responses.push(format!("{key}={response}"));
                 } else if reset {
                     self.reset_iterm_ui_color(role);
-                } else if !value.is_empty()
-                    && let Some(Rgb { r, g, b }) = parse_kitty_color(value)
-                {
+                } else if value.is_empty() {
+                    self.set_iterm_ui_color_dynamic(role);
+                } else if let Some(Rgb { r, g, b }) = parse_kitty_color(value) {
                     self.set_iterm_ui_color(role, [r, g, b]);
+                }
+                continue;
+            }
+            if key == "cursor" {
+                let index = NamedColor::Cursor as usize;
+                if value == "?" {
+                    let response = if self.cursor_dynamic {
+                        String::new()
+                    } else {
+                        resolved_color(&self.terminal, &self.default_colors, index).map_or_else(
+                            || "?".to_owned(),
+                            |color| format!("rgb:{:02x}/{:02x}/{:02x}", color.r, color.g, color.b),
+                        )
+                    };
+                    responses.push(format!("{key}={response}"));
+                } else if reset {
+                    self.cursor_dynamic = false;
+                    Handler::reset_color(&mut self.terminal, index);
+                } else if value.is_empty() {
+                    self.cursor_dynamic = true;
+                    Handler::reset_color(&mut self.terminal, index);
+                } else if let Some(color) = parse_kitty_color(value) {
+                    self.cursor_dynamic = false;
+                    Handler::set_color(&mut self.terminal, index, color);
                 }
                 continue;
             }
@@ -1849,9 +2345,11 @@ impl AlacrittyTerminalBackend {
                         |color| format!("rgb:{:02x}/{:02x}/{:02x}", color.r, color.g, color.b),
                     );
                 responses.push(format!("{key}={response}"));
-            } else if value.is_empty() {
+            } else if reset {
                 Handler::reset_color(&mut self.terminal, index);
-            } else if let Some(color) = parse_kitty_color(value) {
+            } else if !value.is_empty()
+                && let Some(color) = parse_kitty_color(value)
+            {
                 Handler::set_color(&mut self.terminal, index, color);
             }
         }
@@ -1863,21 +2361,113 @@ impl AlacrittyTerminalBackend {
         }
     }
 
+    fn special_color_mut(&mut self, index: usize) -> &mut Option<[u8; 3]> {
+        match index {
+            0 => &mut self.special_colors.bold,
+            1 => &mut self.special_colors.underline,
+            2 => &mut self.special_colors.blink,
+            3 => &mut self.special_colors.reverse,
+            4 => &mut self.special_colors.italic,
+            _ => unreachable!("special color index is validated"),
+        }
+    }
+
+    fn resolved_special_color(&self, index: usize) -> [u8; 3] {
+        let configured = match index {
+            0 => self.special_colors.bold,
+            1 => self.special_colors.underline,
+            2 => self.special_colors.blink,
+            3 => self.special_colors.reverse,
+            4 => self.special_colors.italic,
+            _ => None,
+        };
+        configured.unwrap_or_else(|| match index {
+            0 => {
+                let color = resolved_color(
+                    &self.terminal,
+                    &self.default_colors,
+                    NamedColor::BrightForeground as usize,
+                )
+                .expect("bold foreground has a configured fallback");
+                [color.r, color.g, color.b]
+            }
+            3 => {
+                let color = resolved_color(
+                    &self.terminal,
+                    &self.default_colors,
+                    NamedColor::Background as usize,
+                )
+                .expect("background has a configured fallback");
+                [color.r, color.g, color.b]
+            }
+            _ => {
+                let color = resolved_color(
+                    &self.terminal,
+                    &self.default_colors,
+                    NamedColor::Foreground as usize,
+                )
+                .expect("foreground has a configured fallback");
+                [color.r, color.g, color.b]
+            }
+        })
+    }
+
     fn set_iterm_ui_color(&mut self, role: ItermUiColorRole, color: [u8; 3]) {
-        *self.iterm_ui_color_mut(role) = Some(color);
+        if role == ItermUiColorRole::VisualBell {
+            self.iterm_ui_colors.visual_bell = DynamicUiColor::Explicit(color);
+        } else {
+            match role {
+                ItermUiColorRole::Link => self.iterm_ui_colors.link = Some(color),
+                ItermUiColorRole::CursorForeground => {
+                    self.iterm_ui_colors.cursor_foreground = DynamicUiColor::Explicit(color);
+                }
+                ItermUiColorRole::Underline => self.iterm_ui_colors.underline = Some(color),
+                ItermUiColorRole::SelectionBackground => {
+                    self.iterm_ui_colors.selection_background = DynamicUiColor::Explicit(color);
+                }
+                ItermUiColorRole::SelectionForeground => {
+                    self.iterm_ui_colors.selection_foreground = DynamicUiColor::Explicit(color);
+                }
+                ItermUiColorRole::VisualBell => unreachable!(),
+            }
+        }
     }
 
     fn reset_iterm_ui_color(&mut self, role: ItermUiColorRole) {
-        *self.iterm_ui_color_mut(role) = None;
+        match role {
+            ItermUiColorRole::Link => self.iterm_ui_colors.link = None,
+            ItermUiColorRole::CursorForeground => {
+                self.iterm_ui_colors.cursor_foreground = DynamicUiColor::Default;
+            }
+            ItermUiColorRole::Underline => self.iterm_ui_colors.underline = None,
+            ItermUiColorRole::SelectionBackground => {
+                self.iterm_ui_colors.selection_background = DynamicUiColor::Default;
+            }
+            ItermUiColorRole::SelectionForeground => {
+                self.iterm_ui_colors.selection_foreground = DynamicUiColor::Default;
+            }
+            ItermUiColorRole::VisualBell => {
+                self.iterm_ui_colors.visual_bell = DynamicUiColor::Default;
+            }
+        }
     }
 
-    fn iterm_ui_color_mut(&mut self, role: ItermUiColorRole) -> &mut Option<[u8; 3]> {
+    fn set_iterm_ui_color_dynamic(&mut self, role: ItermUiColorRole) {
         match role {
-            ItermUiColorRole::Link => &mut self.iterm_ui_colors.link,
-            ItermUiColorRole::CursorForeground => &mut self.iterm_ui_colors.cursor_foreground,
-            ItermUiColorRole::Underline => &mut self.iterm_ui_colors.underline,
-            ItermUiColorRole::SelectionBackground => &mut self.iterm_ui_colors.selection_background,
-            ItermUiColorRole::SelectionForeground => &mut self.iterm_ui_colors.selection_foreground,
+            ItermUiColorRole::Link => self.iterm_ui_colors.link = None,
+            ItermUiColorRole::CursorForeground => {
+                self.iterm_ui_colors.cursor_foreground = DynamicUiColor::Dynamic;
+            }
+            ItermUiColorRole::Underline => self.iterm_ui_colors.underline = None,
+            ItermUiColorRole::SelectionBackground => {
+                self.iterm_ui_colors.selection_background = DynamicUiColor::Dynamic;
+            }
+            ItermUiColorRole::SelectionForeground => {
+                self.iterm_ui_colors.selection_foreground = DynamicUiColor::Dynamic;
+            }
+            ItermUiColorRole::VisualBell => {
+                self.iterm_ui_colors.visual_bell = DynamicUiColor::Dynamic;
+            }
         }
     }
 
@@ -1888,18 +2478,26 @@ impl AlacrittyTerminalBackend {
                     .link
                     .unwrap_or(self.default_colors.foreground),
             ),
-            ItermUiColorRole::CursorForeground => self.iterm_ui_colors.cursor_foreground,
+            ItermUiColorRole::CursorForeground => self.iterm_ui_colors.cursor_foreground.explicit(),
             ItermUiColorRole::Underline => Some(
                 self.iterm_ui_colors
                     .underline
                     .unwrap_or(self.default_colors.foreground),
             ),
-            ItermUiColorRole::SelectionBackground => Some(
-                self.iterm_ui_colors
-                    .selection_background
-                    .unwrap_or(self.default_colors.selection),
-            ),
-            ItermUiColorRole::SelectionForeground => self.iterm_ui_colors.selection_foreground,
+            ItermUiColorRole::SelectionBackground => {
+                match self.iterm_ui_colors.selection_background {
+                    DynamicUiColor::Default => Some(self.default_colors.selection),
+                    DynamicUiColor::Dynamic => None,
+                    DynamicUiColor::Explicit(color) => Some(color),
+                }
+            }
+            ItermUiColorRole::SelectionForeground => {
+                self.iterm_ui_colors.selection_foreground.explicit()
+            }
+            ItermUiColorRole::VisualBell => match self.iterm_ui_colors.visual_bell {
+                DynamicUiColor::Explicit(color) => Some(color),
+                DynamicUiColor::Default | DynamicUiColor::Dynamic => None,
+            },
         }
     }
 
@@ -1910,6 +2508,7 @@ impl AlacrittyTerminalBackend {
             | ItermUiColorRole::Link
             | ItermUiColorRole::Underline => self.default_colors.foreground,
             ItermUiColorRole::SelectionBackground => self.default_colors.selection,
+            ItermUiColorRole::VisualBell => self.default_colors.foreground,
         })
     }
 
@@ -1922,6 +2521,8 @@ impl AlacrittyTerminalBackend {
                 .map(|index| self.terminal.colors()[index])
                 .collect(),
             iterm_ui: self.iterm_ui_colors,
+            special: self.special_colors,
+            cursor_dynamic: self.cursor_dynamic,
         });
     }
 
@@ -1936,6 +2537,8 @@ impl AlacrittyTerminalBackend {
             }
         }
         self.iterm_ui_colors = colors.iterm_ui;
+        self.special_colors = colors.special;
+        self.cursor_dynamic = colors.cursor_dynamic;
     }
 
     fn apply_mouse_cursor_control(&mut self, control: &str) {
@@ -2010,17 +2613,42 @@ impl AlacrittyTerminalBackend {
                 .expect("renderable terminal color has a configured fallback");
             [color.r, color.g, color.b]
         };
+        let foreground = resolve(NamedColor::Foreground as usize);
+        let background = resolve(NamedColor::Background as usize);
         TerminalColors {
-            foreground: resolve(NamedColor::Foreground as usize),
+            foreground,
             bold: resolve(NamedColor::BrightForeground as usize),
-            background: resolve(NamedColor::Background as usize),
-            cursor: resolve(NamedColor::Cursor as usize),
+            background,
+            cursor: if self.cursor_dynamic {
+                foreground
+            } else {
+                resolve(NamedColor::Cursor as usize)
+            },
             ansi: std::array::from_fn(resolve),
             link: self.iterm_ui_colors.link,
-            cursor_foreground: self.iterm_ui_colors.cursor_foreground,
+            cursor_foreground: match self.iterm_ui_colors.cursor_foreground {
+                DynamicUiColor::Default => None,
+                DynamicUiColor::Dynamic => Some(background),
+                DynamicUiColor::Explicit(color) => Some(color),
+            },
             underline: self.iterm_ui_colors.underline,
-            selection_background: self.iterm_ui_colors.selection_background,
-            selection_foreground: self.iterm_ui_colors.selection_foreground,
+            selection_background: self.iterm_ui_colors.selection_background.explicit(),
+            selection_foreground: self.iterm_ui_colors.selection_foreground.explicit(),
+            selection_background_dynamic: matches!(
+                self.iterm_ui_colors.selection_background,
+                DynamicUiColor::Dynamic
+            ),
+            selection_foreground_dynamic: matches!(
+                self.iterm_ui_colors.selection_foreground,
+                DynamicUiColor::Dynamic
+            ),
+            visual_bell: match self.iterm_ui_colors.visual_bell {
+                DynamicUiColor::Default => None,
+                DynamicUiColor::Dynamic => Some(contrasting_color(background)),
+                DynamicUiColor::Explicit(color) => Some(color),
+            },
+            transparent_backgrounds: self.iterm_ui_colors.transparent_backgrounds,
+            special: self.special_colors,
         }
     }
 
@@ -2064,6 +2692,34 @@ impl AlacrittyTerminalBackend {
         let column = usize::from(column).min(grid.columns().saturating_sub(1));
         let row = i32::from(row).min(grid.screen_lines().saturating_sub(1) as i32);
         Point::new(Line(row - grid.display_offset() as i32), Column(column))
+    }
+
+    fn expand_point_side(&self, mut point: Point, side: Side) -> Point {
+        let grid = self.terminal.grid();
+        let display_offset = grid.display_offset() as i32;
+        let screen_lines = grid.screen_lines() as i32;
+        let min_line = Line(-display_offset);
+        let max_line = Line(screen_lines - 1 - display_offset);
+        if point.line < min_line || point.line > max_line {
+            return point;
+        }
+        let cell = &grid[point.line][point.column];
+        if side == Side::Right && cell.flags.contains(Flags::WIDE_CHAR) {
+            let max_col = grid.columns().saturating_sub(1);
+            point.column = Column((point.column.0 + 1).min(max_col));
+        } else if side == Side::Left && cell.flags.contains(Flags::WIDE_CHAR_SPACER) {
+            point.column = Column(point.column.0.saturating_sub(1));
+        }
+        point
+    }
+}
+
+fn contrasting_color([red, green, blue]: [u8; 3]) -> [u8; 3] {
+    let luminance = 299 * u32::from(red) + 587 * u32::from(green) + 114 * u32::from(blue);
+    if luminance >= 128_000 {
+        [0, 0, 0]
+    } else {
+        [255, 255, 255]
     }
 }
 
@@ -2122,10 +2778,12 @@ impl TerminalBackend for AlacrittyTerminalBackend {
         let mut start = 0;
         for (end, event) in shell_events {
             self.advance_vt(&bytes[start..=end]);
+            self.collect_vt_events();
             self.record_shell_event(event);
             start = end + 1;
         }
         self.advance_vt(&bytes[start..]);
+        self.collect_vt_events();
         if !self.search.query.is_empty() {
             self.search.matches = terminal_matches(&self.terminal, &self.search.query);
             if self
@@ -2265,8 +2923,20 @@ impl TerminalBackend for AlacrittyTerminalBackend {
                 let mut selected_columns = (0..columns).filter(|column| {
                     range.contains(Point::new(line, Column(usize::from(*column))))
                 });
-                if let Some(start_column) = selected_columns.next() {
-                    let end_column = selected_columns.next_back().unwrap_or(start_column);
+                if let Some(mut start_column) = selected_columns.next() {
+                    let mut end_column = selected_columns.next_back().unwrap_or(start_column);
+                    if grid[line][Column(usize::from(start_column))]
+                        .flags
+                        .contains(Flags::WIDE_CHAR_SPACER)
+                    {
+                        start_column = start_column.saturating_sub(1);
+                    }
+                    if grid[line][Column(usize::from(end_column))]
+                        .flags
+                        .contains(Flags::WIDE_CHAR)
+                    {
+                        end_column = (end_column + 1).min(columns.saturating_sub(1));
+                    }
                     selection.push(SelectionSpan {
                         row: viewport_row,
                         start_column,
@@ -2408,9 +3078,11 @@ impl TerminalBackend for AlacrittyTerminalBackend {
             SelectionKind::Word => SelectionType::Semantic,
             SelectionKind::Line => SelectionType::Lines,
         };
-        let mut selection = Selection::new(selection_type, point, Side::Left);
+        let start_point = self.expand_point_side(point, Side::Left);
+        let mut selection = Selection::new(selection_type, start_point, Side::Left);
         if selection_type == SelectionType::Simple {
-            selection.update(point, Side::Right);
+            let end_point = self.expand_point_side(point, Side::Right);
+            selection.update(end_point, Side::Right);
         }
         self.terminal.selection = Some(selection);
     }
@@ -2428,11 +3100,16 @@ impl TerminalBackend for AlacrittyTerminalBackend {
             } else {
                 (Side::Left, Side::Right)
             };
-            let mut selection = Selection::new(SelectionType::Simple, anchor, anchor_side);
-            selection.update(point, point_side);
+            let anchor_point = self.expand_point_side(anchor, anchor_side);
+            let target_point = self.expand_point_side(point, point_side);
+            let mut selection = Selection::new(SelectionType::Simple, anchor_point, anchor_side);
+            selection.update(target_point, point_side);
             self.terminal.selection = Some(selection);
-        } else if let Some(selection) = self.terminal.selection.as_mut() {
-            selection.update(point, Side::Right);
+        } else {
+            let target_point = self.expand_point_side(point, Side::Right);
+            if let Some(selection) = self.terminal.selection.as_mut() {
+                selection.update(target_point, Side::Right);
+            }
         }
     }
 
@@ -2646,6 +3323,7 @@ fn cell_attributes(foreground: Color, background: Color, flags: Flags) -> CellAt
         bold: flags.contains(Flags::BOLD),
         italic: flags.contains(Flags::ITALIC),
         underline: flags.intersects(Flags::ALL_UNDERLINES),
+        blink: flags.intersects(Flags::from_bits_retain(BLINK_FLAG_BITS)),
         strikethrough: flags.contains(Flags::STRIKEOUT),
         dim: flags.contains(Flags::DIM),
         inverse: flags.contains(Flags::INVERSE),
@@ -2882,7 +3560,7 @@ mod tests {
     #[test]
     fn exposes_sgr_colors_and_text_attributes_in_snapshot_cells() {
         let mut backend = AlacrittyTerminalBackend::new(10, 2);
-        backend.advance(b"\x1b[1;2;3;4;7;9;38;5;196;48;2;1;2;3mX");
+        backend.advance(b"\x1b[1;2;3;4;5;7;9;38;5;196;48;2;1;2;3mX");
 
         let cell = &backend.snapshot().cells[0][0];
         assert_eq!(cell.text, "X");
@@ -2892,8 +3570,25 @@ mod tests {
         assert!(cell.attributes.dim);
         assert!(cell.attributes.italic);
         assert!(cell.attributes.underline);
+        assert!(cell.attributes.blink);
         assert!(cell.attributes.inverse);
         assert!(cell.attributes.strikethrough);
+    }
+
+    #[test]
+    fn tracks_slow_and_fast_blink_until_cancel_or_reset() {
+        let mut backend = AlacrittyTerminalBackend::new(10, 2);
+        backend.advance(b"\x1b[5mA\x1b[25mB\x1b[6mC\x1b[0mD");
+
+        let snapshot = backend.snapshot();
+        let blink = snapshot.cells[0]
+            .iter()
+            .map(|cell| (cell.text.as_str(), cell.attributes.blink))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            blink,
+            [("A", true), ("B", false), ("C", true), ("D", false)]
+        );
     }
 
     #[test]
@@ -3040,6 +3735,49 @@ mod tests {
     }
 
     #[test]
+    fn supports_xterm_special_color_sets_queries_modes_resets_and_stack() {
+        let mut backend = AlacrittyTerminalBackend::new(20, 2);
+        backend.advance(b"\x1b]5;0;#102030;1;#203040;2;#304050;3;#405060;4;#506070\x1b\\");
+        backend.advance(b"\x1b]5;0;?;1;?;2;?;3;?;4;?\x07");
+        backend.advance(b"\x1b]106;1;0;5;1\x1b\\\x1b]6;4;0\x07");
+
+        let colors = backend.render_colors();
+        assert_eq!(colors.special.bold, Some([0x10, 0x20, 0x30]));
+        assert_eq!(colors.special.underline, Some([0x20, 0x30, 0x40]));
+        assert_eq!(colors.special.blink, Some([0x30, 0x40, 0x50]));
+        assert_eq!(colors.special.reverse, Some([0x40, 0x50, 0x60]));
+        assert_eq!(colors.special.italic, Some([0x50, 0x60, 0x70]));
+        assert!(!colors.special.enabled[1]);
+        assert!(!colors.special.enabled[4]);
+        assert!(colors.special.override_ansi);
+        assert_eq!(
+            backend.drain_events(),
+            vec![
+                TerminalEvent::PtyWrite("\x1b]5;0;rgb:1010/2020/3030\x1b\\".into()),
+                TerminalEvent::PtyWrite("\x1b]5;1;rgb:2020/3030/4040\x1b\\".into()),
+                TerminalEvent::PtyWrite("\x1b]5;2;rgb:3030/4040/5050\x1b\\".into()),
+                TerminalEvent::PtyWrite("\x1b]5;3;rgb:4040/5050/6060\x1b\\".into()),
+                TerminalEvent::PtyWrite("\x1b]5;4;rgb:5050/6060/7070\x1b\\".into()),
+            ]
+        );
+
+        backend.advance(b"\x1b]30001\x07\x1b]105;0;4\x1b\\\x1b]106;5;0\x07");
+        assert_eq!(backend.render_colors().special.bold, None);
+        assert_eq!(backend.render_colors().special.italic, None);
+        assert!(!backend.render_colors().special.override_ansi);
+        backend.advance(b"\x1b]30101\x1b\\");
+        assert_eq!(backend.render_colors().special, colors.special);
+
+        backend.advance(b"\x1b]105\x07");
+        let reset = backend.render_colors().special;
+        assert_eq!(reset.bold, None);
+        assert_eq!(reset.underline, None);
+        assert_eq!(reset.blink, None);
+        assert_eq!(reset.reverse, None);
+        assert_eq!(reset.italic, None);
+    }
+
+    #[test]
     fn supports_explicit_kitty_selection_colors_and_resets() {
         let mut backend = AlacrittyTerminalBackend::new(20, 2);
         let ansi = [[0, 0, 0]; 16];
@@ -3062,13 +3800,150 @@ mod tests {
                         .into()
                 ),
                 TerminalEvent::PtyWrite(
-                    "\x1b]21;selection_background=rgb:a0/b0/c0\x1b\\".into()
+                    "\x1b]21;selection_background=\x1b\\".into()
                 ),
                 TerminalEvent::PtyWrite(
                     "\x1b]21;selection_background=rgb:0a/0b/0c;selection_foreground=;cursor_text=\x1b\\"
                         .into()
                 ),
             ]
+        );
+    }
+
+    #[test]
+    fn supports_explicit_and_dynamic_kitty_visual_bell_colors() {
+        let mut backend = AlacrittyTerminalBackend::new(20, 2);
+        backend.set_default_colors(
+            [220, 220, 220],
+            [10, 20, 30],
+            [255, 255, 255],
+            [50, 60, 70],
+            [[0, 0, 0]; 16],
+        );
+
+        backend.advance(b"\x1b]21;visual_bell=?;visual_bell=;visual_bell=?\x1b\\");
+        assert_eq!(backend.render_colors().visual_bell, Some([255, 255, 255]));
+        backend.advance(b"\x1b]21;visual_bell=#123456;visual_bell=?\x07");
+        assert_eq!(
+            backend.render_colors().visual_bell,
+            Some([0x12, 0x34, 0x56])
+        );
+        backend.advance(b"\x1b]21;visual_bell;visual_bell=?\x1b\\");
+        assert_eq!(backend.render_colors().visual_bell, None);
+
+        assert_eq!(
+            backend.drain_events(),
+            vec![
+                TerminalEvent::PtyWrite("\x1b]21;visual_bell=;visual_bell=\x1b\\".into()),
+                TerminalEvent::PtyWrite("\x1b]21;visual_bell=rgb:12/34/56\x1b\\".into()),
+                TerminalEvent::PtyWrite("\x1b]21;visual_bell=\x1b\\".into()),
+            ]
+        );
+    }
+
+    #[test]
+    fn supports_dynamic_kitty_cursor_and_selection_colors() {
+        let mut backend = AlacrittyTerminalBackend::new(20, 2);
+        backend.set_default_colors(
+            [1, 2, 3],
+            [4, 5, 6],
+            [7, 8, 9],
+            [10, 11, 12],
+            [[0, 0, 0]; 16],
+        );
+
+        backend.advance(
+            b"\x1b]21;cursor=;cursor_text=;selection_background=;selection_foreground=;cursor=?;cursor_text=?;selection_background=?;selection_foreground=?\x1b\\",
+        );
+        let colors = backend.render_colors();
+        assert_eq!(colors.cursor, [1, 2, 3]);
+        assert_eq!(colors.cursor_foreground, Some([4, 5, 6]));
+        assert!(colors.selection_background_dynamic);
+        assert!(colors.selection_foreground_dynamic);
+        assert_eq!(
+            backend.drain_events(),
+            vec![TerminalEvent::PtyWrite(
+                "\x1b]21;cursor=;cursor_text=;selection_background=;selection_foreground=\x1b\\"
+                    .into()
+            )]
+        );
+
+        backend.advance(
+            b"\x1b]30001\x1b\\\x1b]21;cursor=#111111;cursor_text=#222222;selection_background=#333333;selection_foreground=#444444\x1b\\\x1b]30101\x1b\\",
+        );
+        let colors = backend.render_colors();
+        assert_eq!(colors.cursor, [1, 2, 3]);
+        assert_eq!(colors.cursor_foreground, Some([4, 5, 6]));
+        assert!(colors.selection_background_dynamic);
+        assert!(colors.selection_foreground_dynamic);
+
+        backend.advance(
+            b"\x1b]21;cursor;cursor_text;selection_background;selection_foreground;cursor=?;cursor_text=?;selection_background=?;selection_foreground=?\x1b\\",
+        );
+        let colors = backend.render_colors();
+        assert_eq!(colors.cursor, [7, 8, 9]);
+        assert_eq!(colors.cursor_foreground, None);
+        assert!(!colors.selection_background_dynamic);
+        assert!(!colors.selection_foreground_dynamic);
+        assert_eq!(
+            backend.drain_events(),
+            vec![TerminalEvent::PtyWrite(
+                "\x1b]21;cursor=rgb:07/08/09;cursor_text=;selection_background=rgb:0a/0b/0c;selection_foreground=\x1b\\"
+                    .into()
+            )]
+        );
+    }
+
+    #[test]
+    fn supports_kitty_transparent_background_color_slots() {
+        let mut backend = AlacrittyTerminalBackend::new(20, 2);
+        backend.advance(
+            b"\x1b]21;transparent_background_color1=#abc@0.3;transparent_background_color7=blue@-1;transparent_background_color1=?;transparent_background_color7=?;transparent_background_color8=?\x1b\\",
+        );
+        assert_eq!(
+            backend.render_colors().transparent_backgrounds,
+            [
+                Some(TerminalTransparentColor {
+                    color: [0xa0, 0xb0, 0xc0],
+                    opacity: Some(0.3),
+                }),
+                None,
+                None,
+                None,
+                None,
+                None,
+                Some(TerminalTransparentColor {
+                    color: [0, 0, 255],
+                    opacity: None,
+                }),
+            ]
+        );
+        assert_eq!(
+            backend.drain_events(),
+            vec![TerminalEvent::PtyWrite(
+                "\x1b]21;transparent_background_color1=rgb:a0/b0/c0@0.3;transparent_background_color7=rgb:00/00/ff;transparent_background_color8=?\x1b\\"
+                    .into()
+            )]
+        );
+
+        backend.advance(
+            b"\x1b]30001\x1b\\\x1b]21;transparent_background_color1=red@2\x1b\\\x1b]30101\x1b\\",
+        );
+        assert_eq!(
+            backend.render_colors().transparent_backgrounds[0].and_then(|color| color.opacity),
+            Some(0.3)
+        );
+
+        backend.advance(
+            b"\x1b]21;transparent_background_color1=;transparent_background_color7;transparent_background_color1=?;transparent_background_color7=?\x1b\\",
+        );
+        assert_eq!(backend.render_colors().transparent_backgrounds, [None; 7]);
+        assert_eq!(
+            backend.drain_events(),
+            vec![TerminalEvent::PtyWrite(
+                "\x1b]21;transparent_background_color1=;transparent_background_color7=\x1b\\"
+                    .into()
+            )]
         );
     }
 
@@ -3387,6 +4262,9 @@ mod tests {
                     timeout_ms: None,
                     sound: NotificationSound::System,
                     icon_name: None,
+                    icon: None,
+                    buttons: Vec::new(),
+                    reporting: NotificationReporting::default(),
                 },
                 TerminalEvent::Notification {
                     id: None,
@@ -3397,6 +4275,9 @@ mod tests {
                     timeout_ms: None,
                     sound: NotificationSound::System,
                     icon_name: None,
+                    icon: None,
+                    buttons: Vec::new(),
+                    reporting: NotificationReporting::default(),
                 },
                 TerminalEvent::ProgressChanged(TerminalProgress::Normal(50)),
             ]
@@ -3582,6 +4463,9 @@ mod tests {
                     timeout_ms: None,
                     sound: NotificationSound::System,
                     icon_name: None,
+                    icon: None,
+                    buttons: Vec::new(),
+                    reporting: NotificationReporting::default(),
                 },
                 TerminalEvent::Notification {
                     id: Some("job".into()),
@@ -3592,6 +4476,9 @@ mod tests {
                     timeout_ms: None,
                     sound: NotificationSound::System,
                     icon_name: None,
+                    icon: None,
+                    buttons: Vec::new(),
+                    reporting: NotificationReporting::default(),
                 },
             ]
         );
@@ -3616,8 +4503,68 @@ mod tests {
                 timeout_ms: Some(5_000),
                 sound: NotificationSound::Silent,
                 icon_name: None,
+                icon: None,
+                buttons: Vec::new(),
+                reporting: NotificationReporting::default(),
             }]
         );
+    }
+
+    #[test]
+    fn parses_bounded_osc99_notification_buttons() {
+        use base64::Engine as _;
+
+        let mut backend = AlacrittyTerminalBackend::new(20, 2);
+        let buttons = base64::engine::general_purpose::STANDARD.encode("Open\u{2028}Dismiss");
+        backend.advance(b"\x1b]99;i=job:d=0;Deploy\x1b\\");
+        backend.advance(format!("\x1b]99;i=job:p=buttons:e=1;{buttons}\x1b\\").as_bytes());
+
+        let events = backend.drain_events();
+        let [
+            TerminalEvent::Notification {
+                buttons: parsed_buttons,
+                ..
+            },
+        ] = events.as_slice()
+        else {
+            panic!("expected one notification");
+        };
+        assert_eq!(parsed_buttons, &["Open", "Dismiss"]);
+    }
+
+    #[test]
+    fn preserves_supported_osc99_reporting_requests_across_chunks() {
+        let mut backend = AlacrittyTerminalBackend::new(20, 2);
+        backend.advance(b"\x1b]99;i=job:a=report,-focus:c=1:d=0;Deploy\x1b\\");
+        backend.advance(b"\x1b]99;i=job:p=body;Finished\x1b\\");
+
+        let events = backend.drain_events();
+        let [TerminalEvent::Notification { reporting, .. }] = events.as_slice() else {
+            panic!("expected one notification");
+        };
+        assert_eq!(
+            *reporting,
+            NotificationReporting {
+                activation: cfg!(windows),
+                close: cfg!(windows),
+            }
+        );
+    }
+
+    #[test]
+    fn rejects_too_many_or_oversized_osc99_notification_buttons() {
+        use base64::Engine as _;
+
+        let mut backend = AlacrittyTerminalBackend::new(20, 2);
+        let too_many =
+            base64::engine::general_purpose::STANDARD.encode("1\u{2028}2\u{2028}3\u{2028}4");
+        backend.advance(b"\x1b]99;i=many:d=0;Many\x1b\\");
+        backend.advance(format!("\x1b]99;i=many:p=buttons:e=1;{too_many}\x1b\\").as_bytes());
+        let oversized = base64::engine::general_purpose::STANDARD.encode("x".repeat(129));
+        backend.advance(b"\x1b]99;i=large:d=0;Large\x1b\\");
+        backend.advance(format!("\x1b]99;i=large:p=buttons:e=1;{oversized}\x1b\\").as_bytes());
+
+        assert!(backend.drain_events().is_empty());
     }
 
     #[test]
@@ -3638,6 +4585,9 @@ mod tests {
                     timeout_ms: None,
                     sound: NotificationSound::Error,
                     icon_name: None,
+                    icon: None,
+                    buttons: Vec::new(),
+                    reporting: NotificationReporting::default(),
                 }]
             );
         } else {
@@ -3661,8 +4611,120 @@ mod tests {
                 timeout_ms: None,
                 sound: NotificationSound::System,
                 icon_name: cfg!(all(unix, not(target_os = "macos"))).then(|| "dialog-error".into()),
+                icon: None,
+                buttons: Vec::new(),
+                reporting: NotificationReporting::default(),
             }]
         );
+    }
+
+    fn encoded_notification_icon(rgba: [u8; 8]) -> (Vec<u8>, String) {
+        use base64::Engine as _;
+        use image::ImageEncoder as _;
+
+        let mut png = Vec::new();
+        image::codecs::png::PngEncoder::new(&mut png)
+            .write_image(&rgba, 2, 1, image::ColorType::Rgba8.into())
+            .unwrap();
+        let encoded = base64::engine::general_purpose::STANDARD.encode(&png);
+        (png, encoded)
+    }
+
+    #[test]
+    fn decodes_and_reuses_cached_osc99_notification_icons() {
+        let mut backend = AlacrittyTerminalBackend::new(20, 2);
+        let (_, encoded) = encoded_notification_icon([255, 0, 0, 255, 0, 255, 0, 128]);
+        backend.advance(
+            format!("\x1b]99;g=logo:p=icon:e=1;{encoded}\x1b\\\x1b]99;i=job:g=logo;Build\x1b\\")
+                .as_bytes(),
+        );
+
+        let events = backend.drain_events();
+        let [
+            TerminalEvent::Notification {
+                icon: Some(icon), ..
+            },
+        ] = events.as_slice()
+        else {
+            panic!("expected one notification with a decoded icon");
+        };
+        assert_eq!((icon.width, icon.height), (2, 1));
+        assert_eq!(icon.rgba.as_ref(), [255, 0, 0, 255, 0, 255, 0, 128]);
+    }
+
+    #[test]
+    fn accepts_individually_encoded_osc99_icon_chunks() {
+        use base64::Engine as _;
+
+        let mut backend = AlacrittyTerminalBackend::new(20, 2);
+        let (png, _) = encoded_notification_icon([1, 2, 3, 255, 4, 5, 6, 255]);
+        let split = png.len() / 2;
+        let first = base64::engine::general_purpose::STANDARD.encode(&png[..split]);
+        let second = base64::engine::general_purpose::STANDARD.encode(&png[split..]);
+        backend.advance(format!("\x1b]99;g=chunked:p=icon:e=1:d=0;{first}\x1b\\").as_bytes());
+        backend.advance(
+            format!("\x1b]99;g=chunked:p=icon:e=1;{second}\x1b\\\x1b]99;g=chunked;Ready\x1b\\")
+                .as_bytes(),
+        );
+
+        let events = backend.drain_events();
+        let [
+            TerminalEvent::Notification {
+                icon: Some(icon), ..
+            },
+        ] = events.as_slice()
+        else {
+            panic!("expected one notification with a chunked icon");
+        };
+        assert_eq!(icon.rgba.as_ref(), [1, 2, 3, 255, 4, 5, 6, 255]);
+    }
+
+    #[test]
+    fn rejects_invalid_and_clears_cached_osc99_notification_icons() {
+        use base64::Engine as _;
+
+        let mut backend = AlacrittyTerminalBackend::new(20, 2);
+        let invalid = base64::engine::general_purpose::STANDARD.encode(b"not an image");
+        backend.advance(
+            format!("\x1b]99;g=bad:p=icon:e=1;{invalid}\x1b\\\x1b]99;g=bad;Ignored\x1b\\")
+                .as_bytes(),
+        );
+        let (_, encoded) = encoded_notification_icon([9, 8, 7, 255, 6, 5, 4, 255]);
+        backend.advance(
+            format!(
+                "\x1b]99;g=clear:p=icon:e=1;{encoded}\x1b\\\x1b]99;g=clear:p=icon:e=1;\x1b\\\x1b]99;g=clear;Cleared\x1b\\"
+            )
+            .as_bytes(),
+        );
+
+        let events = backend.drain_events();
+        assert_eq!(events.len(), 2);
+        assert!(
+            events
+                .iter()
+                .all(|event| matches!(event, TerminalEvent::Notification { icon: None, .. }))
+        );
+    }
+
+    #[test]
+    fn bounds_the_osc99_notification_icon_cache() {
+        let mut backend = AlacrittyTerminalBackend::new(20, 2);
+        for index in 0_u8..17 {
+            let (_, encoded) = encoded_notification_icon([index, 0, 0, 255, index, 0, 0, 255]);
+            backend
+                .advance(format!("\x1b]99;g=icon-{index}:p=icon:e=1;{encoded}\x1b\\").as_bytes());
+        }
+        backend.advance(b"\x1b]99;g=icon-0;Oldest\x1b\\\x1b]99;g=icon-16;Newest\x1b\\");
+
+        let events = backend.drain_events();
+        assert!(matches!(
+            &events[0],
+            TerminalEvent::Notification { icon: None, .. }
+        ));
+        assert!(matches!(
+            &events[1],
+            TerminalEvent::Notification { icon: Some(_), .. }
+        ));
     }
 
     #[test]
@@ -3674,9 +4736,9 @@ mod tests {
         backend.advance(b"\x1b]99;e=1;%%%\x1b\\");
 
         let payload_types = if cfg!(windows) {
-            "title,body"
+            "title,body,icon,buttons,alive"
         } else {
-            "title,body,close"
+            "title,body,close,icon,buttons,alive"
         };
         let sounds = if cfg!(all(unix, not(target_os = "macos"))) {
             "system,silent,error,warn,warning,info,question"
@@ -3684,10 +4746,11 @@ mod tests {
             "system,silent"
         };
         let expiry = if cfg!(windows) { "" } else { ":w=1" };
+        let reports = if cfg!(windows) { ":a=report:c=1" } else { "" };
         assert_eq!(
             backend.drain_events(),
             vec![TerminalEvent::PtyWrite(format!(
-                "\x1b]99;i=probe:p=?;o=always,unfocused,invisible:p={payload_types}:s={sounds}:u=0,1,2{expiry}\x1b\\"
+                "\x1b]99;i=probe:p=?;o=always,unfocused,invisible:p={payload_types}:s={sounds}:u=0,1,2{expiry}{reports}\x1b\\"
             ))]
         );
     }
@@ -3702,6 +4765,21 @@ mod tests {
         assert_eq!(
             backend.drain_events(),
             vec![TerminalEvent::NotificationClose("job".into())]
+        );
+    }
+
+    #[test]
+    fn parses_osc99_alive_queries_with_correlation_ids() {
+        let mut backend = AlacrittyTerminalBackend::new(20, 2);
+        backend.advance(b"\x1b]99;i=probe:p=alive;\x1b\\");
+        backend.advance(b"\x1b]99;p=alive;\x07");
+
+        assert_eq!(
+            backend.drain_events(),
+            vec![
+                TerminalEvent::NotificationAliveQuery("probe".into()),
+                TerminalEvent::NotificationAliveQuery("0".into()),
+            ]
         );
     }
 
@@ -3847,6 +4925,58 @@ mod tests {
     }
 
     #[test]
+    fn selection_includes_full_wide_characters_in_either_direction() {
+        let mut backend = AlacrittyTerminalBackend::new(20, 2);
+        backend.advance("\u{3042}\u{3044}\u{3046}".as_bytes());
+
+        // Forward selection: start at 'あ' (col 0), update to 'い' (col 2)
+        backend.start_selection(0, 0, SelectionKind::Simple);
+        assert_eq!(backend.selected_text().as_deref(), Some("\u{3042}"));
+        assert_eq!(
+            backend.snapshot().selection,
+            [SelectionSpan {
+                row: 0,
+                start_column: 0,
+                end_column: 1,
+            }]
+        );
+
+        backend.update_selection(2, 0);
+        assert_eq!(backend.selected_text().as_deref(), Some("\u{3042}\u{3044}"));
+        assert_eq!(
+            backend.snapshot().selection,
+            [SelectionSpan {
+                row: 0,
+                start_column: 0,
+                end_column: 3,
+            }]
+        );
+
+        // Backward selection: start at 'う' (col 4), update to 'い' (col 2)
+        backend.start_selection(4, 0, SelectionKind::Simple);
+        assert_eq!(backend.selected_text().as_deref(), Some("\u{3046}"));
+        assert_eq!(
+            backend.snapshot().selection,
+            [SelectionSpan {
+                row: 0,
+                start_column: 4,
+                end_column: 5,
+            }]
+        );
+
+        backend.update_selection(2, 0);
+        assert_eq!(backend.selected_text().as_deref(), Some("\u{3044}\u{3046}"));
+        assert_eq!(
+            backend.snapshot().selection,
+            [SelectionSpan {
+                row: 0,
+                start_column: 2,
+                end_column: 5,
+            }]
+        );
+    }
+
+    #[test]
     fn simple_selection_marks_the_anchor_and_spans_multiple_rows_exactly() {
         let mut backend = AlacrittyTerminalBackend::new(8, 3);
         backend.advance(b"abcdef\r\nghijkl\r\nmnopqr");
@@ -3935,8 +5065,22 @@ mod tests {
         assert!(events.contains(&TerminalEvent::CommandLineStarted));
         assert!(events.contains(&TerminalEvent::CommandStarted));
         assert!(events.contains(&TerminalEvent::CommandFinished(Some(17))));
-        assert!(events.contains(&TerminalEvent::Bell));
+        assert!(events.contains(&TerminalEvent::Bell { visual_bell: None }));
         assert!(backend.drain_events().is_empty());
+    }
+
+    #[test]
+    fn captures_the_visual_bell_color_at_bell_time() {
+        let mut backend = AlacrittyTerminalBackend::new(20, 2);
+        backend.advance(b"\x1b]21;visual_bell=#123456\x1b\\\x07\x1b]21;visual_bell\x1b\\");
+
+        assert_eq!(
+            backend.drain_events(),
+            vec![TerminalEvent::Bell {
+                visual_bell: Some([0x12, 0x34, 0x56]),
+            }]
+        );
+        assert_eq!(backend.render_colors().visual_bell, None);
     }
 
     #[test]
@@ -4159,7 +5303,7 @@ mod tests {
     }
 
     #[test]
-    fn parses_iterm_attention_requests_without_accepting_fireworks() {
+    fn parses_iterm_attention_requests_including_cursor_fireworks() {
         let mut backend = AlacrittyTerminalBackend::new(20, 2);
         backend.advance(b"\x1b]1337;RequestAttention=yes\x1b\\");
         backend.advance(b"\x1b]1337;RequestAttention=once\x07");
@@ -4172,6 +5316,7 @@ mod tests {
                 TerminalEvent::AttentionRequested(TerminalAttention::Indefinite),
                 TerminalEvent::AttentionRequested(TerminalAttention::Once),
                 TerminalEvent::AttentionRequested(TerminalAttention::Cancel),
+                TerminalEvent::AttentionRequested(TerminalAttention::Fireworks),
             ]
         );
     }
@@ -4368,6 +5513,23 @@ mod tests {
                 end_row: 1,
                 exit_status: Some(7),
             }]
+        );
+    }
+
+    #[test]
+    fn iterm_clear_captured_output_removes_only_command_ranges() {
+        let mut backend = AlacrittyTerminalBackend::new(20, 5);
+        backend.advance(
+            b"\x1b]1337;SetMark\x07\x1b]133;C\x1b\\output\x1b]133;D;0\x07\x1b]1337;ClearCapturedOutput\x1b\\",
+        );
+
+        assert!(backend.snapshot().command_zones.is_empty());
+        assert!(!backend.select_last_command_output());
+        assert!(backend.navigate_mark(SearchDirection::Previous));
+        assert!(
+            backend
+                .drain_events()
+                .contains(&TerminalEvent::CapturedOutputCleared)
         );
     }
 

@@ -74,10 +74,43 @@ pub struct CellAttributes {
     pub bold: bool,
     pub italic: bool,
     pub underline: bool,
+    pub blink: bool,
     pub strikethrough: bool,
     pub dim: bool,
     pub inverse: bool,
     pub hidden: bool,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct TerminalSpecialColors {
+    pub bold: Option<[u8; 3]>,
+    pub underline: Option<[u8; 3]>,
+    pub blink: Option<[u8; 3]>,
+    pub reverse: Option<[u8; 3]>,
+    pub italic: Option<[u8; 3]>,
+    pub enabled: [bool; 5],
+    pub override_ansi: bool,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct TerminalTransparentColor {
+    pub color: [u8; 3],
+    /// Explicit opacity. `None` inherits the configured window opacity.
+    pub opacity: Option<f32>,
+}
+
+impl Default for TerminalSpecialColors {
+    fn default() -> Self {
+        Self {
+            bold: None,
+            underline: None,
+            blink: None,
+            reverse: None,
+            italic: None,
+            enabled: [true; 5],
+            override_ansi: false,
+        }
+    }
 }
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
@@ -110,7 +143,7 @@ pub struct TerminalSnapshot {
     pub images: Vec<TerminalImage>,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub struct TerminalColors {
     pub foreground: [u8; 3],
     pub bold: [u8; 3],
@@ -122,6 +155,11 @@ pub struct TerminalColors {
     pub underline: Option<[u8; 3]>,
     pub selection_background: Option<[u8; 3]>,
     pub selection_foreground: Option<[u8; 3]>,
+    pub selection_background_dynamic: bool,
+    pub selection_foreground_dynamic: bool,
+    pub visual_bell: Option<[u8; 3]>,
+    pub transparent_backgrounds: [Option<TerminalTransparentColor>; 7],
+    pub special: TerminalSpecialColors,
 }
 
 /// Adapter boundary for a VT implementation such as `alacritty_terminal`.
@@ -156,8 +194,9 @@ pub use graphics::TerminalImage;
 pub use alacritty::{
     AlacrittyTerminalBackend, DEFAULT_SCROLLBACK_LINES, ItermUiColorRole,
     MAX_OSC_NOTIFICATION_BYTES, MAX_OSC_REPORT_VARIABLE_NAME_BYTES, MAX_OSC52_COPY_BYTES,
-    NotificationOccasion, NotificationSound, NotificationUrgency, SessionStatusUpdate,
-    TabColorComponent, TerminalAttention, TerminalEvent, TerminalProgress,
+    NotificationIcon, NotificationOccasion, NotificationReporting, NotificationSound,
+    NotificationUrgency, SessionStatusUpdate, TabColorComponent, TerminalAttention, TerminalEvent,
+    TerminalProgress,
 };
 pub use input::{
     BindingKey, KeyChord, KeyModifiers, KeyPress, KeypadKey, MouseWheelDirection, TerminalKey,

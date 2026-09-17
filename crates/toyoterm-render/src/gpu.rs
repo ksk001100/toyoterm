@@ -122,6 +122,7 @@ pub struct GpuRenderer {
     text_renderer: TextRenderer,
     selector_text_renderer: TextRenderer,
     ui_pipeline: RenderPipeline,
+    transparent_cell_pipeline: RenderPipeline,
     background: Option<background::GpuBackground>,
     panes: HashMap<PaneId, PaneBuffers>,
     tabs: HashMap<TabId, TabBuffer>,
@@ -197,13 +198,18 @@ struct PaneBuffers {
     cursor: CursorState,
     cursor_x: f32,
     rect: PaneRect,
+    content_rect: PaneRect,
     active: bool,
     zoomed: bool,
     backgrounds: Vec<(PaneRect, [u8; 3])>,
+    transparent_backgrounds: Vec<(PaneRect, [u8; 3], f32)>,
     selection_highlights: Vec<PaneRect>,
+    selection_reverse_backgrounds: Vec<(PaneRect, [u8; 3])>,
     search_highlights: Vec<(PaneRect, bool)>,
     command_zone_markers: Vec<(PaneRect, Option<i32>)>,
     cursor_line_highlight: Option<PaneRect>,
+    visual_bell: bool,
+    cursor_fireworks: bool,
     colors: TerminalColors,
     cached_cells: Vec<Vec<toyoterm_terminal::TerminalCell>>,
     cached_selection: Vec<toyoterm_terminal::SelectionSpan>,
@@ -216,6 +222,29 @@ struct CellRunBuffer {
     column: u16,
     row: u16,
     cells: Vec<toyoterm_terminal::TerminalCell>,
+}
+
+fn terminal_colors_have_transparency(colors: &TerminalColors, default_opacity: f32) -> bool {
+    colors
+        .transparent_backgrounds
+        .iter()
+        .flatten()
+        .any(|entry| entry.opacity.unwrap_or(default_opacity).clamp(0.0, 1.0) < 1.0)
+}
+
+pub(super) fn transparent_cell_fill(
+    color: [u8; 3],
+    opacity: f32,
+    alpha_mode: CompositeAlphaMode,
+    preserve_background_image: bool,
+) -> [f32; 4] {
+    let mut fill = rgba(color, opacity.clamp(0.0, 1.0));
+    if !preserve_background_image && alpha_mode == CompositeAlphaMode::PreMultiplied {
+        fill[0] *= fill[3];
+        fill[1] *= fill[3];
+        fill[2] *= fill[3];
+    }
+    fill
 }
 
 #[repr(C)]
@@ -344,13 +373,18 @@ impl PaneBuffers {
             },
             cursor_x: 0.0,
             rect: PaneRect::default(),
+            content_rect: PaneRect::default(),
             active: false,
             zoomed: false,
             backgrounds: Vec::new(),
+            transparent_backgrounds: Vec::new(),
             selection_highlights: Vec::new(),
+            selection_reverse_backgrounds: Vec::new(),
             search_highlights: Vec::new(),
             command_zone_markers: Vec::new(),
             cursor_line_highlight: None,
+            visual_bell: false,
+            cursor_fireworks: false,
             colors,
             images: Vec::new(),
             cached_cells: Vec::new(),
@@ -444,6 +478,7 @@ impl GpuRenderer {
             None,
         );
         let ui_pipeline = create_ui_pipeline(&device, configuration.format);
+        let transparent_cell_pipeline = create_ui_replace_pipeline(&device, configuration.format);
         let mut preedit = Buffer::new(&mut font_system, Metrics::new(14.0, 18.0));
         preedit.set_wrap(Wrap::None);
         let mut search_text = Buffer::new(&mut font_system, Metrics::new(14.0, 18.0));
@@ -484,6 +519,7 @@ impl GpuRenderer {
             text_renderer,
             selector_text_renderer,
             ui_pipeline,
+            transparent_cell_pipeline,
             background,
             panes: HashMap::new(),
             tabs: HashMap::new(),
@@ -525,7 +561,15 @@ impl GpuRenderer {
         if self.style.font_fallback != style.font_fallback {
             self.reset_font_system(&style.font_fallback);
         }
-        let alpha_mode = preferred_alpha_mode(&self.supported_alpha_modes, style.opacity);
+        let has_transparent_cells = self
+            .panes
+            .values()
+            .any(|pane| terminal_colors_have_transparency(&pane.colors, style.opacity));
+        let alpha_mode = preferred_alpha_mode_for_content(
+            &self.supported_alpha_modes,
+            style.opacity,
+            has_transparent_cells,
+        );
         let alpha_mode_changed = self.configuration.alpha_mode != alpha_mode;
         self.configuration.alpha_mode = alpha_mode;
         self.clear_color = clear_color(&style, alpha_mode);
@@ -614,15 +658,28 @@ impl GpuRenderer {
     }
 
     pub fn update_panes(&mut self, panes: &[PaneRenderData<'_>], layout: TextLayout) {
+        let has_transparent_cells = panes
+            .iter()
+            .any(|pane| terminal_colors_have_transparency(&pane.colors, self.style.opacity));
+        let alpha_mode = preferred_alpha_mode_for_content(
+            &self.supported_alpha_modes,
+            self.style.opacity,
+            has_transparent_cells,
+        );
+        if self.configuration.alpha_mode != alpha_mode {
+            self.configuration.alpha_mode = alpha_mode;
+            self.clear_color = clear_color(&self.style, alpha_mode);
+            if !self.suspended {
+                self.surface.configure(&self.device, &self.configuration);
+            }
+        }
         let active_panes = panes.iter().map(|pane| pane.pane).collect::<HashSet<_>>();
         self.panes.retain(|pane, _| active_panes.contains(pane));
         let metrics = Metrics::new(layout.font_size.max(1.0), layout.line_height.max(1.0));
         let font_family = self.style.font_family.clone();
         let font_weight = self.style.font_weight;
         for pane in panes {
-            let foreground = pane.colors.foreground;
             let background = pane.colors.background;
-            let ansi = pane.colors.ansi;
             let use_cell_runs = pane
                 .snapshot
                 .cells
@@ -669,6 +726,30 @@ impl GpuRenderer {
             }
             buffers.cursor = pane.cursor;
             buffers.rect = pane.rect;
+            let content_left = (pane.rect.x as f32 + layout.horizontal_padding)
+                .floor()
+                .max(0.0) as u32;
+            let content_top = (pane.rect.y as f32 + layout.vertical_padding)
+                .floor()
+                .max(0.0) as u32;
+            let content_right = (pane.rect.x as f32
+                + layout.horizontal_padding
+                + f32::from(pane.snapshot.columns) * layout.cell_width)
+                .ceil()
+                .max(0.0) as u32;
+            let content_bottom = (pane.rect.y as f32
+                + layout.vertical_padding
+                + f32::from(pane.snapshot.rows) * layout.line_height)
+                .ceil()
+                .max(0.0) as u32;
+            let pane_right = pane.rect.x.saturating_add(pane.rect.width);
+            let pane_bottom = pane.rect.y.saturating_add(pane.rect.height);
+            buffers.content_rect = PaneRect::new(
+                content_left.min(pane_right),
+                content_top.min(pane_bottom),
+                content_right.min(pane_right).saturating_sub(content_left),
+                content_bottom.min(pane_bottom).saturating_sub(content_top),
+            );
             buffers.active = pane.active;
             buffers.zoomed = pane.zoomed;
             buffers.colors = pane.colors;
@@ -676,13 +757,28 @@ impl GpuRenderer {
                 pane.snapshot,
                 pane.rect,
                 layout,
-                background,
-                foreground,
-                &ansi,
+                &pane.colors,
                 self.style.background_image.is_some(),
+                background != self.style.background
+                    && terminal_colors_have_transparency(&pane.colors, self.style.opacity),
+                self.style.opacity,
             );
-            buffers.selection_highlights =
-                selection_highlight_rects(pane.snapshot, pane.rect, layout);
+            buffers.transparent_backgrounds = terminal_transparent_backgrounds(
+                pane.snapshot,
+                pane.rect,
+                layout,
+                &pane.colors,
+                self.style.opacity,
+            );
+            if pane.colors.selection_background_dynamic {
+                buffers.selection_highlights.clear();
+                buffers.selection_reverse_backgrounds =
+                    selection_reverse_backgrounds(pane.snapshot, pane.rect, layout, &pane.colors);
+            } else {
+                buffers.selection_highlights =
+                    selection_highlight_rects(pane.snapshot, pane.rect, layout);
+                buffers.selection_reverse_backgrounds.clear();
+            }
             buffers.search_highlights = search_highlight_rects(pane.snapshot, pane.rect, layout);
             buffers.command_zone_markers =
                 command_zone_marker_rects(pane.snapshot, pane.rect, layout);
@@ -691,6 +787,8 @@ impl GpuRenderer {
             } else {
                 None
             };
+            buffers.visual_bell = pane.visual_bell;
+            buffers.cursor_fireworks = pane.cursor_fireworks;
             if !use_cell_runs
                 && !(text_cache_matches && buffers.cached_cells == pane.snapshot.cells)
             {
@@ -1555,6 +1653,15 @@ impl GpuRenderer {
                     usage: BufferUsages::VERTEX,
                 })
         });
+        let transparent_vertices = self.transparent_cell_vertices();
+        let transparent_buffer = (!transparent_vertices.is_empty()).then(|| {
+            self.device
+                .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                    label: Some("toyoterm transparent-cell vertices"),
+                    contents: bytemuck::cast_slice(&transparent_vertices),
+                    usage: BufferUsages::VERTEX,
+                })
+        });
         let selector_vertices = self.selector_vertices();
         let selector_buffer = (!selector_vertices.is_empty()).then(|| {
             self.device
@@ -1581,6 +1688,15 @@ impl GpuRenderer {
             });
             if let Some(background) = &self.background {
                 background.draw(&mut pass);
+            }
+            if let Some(transparent_buffer) = transparent_buffer.as_ref() {
+                pass.set_pipeline(if self.background.is_some() {
+                    &self.ui_pipeline
+                } else {
+                    &self.transparent_cell_pipeline
+                });
+                pass.set_vertex_buffer(0, transparent_buffer.slice(..));
+                pass.draw(0..transparent_vertices.len() as u32, 0..1);
             }
             if let Some(ui_buffer) = ui_buffer.as_ref() {
                 pass.set_pipeline(&self.ui_pipeline);
@@ -1734,13 +1850,55 @@ impl GpuRenderer {
 
         for pane in self.panes.values() {
             if let Some(background) = pane_background_override(&self.style, pane.colors) {
-                push_ui_rect(
-                    &mut vertices,
-                    pane.rect,
-                    rgba(background, 1.0),
-                    self.configuration.width,
-                    self.configuration.height,
-                );
+                if pane.transparent_backgrounds.is_empty() {
+                    push_ui_rect(
+                        &mut vertices,
+                        pane.rect,
+                        rgba(background, 1.0),
+                        self.configuration.width,
+                        self.configuration.height,
+                    );
+                } else {
+                    let content_right = pane.content_rect.x.saturating_add(pane.content_rect.width);
+                    let content_bottom =
+                        pane.content_rect.y.saturating_add(pane.content_rect.height);
+                    let pane_right = pane.rect.x.saturating_add(pane.rect.width);
+                    let pane_bottom = pane.rect.y.saturating_add(pane.rect.height);
+                    for rect in [
+                        PaneRect::new(
+                            pane.rect.x,
+                            pane.rect.y,
+                            pane.rect.width,
+                            pane.content_rect.y.saturating_sub(pane.rect.y),
+                        ),
+                        PaneRect::new(
+                            pane.rect.x,
+                            content_bottom,
+                            pane.rect.width,
+                            pane_bottom.saturating_sub(content_bottom),
+                        ),
+                        PaneRect::new(
+                            pane.rect.x,
+                            pane.content_rect.y,
+                            pane.content_rect.x.saturating_sub(pane.rect.x),
+                            pane.content_rect.height,
+                        ),
+                        PaneRect::new(
+                            content_right,
+                            pane.content_rect.y,
+                            pane_right.saturating_sub(content_right),
+                            pane.content_rect.height,
+                        ),
+                    ] {
+                        push_ui_rect(
+                            &mut vertices,
+                            rect,
+                            rgba(background, 1.0),
+                            self.configuration.width,
+                            self.configuration.height,
+                        );
+                    }
+                }
             }
             for (rect, color) in &pane.backgrounds {
                 push_ui_rect(
@@ -1773,6 +1931,15 @@ impl GpuRenderer {
                     self.configuration.height,
                 );
             }
+            for (rect, color) in &pane.selection_reverse_backgrounds {
+                push_ui_rect(
+                    &mut vertices,
+                    *rect,
+                    rgba(*color, 1.0),
+                    self.configuration.width,
+                    self.configuration.height,
+                );
+            }
             for (rect, active) in &pane.search_highlights {
                 push_ui_rect(
                     &mut vertices,
@@ -1799,6 +1966,28 @@ impl GpuRenderer {
                     self.configuration.width,
                     self.configuration.height,
                 );
+            }
+            if pane.visual_bell
+                && let Some(color) = pane.colors.visual_bell
+            {
+                push_ui_rect(
+                    &mut vertices,
+                    pane.rect,
+                    rgba(color, 0.35),
+                    self.configuration.width,
+                    self.configuration.height,
+                );
+            }
+            if pane.cursor_fireworks {
+                for (rect, color) in cursor_firework_rects(pane.rect, pane.layout, pane.cursor) {
+                    push_ui_rect(
+                        &mut vertices,
+                        rect,
+                        rgba(color, 0.92),
+                        self.configuration.width,
+                        self.configuration.height,
+                    );
+                }
             }
         }
 
@@ -1852,6 +2041,29 @@ impl GpuRenderer {
             );
         }
 
+        vertices
+    }
+
+    fn transparent_cell_vertices(&self) -> Vec<UiVertex> {
+        let mut vertices = Vec::new();
+        let preserve_background_image = self.background.is_some();
+        for pane in self.panes.values() {
+            for (rect, color, opacity) in &pane.transparent_backgrounds {
+                let fill = transparent_cell_fill(
+                    *color,
+                    *opacity,
+                    self.configuration.alpha_mode,
+                    preserve_background_image,
+                );
+                push_ui_rect(
+                    &mut vertices,
+                    *rect,
+                    fill,
+                    self.configuration.width,
+                    self.configuration.height,
+                );
+            }
+        }
         vertices
     }
 

@@ -102,15 +102,26 @@ fn render_fixture(
         style.selection,
         242,
     );
-    for (rect, color) in terminal_backgrounds(
-        snapshot,
-        pane,
-        layout,
-        style.background,
-        style.foreground,
-        &style.ansi,
-        false,
-    ) {
+    let colors = TerminalColors {
+        foreground: style.foreground,
+        bold: style.foreground,
+        background: style.background,
+        cursor: style.cursor,
+        ansi: style.ansi,
+        link: None,
+        cursor_foreground: None,
+        underline: None,
+        selection_background: None,
+        selection_foreground: None,
+        selection_background_dynamic: false,
+        selection_foreground_dynamic: false,
+        visual_bell: None,
+        transparent_backgrounds: [None; 7],
+        special: Default::default(),
+    };
+    for (rect, color) in
+        terminal_backgrounds(snapshot, pane, layout, &colors, false, false, style.opacity)
+    {
         image.fill_rect(rect, color, 255);
     }
     for rect in selection_highlight_rects(snapshot, pane, layout) {

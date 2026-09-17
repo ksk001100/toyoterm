@@ -40,7 +40,9 @@ mod selector;
 mod ui_geometry;
 
 use input::*;
-use notifications::{DesktopNotification, NotificationSender};
+use notifications::{
+    DesktopNotification, NotificationFeedback, NotificationFeedbackKind, NotificationSender,
+};
 use object_model::*;
 use selector::*;
 use ui_geometry::*;
@@ -73,6 +75,8 @@ pub use toyoterm_terminal::{
 const MULTI_CLICK_INTERVAL: Duration = Duration::from_millis(500);
 const OSC_NOTIFICATION_INTERVAL: Duration = Duration::from_secs(2);
 const OSC_OPEN_URL_INTERVAL: Duration = Duration::from_secs(2);
+const OSC_VISUAL_BELL_DURATION: Duration = Duration::from_millis(150);
+const OSC_CURSOR_FIREWORKS_DURATION: Duration = Duration::from_millis(350);
 const MAX_OSC_USER_VARS: usize = 64;
 const MAX_OSC_REPORT_VARIABLE_VALUE_BYTES: usize = 4 * 1024;
 const MAX_PENDING_PTY_OUTPUT_BYTES: usize = 1024 * 1024;
@@ -420,6 +424,7 @@ enum AppEvent {
         id: u64,
         output: AsyncProcessOutput,
     },
+    NotificationFeedback(NotificationFeedback),
 }
 
 enum EvalWaiter {
@@ -446,7 +451,10 @@ struct PaneRuntime {
     session_status: SessionStatusState,
     mouse_cursor: CursorIcon,
     last_notification_at: Option<Instant>,
+    active_notifications: BTreeMap<String, Option<Instant>>,
     last_open_url_at: Option<Instant>,
+    visual_bell_deadline: Option<Instant>,
+    cursor_fireworks_deadline: Option<Instant>,
     exited: bool,
 }
 
@@ -487,6 +495,10 @@ fn apply_terminal_progress(
         }
         progress => Some(progress),
     }
+}
+
+fn visual_bell_deadline(color: Option<[u8; 3]>, now: Instant) -> Option<Instant> {
+    color.map(|_| now + OSC_VISUAL_BELL_DURATION)
 }
 
 #[derive(Default)]
@@ -705,6 +717,7 @@ fn ruby_event_from_terminal_event(pane: PaneId, event: TerminalEvent) -> Option<
             event.exit_status = exit_status;
             event
         }
+        TerminalEvent::CapturedOutputCleared => return None,
         TerminalEvent::MouseCursorChanged(_) => return None,
         TerminalEvent::MouseCursorControl(_) => return None,
         TerminalEvent::ColorControl(_)
@@ -712,6 +725,10 @@ fn ruby_event_from_terminal_event(pane: PaneId, event: TerminalEvent) -> Option<
         | TerminalEvent::ItermUiColorReset(_)
         | TerminalEvent::ItermUiColorQuery { .. }
         | TerminalEvent::ItermDefaultColorQuery(_)
+        | TerminalEvent::XtermSpecialColorSet { .. }
+        | TerminalEvent::XtermSpecialColorQuery(_)
+        | TerminalEvent::XtermSpecialColorReset(_)
+        | TerminalEvent::XtermSpecialColorMode { .. }
         | TerminalEvent::ColorStackPush
         | TerminalEvent::ColorStackPop
         | TerminalEvent::TabColorChanged { .. }
@@ -722,9 +739,11 @@ fn ruby_event_from_terminal_event(pane: PaneId, event: TerminalEvent) -> Option<
         TerminalEvent::ClipboardStore(_)
         | TerminalEvent::ClipboardCaptureStart
         | TerminalEvent::ClipboardCaptureEnd => return None,
-        TerminalEvent::Notification { .. } | TerminalEvent::NotificationClose(_) => return None,
+        TerminalEvent::Notification { .. }
+        | TerminalEvent::NotificationClose(_)
+        | TerminalEvent::NotificationAliveQuery(_) => return None,
         TerminalEvent::PtyWrite(_) => return None,
-        TerminalEvent::Bell => RubyEvent::new(ScriptEventKind::Bell),
+        TerminalEvent::Bell { .. } => RubyEvent::new(ScriptEventKind::Bell),
     };
     event.pane = Some(pane);
     Some(event)
@@ -1100,14 +1119,50 @@ impl ApplicationHandler<AppEvent> for ToyotermApplication {
             .values()
             .filter_map(|runtime| runtime.terminal.synchronized_update_deadline())
             .min();
+        let mut transient_effect_expired = false;
+        for runtime in self.pane_runtimes.values_mut() {
+            if runtime
+                .visual_bell_deadline
+                .is_some_and(|deadline| deadline <= now)
+            {
+                runtime.visual_bell_deadline = None;
+                transient_effect_expired = true;
+            }
+            if runtime
+                .cursor_fireworks_deadline
+                .is_some_and(|deadline| deadline <= now)
+            {
+                runtime.cursor_fireworks_deadline = None;
+                transient_effect_expired = true;
+            }
+        }
+        if transient_effect_expired && let Some(window) = self.window.as_ref() {
+            window.request_redraw();
+        }
+        let next_effect_at = self
+            .pane_runtimes
+            .values()
+            .flat_map(|runtime| {
+                [
+                    runtime.visual_bell_deadline,
+                    runtime.cursor_fireworks_deadline,
+                ]
+            })
+            .flatten()
+            .min();
+        let next_terminal_at = match (next_sync_at, next_effect_at) {
+            (Some(sync), Some(effect)) => Some(sync.min(effect)),
+            (Some(deadline), None) | (None, Some(deadline)) => Some(deadline),
+            (None, None) => None,
+        };
 
         if self.script_snapshot.config.status_bars.is_empty() {
             self.next_bar_at.clear();
-            set_wait_control_flow(event_loop, next_sync_at);
+            set_wait_control_flow(event_loop, next_terminal_at);
             return;
         }
         if self.bar_pending.is_some() || self.window.is_none() {
-            set_wait_control_flow(event_loop, next_sync_at);
+            set_wait_control_flow(event_loop, next_terminal_at);
             return;
         }
         for bar in &self.script_snapshot.config.status_bars {
@@ -1125,13 +1180,13 @@ impl ApplicationHandler<AppEvent> for ToyotermApplication {
             })
             .min_by_key(|(_, deadline, _)| *deadline)
         else {
-            set_wait_control_flow(event_loop, next_sync_at);
+            set_wait_control_flow(event_loop, next_terminal_at);
             return;
         };
         if now < deadline {
             set_wait_control_flow(
                 event_loop,
-                Some(next_sync_at.map_or(deadline, |sync| sync.min(deadline))),
+                Some(next_terminal_at.map_or(deadline, |terminal| terminal.min(deadline))),
             );
             return;
         }
@@ -1139,7 +1194,7 @@ impl ApplicationHandler<AppEvent> for ToyotermApplication {
             Ok(_) => {
                 self.bar_pending = Some(position);
                 self.next_bar_at.remove(&position);
-                set_wait_control_flow(event_loop, next_sync_at);
+                set_wait_control_flow(event_loop, next_terminal_at);
             }
             Err(error) => {
                 tracing::warn!(target: "toyoterm::script", %error, "submit bar callback failed");
@@ -1147,7 +1202,7 @@ impl ApplicationHandler<AppEvent> for ToyotermApplication {
                 self.next_bar_at.insert(position, deadline);
                 set_wait_control_flow(
                     event_loop,
-                    Some(next_sync_at.map_or(deadline, |sync| sync.min(deadline))),
+                    Some(next_terminal_at.map_or(deadline, |terminal| terminal.min(deadline))),
                 );
             }
         }
@@ -1225,6 +1280,12 @@ impl ApplicationHandler<AppEvent> for ToyotermApplication {
                             TerminalEvent::AttentionRequested(TerminalAttention::Cancel) => {
                                 attention_request = Some(TerminalAttention::Cancel);
                             }
+                            TerminalEvent::AttentionRequested(TerminalAttention::Fireworks)
+                                if allow_attention =>
+                            {
+                                runtime.cursor_fireworks_deadline =
+                                    Some(Instant::now() + OSC_CURSOR_FIREWORKS_DURATION);
+                            }
                             TerminalEvent::AttentionRequested(request) if allow_attention => {
                                 attention_request = Some(*request);
                             }
@@ -1255,6 +1316,7 @@ impl ApplicationHandler<AppEvent> for ToyotermApplication {
                                 runtime.command_running = false;
                                 runtime.last_exit_status = *status;
                             }
+                            TerminalEvent::CapturedOutputCleared => {}
                             TerminalEvent::MouseCursorChanged(cursor) => {
                                 runtime.mouse_cursor = *cursor;
                                 mouse_cursor_changed = true;
@@ -1262,6 +1324,10 @@ impl ApplicationHandler<AppEvent> for ToyotermApplication {
                             TerminalEvent::MouseCursorControl(_) => {}
                             TerminalEvent::ColorControl(_)
                             | TerminalEvent::ItermDefaultColorQuery(_)
+                            | TerminalEvent::XtermSpecialColorSet { .. }
+                            | TerminalEvent::XtermSpecialColorQuery(_)
+                            | TerminalEvent::XtermSpecialColorReset(_)
+                            | TerminalEvent::XtermSpecialColorMode { .. }
                             | TerminalEvent::ItermUiColorChanged { .. }
                             | TerminalEvent::ItermUiColorReset(_)
                             | TerminalEvent::ItermUiColorQuery { .. }
@@ -1298,6 +1364,9 @@ impl ApplicationHandler<AppEvent> for ToyotermApplication {
                                 timeout_ms,
                                 sound,
                                 icon_name,
+                                icon,
+                                buttons,
+                                reporting,
                             } if allow_notifications
                                 && notification_occasion_matches(
                                     *occasion,
@@ -1309,7 +1378,18 @@ impl ApplicationHandler<AppEvent> for ToyotermApplication {
                                 }) =>
                             {
                                 runtime.last_notification_at = Some(Instant::now());
+                                if let Some(id) = id
+                                    && (runtime.active_notifications.contains_key(id)
+                                        || runtime.active_notifications.len() < 32)
+                                {
+                                    runtime.active_notifications.insert(
+                                        id.clone(),
+                                        notification_expiry(*timeout_ms, Instant::now()),
+                                    );
+                                }
                                 notification = Some(DesktopNotification {
+                                    pane,
+                                    protocol_id: id.clone().unwrap_or_else(|| "0".into()),
                                     id: id.as_deref().map(|id| notification_platform_id(pane, id)),
                                     title: title.clone(),
                                     body: body.clone(),
@@ -1317,18 +1397,41 @@ impl ApplicationHandler<AppEvent> for ToyotermApplication {
                                     timeout_ms: *timeout_ms,
                                     sound: *sound,
                                     icon_name: icon_name.clone(),
+                                    icon: icon.clone(),
+                                    buttons: buttons.clone(),
+                                    reporting: *reporting,
                                 });
                             }
                             TerminalEvent::Notification { .. } => {}
-                            TerminalEvent::NotificationClose(id) if allow_notifications => {
-                                if let Some(sender) = self.notification_sender.as_ref()
+                            TerminalEvent::NotificationClose(id) => {
+                                let was_active = runtime.active_notifications.remove(id).is_some();
+                                if was_active
+                                    && let Some(sender) = self.notification_sender.as_ref()
                                     && let Err(error) =
                                         sender.close(notification_platform_id(pane, id))
                                 {
                                     tracing::warn!(target: "toyoterm::notification", %error, "queue OSC notification close failed");
                                 }
                             }
-                            TerminalEvent::NotificationClose(_) => {}
+                            TerminalEvent::NotificationAliveQuery(request_id) => {
+                                let response = notification_alive_response(
+                                    request_id,
+                                    &mut runtime.active_notifications,
+                                    Instant::now(),
+                                );
+                                if let Some(session) = runtime.pty_session.as_mut()
+                                    && let Err(error) = session.write(response.as_bytes())
+                                {
+                                    tracing::error!(
+                                        target: "toyoterm::pty",
+                                        operation = error.operation(),
+                                        %pane,
+                                        bytes = response.len(),
+                                        %error,
+                                        "write OSC 99 alive response to pane PTY failed"
+                                    );
+                                }
+                            }
                             TerminalEvent::PtyWrite(response) => {
                                 if let Some(session) = runtime.pty_session.as_mut()
                                     && let Err(error) = session.write(response.as_bytes())
@@ -1343,7 +1446,10 @@ impl ApplicationHandler<AppEvent> for ToyotermApplication {
                                     );
                                 }
                             }
-                            TerminalEvent::Bell => {}
+                            TerminalEvent::Bell { visual_bell } => {
+                                runtime.visual_bell_deadline =
+                                    visual_bell_deadline(*visual_bell, Instant::now());
+                            }
                         }
                     }
                 }
@@ -1361,6 +1467,7 @@ impl ApplicationHandler<AppEvent> for ToyotermApplication {
                         TerminalAttention::Indefinite => Some(UserAttentionType::Critical),
                         TerminalAttention::Once => Some(UserAttentionType::Informational),
                         TerminalAttention::Cancel => None,
+                        TerminalAttention::Fireworks => None,
                     });
                 }
                 for url in open_urls {
@@ -1463,6 +1570,24 @@ impl ApplicationHandler<AppEvent> for ToyotermApplication {
                     tracing::warn!(target: "toyoterm::script", %error, "submit async callback failed");
                 }
             }
+            AppEvent::NotificationFeedback(feedback) => {
+                let response = notification_feedback_response(&feedback);
+                if let Some(runtime) = self.pane_runtimes.get_mut(&feedback.pane) {
+                    runtime.active_notifications.remove(&feedback.id);
+                    if let Some(session) = runtime.pty_session.as_mut()
+                        && let Err(error) = session.write(response.as_bytes())
+                    {
+                        tracing::error!(
+                            target: "toyoterm::pty",
+                            operation = error.operation(),
+                            pane = %feedback.pane,
+                            bytes = response.len(),
+                            %error,
+                            "write OSC 99 notification feedback to pane PTY failed"
+                        );
+                    }
+                }
+            }
         }
     }
 }
@@ -1471,6 +1596,18 @@ fn set_wait_control_flow(event_loop: &ActiveEventLoop, deadline: Option<Instant>
     match deadline {
         Some(deadline) => event_loop.set_control_flow(ControlFlow::WaitUntil(deadline)),
         None => event_loop.set_control_flow(ControlFlow::Wait),
+    }
+}
+
+fn notification_feedback_response(feedback: &NotificationFeedback) -> String {
+    match feedback.kind {
+        NotificationFeedbackKind::Activated => format!("\x1b]99;i={};\x1b\\", feedback.id),
+        NotificationFeedbackKind::Button(button) => {
+            format!("\x1b]99;i={};{button}\x1b\\", feedback.id)
+        }
+        NotificationFeedbackKind::Closed => {
+            format!("\x1b]99;i={}:p=close;\x1b\\", feedback.id)
+        }
     }
 }
 
@@ -1493,6 +1630,22 @@ fn notification_platform_id(pane: PaneId, id: &str) -> u32 {
         hash = hash.wrapping_mul(16_777_619);
     }
     hash.max(1)
+}
+
+fn notification_expiry(timeout_ms: Option<u32>, now: Instant) -> Option<Instant> {
+    timeout_ms
+        .filter(|timeout_ms| *timeout_ms > 0)
+        .and_then(|timeout_ms| now.checked_add(Duration::from_millis(u64::from(timeout_ms))))
+}
+
+fn notification_alive_response(
+    request_id: &str,
+    active: &mut BTreeMap<String, Option<Instant>>,
+    now: Instant,
+) -> String {
+    active.retain(|_, deadline| deadline.is_none_or(|deadline| deadline > now));
+    let ids = active.keys().cloned().collect::<Vec<_>>().join(",");
+    format!("\x1b]99;i={request_id}:p=alive;{ids}\x1b\\")
 }
 
 fn should_open_osc_url(
@@ -1556,6 +1709,15 @@ impl ToyotermApplication {
             error
         })
         .ok();
+        let notification_proxy = event_proxy.clone();
+        let notification_sender = NotificationSender::start(move |feedback| {
+            let _ = notification_proxy.send_event(AppEvent::NotificationFeedback(feedback));
+        })
+        .map_err(|error| {
+            tracing::warn!(target: "toyoterm::notification", %error);
+            error
+        })
+        .ok();
         Ok(Self {
             event_proxy,
             window: None,
@@ -1587,12 +1749,7 @@ impl ToyotermApplication {
             click_tracker: ClickTracker::default(),
             clipboard: None,
             pending_clipboard_writes: Vec::new(),
-            notification_sender: NotificationSender::start()
-                .map_err(|error| {
-                    tracing::warn!(target: "toyoterm::notification", %error);
-                    error
-                })
-                .ok(),
+            notification_sender,
             pane_badges: HashMap::new(),
             runtime_events: VecDeque::new(),
             next_script_request: 1,
@@ -1764,6 +1921,16 @@ mod tests {
     }
 
     #[test]
+    fn visual_bell_deadline_requires_an_osc21_color() {
+        let now = Instant::now();
+        assert_eq!(visual_bell_deadline(None, now), None);
+        assert_eq!(
+            visual_bell_deadline(Some([1, 2, 3]), now),
+            Some(now + OSC_VISUAL_BELL_DURATION)
+        );
+    }
+
+    #[test]
     fn session_status_updates_only_present_fields_and_supports_clear() {
         let mut state = SessionStatusState::default();
         state.apply(&SessionStatusUpdate {
@@ -1853,6 +2020,27 @@ mod tests {
     }
 
     #[test]
+    fn reports_only_unexpired_accepted_notification_ids() {
+        let now = Instant::now();
+        let mut active = BTreeMap::from([
+            ("persistent".into(), None),
+            ("expired".into(), Some(now - Duration::from_millis(1))),
+            ("pending".into(), Some(now + Duration::from_millis(1))),
+        ]);
+
+        assert_eq!(
+            notification_alive_response("probe", &mut active, now),
+            "\x1b]99;i=probe:p=alive;pending,persistent\x1b\\"
+        );
+        assert!(!active.contains_key("expired"));
+        assert_eq!(notification_expiry(Some(0), now), None);
+        assert_eq!(
+            notification_expiry(Some(25), now),
+            Some(now + Duration::from_millis(25))
+        );
+    }
+
+    #[test]
     fn maps_shell_command_lifecycle_to_ruby_events() {
         let pane = PaneId(7);
         let prompt = ruby_event_from_terminal_event(pane, TerminalEvent::PromptStarted).unwrap();
@@ -1900,7 +2088,10 @@ mod tests {
             session_status: SessionStatusState::default(),
             mouse_cursor: CursorIcon::Default,
             last_notification_at: None,
+            active_notifications: BTreeMap::new(),
             last_open_url_at: None,
+            visual_bell_deadline: None,
+            cursor_fireworks_deadline: None,
             exited: false,
         };
 
@@ -2088,7 +2279,10 @@ mod tests {
                 session_status: SessionStatusState::default(),
                 mouse_cursor: CursorIcon::Default,
                 last_notification_at: None,
+                active_notifications: BTreeMap::new(),
                 last_open_url_at: None,
+                visual_bell_deadline: None,
+                cursor_fireworks_deadline: None,
                 exited: false,
             };
         }
@@ -2452,5 +2646,27 @@ mod tests {
 
         assert_eq!(encode_key(&space, mode), Some(b" ".to_vec()));
         assert_eq!(encode_key(&tab, mode), Some(b"\t".to_vec()));
+    }
+
+    #[test]
+    fn encodes_osc99_notification_feedback() {
+        let feedback = |kind| NotificationFeedback {
+            pane: PaneId(7),
+            id: "job-1".into(),
+            kind,
+        };
+
+        assert_eq!(
+            notification_feedback_response(&feedback(NotificationFeedbackKind::Activated)),
+            "\x1b]99;i=job-1;\x1b\\"
+        );
+        assert_eq!(
+            notification_feedback_response(&feedback(NotificationFeedbackKind::Button(2))),
+            "\x1b]99;i=job-1;2\x1b\\"
+        );
+        assert_eq!(
+            notification_feedback_response(&feedback(NotificationFeedbackKind::Closed)),
+            "\x1b]99;i=job-1:p=close;\x1b\\"
+        );
     }
 }

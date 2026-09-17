@@ -75,7 +75,7 @@ pub(super) fn update_terminal_cell_buffer(
                 context.selection,
                 context.row,
                 cell,
-                context.colors.selection_foreground,
+                context.colors,
             );
             (
                 cell.text.as_str(),
@@ -120,18 +120,27 @@ pub(super) fn apply_selection_foreground(
     selection: &[toyoterm_terminal::SelectionSpan],
     row: u16,
     cell: &toyoterm_terminal::TerminalCell,
-    color: Option<[u8; 3]>,
+    colors: &TerminalColors,
 ) {
-    let Some([red, green, blue]) = color else {
-        return;
-    };
     let cell_end = cell
         .column
         .saturating_add(u16::from(cell.width.max(1)))
         .saturating_sub(1);
-    if selection.iter().any(|span| {
+    if !selection.iter().any(|span| {
         span.row == row && span.start_column <= cell_end && span.end_column >= cell.column
     }) {
+        return;
+    }
+    let color = colors.selection_foreground.or_else(|| {
+        colors.selection_foreground_dynamic.then(|| {
+            if attributes.inverse {
+                resolve_cell_color(attributes.foreground, colors.foreground, &colors.ansi)
+            } else {
+                resolve_cell_color(attributes.background, colors.background, &colors.ansi)
+            }
+        })
+    });
+    if let Some([red, green, blue]) = color {
         attributes.foreground = CellColor::Rgb(red, green, blue);
         attributes.inverse = false;
     }
@@ -224,6 +233,87 @@ pub(super) fn selection_highlight_rects(
         .collect()
 }
 
+pub(super) fn selection_reverse_backgrounds(
+    snapshot: &TerminalSnapshot,
+    pane: PaneRect,
+    layout: TextLayout,
+    colors: &TerminalColors,
+) -> Vec<(PaneRect, [u8; 3])> {
+    if !colors.selection_background_dynamic {
+        return Vec::new();
+    }
+    let mut backgrounds = Vec::new();
+    for span in &snapshot.selection {
+        let cells = snapshot.cells.get(usize::from(span.row));
+        let mut run_start = span.start_column;
+        let mut run_color = None;
+        for column in span.start_column..=span.end_column {
+            let cell = cells.and_then(|cells| {
+                cells.iter().find(|cell| {
+                    let end = cell
+                        .column
+                        .saturating_add(u16::from(cell.width.max(1)))
+                        .saturating_sub(1);
+                    cell.column <= column && end >= column
+                })
+            });
+            let color = cell.map_or(colors.foreground, |cell| {
+                displayed_foreground(cell.attributes, cell.hyperlink.is_some(), colors)
+            });
+            if let Some(previous) = run_color
+                && previous != color
+            {
+                if let Some(rect) = selection_cell_range_rect(
+                    pane,
+                    layout,
+                    span.row,
+                    run_start,
+                    column.saturating_sub(1),
+                ) {
+                    backgrounds.push((rect, previous));
+                }
+                run_start = column;
+            }
+            run_color = Some(color);
+        }
+        if let Some(color) = run_color
+            && let Some(rect) =
+                selection_cell_range_rect(pane, layout, span.row, run_start, span.end_column)
+        {
+            backgrounds.push((rect, color));
+        }
+    }
+    backgrounds
+}
+
+fn selection_cell_range_rect(
+    pane: PaneRect,
+    layout: TextLayout,
+    row: u16,
+    start_column: u16,
+    end_column: u16,
+) -> Option<PaneRect> {
+    let origin_x = pane.x as f32 + layout.horizontal_padding;
+    let origin_y = pane.y as f32 + layout.vertical_padding;
+    let left = (origin_x + f32::from(start_column) * layout.cell_width)
+        .floor()
+        .max(0.0) as u32;
+    let right = (origin_x + f32::from(end_column.saturating_add(1)) * layout.cell_width)
+        .ceil()
+        .max(0.0) as u32;
+    let top = (origin_y + f32::from(row) * layout.line_height)
+        .floor()
+        .max(0.0) as u32;
+    let bottom = (origin_y + f32::from(row.saturating_add(1)) * layout.line_height)
+        .ceil()
+        .max(0.0) as u32;
+    let left = left.max(pane.x);
+    let top = top.max(pane.y);
+    let right = right.min(pane.x.saturating_add(pane.width));
+    let bottom = bottom.min(pane.y.saturating_add(pane.height));
+    (right > left && bottom > top).then(|| PaneRect::new(left, top, right - left, bottom - top))
+}
+
 pub(super) fn cursor_line_highlight_rect(
     pane: PaneRect,
     layout: TextLayout,
@@ -246,6 +336,49 @@ pub(super) fn cursor_line_highlight_rect(
     let right = right.min(pane.x.saturating_add(pane.width));
     let bottom = bottom.min(pane.y.saturating_add(pane.height));
     (right > left && bottom > top).then(|| PaneRect::new(left, top, right - left, bottom - top))
+}
+
+pub(super) fn cursor_firework_rects(
+    pane: PaneRect,
+    layout: TextLayout,
+    cursor: CursorState,
+) -> Vec<(PaneRect, [u8; 3])> {
+    let center_x = pane.x as f32
+        + layout.horizontal_padding
+        + (f32::from(cursor.column) + 0.5) * layout.cell_width;
+    let center_y = pane.y as f32
+        + layout.vertical_padding
+        + (f32::from(cursor.row) + 0.5) * layout.line_height;
+    let radius_x = layout.cell_width.max(2.0) * 1.4;
+    let radius_y = layout.line_height.max(2.0) * 0.85;
+    let spark = ((layout.cell_width.min(layout.line_height) * 0.24).round() as u32).clamp(2, 5);
+    let offsets = [
+        (0.0, -1.0, [255, 214, 74]),
+        (0.72, -0.72, [255, 94, 91]),
+        (1.0, 0.0, [89, 214, 255]),
+        (0.72, 0.72, [174, 112, 255]),
+        (0.0, 1.0, [104, 232, 149]),
+        (-0.72, 0.72, [255, 151, 72]),
+        (-1.0, 0.0, [255, 105, 180]),
+        (-0.72, -0.72, [116, 185, 255]),
+    ];
+    let pane_right = pane.x.saturating_add(pane.width);
+    let pane_bottom = pane.y.saturating_add(pane.height);
+    offsets
+        .into_iter()
+        .filter_map(|(x, y, color)| {
+            let left = (center_x + x * radius_x - spark as f32 * 0.5)
+                .round()
+                .max(pane.x as f32) as u32;
+            let top = (center_y + y * radius_y - spark as f32 * 0.5)
+                .round()
+                .max(pane.y as f32) as u32;
+            let right = left.saturating_add(spark).min(pane_right);
+            let bottom = top.saturating_add(spark).min(pane_bottom);
+            (right > left && bottom > top)
+                .then(|| (PaneRect::new(left, top, right - left, bottom - top), color))
+        })
+        .collect()
 }
 
 pub(super) fn command_zone_marker_rects(
@@ -294,10 +427,10 @@ pub(super) fn terminal_backgrounds(
     snapshot: &TerminalSnapshot,
     pane: PaneRect,
     layout: TextLayout,
-    default_background: [u8; 3],
-    default_foreground: [u8; 3],
-    ansi: &[[u8; 3]; 16],
+    colors: &TerminalColors,
     has_background_image: bool,
+    render_default_cells: bool,
+    default_opacity: f32,
 ) -> Vec<(PaneRect, [u8; 3])> {
     let pane_right = pane.x.saturating_add(pane.width);
     let pane_bottom = pane.y.saturating_add(pane.height);
@@ -317,13 +450,24 @@ pub(super) fn terminal_backgrounds(
         }
         for cell in cells {
             let color = if cell.attributes.inverse {
-                resolve_cell_color(cell.attributes.foreground, default_foreground, ansi)
+                resolve_cell_color(cell.attributes.foreground, colors.foreground, &colors.ansi)
             } else {
-                resolve_cell_color(cell.attributes.background, default_background, ansi)
+                resolve_cell_color(cell.attributes.background, colors.background, &colors.ansi)
             };
             let default_cell =
                 !cell.attributes.inverse && cell.attributes.background == CellColor::Default;
-            if default_cell || (!has_background_image && color == default_background) {
+            if transparent_background_opacity(
+                color,
+                &colors.transparent_backgrounds,
+                default_opacity,
+            )
+            .is_some_and(|opacity| opacity < 1.0)
+            {
+                continue;
+            }
+            if (default_cell && !render_default_cells)
+                || (!has_background_image && color == colors.background && !render_default_cells)
+            {
                 continue;
             }
             let left = (origin_x + f32::from(cell.column) * layout.cell_width)
@@ -343,7 +487,137 @@ pub(super) fn terminal_backgrounds(
             }
         }
     }
+    let default_is_transparent = transparent_background_opacity(
+        colors.background,
+        &colors.transparent_backgrounds,
+        default_opacity,
+    )
+    .is_some_and(|opacity| opacity < 1.0);
+    if render_default_cells && !default_is_transparent {
+        for row in 0..snapshot.rows {
+            let cells = snapshot
+                .cells
+                .get(usize::from(row))
+                .map(Vec::as_slice)
+                .unwrap_or_default();
+            let mut column = 0;
+            for cell in cells {
+                if cell.column > column
+                    && let Some(rect) = selection_cell_range_rect(
+                        pane,
+                        layout,
+                        row,
+                        column,
+                        cell.column.saturating_sub(1),
+                    )
+                {
+                    backgrounds.push((rect, colors.background));
+                }
+                column = column.max(cell.column.saturating_add(u16::from(cell.width.max(1))));
+            }
+            if column < snapshot.columns
+                && let Some(rect) = selection_cell_range_rect(
+                    pane,
+                    layout,
+                    row,
+                    column,
+                    snapshot.columns.saturating_sub(1),
+                )
+            {
+                backgrounds.push((rect, colors.background));
+            }
+        }
+    }
     backgrounds
+}
+
+pub(super) fn terminal_transparent_backgrounds(
+    snapshot: &TerminalSnapshot,
+    pane: PaneRect,
+    layout: TextLayout,
+    colors: &TerminalColors,
+    default_opacity: f32,
+) -> Vec<(PaneRect, [u8; 3], f32)> {
+    let mut backgrounds = Vec::new();
+    for row in 0..snapshot.rows {
+        let cells = snapshot
+            .cells
+            .get(usize::from(row))
+            .map(Vec::as_slice)
+            .unwrap_or_default();
+        let mut cell_index = 0;
+        let mut run_start = 0;
+        let mut run_value = None;
+        for column in 0..snapshot.columns {
+            while cell_index < cells.len()
+                && cells[cell_index]
+                    .column
+                    .saturating_add(u16::from(cells[cell_index].width.max(1)))
+                    <= column
+            {
+                cell_index += 1;
+            }
+            let attributes = cells
+                .get(cell_index)
+                .filter(|cell| cell.column <= column)
+                .map_or_else(CellAttributes::default, |cell| cell.attributes);
+            let color = displayed_background(attributes, colors);
+            let value = transparent_background_opacity(
+                color,
+                &colors.transparent_backgrounds,
+                default_opacity,
+            )
+            .filter(|opacity| *opacity < 1.0)
+            .map(|opacity| (color, opacity));
+            if value != run_value {
+                if let Some((color, opacity)) = run_value
+                    && let Some(rect) = selection_cell_range_rect(
+                        pane,
+                        layout,
+                        row,
+                        run_start,
+                        column.saturating_sub(1),
+                    )
+                {
+                    backgrounds.push((rect, color, opacity));
+                }
+                run_start = column;
+                run_value = value;
+            }
+        }
+        if let Some((color, opacity)) = run_value
+            && let Some(rect) = selection_cell_range_rect(
+                pane,
+                layout,
+                row,
+                run_start,
+                snapshot.columns.saturating_sub(1),
+            )
+        {
+            backgrounds.push((rect, color, opacity));
+        }
+    }
+    backgrounds
+}
+
+fn transparent_background_opacity(
+    color: [u8; 3],
+    configured: &[Option<TerminalTransparentColor>; 7],
+    default_opacity: f32,
+) -> Option<f32> {
+    configured
+        .iter()
+        .flatten()
+        .find(|entry| entry.color == color)
+        .map(|entry| entry.opacity.unwrap_or(default_opacity).clamp(0.0, 1.0))
+}
+
+fn displayed_background(attributes: CellAttributes, colors: &TerminalColors) -> [u8; 3] {
+    if attributes.inverse {
+        resolve_cell_color(attributes.foreground, colors.foreground, &colors.ansi)
+    } else {
+        resolve_cell_color(attributes.background, colors.background, &colors.ansi)
+    }
 }
 
 pub(super) fn search_highlight_rects(
@@ -418,13 +692,7 @@ pub(super) fn terminal_rich_text<'a>(
             if hyperlink {
                 attributes.underline = true;
             }
-            apply_selection_foreground(
-                &mut attributes,
-                &snapshot.selection,
-                row,
-                cell,
-                colors.selection_foreground,
-            );
+            apply_selection_foreground(&mut attributes, &snapshot.selection, row, cell, colors);
             push_rich_span(
                 &mut spans,
                 &cell.text,
@@ -478,18 +746,7 @@ pub(super) fn glyph_attrs<'a>(
     font_weight: u16,
     colors: &TerminalColors,
 ) -> Attrs<'a> {
-    let default_foreground = if hyperlink && attributes.foreground == CellColor::Default {
-        colors.link.unwrap_or(colors.foreground)
-    } else if attributes.bold && attributes.foreground == CellColor::Default {
-        colors.bold
-    } else {
-        colors.foreground
-    };
-    let foreground = if attributes.inverse {
-        resolve_cell_color(attributes.background, colors.background, &colors.ansi)
-    } else {
-        resolve_cell_color(attributes.foreground, default_foreground, &colors.ansi)
-    };
+    let foreground = displayed_foreground(attributes, hyperlink, colors);
     let alpha = if attributes.hidden {
         0
     } else if attributes.dim {
@@ -517,6 +774,51 @@ pub(super) fn glyph_attrs<'a>(
         attrs = attrs.strikethrough();
     }
     attrs
+}
+
+fn displayed_foreground(
+    attributes: CellAttributes,
+    hyperlink: bool,
+    colors: &TerminalColors,
+) -> [u8; 3] {
+    let default_foreground = if hyperlink && attributes.foreground == CellColor::Default {
+        colors.link.unwrap_or(colors.foreground)
+    } else if attributes.bold && attributes.foreground == CellColor::Default {
+        colors.bold
+    } else {
+        colors.foreground
+    };
+    let foreground = if attributes.inverse {
+        resolve_cell_color(attributes.background, colors.background, &colors.ansi)
+    } else {
+        resolve_cell_color(attributes.foreground, default_foreground, &colors.ansi)
+    };
+    special_attribute_foreground(attributes, foreground, colors)
+}
+
+fn special_attribute_foreground(
+    attributes: CellAttributes,
+    fallback: [u8; 3],
+    colors: &TerminalColors,
+) -> [u8; 3] {
+    if attributes.foreground != CellColor::Default && !colors.special.override_ansi {
+        return fallback;
+    }
+    let candidates = [
+        (attributes.bold, 0, colors.special.bold),
+        (attributes.underline, 1, colors.special.underline),
+        (attributes.blink, 2, colors.special.blink),
+        (attributes.inverse, 3, colors.special.reverse),
+        (attributes.italic, 4, colors.special.italic),
+    ];
+    candidates
+        .into_iter()
+        .find_map(|(active, index, color)| {
+            (active && colors.special.enabled[index])
+                .then_some(color)
+                .flatten()
+        })
+        .unwrap_or(fallback)
 }
 
 pub(super) fn resolve_cell_color(
@@ -629,6 +931,24 @@ pub(super) fn preferred_alpha_mode(
         .copied()
         .find(|mode| supported.contains(mode))
         .unwrap_or(CompositeAlphaMode::Auto)
+}
+
+pub(super) fn preferred_alpha_mode_for_content(
+    supported: &[CompositeAlphaMode],
+    opacity: f32,
+    transparent_cells: bool,
+) -> CompositeAlphaMode {
+    if !transparent_cells || cfg!(target_os = "windows") || opacity < 1.0 {
+        return preferred_alpha_mode(supported, opacity);
+    }
+    [
+        CompositeAlphaMode::PostMultiplied,
+        CompositeAlphaMode::PreMultiplied,
+        CompositeAlphaMode::Inherit,
+    ]
+    .into_iter()
+    .find(|mode| supported.contains(mode))
+    .unwrap_or_else(|| preferred_alpha_mode(supported, opacity))
 }
 
 pub(super) fn glyph_color(color: [u8; 3], alpha: u8) -> GlyphColor {

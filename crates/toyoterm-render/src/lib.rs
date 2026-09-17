@@ -26,6 +26,7 @@ use winit::window::Window;
 use toyoterm_api::{PaneId, TabId, WorkspaceId};
 use toyoterm_terminal::{
     CellAttributes, CellColor, CursorShape, CursorState, TerminalColors, TerminalSnapshot,
+    TerminalTransparentColor,
 };
 
 mod background;
@@ -57,6 +58,8 @@ pub struct PaneRenderData<'a> {
     pub snapshot: &'a TerminalSnapshot,
     pub cursor: CursorState,
     pub cursor_line_highlight: bool,
+    pub visual_bell: bool,
+    pub cursor_fireworks: bool,
     pub rect: PaneRect,
     pub active: bool,
     pub zoomed: bool,
@@ -354,6 +357,11 @@ mod tests {
             underline: None,
             selection_background: None,
             selection_foreground: None,
+            selection_background_dynamic: false,
+            selection_foreground_dynamic: false,
+            visual_bell: None,
+            transparent_backgrounds: [None; 7],
+            special: Default::default(),
         }
     }
 
@@ -821,6 +829,58 @@ mod tests {
     }
 
     #[test]
+    fn dynamically_reverses_selected_cell_colors() {
+        let cell = toyoterm_terminal::TerminalCell {
+            column: 0,
+            text: "x".into(),
+            width: 1,
+            attributes: CellAttributes {
+                foreground: CellColor::Rgb(10, 20, 30),
+                background: CellColor::Rgb(40, 50, 60),
+                ..CellAttributes::default()
+            },
+            hyperlink: None,
+        };
+        let snapshot = TerminalSnapshot {
+            images: Vec::new(),
+            columns: 2,
+            rows: 1,
+            lines: vec!["x ".into()],
+            cells: vec![vec![cell.clone()]],
+            selection: vec![SelectionSpan {
+                row: 0,
+                start_column: 0,
+                end_column: 1,
+            }],
+            search_matches: Vec::new(),
+            command_zones: Vec::new(),
+        };
+        let layout = TextLayout {
+            font_size: 14.0,
+            line_height: 18.0,
+            cell_width: 9.0,
+            horizontal_padding: 0.0,
+            vertical_padding: 0.0,
+        };
+        let mut colors = test_terminal_colors([200, 210, 220], [1, 2, 3], default_ansi_palette());
+        colors.selection_background_dynamic = true;
+        colors.selection_foreground_dynamic = true;
+
+        assert_eq!(
+            selection_reverse_backgrounds(&snapshot, PaneRect::new(0, 0, 100, 40), layout, &colors,),
+            [
+                (PaneRect::new(0, 0, 9, 18), [10, 20, 30]),
+                (PaneRect::new(9, 0, 9, 18), [200, 210, 220]),
+            ]
+        );
+
+        let mut attributes = cell.attributes;
+        apply_selection_foreground(&mut attributes, &snapshot.selection, 0, &cell, &colors);
+        assert_eq!(attributes.foreground, CellColor::Rgb(40, 50, 60));
+        assert!(!attributes.inverse);
+    }
+
+    #[test]
     fn cursor_line_highlight_is_clipped_to_the_pane_content() {
         let layout = TextLayout {
             font_size: 14.0,
@@ -836,6 +896,44 @@ mod tests {
         assert_eq!(
             cursor_line_highlight_rect(PaneRect::new(10, 20, 100, 50), layout, 9),
             None
+        );
+    }
+
+    #[test]
+    fn cursor_fireworks_surround_the_cursor_and_stay_inside_the_pane() {
+        let pane = PaneRect::new(10, 20, 100, 60);
+        let layout = TextLayout {
+            font_size: 14.0,
+            line_height: 18.0,
+            cell_width: 9.0,
+            horizontal_padding: 8.0,
+            vertical_padding: 6.0,
+        };
+        let sparks = cursor_firework_rects(
+            pane,
+            layout,
+            CursorState {
+                column: 3,
+                row: 1,
+                visible: true,
+                shape: CursorShape::Block,
+            },
+        );
+
+        assert_eq!(sparks.len(), 8);
+        assert!(sparks.iter().all(|(rect, _)| {
+            rect.x >= pane.x
+                && rect.y >= pane.y
+                && rect.x.saturating_add(rect.width) <= pane.x.saturating_add(pane.width)
+                && rect.y.saturating_add(rect.height) <= pane.y.saturating_add(pane.height)
+        }));
+        assert!(
+            sparks
+                .iter()
+                .map(|(_, color)| color)
+                .collect::<HashSet<_>>()
+                .len()
+                > 1
         );
     }
 
@@ -927,6 +1025,7 @@ mod tests {
             inverse: true,
             ..CellAttributes::default()
         };
+        colors.selection_foreground = Some([70, 80, 90]);
         apply_selection_foreground(
             &mut selected,
             &[SelectionSpan {
@@ -942,7 +1041,7 @@ mod tests {
                 attributes: CellAttributes::default(),
                 hyperlink: None,
             },
-            Some([70, 80, 90]),
+            &colors,
         );
         assert_eq!(selected.foreground, CellColor::Rgb(70, 80, 90));
         assert!(!selected.inverse);
@@ -977,6 +1076,84 @@ mod tests {
             &test_terminal_colors([200, 200, 200], [0, 0, 0], ansi),
         );
         assert_eq!(inverse.color_opt, Some(GlyphColor::rgba(9, 8, 7, 255)));
+
+        let mut special_colors = test_terminal_colors([200, 200, 200], [0, 0, 0], ansi);
+        special_colors.special.bold = Some([11, 22, 33]);
+        let special_bold = glyph_attrs(
+            CellAttributes {
+                bold: true,
+                ..CellAttributes::default()
+            },
+            false,
+            "monospace",
+            400,
+            &special_colors,
+        );
+        assert_eq!(
+            special_bold.color_opt,
+            Some(GlyphColor::rgba(11, 22, 33, 255))
+        );
+        special_colors.special.blink = Some([44, 55, 66]);
+        let special_blink = glyph_attrs(
+            CellAttributes {
+                blink: true,
+                ..CellAttributes::default()
+            },
+            false,
+            "monospace",
+            400,
+            &special_colors,
+        );
+        assert_eq!(
+            special_blink.color_opt,
+            Some(GlyphColor::rgba(44, 55, 66, 255))
+        );
+        let explicit_bold = glyph_attrs(
+            CellAttributes {
+                foreground: CellColor::Rgb(1, 2, 3),
+                bold: true,
+                ..CellAttributes::default()
+            },
+            false,
+            "monospace",
+            400,
+            &special_colors,
+        );
+        assert_eq!(
+            explicit_bold.color_opt,
+            Some(GlyphColor::rgba(1, 2, 3, 255))
+        );
+        special_colors.special.override_ansi = true;
+        let overridden_bold = glyph_attrs(
+            CellAttributes {
+                foreground: CellColor::Rgb(1, 2, 3),
+                bold: true,
+                ..CellAttributes::default()
+            },
+            false,
+            "monospace",
+            400,
+            &special_colors,
+        );
+        assert_eq!(
+            overridden_bold.color_opt,
+            Some(GlyphColor::rgba(11, 22, 33, 255))
+        );
+        special_colors.special.enabled[0] = false;
+        let disabled_bold = glyph_attrs(
+            CellAttributes {
+                bold: true,
+                ..CellAttributes::default()
+            },
+            false,
+            "monospace",
+            400,
+            &special_colors,
+        );
+        assert_eq!(
+            disabled_bold.color_opt,
+            Some(GlyphColor::rgba(200, 200, 200, 255))
+        );
     }
 
     #[test]
@@ -1051,6 +1228,7 @@ mod tests {
             search_matches: Vec::new(),
             command_zones: Vec::new(),
         };
+        let colors = test_terminal_colors([220, 225, 232], [9, 11, 14], ansi);
         let backgrounds = terminal_backgrounds(
             &snapshot,
             PaneRect::new(10, 20, 100, 40),
@@ -1061,10 +1239,10 @@ mod tests {
                 horizontal_padding: 4.0,
                 vertical_padding: 3.0,
             },
-            [9, 11, 14],
-            [220, 225, 232],
-            &ansi,
+            &colors,
             false,
+            false,
+            1.0,
         );
         assert_eq!(
             backgrounds,
@@ -1080,6 +1258,7 @@ mod tests {
         let mut terminal = AlacrittyTerminalBackend::new(4, 1);
         terminal.advance(b"a\x1b[48;2;9;11;14mb\x1b[0mc");
         let snapshot = terminal.snapshot();
+        let colors = test_terminal_colors([220, 225, 232], [9, 11, 14], default_ansi_palette());
         let rectangles = terminal_backgrounds(
             &snapshot,
             PaneRect::new(0, 0, 100, 40),
@@ -1090,13 +1269,107 @@ mod tests {
                 horizontal_padding: 0.0,
                 vertical_padding: 0.0,
             },
-            [9, 11, 14],
-            [220, 225, 232],
-            &default_ansi_palette(),
+            &colors,
             true,
+            false,
+            1.0,
         );
         assert_eq!(rectangles.len(), 1);
         assert_eq!(rectangles[0].1, [9, 11, 14]);
+    }
+
+    #[test]
+    fn maps_matching_cell_backgrounds_to_kitty_opacity() {
+        let snapshot = TerminalSnapshot {
+            images: Vec::new(),
+            columns: 3,
+            rows: 1,
+            lines: vec!["ab ".into()],
+            cells: vec![vec![
+                toyoterm_terminal::TerminalCell {
+                    column: 0,
+                    text: "a".into(),
+                    width: 1,
+                    attributes: CellAttributes {
+                        background: CellColor::Rgb(255, 0, 0),
+                        ..CellAttributes::default()
+                    },
+                    hyperlink: None,
+                },
+                toyoterm_terminal::TerminalCell {
+                    column: 1,
+                    text: "b".into(),
+                    width: 1,
+                    attributes: CellAttributes {
+                        background: CellColor::Rgb(0, 255, 0),
+                        ..CellAttributes::default()
+                    },
+                    hyperlink: None,
+                },
+            ]],
+            selection: Vec::new(),
+            search_matches: Vec::new(),
+            command_zones: Vec::new(),
+        };
+        let mut colors = test_terminal_colors([220, 225, 232], [9, 11, 14], default_ansi_palette());
+        colors.transparent_backgrounds[0] = Some(TerminalTransparentColor {
+            color: [255, 0, 0],
+            opacity: Some(0.25),
+        });
+        colors.transparent_backgrounds[1] = Some(TerminalTransparentColor {
+            color: [9, 11, 14],
+            opacity: None,
+        });
+        let layout = TextLayout {
+            font_size: 14.0,
+            line_height: 18.0,
+            cell_width: 9.0,
+            horizontal_padding: 0.0,
+            vertical_padding: 0.0,
+        };
+
+        assert_eq!(
+            terminal_transparent_backgrounds(
+                &snapshot,
+                PaneRect::new(0, 0, 100, 40),
+                layout,
+                &colors,
+                0.6,
+            ),
+            [
+                (PaneRect::new(0, 0, 9, 18), [255, 0, 0], 0.25),
+                (PaneRect::new(18, 0, 9, 18), [9, 11, 14], 0.6),
+            ]
+        );
+        assert_eq!(
+            terminal_backgrounds(
+                &snapshot,
+                PaneRect::new(0, 0, 100, 40),
+                layout,
+                &colors,
+                true,
+                false,
+                0.6,
+            ),
+            [(PaneRect::new(9, 0, 9, 18), [0, 255, 0])]
+        );
+
+        colors.transparent_backgrounds[1] = None;
+        assert_eq!(
+            terminal_backgrounds(
+                &snapshot,
+                PaneRect::new(0, 0, 100, 40),
+                layout,
+                &colors,
+                true,
+                true,
+                0.6,
+            ),
+            [
+                (PaneRect::new(9, 0, 9, 18), [0, 255, 0]),
+                (PaneRect::new(18, 0, 9, 18), [9, 11, 14]),
+            ]
+        );
     }
 
     #[test]
@@ -1248,6 +1521,18 @@ mod tests {
         assert_eq!(
             preferred_alpha_mode(&[CompositeAlphaMode::Opaque], 0.8),
             CompositeAlphaMode::Auto
+        );
+        assert_eq!(
+            preferred_alpha_mode_for_content(&supported, 1.0, true),
+            CompositeAlphaMode::PreMultiplied
+        );
+        assert_eq!(
+            transparent_cell_fill([255, 0, 0], 0.5, CompositeAlphaMode::PreMultiplied, false,),
+            [0.5, 0.0, 0.0, 0.5]
+        );
+        assert_eq!(
+            transparent_cell_fill([255, 0, 0], 0.5, CompositeAlphaMode::PreMultiplied, true,),
+            [1.0, 0.0, 0.0, 0.5]
         );
     }
 

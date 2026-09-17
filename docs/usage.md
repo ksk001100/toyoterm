@@ -59,6 +59,16 @@ requests a non-expiring platform notification; `-1` keeps the platform default.
 Linux additionally maps the protocol's standard named sounds and safe `n=` icon names
 to the freedesktop notification service. Icon names are limited to 128 ASCII identifier
 bytes; paths and control characters are rejected.
+Binary `p=icon` payloads accept PNG, JPEG, or GIF data when base64 encoded with `e=1`.
+Decoded input is limited to 1 MiB and 512×512 pixels. A bounded 16-entry least-recently-used
+cache keyed by `g=` allows later notifications to reuse an icon; the desktop worker writes
+validated RGBA data to uniquely-created temporary PNG files and removes those files when
+the tracked notification is replaced, expires, is evicted, or the worker stops. Windows
+retains at most 128 icon files because its current backend cannot report explicit closure.
+The `p=buttons` payload accepts at most three non-empty labels of 128 UTF-8 bytes each;
+they are displayed as platform notification actions. On Windows, `a=report` activation
+and button results plus `c=1` close reports are returned only to the originating pane PTY;
+at most 128 response listeners can be active. Other platforms do not advertise reports.
 Assembled title and body fields are limited to 4 KiB, identifiers are restricted to the
 protocol's safe character set, control characters are rejected, and delivery is rate limited
 to one notification per pane every two seconds. Notification delivery runs off the
@@ -71,7 +81,8 @@ iTerm2 OSC 1337 attention requests are disabled by default because remote output
 could otherwise flash or bounce the application repeatedly. Trusted configuration
 can opt in with `config.behavior.allow_osc_attention_requests = true`. Values `yes`,
 `once`, and `no` request indefinite attention, one-shot attention, or cancellation
-through the platform window API. The cursor-local `fireworks` effect is ignored.
+through the platform window API. `fireworks` renders a bounded 350 ms burst around
+the requesting pane's cursor without invoking a platform attention API.
 
 ### OSC URL opening security
 

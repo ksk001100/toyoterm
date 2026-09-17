@@ -43,6 +43,7 @@ impl ToyotermApplication {
     }
 
     pub(super) fn sync_active_renderer(&mut self, scale_factor: f64) {
+        let now = Instant::now();
         let active = self.mux.current_pane();
         let zoomed = self
             .mux
@@ -69,6 +70,12 @@ impl ToyotermApplication {
                         runtime.terminal.render_colors(),
                         cursor,
                         runtime.cursor_line_highlight,
+                        runtime
+                            .visual_bell_deadline
+                            .is_some_and(|deadline| deadline > now),
+                        runtime
+                            .cursor_fireworks_deadline
+                            .is_some_and(|deadline| deadline > now),
                         placement.rect,
                         is_active,
                         self.pane_badges
@@ -82,13 +89,26 @@ impl ToyotermApplication {
         let panes = snapshots
             .iter()
             .map(
-                |(pane, snapshot, colors, cursor, cursor_line_highlight, rect, active, badge)| {
+                |(
+                    pane,
+                    snapshot,
+                    colors,
+                    cursor,
+                    cursor_line_highlight,
+                    visual_bell,
+                    cursor_fireworks,
+                    rect,
+                    active,
+                    badge,
+                )| {
                     PaneRenderData {
                         pane: *pane,
                         snapshot,
                         colors: *colors,
                         cursor: *cursor,
                         cursor_line_highlight: *cursor_line_highlight,
+                        visual_bell: *visual_bell,
+                        cursor_fireworks: *cursor_fireworks,
                         rect: *rect,
                         active: *active,
                         badge: badge.as_deref(),

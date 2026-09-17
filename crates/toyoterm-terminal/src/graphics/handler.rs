@@ -212,6 +212,16 @@ impl SemanticMarkers {
         self.current_command = None;
     }
 
+    pub fn clear_commands(&mut self) {
+        self.markers.retain(|marker| {
+            !matches!(
+                marker.kind,
+                SemanticMarkerKind::CommandStart | SemanticMarkerKind::CommandEnd
+            )
+        });
+        self.current_command = None;
+    }
+
     pub fn clear(&mut self, alternate: bool, start: i32, end: i32) {
         self.retain(|marker| {
             marker.alternate != alternate || marker.line < start || marker.line >= end
@@ -567,7 +577,22 @@ impl<E: EventListener> Handler for GraphicsHandler<'_, E> {
         self.terminal.set_tabs(arg0);
     }
     fn terminal_attribute(&mut self, arg0: Attr) {
+        let blink = match &arg0 {
+            Attr::BlinkSlow | Attr::BlinkFast => Some(true),
+            Attr::CancelBlink | Attr::Reset => Some(false),
+            _ => None,
+        };
         self.terminal.terminal_attribute(arg0);
+        if let Some(blink) = blink {
+            let flag = alacritty_terminal::term::cell::Flags::from_bits_retain(
+                crate::alacritty::BLINK_FLAG_BITS,
+            );
+            if blink {
+                self.terminal.grid_mut().cursor.template.flags.insert(flag);
+            } else {
+                self.terminal.grid_mut().cursor.template.flags.remove(flag);
+            }
+        }
     }
     fn set_mode(&mut self, arg0: Mode) {
         self.terminal.set_mode(arg0);
