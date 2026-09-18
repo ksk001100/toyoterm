@@ -498,7 +498,7 @@ impl ToyotermApplication {
             .map(TerminalBackend::mode)
             .unwrap_or_default();
         if mode.mouse_reporting && !self.modifiers.shift_key() {
-            let (column, row) = self.mouse_cell(window.scale_factor());
+            let (column, row) = self.clamped_mouse_cell(window.scale_factor());
             let direction = if steps > 0 {
                 MouseWheelDirection::Up
             } else {
@@ -560,11 +560,34 @@ impl ToyotermApplication {
         )
     }
 
-    pub(super) fn handle_left_mouse(&mut self, window: &Window, state: ElementState) {
-        if state == ElementState::Pressed && self.visual_selection.is_some() {
+    pub(super) fn clamped_mouse_cell(&self, scale_factor: f64) -> (u16, u16) {
+        let (mut column, mut row) = self.mouse_cell(scale_factor);
+        if let Some(terminal) = self.active_terminal() {
+            let (columns, rows) = terminal.dimensions();
+            if columns > 0 {
+                column = column.min(columns.saturating_sub(1));
+            }
+            if rows > 0 {
+                row = row.min(rows.saturating_sub(1));
+            }
+        }
+        (column, row)
+    }
+
+    pub(super) fn handle_mouse_input(
+        &mut self,
+        event_loop: &ActiveEventLoop,
+        window: &Window,
+        button: MouseButton,
+        state: ElementState,
+    ) {
+        if button == MouseButton::Left
+            && state == ElementState::Pressed
+            && self.visual_selection.is_some()
+        {
             self.exit_visual_mode();
         }
-        if state == ElementState::Pressed {
+        if button == MouseButton::Left && state == ElementState::Pressed {
             if self.search_open {
                 self.close_search();
                 self.sync_active_renderer(window.scale_factor());
@@ -636,7 +659,7 @@ impl ToyotermApplication {
                 return;
             }
             if has_link_modifier(self.modifiers, current_shortcut_platform()) {
-                let (column, row) = self.mouse_cell(window.scale_factor());
+                let (column, row) = self.clamped_mouse_cell(window.scale_factor());
                 if let Some(url) = self
                     .active_terminal()
                     .map(TerminalBackend::snapshot)
@@ -648,36 +671,24 @@ impl ToyotermApplication {
                     return;
                 }
             }
-        }
-        if self
-            .active_terminal()
-            .is_some_and(|terminal| terminal.mode().mouse_reporting)
-            && !self.modifiers.shift_key()
-        {
-            return;
+        } else if state == ElementState::Pressed {
+            let hovered = self
+                .pane_layout
+                .pane_at(self.mouse_position.x, self.mouse_position.y);
+            let Some(hovered) = hovered else {
+                return;
+            };
+            if self.mux.current_pane() != Some(hovered)
+                && let Err(error) = self.dispatch_gui_command(Command::ActivatePane(hovered))
+            {
+                tracing::warn!(target: "toyoterm::mux", %error, pane = %hovered, "focus pane failed");
+                return;
+            }
         }
 
-        let (column, row) = self.mouse_cell(window.scale_factor());
-        match state {
-            ElementState::Pressed => {
-                let Some(pane) = self.mux.current_pane() else {
-                    return;
-                };
-                let click_count = self
-                    .click_tracker
-                    .register(Instant::now(), ClickTarget { pane, column, row });
-                let kind = match click_count {
-                    2 => SelectionKind::Word,
-                    3 => SelectionKind::Line,
-                    _ => SelectionKind::Simple,
-                };
-                if let Some(terminal) = self.active_terminal_mut() {
-                    terminal.clear_selection();
-                    terminal.start_selection(column, row, kind);
-                }
-                self.selecting = true;
-            }
-            ElementState::Released if self.selecting => {
+        if self.selecting {
+            if state == ElementState::Released {
+                let (column, row) = self.clamped_mouse_cell(window.scale_factor());
                 if let Some(terminal) = self.active_terminal_mut() {
                     terminal.update_selection(column, row);
                 }
@@ -687,11 +698,146 @@ impl ToyotermApplication {
                 {
                     tracing::warn!(target: "toyoterm::app", %error, "copy-on-select failed");
                 }
+                self.sync_active_renderer(window.scale_factor());
+                window.request_redraw();
             }
-            ElementState::Released => return,
+            return;
         }
-        self.sync_active_renderer(window.scale_factor());
-        window.request_redraw();
+
+        let mode = self
+            .active_terminal()
+            .map(TerminalBackend::mode)
+            .unwrap_or_default();
+        let term_button = terminal_mouse_button(button);
+
+        if mode.mouse_reporting && !self.modifiers.shift_key() {
+            let (column, row) = self.clamped_mouse_cell(window.scale_factor());
+            let modifiers = key_modifiers(self.modifiers);
+            match state {
+                ElementState::Pressed => {
+                    if let Some(btn) = term_button {
+                        self.pressed_mouse_button = Some(btn);
+                        self.last_mouse_cell = Some((column, row));
+                        let sequence = encode_mouse_event(
+                            MouseEventKind::Press(btn),
+                            column,
+                            row,
+                            modifiers,
+                            mode.sgr_mouse,
+                        );
+                        if let Err(error) = self.write_pty(&sequence) {
+                            self.fail(event_loop, error);
+                        }
+                    }
+                }
+                ElementState::Released => {
+                    let btn = term_button.or(self.pressed_mouse_button);
+                    self.pressed_mouse_button = None;
+                    if let Some(btn) = btn {
+                        let sequence = encode_mouse_event(
+                            MouseEventKind::Release(btn),
+                            column,
+                            row,
+                            modifiers,
+                            mode.sgr_mouse,
+                        );
+                        if let Err(error) = self.write_pty(&sequence) {
+                            self.fail(event_loop, error);
+                        }
+                    }
+                }
+            }
+            return;
+        }
+
+        if state == ElementState::Released
+            && let Some(btn) = self.pressed_mouse_button.take()
+        {
+            let (column, row) = self.clamped_mouse_cell(window.scale_factor());
+            let modifiers = key_modifiers(self.modifiers);
+            let sequence = encode_mouse_event(
+                MouseEventKind::Release(btn),
+                column,
+                row,
+                modifiers,
+                mode.sgr_mouse,
+            );
+            if let Err(error) = self.write_pty(&sequence) {
+                self.fail(event_loop, error);
+            }
+            return;
+        }
+
+        if button == MouseButton::Left {
+            let (column, row) = self.clamped_mouse_cell(window.scale_factor());
+            match state {
+                ElementState::Pressed => {
+                    let Some(pane) = self.mux.current_pane() else {
+                        return;
+                    };
+                    let click_count = self
+                        .click_tracker
+                        .register(Instant::now(), ClickTarget { pane, column, row });
+                    let kind = match click_count {
+                        2 => SelectionKind::Word,
+                        3 => SelectionKind::Line,
+                        _ => SelectionKind::Simple,
+                    };
+                    if let Some(terminal) = self.active_terminal_mut() {
+                        terminal.clear_selection();
+                        terminal.start_selection(column, row, kind);
+                    }
+                    self.selecting = true;
+                }
+                ElementState::Released => return,
+            }
+            self.sync_active_renderer(window.scale_factor());
+            window.request_redraw();
+        }
+    }
+
+    pub(super) fn handle_mouse_motion(&mut self, event_loop: &ActiveEventLoop, window: &Window) {
+        let mode = self
+            .active_terminal()
+            .map(TerminalBackend::mode)
+            .unwrap_or_default();
+        if !mode.mouse_reporting || self.modifiers.shift_key() {
+            return;
+        }
+
+        let is_drag = self.pressed_mouse_button.is_some();
+        let should_report = if is_drag {
+            mode.mouse_drag || mode.mouse_motion
+        } else {
+            if self
+                .pane_layout
+                .pane_at(self.mouse_position.x, self.mouse_position.y)
+                != self.mux.current_pane()
+            {
+                return;
+            }
+            mode.mouse_motion
+        };
+
+        if !should_report {
+            return;
+        }
+
+        let (column, row) = self.clamped_mouse_cell(window.scale_factor());
+        if self.last_mouse_cell == Some((column, row)) {
+            return;
+        }
+        self.last_mouse_cell = Some((column, row));
+
+        let modifiers = key_modifiers(self.modifiers);
+        let kind = match self.pressed_mouse_button {
+            Some(btn) => MouseEventKind::Drag(btn),
+            None => MouseEventKind::Move,
+        };
+        let sequence = encode_mouse_event(kind, column, row, modifiers, mode.sgr_mouse);
+        if let Err(error) = self.write_pty(&sequence) {
+            self.fail(event_loop, error);
+        }
     }
 
     pub(super) fn copy_selection(&mut self) -> Result<(), String> {
@@ -780,4 +926,13 @@ fn spawn_pty_reader(
         })
         .map(|_| ())
         .map_err(|error| format!("start PTY reader: {error}"))
+}
+
+pub(super) fn terminal_mouse_button(button: MouseButton) -> Option<TerminalMouseButton> {
+    match button {
+        MouseButton::Left => Some(TerminalMouseButton::Left),
+        MouseButton::Middle => Some(TerminalMouseButton::Middle),
+        MouseButton::Right => Some(TerminalMouseButton::Right),
+        _ => None,
+    }
 }

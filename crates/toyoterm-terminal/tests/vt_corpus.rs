@@ -29,7 +29,7 @@ fn vt_input_corpus_matches_terminal_snapshots() {
 special_cells=[]
 styled_runs=["0:0..12=\"   Compiling\" fg=Indexed(2),bold", "1:0..12=\"    Finished\" fg=Indexed(2),bold"]
 cursor=CursorState { column: 2, row: 2, visible: true, shape: Block }
-mode=TerminalMode { application_cursor: false, application_keypad: false, bracketed_paste: false, mouse_reporting: false, sgr_mouse: false, focus_reporting: false, alternate_screen: false, alternate_scroll: true }
+mode=TerminalMode { application_cursor: false, application_keypad: false, bracketed_paste: false, mouse_reporting: false, mouse_drag: false, mouse_motion: false, sgr_mouse: false, focus_reporting: false, alternate_screen: false, alternate_scroll: true }
 events=[TitleChanged("cargo test")]"#,
         },
         CorpusCase {
@@ -45,7 +45,7 @@ events=[TitleChanged("cargo test")]"#,
 special_cells=[]
 styled_runs=[]
 cursor=CursorState { column: 1, row: 0, visible: false, shape: Block }
-mode=TerminalMode { application_cursor: false, application_keypad: false, bracketed_paste: false, mouse_reporting: false, sgr_mouse: false, focus_reporting: false, alternate_screen: true, alternate_scroll: true }
+mode=TerminalMode { application_cursor: false, application_keypad: false, bracketed_paste: false, mouse_reporting: false, mouse_drag: false, mouse_motion: false, sgr_mouse: false, focus_reporting: false, alternate_screen: true, alternate_scroll: true }
 events=[]"#,
         },
         CorpusCase {
@@ -57,7 +57,7 @@ events=[]"#,
 special_cells=["0:6=\"界\"/w2", "0:9=\"e\\u{301}\"/w1", "0:11=\"😀\"/w2", "0:14=\"👩\\u{200d}\"/w2", "0:16=\"💻\"/w2"]
 styled_runs=[]
 cursor=CursorState { column: 18, row: 0, visible: true, shape: Block }
-mode=TerminalMode { application_cursor: false, application_keypad: false, bracketed_paste: false, mouse_reporting: false, sgr_mouse: false, focus_reporting: false, alternate_screen: false, alternate_scroll: true }
+mode=TerminalMode { application_cursor: false, application_keypad: false, bracketed_paste: false, mouse_reporting: false, mouse_drag: false, mouse_motion: false, sgr_mouse: false, focus_reporting: false, alternate_screen: false, alternate_scroll: true }
 events=[]"#,
         },
         CorpusCase {
@@ -72,7 +72,7 @@ events=[]"#,
 special_cells=[]
 styled_runs=[]
 cursor=CursorState { column: 6, row: 1, visible: true, shape: Block }
-mode=TerminalMode { application_cursor: true, application_keypad: true, bracketed_paste: true, mouse_reporting: true, sgr_mouse: true, focus_reporting: true, alternate_screen: false, alternate_scroll: true }
+mode=TerminalMode { application_cursor: true, application_keypad: true, bracketed_paste: true, mouse_reporting: true, mouse_drag: false, mouse_motion: false, sgr_mouse: true, focus_reporting: true, alternate_screen: false, alternate_scroll: true }
 events=[]"#,
         },
         CorpusCase {
@@ -90,7 +90,7 @@ events=[]"#,
 special_cells=["0:12=\"😀\"/w2"]
 styled_runs=["0:20..21=\"!\" fg=Rgb(255, 0, 0)"]
 cursor=CursorState { column: 21, row: 0, visible: true, shape: Block }
-mode=TerminalMode { application_cursor: false, application_keypad: false, bracketed_paste: false, mouse_reporting: false, sgr_mouse: false, focus_reporting: false, alternate_screen: false, alternate_scroll: true }
+mode=TerminalMode { application_cursor: false, application_keypad: false, bracketed_paste: false, mouse_reporting: false, mouse_drag: false, mouse_motion: false, sgr_mouse: false, focus_reporting: false, alternate_screen: false, alternate_scroll: true }
 events=[]"#,
         },
     ];

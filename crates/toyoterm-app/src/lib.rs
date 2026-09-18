@@ -66,10 +66,11 @@ pub use toyoterm_render::{
 pub use toyoterm_script::ConfigManager;
 pub use toyoterm_terminal::{
     AlacrittyTerminalBackend, BindingKey, CursorShape, KeyChord, KeyModifiers, KeyPress, KeypadKey,
-    MouseWheelDirection, NotificationOccasion, NotificationSound, NotificationUrgency,
-    SearchDirection, SearchResult, SelectionKind, SessionStatusUpdate, TabColorComponent,
-    TerminalAttention, TerminalBackend, TerminalEvent, TerminalKey, TerminalMode, TerminalProgress,
-    encode_key, encode_mouse_wheel, encode_paste,
+    MouseEventKind, MouseWheelDirection, NotificationOccasion, NotificationSound,
+    NotificationUrgency, SearchDirection, SearchResult, SelectionKind, SessionStatusUpdate,
+    TabColorComponent, TerminalAttention, TerminalBackend, TerminalEvent, TerminalKey,
+    TerminalMode, TerminalMouseButton, TerminalProgress, encode_key, encode_mouse_event,
+    encode_mouse_wheel, encode_paste,
 };
 
 const MULTI_CLICK_INTERVAL: Duration = Duration::from_millis(500);
@@ -651,6 +652,8 @@ struct ToyotermApplication {
     alt_graph_active: bool,
     leader_deadline: Option<Instant>,
     mouse_position: PhysicalPosition<f64>,
+    pressed_mouse_button: Option<TerminalMouseButton>,
+    last_mouse_cell: Option<(u16, u16)>,
     wheel_line_accumulator: f64,
     selecting: bool,
     visual_selection: Option<VisualSelection>,
@@ -901,6 +904,8 @@ impl ApplicationHandler<AppEvent> for ToyotermApplication {
                     clear_modifier_state(&mut self.modifiers, &mut self.alt_graph_active);
                     self.leader_deadline = None;
                     self.exit_visual_mode();
+                    self.pressed_mouse_button = None;
+                    self.last_mouse_cell = None;
                     if self.search_open {
                         self.close_search();
                         self.sync_active_renderer(window.scale_factor());
@@ -925,15 +930,16 @@ impl ApplicationHandler<AppEvent> for ToyotermApplication {
                     }
                     self.sync_active_renderer(window.scale_factor());
                     window.request_redraw();
+                } else if self.selector.is_none() {
+                    self.handle_mouse_motion(event_loop, &window);
                 }
             }
-            WindowEvent::MouseInput {
-                state,
-                button: MouseButton::Left,
-                ..
-            } => {
+            WindowEvent::CursorLeft { .. } => {
+                self.last_mouse_cell = None;
+            }
+            WindowEvent::MouseInput { state, button, .. } => {
                 if self.selector.is_none() {
-                    self.handle_left_mouse(&window, state);
+                    self.handle_mouse_input(event_loop, &window, button, state);
                 }
             }
             WindowEvent::MouseWheel { delta, .. } => {
@@ -1743,6 +1749,8 @@ impl ToyotermApplication {
             alt_graph_active: false,
             leader_deadline: None,
             mouse_position: PhysicalPosition::new(0.0, 0.0),
+            pressed_mouse_button: None,
+            last_mouse_cell: None,
             wheel_line_accumulator: 0.0,
             selecting: false,
             visual_selection: None,
@@ -2667,6 +2675,30 @@ mod tests {
         assert_eq!(
             notification_feedback_response(&feedback(NotificationFeedbackKind::Closed)),
             "\x1b]99;i=job-1:p=close;\x1b\\"
+        );
+    }
+
+    #[test]
+    fn maps_winit_mouse_buttons() {
+        assert_eq!(
+            pane_lifecycle::terminal_mouse_button(MouseButton::Left),
+            Some(TerminalMouseButton::Left)
+        );
+        assert_eq!(
+            pane_lifecycle::terminal_mouse_button(MouseButton::Middle),
+            Some(TerminalMouseButton::Middle)
+        );
+        assert_eq!(
+            pane_lifecycle::terminal_mouse_button(MouseButton::Right),
+            Some(TerminalMouseButton::Right)
+        );
+        assert_eq!(
+            pane_lifecycle::terminal_mouse_button(MouseButton::Back),
+            None
+        );
+        assert_eq!(
+            pane_lifecycle::terminal_mouse_button(MouseButton::Forward),
+            None
         );
     }
 }

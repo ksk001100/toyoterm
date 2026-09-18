@@ -19,6 +19,8 @@ pub struct TerminalMode {
     pub application_keypad: bool,
     pub bracketed_paste: bool,
     pub mouse_reporting: bool,
+    pub mouse_drag: bool,
+    pub mouse_motion: bool,
     pub sgr_mouse: bool,
     pub focus_reporting: bool,
     pub alternate_screen: bool,
@@ -172,6 +174,7 @@ pub trait TerminalBackend: Send {
     fn visible_text(&self) -> String;
     fn cursor(&self) -> CursorState;
     fn mode(&self) -> TerminalMode;
+    fn dimensions(&self) -> (u16, u16);
     fn scroll_display(&mut self, lines: i32);
     fn scroll_to_bottom(&mut self);
     fn start_selection(&mut self, column: u16, row: u16, kind: SelectionKind);
@@ -199,6 +202,7 @@ pub use alacritty::{
     TerminalProgress,
 };
 pub use input::{
-    BindingKey, KeyChord, KeyModifiers, KeyPress, KeypadKey, MouseWheelDirection, TerminalKey,
-    encode_key, encode_mouse_wheel, encode_paste,
+    BindingKey, KeyChord, KeyModifiers, KeyPress, KeypadKey, MouseEventKind, MouseWheelDirection,
+    TerminalKey, TerminalMouseButton, encode_key, encode_mouse_event, encode_mouse_wheel,
+    encode_paste,
 };

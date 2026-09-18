@@ -3055,11 +3055,17 @@ impl TerminalBackend for AlacrittyTerminalBackend {
             application_keypad: mode.contains(TermMode::APP_KEYPAD),
             bracketed_paste: mode.contains(TermMode::BRACKETED_PASTE),
             mouse_reporting: mode.intersects(TermMode::MOUSE_MODE),
+            mouse_drag: mode.contains(TermMode::MOUSE_DRAG),
+            mouse_motion: mode.contains(TermMode::MOUSE_MOTION),
             sgr_mouse: mode.contains(TermMode::SGR_MOUSE),
             focus_reporting: mode.contains(TermMode::FOCUS_IN_OUT),
             alternate_screen: mode.contains(TermMode::ALT_SCREEN),
             alternate_scroll: mode.contains(TermMode::ALTERNATE_SCROLL),
         }
+    }
+
+    fn dimensions(&self) -> (u16, u16) {
+        self.dimensions()
     }
 
     fn scroll_display(&mut self, lines: i32) {
@@ -4152,6 +4158,30 @@ mod tests {
             }
         );
         assert!(!backend.cursor().visible);
+
+        // DECSET 1002 (Cell motion / drag)
+        backend.advance(b"\x1b[?1002h\x1b[?1006h");
+        let mode = backend.mode();
+        assert!(mode.mouse_reporting);
+        assert!(mode.mouse_drag);
+        assert!(!mode.mouse_motion);
+        assert!(mode.sgr_mouse);
+
+        // DECSET 1003 (All motion)
+        backend.advance(b"\x1b[?1003h");
+        let mode = backend.mode();
+        assert!(mode.mouse_reporting);
+        assert!(!mode.mouse_drag);
+        assert!(mode.mouse_motion);
+        assert!(mode.sgr_mouse);
+
+        // DECRST 1003 (Reset motion)
+        backend.advance(b"\x1b[?1003l\x1b[?1006l");
+        let mode = backend.mode();
+        assert!(!mode.mouse_reporting);
+        assert!(!mode.mouse_drag);
+        assert!(!mode.mouse_motion);
+        assert!(!mode.sgr_mouse);
     }
 
     #[test]

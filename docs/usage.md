@@ -9,7 +9,9 @@ There are no built-in GUI key bindings. Copy the bindings from
 
 - Type normally to send input to the PTY
 - Click a workspace or tab label to activate it
-- Drag with the left mouse button: select text
+- Drag with the left mouse button: select text (or drag within terminal applications when mouse reporting is requested)
+- Click, right-click, or middle-click: report mouse button events when the terminal application (such as Vim/Neovim) requests mouse reporting
+- Shift+click or Shift+drag: bypass mouse reporting to select text natively even when mouse reporting is active
 - Mouse wheel: scroll through history, or report wheel input when the terminal application requests mouse reporting
 - Control+click on Linux/Windows or Command+click on macOS: open an OSC 8 or detected web/mail link after scheme validation
 

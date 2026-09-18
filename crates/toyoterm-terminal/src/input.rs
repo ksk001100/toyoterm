@@ -88,6 +88,21 @@ pub struct KeyPress {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum TerminalMouseButton {
+    Left,
+    Middle,
+    Right,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum MouseEventKind {
+    Press(TerminalMouseButton),
+    Release(TerminalMouseButton),
+    Drag(TerminalMouseButton),
+    Move,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum MouseWheelDirection {
     Up,
     Down,
@@ -165,6 +180,61 @@ pub fn encode_mouse_wheel(
             column.min(223) as u8 + 32,
             row.min(223) as u8 + 32,
         ]
+    }
+}
+
+pub fn encode_mouse_event(
+    kind: MouseEventKind,
+    column: u16,
+    row: u16,
+    modifiers: KeyModifiers,
+    sgr_mouse: bool,
+) -> Vec<u8> {
+    let mut modifier_bits = 0;
+    if modifiers.shift {
+        modifier_bits += 4;
+    }
+    if modifiers.alt {
+        modifier_bits += 8;
+    }
+    if modifiers.control {
+        modifier_bits += 16;
+    }
+
+    let column = column.saturating_add(1);
+    let row = row.saturating_add(1);
+
+    if sgr_mouse {
+        let (code, trailer) = match kind {
+            MouseEventKind::Press(button) => (mouse_button_code(button) + modifier_bits, 'M'),
+            MouseEventKind::Release(button) => (mouse_button_code(button) + modifier_bits, 'm'),
+            MouseEventKind::Drag(button) => (mouse_button_code(button) + 32 + modifier_bits, 'M'),
+            MouseEventKind::Move => (3 + 32 + modifier_bits, 'M'),
+        };
+        format!("\x1b[<{code};{column};{row}{trailer}").into_bytes()
+    } else {
+        let code = match kind {
+            MouseEventKind::Press(button) => mouse_button_code(button) + modifier_bits,
+            MouseEventKind::Release(_) => 3 + modifier_bits,
+            MouseEventKind::Drag(button) => mouse_button_code(button) + 32 + modifier_bits,
+            MouseEventKind::Move => 3 + 32 + modifier_bits,
+        };
+        vec![
+            0x1b,
+            b'[',
+            b'M',
+            (code + 32) as u8,
+            column.min(223) as u8 + 32,
+            row.min(223) as u8 + 32,
+        ]
+    }
+}
+
+fn mouse_button_code(button: TerminalMouseButton) -> u32 {
+    match button {
+        TerminalMouseButton::Left => 0,
+        TerminalMouseButton::Middle => 1,
+        TerminalMouseButton::Right => 2,
     }
 }
 
@@ -458,6 +528,142 @@ mod tests {
         assert_eq!(
             encode_paste("one\r\ntwo", mode),
             b"\x1b[200~one\ntwo\x1b[201~"
+        );
+    }
+
+    #[test]
+    fn encodes_sgr_mouse_events() {
+        // Left press
+        assert_eq!(
+            encode_mouse_event(
+                MouseEventKind::Press(TerminalMouseButton::Left),
+                10,
+                5,
+                KeyModifiers::default(),
+                true,
+            ),
+            b"\x1b[<0;11;6M"
+        );
+
+        // Left release
+        assert_eq!(
+            encode_mouse_event(
+                MouseEventKind::Release(TerminalMouseButton::Left),
+                10,
+                5,
+                KeyModifiers::default(),
+                true,
+            ),
+            b"\x1b[<0;11;6m"
+        );
+
+        // Middle press with shift
+        assert_eq!(
+            encode_mouse_event(
+                MouseEventKind::Press(TerminalMouseButton::Middle),
+                0,
+                0,
+                KeyModifiers {
+                    shift: true,
+                    ..KeyModifiers::default()
+                },
+                true,
+            ),
+            b"\x1b[<5;1;1M"
+        );
+
+        // Right release with ctrl and alt
+        assert_eq!(
+            encode_mouse_event(
+                MouseEventKind::Release(TerminalMouseButton::Right),
+                2,
+                3,
+                KeyModifiers {
+                    control: true,
+                    alt: true,
+                    ..KeyModifiers::default()
+                },
+                true,
+            ),
+            b"\x1b[<26;3;4m"
+        );
+
+        // Left drag (motion with button held)
+        assert_eq!(
+            encode_mouse_event(
+                MouseEventKind::Drag(TerminalMouseButton::Left),
+                15,
+                20,
+                KeyModifiers::default(),
+                true,
+            ),
+            b"\x1b[<32;16;21M"
+        );
+
+        // Right drag with shift
+        assert_eq!(
+            encode_mouse_event(
+                MouseEventKind::Drag(TerminalMouseButton::Right),
+                15,
+                20,
+                KeyModifiers {
+                    shift: true,
+                    ..KeyModifiers::default()
+                },
+                true,
+            ),
+            b"\x1b[<38;16;21M"
+        );
+
+        // Move without buttons held (code 35)
+        assert_eq!(
+            encode_mouse_event(MouseEventKind::Move, 7, 8, KeyModifiers::default(), true,),
+            b"\x1b[<35;8;9M"
+        );
+    }
+
+    #[test]
+    fn encodes_legacy_mouse_events() {
+        // Left press: code 0 + 32 = 32 (' ')
+        assert_eq!(
+            encode_mouse_event(
+                MouseEventKind::Press(TerminalMouseButton::Left),
+                0,
+                0,
+                KeyModifiers::default(),
+                false,
+            ),
+            [0x1b, b'[', b'M', 32, 33, 33]
+        );
+
+        // Release: always code 3 + 32 = 35 ('#')
+        assert_eq!(
+            encode_mouse_event(
+                MouseEventKind::Release(TerminalMouseButton::Right),
+                0,
+                0,
+                KeyModifiers::default(),
+                false,
+            ),
+            [0x1b, b'[', b'M', 35, 33, 33]
+        );
+
+        // Left drag: code 32 + 32 = 64 ('@')
+        assert_eq!(
+            encode_mouse_event(
+                MouseEventKind::Drag(TerminalMouseButton::Left),
+                1,
+                2,
+                KeyModifiers::default(),
+                false,
+            ),
+            [0x1b, b'[', b'M', 64, 34, 35]
+        );
+
+        // Move: code 35 + 32 = 67 ('C')
+        assert_eq!(
+            encode_mouse_event(MouseEventKind::Move, 1, 2, KeyModifiers::default(), false,),
+            [0x1b, b'[', b'M', 67, 34, 35]
         );
     }
 }
