@@ -1,0 +1,1306 @@
+use super::*;
+use toyoterm_terminal::{AlacrittyTerminalBackend, SelectionSpan, TerminalBackend};
+
+fn test_terminal_colors(
+    foreground: [u8; 3],
+    background: [u8; 3],
+    ansi: [[u8; 3]; 16],
+) -> TerminalColors {
+    TerminalColors {
+        foreground,
+        bold: foreground,
+        background,
+        cursor: foreground,
+        ansi,
+        link: None,
+        cursor_foreground: None,
+        underline: None,
+        selection_background: None,
+        selection_foreground: None,
+        selection_background_dynamic: false,
+        selection_foreground_dynamic: false,
+        visual_bell: None,
+        transparent_backgrounds: [None; 7],
+        special: Default::default(),
+    }
+}
+
+#[test]
+#[cfg(target_os = "windows")]
+fn windows_presentation_uses_direct_composition_and_premultiplied_alpha() {
+    let descriptor = renderer_instance_descriptor();
+    assert_eq!(descriptor.backends, wgpu::Backends::DX12);
+    assert_eq!(
+        descriptor.backend_options.dx12.presentation_system,
+        wgpu::Dx12SwapchainKind::DxgiFromVisual
+    );
+    let supported = [
+        CompositeAlphaMode::Opaque,
+        CompositeAlphaMode::PostMultiplied,
+        CompositeAlphaMode::PreMultiplied,
+    ];
+    for opacity in [1.0, 0.9, 0.5, 0.0, 0.8, 1.0] {
+        let mode = preferred_alpha_mode(&supported, opacity);
+        assert_eq!(mode, CompositeAlphaMode::PreMultiplied);
+        let style = RenderStyle {
+            background: [255, 128, 64],
+            opacity,
+            ..RenderStyle::default()
+        };
+        let clear = clear_color(&style, mode);
+        assert_eq!(clear.a, f64::from(opacity));
+        assert_eq!(clear.r, clear.a);
+        assert!(clear.g <= clear.a && clear.b <= clear.a);
+    }
+}
+
+#[test]
+fn window_bar_groups_widgets_by_alignment_in_registration_order() {
+    let items = [
+        StatusBarRenderItem {
+            alignment: StatusBarAlignment::Right,
+            text: "clock",
+        },
+        StatusBarRenderItem {
+            alignment: StatusBarAlignment::Left,
+            text: "cwd",
+        },
+        StatusBarRenderItem {
+            alignment: StatusBarAlignment::Left,
+            text: "branch",
+        },
+    ];
+
+    assert_eq!(
+        status_bar_section_text(&items, StatusBarAlignment::Left),
+        "cwd branch"
+    );
+    assert_eq!(
+        status_bar_section_text(&items, StatusBarAlignment::Center),
+        ""
+    );
+    assert_eq!(
+        status_bar_section_text(&items, StatusBarAlignment::Right),
+        "clock"
+    );
+}
+
+#[test]
+fn render_plan_matches_snapshot() {
+    let pane = PaneRect::new(10, 20, 320, 180);
+    let layout = TextLayout {
+        font_size: 14.0,
+        line_height: 18.0,
+        cell_width: 9.0,
+        horizontal_padding: 4.0,
+        vertical_padding: 6.0,
+    };
+    let placement = pane_text_placement(
+        pane,
+        layout,
+        CursorState {
+            column: 3,
+            row: 2,
+            visible: true,
+            shape: CursorShape::Beam,
+        },
+        27.0,
+    );
+    let style = RenderStyle {
+        background: [32, 64, 128],
+        opacity: 0.5,
+        ..RenderStyle::default()
+    };
+    let background = clear_color(&style, CompositeAlphaMode::PreMultiplied);
+    let terminal = TerminalSnapshot {
+        images: Vec::new(),
+        columns: 8,
+        rows: 3,
+        lines: vec!["alpha".into(), "beta".into(), "gamma".into()],
+        cells: Vec::new(),
+        selection: vec![
+            SelectionSpan {
+                row: 0,
+                start_column: 2,
+                end_column: 4,
+            },
+            SelectionSpan {
+                row: 1,
+                start_column: 0,
+                end_column: 1,
+            },
+        ],
+        search_matches: Vec::new(),
+        command_zones: Vec::new(),
+    };
+    let selection_rects = selection_highlight_rects(&terminal, pane, layout);
+    let snapshot = format!(
+        concat!(
+            "background_rgba=({:.6},{:.6},{:.6},{:.6})\n",
+            "glyph_origin=({:.1},{:.1})\n",
+            "cursor_origin=({:.1},{:.1})\n",
+            "clip=({},{},{},{})\n",
+            "selection_rects={:?}\n",
+            "resize_minimized={:?}\n",
+            "resize_restored={:?}\n"
+        ),
+        background.r,
+        background.g,
+        background.b,
+        background.a,
+        placement.text_left,
+        placement.text_top,
+        placement.cursor_left,
+        placement.cursor_top,
+        placement.bounds.x,
+        placement.bounds.y,
+        placement.bounds.width,
+        placement.bounds.height,
+        selection_rects,
+        surface_resize(PhysicalSize::new(0, 180)),
+        surface_resize(PhysicalSize::new(640, 360)),
+    );
+    assert_eq!(snapshot, include_str!("snapshots/render_plan.snap"));
+}
+
+#[test]
+fn styled_shell_prompt_cursor_stays_on_the_terminal_cell_grid() {
+    let mut terminal = AlacrittyTerminalBackend::new(80, 4);
+    terminal.advance(
+        "\n\x1b[1;36mtoyoterm\x1b[0m \x1b[3;36mmaster\x1b[0m \
+             \x1b[36m? \x1b[1m>\x1b[0m "
+            .as_bytes(),
+    );
+    let snapshot = terminal.snapshot();
+    let cursor = terminal.cursor();
+    let metrics = Metrics::new(14.0, 18.0);
+    let mut font_system = configured_font_system(&[]);
+    let cell_width = measure_cell_width(&mut font_system, "monospace", 400, 14.0);
+    let mut buffer = Buffer::new(&mut font_system, metrics);
+    buffer.set_wrap(Wrap::None);
+    buffer.set_monospace_width(Some(cell_width));
+    let rich_text = terminal_rich_text(
+        &snapshot,
+        Some(cursor),
+        "monospace",
+        400,
+        &test_terminal_colors([220, 225, 232], [9, 11, 14], default_ansi_palette()),
+    );
+    let default_attrs = Attrs::new().family(Family::Monospace);
+    buffer.set_rich_text(
+        rich_text
+            .iter()
+            .map(|(text, attrs)| (text.as_str(), attrs.clone())),
+        &default_attrs,
+        Shaping::Advanced,
+        None,
+    );
+    buffer.shape_until_scroll(&mut font_system, false);
+
+    assert_eq!(
+        pane_cursor_x(cursor, cell_width),
+        f32::from(cursor.column) * cell_width,
+    );
+}
+
+#[test]
+fn cursor_ignores_shaped_advances_when_cell_metrics_change() {
+    let snapshot = TerminalSnapshot {
+        images: Vec::new(),
+        columns: 20,
+        rows: 1,
+        lines: vec!["iiiiiiii".into()],
+        cells: Vec::new(),
+        selection: Vec::new(),
+        search_matches: Vec::new(),
+        command_zones: Vec::new(),
+    };
+    let cursor = CursorState {
+        column: 8,
+        row: 0,
+        visible: true,
+        shape: CursorShape::Block,
+    };
+    let mut font_system = configured_font_system(&[]);
+    let mut buffer = Buffer::new(&mut font_system, Metrics::new(14.0, 18.0));
+    buffer.set_text(
+        &snapshot.lines.join("\n"),
+        &Attrs::new().family(Family::SansSerif),
+        Shaping::Advanced,
+        None,
+    );
+    buffer.shape_until_scroll(&mut font_system, false);
+
+    for cell_width in [7.25, 9.0, 13.5] {
+        assert_eq!(
+            pane_cursor_x(cursor, cell_width),
+            f32::from(cursor.column) * cell_width,
+        );
+    }
+}
+
+#[test]
+fn split_separator_stays_in_the_same_column_with_diagnostic_symbols() {
+    let mut font_system = configured_font_system(&[]);
+    let cell_width = measure_cell_width(&mut font_system, "monospace", 400, 14.0);
+    for text in [
+        "plain",
+        "󰅚 error",
+        "⚠ warning",
+        "日本語",
+        "→ hint",
+        "e\u{301}",
+    ] {
+        let mut terminal = AlacrittyTerminalBackend::new(80, 2);
+        terminal.advance(text.as_bytes());
+        terminal.advance("\x1b[1;41H│ right pane".as_bytes());
+        let snapshot = terminal.snapshot();
+        let layout = TextLayout {
+            cell_width,
+            font_size: 14.0,
+            line_height: 18.0,
+            horizontal_padding: 0.0,
+            vertical_padding: 0.0,
+        };
+        let style = RenderStyle::default();
+        let mut separator_x = None;
+        for (row, cells) in terminal_cell_runs(&snapshot) {
+            let mut buffer = Buffer::new(&mut font_system, Metrics::new(14.0, 18.0));
+            update_terminal_cell_buffer(
+                &mut buffer,
+                &mut font_system,
+                cells,
+                layout,
+                &style,
+                CellRenderContext {
+                    row,
+                    selection: &snapshot.selection,
+                    colors: &test_terminal_colors(style.foreground, style.background, style.ansi),
+                },
+            );
+            if cells.iter().any(|cell| cell.column == 40) {
+                let glyph = buffer.layout_runs().next().unwrap().glyphs.first().unwrap();
+                separator_x = Some(f32::from(cells[0].column) * cell_width + glyph.x);
+            }
+        }
+        let x = separator_x.expect("separator is rendered");
+        assert!(
+            (x - 40.0 * cell_width).abs() < 0.01,
+            "{text:?}: separator x {x}, expected {}",
+            40.0 * cell_width
+        );
+    }
+}
+
+#[test]
+fn scrolled_cell_runs_keep_wide_and_combining_cells_at_grid_positions() {
+    let mut terminal = AlacrittyTerminalBackend::new(80, 4);
+    terminal.advance("\x1b[?1049h\x1b[1;3r".as_bytes());
+    for (row, text) in [(1, "󰅚 error"), (2, "日本語"), (3, "e\u{301} hint")] {
+        terminal.advance(format!("\x1b[{row};1H{text}\x1b[{row};41H│ right").as_bytes());
+    }
+    let mut font_system = configured_font_system(&[]);
+    let layout = TextLayout {
+        cell_width: 8.25,
+        font_size: 14.0,
+        line_height: 18.0,
+        horizontal_padding: 0.0,
+        vertical_padding: 0.0,
+    };
+    let style = RenderStyle::default();
+    let mut buffer = Buffer::new(&mut font_system, Metrics::new(14.0, 18.0));
+    for scrolls in 0..3 {
+        let snapshot = terminal.snapshot();
+        let mut separators = 0;
+        for (row, cells) in terminal_cell_runs(&snapshot) {
+            update_terminal_cell_buffer(
+                &mut buffer,
+                &mut font_system,
+                cells,
+                layout,
+                &style,
+                CellRenderContext {
+                    row,
+                    selection: &snapshot.selection,
+                    colors: &test_terminal_colors(style.foreground, style.background, style.ansi),
+                },
+            );
+            let run = buffer.layout_runs().next().unwrap();
+            assert_eq!(run.line_i, 0, "each run uses its explicit terminal row");
+            if cells[0].text == "│" {
+                assert_eq!(cells[0].column, 40);
+                assert!(row < 3 - scrolls);
+                assert_eq!(run.glyphs[0].x, 0.0);
+                separators += 1;
+            }
+            if cells[0].text == "日" {
+                assert_eq!(cells.len(), 1);
+                assert_eq!(cells[0].width, 2);
+            }
+            if cells[0].text.starts_with('e') && cells[0].text.contains('\u{301}') {
+                assert_eq!(cells.len(), 1, "combining marks stay with the base cell");
+            }
+        }
+        assert_eq!(separators, 3 - scrolls);
+        terminal.advance(b"\x1b[1;1H\x1b[M");
+    }
+}
+
+#[test]
+fn cell_run_cache_only_reuses_identical_shaping_inputs() {
+    let mut terminal = AlacrittyTerminalBackend::new(20, 2);
+    terminal.advance("日本語 and ASCII".as_bytes());
+    let snapshot = terminal.snapshot();
+    let (row, cells) = terminal_cell_runs(&snapshot)
+        .into_iter()
+        .next()
+        .expect("snapshot has a cell run");
+
+    assert!(cell_run_cache_matches(
+        true,
+        cells[0].column,
+        row,
+        cells,
+        row,
+        cells,
+    ));
+    assert!(!cell_run_cache_matches(
+        false,
+        cells[0].column,
+        row,
+        cells,
+        row,
+        cells,
+    ));
+
+    let mut changed = cells.to_vec();
+    changed[0].text = "語".to_owned();
+    assert!(!cell_run_cache_matches(
+        true,
+        cells[0].column,
+        row,
+        &changed,
+        row,
+        cells,
+    ));
+}
+
+#[test]
+fn terminal_rich_text_coalesces_adjacent_cells_with_the_same_attributes() {
+    let mut terminal = AlacrittyTerminalBackend::new(10, 2);
+    terminal.advance(b"abcdefghij");
+    let snapshot = terminal.snapshot();
+    let spans = terminal_rich_text(
+        &snapshot,
+        None,
+        "monospace",
+        400,
+        &test_terminal_colors([220, 225, 232], [9, 11, 14], default_ansi_palette()),
+    );
+
+    assert_eq!(
+        spans
+            .iter()
+            .map(|(text, _)| text.as_str())
+            .collect::<String>(),
+        "abcdefghij\n"
+    );
+    assert_eq!(spans.len(), 2, "one text run plus the row separator");
+}
+
+#[test]
+fn visual_cursor_uses_the_same_fixed_cell_grid_as_selection() {
+    let snapshot = TerminalSnapshot {
+        images: Vec::new(),
+        columns: 12,
+        rows: 1,
+        lines: vec!["wide: 日本語".into()],
+        cells: Vec::new(),
+        selection: Vec::new(),
+        search_matches: Vec::new(),
+        command_zones: Vec::new(),
+    };
+    let cursor = CursorState {
+        column: 7,
+        row: 0,
+        visible: true,
+        shape: CursorShape::Block,
+    };
+    let metrics = Metrics::new(14.0, 18.0);
+    let mut font_system = configured_font_system(&[]);
+    let cell_width = measure_cell_width(&mut font_system, "monospace", 400, 14.0);
+    let mut buffer = Buffer::new(&mut font_system, metrics);
+    buffer.set_text(
+        &snapshot.lines.join("\n"),
+        &Attrs::new().family(Family::Monospace),
+        Shaping::Advanced,
+        None,
+    );
+    buffer.shape_until_scroll(&mut font_system, false);
+
+    assert_eq!(
+        pane_cursor_x(cursor, cell_width),
+        f32::from(cursor.column) * cell_width
+    );
+}
+
+#[test]
+fn builds_cell_aligned_selection_rectangles() {
+    let snapshot = TerminalSnapshot {
+        images: Vec::new(),
+        columns: 8,
+        rows: 3,
+        lines: vec!["alpha".into(), "beta".into(), "gamma".into()],
+        cells: Vec::new(),
+        selection: vec![
+            SelectionSpan {
+                row: 0,
+                start_column: 2,
+                end_column: 4,
+            },
+            SelectionSpan {
+                row: 1,
+                start_column: 0,
+                end_column: 1,
+            },
+        ],
+        search_matches: Vec::new(),
+        command_zones: Vec::new(),
+    };
+    let layout = TextLayout {
+        font_size: 14.0,
+        line_height: 18.0,
+        cell_width: 9.0,
+        horizontal_padding: 8.0,
+        vertical_padding: 4.0,
+    };
+    assert_eq!(
+        selection_highlight_rects(&snapshot, PaneRect::new(10, 20, 100, 80), layout),
+        [PaneRect::new(36, 24, 27, 18), PaneRect::new(18, 42, 18, 18),]
+    );
+}
+
+#[test]
+fn dynamically_reverses_selected_cell_colors() {
+    let cell = toyoterm_terminal::TerminalCell {
+        column: 0,
+        text: "x".into(),
+        width: 1,
+        attributes: CellAttributes {
+            foreground: CellColor::Rgb(10, 20, 30),
+            background: CellColor::Rgb(40, 50, 60),
+            ..CellAttributes::default()
+        },
+        hyperlink: None,
+    };
+    let snapshot = TerminalSnapshot {
+        images: Vec::new(),
+        columns: 2,
+        rows: 1,
+        lines: vec!["x ".into()],
+        cells: vec![vec![cell.clone()]],
+        selection: vec![SelectionSpan {
+            row: 0,
+            start_column: 0,
+            end_column: 1,
+        }],
+        search_matches: Vec::new(),
+        command_zones: Vec::new(),
+    };
+    let layout = TextLayout {
+        font_size: 14.0,
+        line_height: 18.0,
+        cell_width: 9.0,
+        horizontal_padding: 0.0,
+        vertical_padding: 0.0,
+    };
+    let mut colors = test_terminal_colors([200, 210, 220], [1, 2, 3], default_ansi_palette());
+    colors.selection_background_dynamic = true;
+    colors.selection_foreground_dynamic = true;
+
+    assert_eq!(
+        selection_reverse_backgrounds(&snapshot, PaneRect::new(0, 0, 100, 40), layout, &colors,),
+        [
+            (PaneRect::new(0, 0, 9, 18), [10, 20, 30]),
+            (PaneRect::new(9, 0, 9, 18), [200, 210, 220]),
+        ]
+    );
+
+    let mut attributes = cell.attributes;
+    apply_selection_foreground(&mut attributes, &snapshot.selection, 0, &cell, &colors);
+    assert_eq!(attributes.foreground, CellColor::Rgb(40, 50, 60));
+    assert!(!attributes.inverse);
+}
+
+#[test]
+fn cursor_line_highlight_is_clipped_to_the_pane_content() {
+    let layout = TextLayout {
+        font_size: 14.0,
+        line_height: 18.0,
+        cell_width: 9.0,
+        horizontal_padding: 8.0,
+        vertical_padding: 6.0,
+    };
+    assert_eq!(
+        cursor_line_highlight_rect(PaneRect::new(10, 20, 100, 50), layout, 1),
+        Some(PaneRect::new(18, 44, 84, 18))
+    );
+    assert_eq!(
+        cursor_line_highlight_rect(PaneRect::new(10, 20, 100, 50), layout, 9),
+        None
+    );
+}
+
+#[test]
+fn cursor_fireworks_surround_the_cursor_and_stay_inside_the_pane() {
+    let pane = PaneRect::new(10, 20, 100, 60);
+    let layout = TextLayout {
+        font_size: 14.0,
+        line_height: 18.0,
+        cell_width: 9.0,
+        horizontal_padding: 8.0,
+        vertical_padding: 6.0,
+    };
+    let sparks = cursor_firework_rects(
+        pane,
+        layout,
+        CursorState {
+            column: 3,
+            row: 1,
+            visible: true,
+            shape: CursorShape::Block,
+        },
+    );
+
+    assert_eq!(sparks.len(), 8);
+    assert!(sparks.iter().all(|(rect, _)| {
+        rect.x >= pane.x
+            && rect.y >= pane.y
+            && rect.x.saturating_add(rect.width) <= pane.x.saturating_add(pane.width)
+            && rect.y.saturating_add(rect.height) <= pane.y.saturating_add(pane.height)
+    }));
+    assert!(
+        sparks
+            .iter()
+            .map(|(_, color)| color)
+            .collect::<HashSet<_>>()
+            .len()
+            > 1
+    );
+}
+
+#[test]
+fn builds_status_aware_command_zone_markers_in_the_pane_margin() {
+    let snapshot = TerminalSnapshot {
+        images: Vec::new(),
+        columns: 8,
+        rows: 3,
+        lines: Vec::new(),
+        cells: Vec::new(),
+        selection: Vec::new(),
+        search_matches: Vec::new(),
+        command_zones: vec![
+            toyoterm_terminal::CommandZoneSpan {
+                start_row: 0,
+                end_row: 1,
+                exit_status: Some(0),
+            },
+            toyoterm_terminal::CommandZoneSpan {
+                start_row: 2,
+                end_row: 2,
+                exit_status: Some(1),
+            },
+        ],
+    };
+    let layout = TextLayout {
+        font_size: 14.0,
+        line_height: 18.0,
+        cell_width: 9.0,
+        horizontal_padding: 8.0,
+        vertical_padding: 4.0,
+    };
+
+    assert_eq!(
+        command_zone_marker_rects(&snapshot, PaneRect::new(10, 20, 100, 80), layout),
+        [
+            (PaneRect::new(13, 24, 2, 36), Some(0)),
+            (PaneRect::new(13, 60, 2, 18), Some(1)),
+        ]
+    );
+}
+
+#[test]
+fn maps_xterm_palette_and_rich_cell_attributes() {
+    let ansi = default_ansi_palette();
+    assert_eq!(xterm_color(1, &ansi), [205, 0, 0]);
+    assert_eq!(xterm_color(21, &ansi), [0, 0, 255]);
+    assert_eq!(xterm_color(232, &ansi), [8, 8, 8]);
+
+    let mut colors = test_terminal_colors([200, 200, 200], [0, 0, 0], ansi);
+    colors.bold = [10, 20, 30];
+    let bold_default = glyph_attrs(
+        CellAttributes {
+            bold: true,
+            ..CellAttributes::default()
+        },
+        false,
+        "monospace",
+        400,
+        &colors,
+    );
+    assert_eq!(
+        bold_default.color_opt,
+        Some(GlyphColor::rgba(10, 20, 30, 255))
+    );
+
+    colors.link = Some([40, 50, 60]);
+    let link = glyph_attrs(CellAttributes::default(), true, "monospace", 400, &colors);
+    assert_eq!(link.color_opt, Some(GlyphColor::rgba(40, 50, 60, 255)));
+
+    colors.underline = Some([30, 40, 50]);
+    let underline = glyph_attrs(
+        CellAttributes {
+            underline: true,
+            ..CellAttributes::default()
+        },
+        false,
+        "monospace",
+        400,
+        &colors,
+    );
+    assert_eq!(
+        underline.text_decoration.underline_color_opt,
+        Some(GlyphColor::rgba(30, 40, 50, 255))
+    );
+
+    let mut selected = CellAttributes {
+        inverse: true,
+        ..CellAttributes::default()
+    };
+    colors.selection_foreground = Some([70, 80, 90]);
+    apply_selection_foreground(
+        &mut selected,
+        &[SelectionSpan {
+            row: 2,
+            start_column: 3,
+            end_column: 4,
+        }],
+        2,
+        &toyoterm_terminal::TerminalCell {
+            column: 3,
+            text: "x".into(),
+            width: 1,
+            attributes: CellAttributes::default(),
+            hyperlink: None,
+        },
+        &colors,
+    );
+    assert_eq!(selected.foreground, CellColor::Rgb(70, 80, 90));
+    assert!(!selected.inverse);
+
+    let attrs = glyph_attrs(
+        CellAttributes {
+            foreground: CellColor::Rgb(1, 2, 3),
+            bold: true,
+            italic: true,
+            dim: true,
+            ..CellAttributes::default()
+        },
+        false,
+        "monospace",
+        400,
+        &test_terminal_colors([200, 200, 200], [0, 0, 0], ansi),
+    );
+    assert_eq!(attrs.color_opt, Some(GlyphColor::rgba(1, 2, 3, 150)));
+    assert_eq!(attrs.weight, Weight::BOLD);
+    assert_eq!(attrs.style, Style::Italic);
+
+    let inverse = glyph_attrs(
+        CellAttributes {
+            foreground: CellColor::Indexed(1),
+            background: CellColor::Rgb(9, 8, 7),
+            inverse: true,
+            ..CellAttributes::default()
+        },
+        false,
+        "monospace",
+        400,
+        &test_terminal_colors([200, 200, 200], [0, 0, 0], ansi),
+    );
+    assert_eq!(inverse.color_opt, Some(GlyphColor::rgba(9, 8, 7, 255)));
+
+    let mut special_colors = test_terminal_colors([200, 200, 200], [0, 0, 0], ansi);
+    special_colors.special.bold = Some([11, 22, 33]);
+    let special_bold = glyph_attrs(
+        CellAttributes {
+            bold: true,
+            ..CellAttributes::default()
+        },
+        false,
+        "monospace",
+        400,
+        &special_colors,
+    );
+    assert_eq!(
+        special_bold.color_opt,
+        Some(GlyphColor::rgba(11, 22, 33, 255))
+    );
+    special_colors.special.blink = Some([44, 55, 66]);
+    let special_blink = glyph_attrs(
+        CellAttributes {
+            blink: true,
+            ..CellAttributes::default()
+        },
+        false,
+        "monospace",
+        400,
+        &special_colors,
+    );
+    assert_eq!(
+        special_blink.color_opt,
+        Some(GlyphColor::rgba(44, 55, 66, 255))
+    );
+    let explicit_bold = glyph_attrs(
+        CellAttributes {
+            foreground: CellColor::Rgb(1, 2, 3),
+            bold: true,
+            ..CellAttributes::default()
+        },
+        false,
+        "monospace",
+        400,
+        &special_colors,
+    );
+    assert_eq!(
+        explicit_bold.color_opt,
+        Some(GlyphColor::rgba(1, 2, 3, 255))
+    );
+    special_colors.special.override_ansi = true;
+    let overridden_bold = glyph_attrs(
+        CellAttributes {
+            foreground: CellColor::Rgb(1, 2, 3),
+            bold: true,
+            ..CellAttributes::default()
+        },
+        false,
+        "monospace",
+        400,
+        &special_colors,
+    );
+    assert_eq!(
+        overridden_bold.color_opt,
+        Some(GlyphColor::rgba(11, 22, 33, 255))
+    );
+    special_colors.special.enabled[0] = false;
+    let disabled_bold = glyph_attrs(
+        CellAttributes {
+            bold: true,
+            ..CellAttributes::default()
+        },
+        false,
+        "monospace",
+        400,
+        &special_colors,
+    );
+    assert_eq!(
+        disabled_bold.color_opt,
+        Some(GlyphColor::rgba(200, 200, 200, 255))
+    );
+}
+
+#[test]
+fn locates_only_the_leading_cell_under_the_cursor() {
+    let snapshot = TerminalSnapshot {
+        columns: 4,
+        rows: 1,
+        lines: vec!["界x".into()],
+        cells: vec![vec![
+            toyoterm_terminal::TerminalCell {
+                column: 0,
+                text: "界".into(),
+                width: 2,
+                ..toyoterm_terminal::TerminalCell::default()
+            },
+            toyoterm_terminal::TerminalCell {
+                column: 2,
+                text: "x".into(),
+                width: 1,
+                ..toyoterm_terminal::TerminalCell::default()
+            },
+        ]],
+        selection: Vec::new(),
+        search_matches: Vec::new(),
+        command_zones: Vec::new(),
+        images: Vec::new(),
+    };
+    let cursor = |column| CursorState {
+        column,
+        row: 0,
+        visible: true,
+        shape: CursorShape::Block,
+    };
+
+    assert_eq!(cursor_cell(&snapshot, cursor(0)).unwrap().text, "界");
+    assert!(cursor_cell(&snapshot, cursor(1)).is_none());
+    assert_eq!(cursor_cell(&snapshot, cursor(2)).unwrap().text, "x");
+}
+
+#[test]
+fn builds_background_rectangles_for_indexed_and_inverse_cells() {
+    let ansi = default_ansi_palette();
+    let snapshot = TerminalSnapshot {
+        images: Vec::new(),
+        columns: 4,
+        rows: 1,
+        lines: vec!["ab".into()],
+        cells: vec![vec![
+            toyoterm_terminal::TerminalCell {
+                column: 0,
+                text: "a".into(),
+                width: 1,
+                attributes: CellAttributes {
+                    background: CellColor::Indexed(196),
+                    ..CellAttributes::default()
+                },
+                hyperlink: None,
+            },
+            toyoterm_terminal::TerminalCell {
+                column: 1,
+                text: "b".into(),
+                width: 1,
+                attributes: CellAttributes {
+                    foreground: CellColor::Indexed(21),
+                    inverse: true,
+                    ..CellAttributes::default()
+                },
+                hyperlink: None,
+            },
+        ]],
+        selection: Vec::new(),
+        search_matches: Vec::new(),
+        command_zones: Vec::new(),
+    };
+    let colors = test_terminal_colors([220, 225, 232], [9, 11, 14], ansi);
+    let backgrounds = terminal_backgrounds(
+        &snapshot,
+        PaneRect::new(10, 20, 100, 40),
+        TextLayout {
+            font_size: 14.0,
+            line_height: 18.0,
+            cell_width: 9.0,
+            horizontal_padding: 4.0,
+            vertical_padding: 3.0,
+        },
+        &colors,
+        false,
+        false,
+        1.0,
+    );
+    assert_eq!(
+        backgrounds,
+        [
+            (PaneRect::new(14, 23, 9, 18), [255, 0, 0]),
+            (PaneRect::new(23, 23, 9, 18), [0, 0, 255]),
+        ]
+    );
+}
+
+#[test]
+fn explicit_background_matching_default_still_covers_wallpaper() {
+    let mut terminal = AlacrittyTerminalBackend::new(4, 1);
+    terminal.advance(b"a\x1b[48;2;9;11;14mb\x1b[0mc");
+    let snapshot = terminal.snapshot();
+    let colors = test_terminal_colors([220, 225, 232], [9, 11, 14], default_ansi_palette());
+    let rectangles = terminal_backgrounds(
+        &snapshot,
+        PaneRect::new(0, 0, 100, 40),
+        TextLayout {
+            font_size: 14.0,
+            line_height: 18.0,
+            cell_width: 9.0,
+            horizontal_padding: 0.0,
+            vertical_padding: 0.0,
+        },
+        &colors,
+        true,
+        false,
+        1.0,
+    );
+    assert_eq!(rectangles.len(), 1);
+    assert_eq!(rectangles[0].1, [9, 11, 14]);
+}
+
+#[test]
+fn maps_matching_cell_backgrounds_to_kitty_opacity() {
+    let snapshot = TerminalSnapshot {
+        images: Vec::new(),
+        columns: 3,
+        rows: 1,
+        lines: vec!["ab ".into()],
+        cells: vec![vec![
+            toyoterm_terminal::TerminalCell {
+                column: 0,
+                text: "a".into(),
+                width: 1,
+                attributes: CellAttributes {
+                    background: CellColor::Rgb(255, 0, 0),
+                    ..CellAttributes::default()
+                },
+                hyperlink: None,
+            },
+            toyoterm_terminal::TerminalCell {
+                column: 1,
+                text: "b".into(),
+                width: 1,
+                attributes: CellAttributes {
+                    background: CellColor::Rgb(0, 255, 0),
+                    ..CellAttributes::default()
+                },
+                hyperlink: None,
+            },
+        ]],
+        selection: Vec::new(),
+        search_matches: Vec::new(),
+        command_zones: Vec::new(),
+    };
+    let mut colors = test_terminal_colors([220, 225, 232], [9, 11, 14], default_ansi_palette());
+    colors.transparent_backgrounds[0] = Some(TerminalTransparentColor {
+        color: [255, 0, 0],
+        opacity: Some(0.25),
+    });
+    colors.transparent_backgrounds[1] = Some(TerminalTransparentColor {
+        color: [9, 11, 14],
+        opacity: None,
+    });
+    let layout = TextLayout {
+        font_size: 14.0,
+        line_height: 18.0,
+        cell_width: 9.0,
+        horizontal_padding: 0.0,
+        vertical_padding: 0.0,
+    };
+
+    assert_eq!(
+        terminal_transparent_backgrounds(
+            &snapshot,
+            PaneRect::new(0, 0, 100, 40),
+            layout,
+            &colors,
+            0.6,
+        ),
+        [
+            (PaneRect::new(0, 0, 9, 18), [255, 0, 0], 0.25),
+            (PaneRect::new(18, 0, 9, 18), [9, 11, 14], 0.6),
+        ]
+    );
+    assert_eq!(
+        terminal_backgrounds(
+            &snapshot,
+            PaneRect::new(0, 0, 100, 40),
+            layout,
+            &colors,
+            true,
+            false,
+            0.6,
+        ),
+        [(PaneRect::new(9, 0, 9, 18), [0, 255, 0])]
+    );
+
+    colors.transparent_backgrounds[1] = None;
+    assert_eq!(
+        terminal_backgrounds(
+            &snapshot,
+            PaneRect::new(0, 0, 100, 40),
+            layout,
+            &colors,
+            true,
+            true,
+            0.6,
+        ),
+        [
+            (PaneRect::new(9, 0, 9, 18), [0, 255, 0]),
+            (PaneRect::new(18, 0, 9, 18), [9, 11, 14]),
+        ]
+    );
+}
+
+#[test]
+fn parses_configured_render_colors() {
+    let style = RenderStyle::from_hex(
+        "JetBrains Mono",
+        vec!["Noto Sans Mono CJK JP".into(), "Noto Color Emoji".into()],
+        500,
+        ["#112233", "aabbcc", "#ffffff", "#010203"],
+        0.9,
+    )
+    .unwrap();
+    assert_eq!(style.background, [0x11, 0x22, 0x33]);
+    assert_eq!(style.font_weight, 500);
+    assert_eq!(style.font_fallback.len(), 2);
+    assert_eq!(style.foreground, [0xaa, 0xbb, 0xcc]);
+    assert_eq!(style.opacity, 0.9);
+    let mut custom_ansi = vec!["#000000".to_owned(); 16];
+    custom_ansi[1] = "#123456".to_owned();
+    let style = RenderStyle::from_hex_with_ansi(
+        "mono",
+        Vec::new(),
+        400,
+        ["#000000", "#ffffff", "#ffffff", "#333333"],
+        &custom_ansi,
+        1.0,
+    )
+    .unwrap();
+    assert_eq!(style.ansi[1], [0x12, 0x34, 0x56]);
+    let error = RenderStyle::from_hex(
+        "mono",
+        Vec::new(),
+        400,
+        ["bad", "#fff", "#fff", "#fff"],
+        1.0,
+    )
+    .unwrap_err();
+    assert_eq!(error.operation(), "parse color");
+    assert!(error.message().contains("expected #RRGGBB"));
+}
+
+#[test]
+fn configured_font_fallback_preserves_user_priority() {
+    let fallback = ConfiguredFallback::new(&["CJK First".to_owned(), "Emoji Second".to_owned()]);
+    assert_eq!(
+        &fallback.common_fallback()[..2],
+        &["CJK First", "Emoji Second"]
+    );
+    assert_eq!(
+        fallback.script_fallback(Script::Han, "ja-JP"),
+        &["CJK First", "Emoji Second"]
+    );
+}
+
+#[test]
+fn device_loss_is_reported_once_for_renderer_recovery() {
+    let state = DeviceLossState::default();
+    let callback_state = state.clone();
+    assert!(!state.take_lost());
+
+    callback_state.mark_lost();
+    assert!(state.take_lost());
+    assert!(!state.take_lost());
+}
+
+#[test]
+fn classifies_recoverable_surface_failures() {
+    assert_eq!(
+        surface_recovery_action(&CurrentSurfaceTexture::Timeout),
+        Some(SurfaceRecoveryAction::Skip)
+    );
+    assert_eq!(
+        surface_recovery_action(&CurrentSurfaceTexture::Occluded),
+        Some(SurfaceRecoveryAction::Skip)
+    );
+    assert_eq!(
+        surface_recovery_action(&CurrentSurfaceTexture::Outdated),
+        Some(SurfaceRecoveryAction::Reconfigure)
+    );
+    assert_eq!(
+        surface_recovery_action(&CurrentSurfaceTexture::Lost),
+        Some(SurfaceRecoveryAction::Recreate)
+    );
+    assert_eq!(
+        surface_recovery_action(&CurrentSurfaceTexture::Validation),
+        Some(SurfaceRecoveryAction::Fail)
+    );
+}
+
+#[test]
+fn unavailable_surface_never_starts_frame_preparation() {
+    for action in [
+        SurfaceRecoveryAction::Skip,
+        SurfaceRecoveryAction::Reconfigure,
+        SurfaceRecoveryAction::Recreate,
+        SurfaceRecoveryAction::Fail,
+    ] {
+        let mut prepared = false;
+        let result = after_surface_acquisition(FrameStart::<()>::Unavailable(action), |_| {
+            prepared = true;
+        });
+
+        assert_eq!(result, Err(action));
+        assert!(!prepared, "GPU preparation ran for {action:?}");
+    }
+}
+
+#[test]
+fn successful_frame_lifecycle_acquires_before_prepare_submit_and_present() {
+    let mut lifecycle = vec!["acquire"];
+    let outcome = after_surface_acquisition(
+        FrameStart::Acquired(AcquiredFrame {
+            texture: (),
+            suboptimal: false,
+        }),
+        |frame| {
+            assert!(!frame.suboptimal);
+            lifecycle.extend(["prepare", "encode", "submit", "present"]);
+            RenderOutcome::Presented
+        },
+    );
+
+    assert_eq!(outcome, Ok(RenderOutcome::Presented));
+    assert_eq!(
+        lifecycle,
+        ["acquire", "prepare", "encode", "submit", "present"]
+    );
+}
+
+#[test]
+fn selects_a_supported_transparency_mode() {
+    let supported = [
+        CompositeAlphaMode::Opaque,
+        CompositeAlphaMode::PreMultiplied,
+    ];
+    assert_eq!(
+        preferred_alpha_mode(&supported, 0.8),
+        CompositeAlphaMode::PreMultiplied
+    );
+    assert_eq!(
+        preferred_alpha_mode(&supported, 1.0),
+        if cfg!(target_os = "windows") {
+            CompositeAlphaMode::PreMultiplied
+        } else {
+            CompositeAlphaMode::Opaque
+        }
+    );
+    assert_eq!(
+        preferred_alpha_mode(&[CompositeAlphaMode::Opaque], 0.8),
+        CompositeAlphaMode::Auto
+    );
+    assert_eq!(
+        preferred_alpha_mode_for_content(&supported, 1.0, true),
+        CompositeAlphaMode::PreMultiplied
+    );
+    assert_eq!(
+        transparent_cell_fill([255, 0, 0], 0.5, CompositeAlphaMode::PreMultiplied, false,),
+        [0.5, 0.0, 0.0, 0.5]
+    );
+    assert_eq!(
+        transparent_cell_fill([255, 0, 0], 0.5, CompositeAlphaMode::PreMultiplied, true,),
+        [1.0, 0.0, 0.0, 0.5]
+    );
+}
+
+#[test]
+fn opacity_transitions_update_alpha_mode_and_clear_color() {
+    let supported = [
+        CompositeAlphaMode::Opaque,
+        CompositeAlphaMode::PostMultiplied,
+    ];
+    let mut style = RenderStyle::default();
+    for opacity in [1.0, 0.8, 0.0, 0.5, 1.0] {
+        style.opacity = opacity;
+        let mode = preferred_alpha_mode(&supported, opacity);
+        assert_eq!(
+            mode,
+            if cfg!(target_os = "windows") || opacity < 1.0 {
+                CompositeAlphaMode::PostMultiplied
+            } else {
+                CompositeAlphaMode::Opaque
+            }
+        );
+        let clear = clear_color(&style, mode);
+        assert_eq!(clear.a, f64::from(opacity));
+        assert_eq!(
+            clear.r,
+            f64::from(srgb_channel_to_linear(style.background[0]))
+        );
+    }
+}
+
+#[test]
+#[cfg(target_os = "windows")]
+fn windows_opacity_rounding_keeps_the_same_compositor_mode() {
+    // Ruby arithmetic uses f64, then native configuration narrows to f32.
+    let rounded_one = (0.9_f64 + 0.1) as f32;
+    let just_below_one = f32::from_bits(1.0_f32.to_bits() - 1);
+    for supported in [
+        vec![
+            CompositeAlphaMode::Opaque,
+            CompositeAlphaMode::PreMultiplied,
+        ],
+        vec![
+            CompositeAlphaMode::Opaque,
+            CompositeAlphaMode::PostMultiplied,
+        ],
+        vec![CompositeAlphaMode::Opaque, CompositeAlphaMode::Inherit],
+        vec![CompositeAlphaMode::Opaque],
+    ] {
+        let initial_mode = preferred_alpha_mode(&supported, 0.9);
+        for opacity in [0.9, rounded_one, 0.9, just_below_one, 1.0, 0.8, 0.0, 1.0] {
+            let mode = preferred_alpha_mode(&supported, opacity);
+            assert_eq!(mode, initial_mode);
+            let style = RenderStyle {
+                opacity,
+                ..RenderStyle::default()
+            };
+            let clear = clear_color(&style, mode);
+            assert_eq!(clear.a, f64::from(opacity));
+            let background = f64::from(srgb_channel_to_linear(style.background[0]));
+            assert_eq!(
+                clear.r,
+                if mode == CompositeAlphaMode::PreMultiplied {
+                    background * f64::from(opacity)
+                } else {
+                    background
+                }
+            );
+        }
+    }
+}
+
+#[test]
+fn converts_configured_srgb_colors_to_linear_gpu_values() {
+    let converted = rgba([0x1a, 0x1b, 0x26], 1.0);
+    assert!((converted[0] - 0.0103298).abs() < 0.000001);
+    assert!((converted[1] - 0.0109601).abs() < 0.000001);
+    assert!((converted[2] - 0.0193824).abs() < 0.000001);
+    assert_eq!(converted[3], 1.0);
+
+    assert_eq!(rgba([0, 0, 0], 0.5), [0.0, 0.0, 0.0, 0.5]);
+    assert_eq!(rgba([255, 255, 255], 1.0), [1.0, 1.0, 1.0, 1.0]);
+}
+
+#[test]
+fn terminal_tab_color_overrides_configured_active_and_inactive_colors() {
+    let style = RenderStyle::default();
+    assert_eq!(
+        tab_fill_color(&style, Some([255, 0, 0]), true),
+        [1.0, 0.0, 0.0, 1.0]
+    );
+    assert_eq!(
+        tab_fill_color(&style, Some([0, 255, 0]), false),
+        [0.0, 1.0, 0.0, 0.96]
+    );
+    assert_eq!(
+        tab_fill_color(&style, None, true),
+        rgba(style.tab_active, 1.0)
+    );
+}
+
+#[test]
+fn tab_indicator_is_inset_and_centered() {
+    assert_eq!(
+        tab_indicator_rect(PaneRect::new(10, 20, 160, 30)),
+        PaneRect::new(17, 32, 6, 6)
+    );
+    assert_eq!(
+        tab_indicator_rect(PaneRect::new(10, 20, 8, 4)),
+        PaneRect::new(17, 20, 1, 4)
+    );
+}
+
+#[test]
+fn terminal_background_override_replaces_the_pane_base_color() {
+    let style = RenderStyle::default();
+    let mut colors = test_terminal_colors(style.foreground, style.background, style.ansi);
+    assert_eq!(pane_background_override(&style, colors), None);
+    colors.background = [1, 2, 3];
+    assert_eq!(pane_background_override(&style, colors), Some([1, 2, 3]));
+}
