@@ -21,6 +21,10 @@ use winit::platform::wayland::WindowAttributesExtWayland;
 #[cfg(target_os = "windows")]
 use winit::platform::windows::WindowAttributesExtWindows;
 
+use toyoterm_api::{
+    ActionCommand, ClipboardCommand, ConfigCommand, NativeHandle, PaneCommand, UiCommand,
+    WindowCommand,
+};
 use toyoterm_script::{
     AsyncProcessOutput, BarItem, RubyEvent, RubyObjectModel, RubyPane, RubyTab, RubyWindow,
     RubyWorkspace, ScriptCompletion, ScriptContext, ScriptInvocation, ScriptRequest,
@@ -434,14 +438,27 @@ enum EvalWaiter {
 
 struct PaneRuntime {
     terminal: AlacrittyTerminalBackend,
+    process: ProcessRuntime,
+    metadata: PaneMetadata,
+    protocol: PaneProtocolState,
+}
+
+struct ProcessRuntime {
     pty_session: Option<Box<dyn PtySession>>,
     process_id: Option<u32>,
+    exited: bool,
+}
+
+struct PaneMetadata {
     title: String,
     icon_title: Option<String>,
     osc_badge: Option<String>,
-    cursor_line_highlight: bool,
     cwd: Option<PathBuf>,
     remote_host: Option<String>,
+}
+
+struct PaneProtocolState {
+    cursor_line_highlight: bool,
     shell_integration_version: Option<u32>,
     shell_integration_shell: Option<String>,
     user_vars: BTreeMap<String, String>,
@@ -456,7 +473,28 @@ struct PaneRuntime {
     last_open_url_at: Option<Instant>,
     visual_bell_deadline: Option<Instant>,
     cursor_fireworks_deadline: Option<Instant>,
-    exited: bool,
+}
+
+impl Default for PaneProtocolState {
+    fn default() -> Self {
+        Self {
+            cursor_line_highlight: false,
+            shell_integration_version: None,
+            shell_integration_shell: None,
+            user_vars: BTreeMap::new(),
+            command_running: false,
+            last_exit_status: None,
+            progress: None,
+            tab_color: TabColorState::default(),
+            session_status: SessionStatusState::default(),
+            mouse_cursor: CursorIcon::Default,
+            last_notification_at: None,
+            active_notifications: BTreeMap::new(),
+            last_open_url_at: None,
+            visual_bell_deadline: None,
+            cursor_fireworks_deadline: None,
+        }
+    }
 }
 
 #[derive(Default)]
@@ -526,28 +564,31 @@ impl SessionStatusState {
 fn iterm_variable_value(runtime: &PaneRuntime, name: &str) -> Option<String> {
     let (columns, rows) = runtime.terminal.dimensions();
     let value = match name {
-        "session.name" => Some(runtime.title.clone()),
-        "session.terminalIconName" => runtime.icon_title.clone(),
+        "session.name" => Some(runtime.metadata.title.clone()),
+        "session.terminalIconName" => runtime.metadata.icon_title.clone(),
         "session.columns" => Some(columns.to_string()),
         "session.rows" => Some(rows.to_string()),
         "session.path" => runtime
+            .metadata
             .cwd
             .as_ref()
             .map(|path| path.to_string_lossy().into_owned()),
-        "session.shell" => runtime.shell_integration_shell.clone(),
+        "session.shell" => runtime.protocol.shell_integration_shell.clone(),
         "session.hostname" => runtime
+            .metadata
             .remote_host
             .as_deref()
             .and_then(|remote_host| remote_host.split_once('@'))
             .map(|(_, hostname)| hostname.to_owned()),
         "session.username" => runtime
+            .metadata
             .remote_host
             .as_deref()
             .and_then(|remote_host| remote_host.split_once('@'))
             .map(|(username, _)| username.to_owned()),
         name => name
             .strip_prefix("session.user.")
-            .and_then(|name| runtime.user_vars.get(name))
+            .and_then(|name| runtime.protocol.user_vars.get(name))
             .cloned(),
     }?;
     (value.len() <= MAX_OSC_REPORT_VARIABLE_VALUE_BYTES).then_some(value)
@@ -591,7 +632,7 @@ fn interpolate_iterm_badge(runtime: &PaneRuntime, format: &str) -> Option<String
 }
 
 fn apply_iterm_badge_format(runtime: &mut PaneRuntime, format: &str) {
-    runtime.osc_badge = if format.is_empty() {
+    runtime.metadata.osc_badge = if format.is_empty() {
         None
     } else {
         interpolate_iterm_badge(runtime, format)
@@ -600,6 +641,12 @@ fn apply_iterm_badge_format(runtime: &mut PaneRuntime, format: &str) {
 
 impl PaneRuntime {
     fn terminate(&mut self) {
+        self.process.terminate();
+    }
+}
+
+impl ProcessRuntime {
+    fn terminate(&mut self) {
         if let Some(mut session) = self.pty_session.take() {
             let _ = session.kill();
         }
@@ -607,7 +654,7 @@ impl PaneRuntime {
     }
 }
 
-impl Drop for PaneRuntime {
+impl Drop for ProcessRuntime {
     fn drop(&mut self) {
         self.terminate();
     }
@@ -632,11 +679,47 @@ impl WindowOcclusion {
 
 struct ToyotermApplication {
     event_proxy: EventLoopProxy<AppEvent>,
+    platform: PlatformState,
+    terminal_runtime: TerminalRuntime,
+    scripting: ScriptRuntimeState,
+    ui: UiState,
+    _ipc_server: Option<IpcServer>,
+    mux: Mux,
+    fatal_error: Option<String>,
+    exit_after_startup: bool,
+}
+
+struct PlatformState {
     window: Option<Arc<Window>>,
     renderer: Option<GpuRenderer>,
     occlusion: WindowOcclusion,
+    clipboard: Option<Clipboard>,
+    notification_sender: Option<NotificationSender>,
+    #[cfg(target_os = "linux")]
+    app_id: Option<String>,
+}
+
+struct TerminalRuntime {
     pane_runtimes: HashMap<PaneId, PaneRuntime>,
     pending_pane_launches: HashMap<PaneId, PaneLaunchSpec>,
+}
+
+struct ScriptRuntimeState {
+    thread: ScriptThread,
+    snapshot: Arc<ScriptSnapshot>,
+    next_request_id: u64,
+    in_flight: bool,
+    pending: VecDeque<(u64, ScriptInvocation)>,
+    runtime_events: VecDeque<RubyEvent>,
+    event_drops: u64,
+    eval_waiters: HashMap<u64, EvalWaiter>,
+    cancelled_async_tasks: HashSet<u64>,
+    cached_model: Option<Arc<RubyObjectModel>>,
+    cached_handles: Option<Arc<[NativeHandle]>>,
+    context_dirty: bool,
+}
+
+struct UiState {
     pane_layout: PaneLayout,
     tab_layout: TabStripLayout,
     workspace_layout: WorkspaceStripLayout,
@@ -644,7 +727,6 @@ struct ToyotermApplication {
     search_query: String,
     search_result: SearchResult,
     selector: Option<SelectorOverlay>,
-    _ipc_server: Option<IpcServer>,
     config_error_layout: ConfigErrorLayout,
     config_error_notice: Option<ConfigErrorNotice>,
     ime_preedit: Option<String>,
@@ -658,31 +740,15 @@ struct ToyotermApplication {
     selecting: bool,
     visual_selection: Option<VisualSelection>,
     click_tracker: ClickTracker,
-    clipboard: Option<Clipboard>,
     pending_clipboard_writes: Vec<String>,
-    notification_sender: Option<NotificationSender>,
     pane_badges: HashMap<PaneId, String>,
-    runtime_events: VecDeque<RubyEvent>,
-    next_script_request: u64,
-    script_in_flight: bool,
-    pending_script: VecDeque<(u64, ScriptInvocation)>,
-    script_event_drops: u64,
-    eval_waiters: HashMap<u64, EvalWaiter>,
     cell_metrics: CellMetrics,
-    script_thread: ScriptThread,
-    script_snapshot: ScriptSnapshot,
     bar_items: HashMap<StatusBarPosition, Vec<BarItem>>,
     bar_pending: Option<StatusBarPosition>,
     next_bar_at: HashMap<StatusBarPosition, Instant>,
-    cancelled_async_tasks: HashSet<u64>,
     terminal_render_pending: bool,
-    mux: Mux,
     render_style: RenderStyle,
-    fatal_error: Option<String>,
-    exit_after_startup: bool,
     window_title_override: Option<String>,
-    #[cfg(target_os = "linux")]
-    app_id: Option<String>,
 }
 
 fn ruby_event_from_terminal_event(pane: PaneId, event: TerminalEvent) -> Option<RubyEvent> {
@@ -754,7 +820,7 @@ fn ruby_event_from_terminal_event(pane: PaneId, event: TerminalEvent) -> Option<
 
 impl ApplicationHandler<AppEvent> for ToyotermApplication {
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
-        if self.window.is_some() {
+        if self.platform.window.is_some() {
             return;
         }
         let attributes = Window::default_attributes()
@@ -762,25 +828,25 @@ impl ApplicationHandler<AppEvent> for ToyotermApplication {
             // Windows transparency must be enabled at creation, including when
             // starting opaque. Later opacity changes only update the GPU alpha.
             .with_transparent(
-                cfg!(target_os = "windows") || self.script_snapshot.config.window.opacity < 1.0,
+                cfg!(target_os = "windows") || self.scripting.snapshot.config.window.opacity < 1.0,
             )
             .with_inner_size(LogicalSize::new(
-                self.script_snapshot.config.window.width,
-                self.script_snapshot.config.window.height,
+                self.scripting.snapshot.config.window.width,
+                self.scripting.snapshot.config.window.height,
             ))
             .with_min_inner_size(LogicalSize::new(
-                self.script_snapshot.config.window.min_width,
-                self.script_snapshot.config.window.min_height,
+                self.scripting.snapshot.config.window.min_width,
+                self.scripting.snapshot.config.window.min_height,
             ))
-            .with_decorations(self.script_snapshot.config.window.decorations)
-            .with_resizable(self.script_snapshot.config.window.resizable)
-            .with_window_level(if self.script_snapshot.config.window.always_on_top {
+            .with_decorations(self.scripting.snapshot.config.window.decorations)
+            .with_resizable(self.scripting.snapshot.config.window.resizable)
+            .with_window_level(if self.scripting.snapshot.config.window.always_on_top {
                 winit::window::WindowLevel::AlwaysOnTop
             } else {
                 winit::window::WindowLevel::Normal
             });
         #[cfg(target_os = "linux")]
-        let attributes = match self.app_id.as_deref() {
+        let attributes = match self.platform.app_id.as_deref() {
             Some(app_id) => attributes.with_name(app_id, app_id),
             None => attributes,
         };
@@ -795,31 +861,34 @@ impl ApplicationHandler<AppEvent> for ToyotermApplication {
                 return;
             }
         };
-        let mut renderer =
-            match pollster::block_on(GpuRenderer::new(window.clone(), self.render_style.clone())) {
-                Ok(renderer) => renderer,
-                Err(error) => {
-                    tracing::error!(
-                        target: "toyoterm::render",
-                        operation = error.operation(),
-                        width = window.inner_size().width,
-                        height = window.inner_size().height,
-                        scale_factor = window.scale_factor(),
-                        %error,
-                        "initialize renderer failed"
-                    );
-                    self.fail(event_loop, error.to_string());
-                    return;
-                }
-            };
-        self.cell_metrics.width =
-            f64::from(renderer.terminal_cell_width(self.cell_metrics.font_size));
+        let mut renderer = match pollster::block_on(GpuRenderer::new(
+            window.clone(),
+            self.ui.render_style.clone(),
+        )) {
+            Ok(renderer) => renderer,
+            Err(error) => {
+                tracing::error!(
+                    target: "toyoterm::render",
+                    operation = error.operation(),
+                    width = window.inner_size().width,
+                    height = window.inner_size().height,
+                    scale_factor = window.scale_factor(),
+                    %error,
+                    "initialize renderer failed"
+                );
+                self.fail(event_loop, error.to_string());
+                return;
+            }
+        };
+        self.ui.cell_metrics.width =
+            f64::from(renderer.terminal_cell_width(self.ui.cell_metrics.font_size));
         let size = self
+            .ui
             .cell_metrics
             .terminal_size_at_scale(window.inner_size(), window.scale_factor());
         window.set_ime_allowed(true);
-        self.renderer = Some(renderer);
-        self.window = Some(window);
+        self.platform.renderer = Some(renderer);
+        self.platform.window = Some(window);
         if let Err(error) = self.flush_script_clipboard_writes() {
             self.fail(event_loop, error);
             return;
@@ -838,12 +907,14 @@ impl ApplicationHandler<AppEvent> for ToyotermApplication {
             return;
         }
         self.sync_active_renderer(
-            self.window
+            self.platform
+                .window
                 .as_ref()
                 .expect("window was installed")
                 .scale_factor(),
         );
-        self.window
+        self.platform
+            .window
             .as_ref()
             .expect("window was installed")
             .request_redraw();
@@ -858,7 +929,7 @@ impl ApplicationHandler<AppEvent> for ToyotermApplication {
         window_id: WindowId,
         event: WindowEvent,
     ) {
-        let Some(window) = self.window.clone() else {
+        let Some(window) = self.platform.window.clone() else {
             return;
         };
         if window.id() != window_id {
@@ -868,12 +939,12 @@ impl ApplicationHandler<AppEvent> for ToyotermApplication {
         match event {
             WindowEvent::CloseRequested => event_loop.exit(),
             WindowEvent::Occluded(occluded) => {
-                if self.occlusion.update(occluded) {
+                if self.platform.occlusion.update(occluded) {
                     window.request_redraw();
                 }
             }
             WindowEvent::Resized(size) => {
-                if let Some(renderer) = self.renderer.as_mut() {
+                if let Some(renderer) = self.platform.renderer.as_mut() {
                     renderer.resize(size);
                 }
                 if let Err(error) = self.resize_panes(size, window.scale_factor()) {
@@ -885,7 +956,7 @@ impl ApplicationHandler<AppEvent> for ToyotermApplication {
             }
             WindowEvent::ScaleFactorChanged { scale_factor, .. } => {
                 let size = window.inner_size();
-                if let Some(renderer) = self.renderer.as_mut() {
+                if let Some(renderer) = self.platform.renderer.as_mut() {
                     renderer.resize(size);
                 }
                 if let Err(error) = self.resize_panes(size, scale_factor) {
@@ -895,18 +966,18 @@ impl ApplicationHandler<AppEvent> for ToyotermApplication {
                 self.sync_active_renderer(scale_factor);
                 window.request_redraw();
             }
-            WindowEvent::ModifiersChanged(modifiers) => self.modifiers = modifiers.state(),
+            WindowEvent::ModifiersChanged(modifiers) => self.ui.modifiers = modifiers.state(),
             WindowEvent::Focused(focused) => {
                 // A platform is not required to send key-release events after
                 // the window loses focus. Do not leave modifiers (especially
                 // AltGraph) stuck when focus returns.
                 if !focused {
-                    clear_modifier_state(&mut self.modifiers, &mut self.alt_graph_active);
-                    self.leader_deadline = None;
+                    clear_modifier_state(&mut self.ui.modifiers, &mut self.ui.alt_graph_active);
+                    self.ui.leader_deadline = None;
                     self.exit_visual_mode();
-                    self.pressed_mouse_button = None;
-                    self.last_mouse_cell = None;
-                    if self.search_open {
+                    self.ui.pressed_mouse_button = None;
+                    self.ui.last_mouse_cell = None;
+                    if self.ui.search_open {
                         self.close_search();
                         self.sync_active_renderer(window.scale_factor());
                         window.request_redraw();
@@ -921,45 +992,45 @@ impl ApplicationHandler<AppEvent> for ToyotermApplication {
                 }
             }
             WindowEvent::CursorMoved { position, .. } => {
-                self.mouse_position = position;
+                self.ui.mouse_position = position;
                 self.update_mouse_cursor(&window);
-                if self.selecting {
+                if self.ui.selecting {
                     let (column, row) = self.mouse_cell(window.scale_factor());
                     if let Some(terminal) = self.active_terminal_mut() {
                         terminal.update_selection(column, row);
                     }
                     self.sync_active_renderer(window.scale_factor());
                     window.request_redraw();
-                } else if self.selector.is_none() {
+                } else if self.ui.selector.is_none() {
                     self.handle_mouse_motion(event_loop, &window);
                 }
             }
             WindowEvent::CursorLeft { .. } => {
-                self.last_mouse_cell = None;
+                self.ui.last_mouse_cell = None;
             }
             WindowEvent::MouseInput { state, button, .. } => {
-                if self.selector.is_none() {
+                if self.ui.selector.is_none() {
                     self.handle_mouse_input(event_loop, &window, button, state);
                 }
             }
             WindowEvent::MouseWheel { delta, .. } => {
-                if self.selector.is_none() {
+                if self.ui.selector.is_none() {
                     self.handle_mouse_wheel(event_loop, &window, delta);
                 }
             }
             WindowEvent::KeyboardInput { event, .. } => {
                 if matches!(event.logical_key, Key::Named(NamedKey::AltGraph)) {
-                    self.alt_graph_active = event.state == ElementState::Pressed;
+                    self.ui.alt_graph_active = event.state == ElementState::Pressed;
                     return;
                 }
                 if !should_handle_key_event(event.state, event.repeat) {
                     return;
                 }
-                let modifiers = effective_modifiers(self.modifiers, self.alt_graph_active);
-                if self.config_error_notice.is_some()
+                let modifiers = effective_modifiers(self.ui.modifiers, self.ui.alt_graph_active);
+                if self.ui.config_error_notice.is_some()
                     && matches!(event.logical_key, Key::Named(NamedKey::Escape))
                 {
-                    self.config_error_notice = None;
+                    self.ui.config_error_notice = None;
                     if let Err(error) =
                         self.resize_panes(window.inner_size(), window.scale_factor())
                     {
@@ -970,7 +1041,7 @@ impl ApplicationHandler<AppEvent> for ToyotermApplication {
                     window.request_redraw();
                     return;
                 }
-                if self.selector.is_some() {
+                if self.ui.selector.is_some() {
                     if let Err(error) = self.handle_selector_key(&event, modifiers) {
                         tracing::warn!(target: "toyoterm::script", %error, "selector callback submission failed");
                     }
@@ -978,13 +1049,13 @@ impl ApplicationHandler<AppEvent> for ToyotermApplication {
                     window.request_redraw();
                     return;
                 }
-                if self.search_open {
+                if self.ui.search_open {
                     self.handle_search_key(&event, modifiers);
                     self.sync_active_renderer(window.scale_factor());
                     window.request_redraw();
                     return;
                 }
-                if self.visual_selection.is_some() {
+                if self.ui.visual_selection.is_some() {
                     match self.handle_keybinding(&event, modifiers) {
                         Ok(true) => {}
                         Ok(false) if matches!(event.logical_key, Key::Named(NamedKey::Escape)) => {
@@ -1028,25 +1099,25 @@ impl ApplicationHandler<AppEvent> for ToyotermApplication {
                 }
             }
             WindowEvent::Ime(Ime::Preedit(text, _cursor)) => {
-                self.leader_deadline = None;
-                self.ime_preedit = (!text.is_empty()).then_some(text);
+                self.ui.leader_deadline = None;
+                self.ui.ime_preedit = (!text.is_empty()).then_some(text);
                 self.sync_active_renderer(window.scale_factor());
                 window.request_redraw();
             }
             WindowEvent::Ime(Ime::Commit(text)) => {
-                self.leader_deadline = None;
-                self.ime_preedit = None;
-                if let Some(selector) = self.selector.as_mut() {
+                self.ui.leader_deadline = None;
+                self.ui.ime_preedit = None;
+                if let Some(selector) = self.ui.selector.as_mut() {
                     selector.append_query(&text);
                     self.sync_active_renderer(window.scale_factor());
                     window.request_redraw();
                     return;
                 }
-                if self.visual_selection.is_some() {
+                if self.ui.visual_selection.is_some() {
                     return;
                 }
-                if self.search_open {
-                    self.search_query.push_str(&text);
+                if self.ui.search_open {
+                    self.ui.search_query.push_str(&text);
                     self.refresh_search(SearchDirection::Next);
                     self.sync_active_renderer(window.scale_factor());
                     window.request_redraw();
@@ -1059,20 +1130,20 @@ impl ApplicationHandler<AppEvent> for ToyotermApplication {
                 window.request_redraw();
             }
             WindowEvent::Ime(Ime::Disabled) => {
-                self.leader_deadline = None;
-                self.ime_preedit = None;
+                self.ui.leader_deadline = None;
+                self.ui.ime_preedit = None;
                 self.sync_active_renderer(window.scale_factor());
                 window.request_redraw();
             }
             WindowEvent::RedrawRequested => {
-                if !self.occlusion.should_render() {
+                if !self.platform.occlusion.should_render() {
                     return;
                 }
-                if self.terminal_render_pending {
-                    self.terminal_render_pending = false;
+                if self.ui.terminal_render_pending {
+                    self.ui.terminal_render_pending = false;
                     self.sync_active_renderer(window.scale_factor());
                 }
-                let render_result = self.renderer.as_mut().map(GpuRenderer::render);
+                let render_result = self.platform.renderer.as_mut().map(GpuRenderer::render);
                 match render_result {
                     Some(Ok(RenderOutcome::DeviceLost)) => {
                         if let Err(error) = self.recover_renderer() {
@@ -1098,6 +1169,7 @@ impl ApplicationHandler<AppEvent> for ToyotermApplication {
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
         let now = Instant::now();
         let expired_sync_panes = self
+            .terminal_runtime
             .pane_runtimes
             .iter()
             .filter_map(|(pane, runtime)| {
@@ -1109,7 +1181,7 @@ impl ApplicationHandler<AppEvent> for ToyotermApplication {
             })
             .collect::<Vec<_>>();
         for pane in expired_sync_panes {
-            if let Some(runtime) = self.pane_runtimes.get_mut(&pane) {
+            if let Some(runtime) = self.terminal_runtime.pane_runtimes.get_mut(&pane) {
                 runtime.terminal.stop_synchronized_update();
                 // Re-enter the regular output path so terminal events emitted
                 // while releasing the synchronized bytes retain their normal
@@ -1121,37 +1193,41 @@ impl ApplicationHandler<AppEvent> for ToyotermApplication {
             }
         }
         let next_sync_at = self
+            .terminal_runtime
             .pane_runtimes
             .values()
             .filter_map(|runtime| runtime.terminal.synchronized_update_deadline())
             .min();
         let mut transient_effect_expired = false;
-        for runtime in self.pane_runtimes.values_mut() {
+        for runtime in self.terminal_runtime.pane_runtimes.values_mut() {
             if runtime
+                .protocol
                 .visual_bell_deadline
                 .is_some_and(|deadline| deadline <= now)
             {
-                runtime.visual_bell_deadline = None;
+                runtime.protocol.visual_bell_deadline = None;
                 transient_effect_expired = true;
             }
             if runtime
+                .protocol
                 .cursor_fireworks_deadline
                 .is_some_and(|deadline| deadline <= now)
             {
-                runtime.cursor_fireworks_deadline = None;
+                runtime.protocol.cursor_fireworks_deadline = None;
                 transient_effect_expired = true;
             }
         }
-        if transient_effect_expired && let Some(window) = self.window.as_ref() {
+        if transient_effect_expired && let Some(window) = self.platform.window.as_ref() {
             window.request_redraw();
         }
         let next_effect_at = self
+            .terminal_runtime
             .pane_runtimes
             .values()
             .flat_map(|runtime| {
                 [
-                    runtime.visual_bell_deadline,
-                    runtime.cursor_fireworks_deadline,
+                    runtime.protocol.visual_bell_deadline,
+                    runtime.protocol.cursor_fireworks_deadline,
                 ]
             })
             .flatten()
@@ -1162,27 +1238,29 @@ impl ApplicationHandler<AppEvent> for ToyotermApplication {
             (None, None) => None,
         };
 
-        if self.script_snapshot.config.status_bars.is_empty() {
-            self.next_bar_at.clear();
+        if self.scripting.snapshot.config.status_bars.is_empty() {
+            self.ui.next_bar_at.clear();
             set_wait_control_flow(event_loop, next_terminal_at);
             return;
         }
-        if self.bar_pending.is_some() || self.window.is_none() {
+        if self.ui.bar_pending.is_some() || self.platform.window.is_none() {
             set_wait_control_flow(event_loop, next_terminal_at);
             return;
         }
-        for bar in &self.script_snapshot.config.status_bars {
-            if !self.bar_items.contains_key(&bar.position) {
-                self.next_bar_at.entry(bar.position).or_insert(now);
+        for bar in &self.scripting.snapshot.config.status_bars {
+            if !self.ui.bar_items.contains_key(&bar.position) {
+                self.ui.next_bar_at.entry(bar.position).or_insert(now);
             }
         }
         let Some((position, deadline)) = self
-            .script_snapshot
+            .scripting
+            .snapshot
             .config
             .status_bars
             .iter()
             .filter_map(|bar| {
-                self.next_bar_at
+                self.ui
+                    .next_bar_at
                     .get(&bar.position)
                     .map(|deadline| (bar.position, *deadline))
             })
@@ -1200,14 +1278,14 @@ impl ApplicationHandler<AppEvent> for ToyotermApplication {
         }
         match self.submit_script(ScriptInvocation::Bar { position }) {
             Ok(_) => {
-                self.bar_pending = Some(position);
-                self.next_bar_at.remove(&position);
+                self.ui.bar_pending = Some(position);
+                self.ui.next_bar_at.remove(&position);
                 set_wait_control_flow(event_loop, next_terminal_at);
             }
             Err(error) => {
                 tracing::warn!(target: "toyoterm::script", %error, "submit bar callback failed");
                 let deadline = now + Duration::from_secs(1);
-                self.next_bar_at.insert(position, deadline);
+                self.ui.next_bar_at.insert(position, deadline);
                 set_wait_control_flow(
                     event_loop,
                     Some(next_terminal_at.map_or(deadline, |terminal| terminal.min(deadline))),
@@ -1223,6 +1301,7 @@ impl ApplicationHandler<AppEvent> for ToyotermApplication {
     fn user_event(&mut self, event_loop: &ActiveEventLoop, event: AppEvent) {
         match event {
             AppEvent::Output { pane, pending } => {
+                self.scripting.invalidate_context();
                 let bytes = pending.take();
                 let mut terminal_events = Vec::new();
                 let mut mouse_cursor_changed = false;
@@ -1230,43 +1309,53 @@ impl ApplicationHandler<AppEvent> for ToyotermApplication {
                 let mut notification = None;
                 let mut attention_request = None;
                 let mut open_urls = Vec::new();
-                let allow_notifications =
-                    self.script_snapshot.config.behavior.allow_osc_notifications;
+                let allow_notifications = self
+                    .scripting
+                    .snapshot
+                    .config
+                    .behavior
+                    .allow_osc_notifications;
                 let allow_attention = self
-                    .script_snapshot
+                    .scripting
+                    .snapshot
                     .config
                     .behavior
                     .allow_osc_attention_requests;
-                let allow_open_url = self.script_snapshot.config.behavior.allow_osc_open_url;
+                let allow_open_url = self.scripting.snapshot.config.behavior.allow_osc_open_url;
                 let window_focused = self
+                    .platform
                     .window
                     .as_ref()
                     .is_some_and(|window| window.has_focus());
                 let source_focused = window_focused && self.mux.current_pane() == Some(pane);
-                let source_visible = window_focused && self.pane_layout.rect(pane).is_some();
-                if let Some(runtime) = self.pane_runtimes.get_mut(&pane) {
+                let source_visible = window_focused && self.ui.pane_layout.rect(pane).is_some();
+                if let Some(runtime) = self.terminal_runtime.pane_runtimes.get_mut(&pane) {
                     runtime.terminal.advance(&bytes);
                     terminal_events = runtime.terminal.drain_events();
                     for event in &terminal_events {
                         match event {
-                            TerminalEvent::TitleChanged(title) => runtime.title = title.clone(),
-                            TerminalEvent::TitleReset => runtime.title = format!("Pane {}", pane.0),
+                            TerminalEvent::TitleChanged(title) => {
+                                runtime.metadata.title = title.clone()
+                            }
+                            TerminalEvent::TitleReset => {
+                                runtime.metadata.title = format!("Pane {}", pane.0)
+                            }
                             TerminalEvent::IconTitleChanged(title) => {
-                                runtime.icon_title = Some(title.clone());
+                                runtime.metadata.icon_title = Some(title.clone());
                             }
                             TerminalEvent::CwdChanged(cwd) => {
-                                runtime.cwd = Some(PathBuf::from(cwd))
+                                runtime.metadata.cwd = Some(PathBuf::from(cwd))
                             }
                             TerminalEvent::RemoteHostChanged(remote_host) => {
-                                runtime.remote_host = Some(remote_host.clone());
+                                runtime.metadata.remote_host = Some(remote_host.clone());
                             }
                             TerminalEvent::ShellIntegrationChanged { version, shell } => {
-                                runtime.shell_integration_version = Some(*version);
-                                runtime.shell_integration_shell = shell.clone();
+                                runtime.protocol.shell_integration_version = Some(*version);
+                                runtime.protocol.shell_integration_shell = shell.clone();
                             }
                             TerminalEvent::ItermVariableQuery(name) => {
                                 let response = iterm_variable_response(runtime, name);
-                                if let Some(session) = runtime.pty_session.as_mut()
+                                if let Some(session) = runtime.process.pty_session.as_mut()
                                     && let Err(error) = session.write(response.as_bytes())
                                 {
                                     tracing::error!(
@@ -1283,7 +1372,7 @@ impl ApplicationHandler<AppEvent> for ToyotermApplication {
                                 apply_iterm_badge_format(runtime, format);
                             }
                             TerminalEvent::CursorLineHighlightChanged(enabled) => {
-                                runtime.cursor_line_highlight = *enabled;
+                                runtime.protocol.cursor_line_highlight = *enabled;
                             }
                             TerminalEvent::AttentionRequested(TerminalAttention::Cancel) => {
                                 attention_request = Some(TerminalAttention::Cancel);
@@ -1291,7 +1380,7 @@ impl ApplicationHandler<AppEvent> for ToyotermApplication {
                             TerminalEvent::AttentionRequested(TerminalAttention::Fireworks)
                                 if allow_attention =>
                             {
-                                runtime.cursor_fireworks_deadline =
+                                runtime.protocol.cursor_fireworks_deadline =
                                     Some(Instant::now() + OSC_CURSOR_FIREWORKS_DURATION);
                             }
                             TerminalEvent::AttentionRequested(request) if allow_attention => {
@@ -1302,31 +1391,36 @@ impl ApplicationHandler<AppEvent> for ToyotermApplication {
                                 if should_open_osc_url(
                                     allow_open_url,
                                     url,
-                                    runtime.last_open_url_at,
+                                    runtime.protocol.last_open_url_at,
                                     Instant::now(),
                                 ) =>
                             {
-                                runtime.last_open_url_at = Some(Instant::now());
+                                runtime.protocol.last_open_url_at = Some(Instant::now());
                                 open_urls.push(url.clone());
                             }
                             TerminalEvent::OpenUrlRequested(_) => {}
                             TerminalEvent::UserVarChanged { name, value }
-                                if runtime.user_vars.contains_key(name)
-                                    || runtime.user_vars.len() < MAX_OSC_USER_VARS =>
+                                if runtime.protocol.user_vars.contains_key(name)
+                                    || runtime.protocol.user_vars.len() < MAX_OSC_USER_VARS =>
                             {
-                                runtime.user_vars.insert(name.clone(), value.clone());
+                                runtime
+                                    .protocol
+                                    .user_vars
+                                    .insert(name.clone(), value.clone());
                             }
                             TerminalEvent::UserVarChanged { .. } => {}
                             TerminalEvent::MarkSet => {}
                             TerminalEvent::PromptStarted | TerminalEvent::CommandLineStarted => {}
-                            TerminalEvent::CommandStarted => runtime.command_running = true,
+                            TerminalEvent::CommandStarted => {
+                                runtime.protocol.command_running = true
+                            }
                             TerminalEvent::CommandFinished(status) => {
-                                runtime.command_running = false;
-                                runtime.last_exit_status = *status;
+                                runtime.protocol.command_running = false;
+                                runtime.protocol.last_exit_status = *status;
                             }
                             TerminalEvent::CapturedOutputCleared => {}
                             TerminalEvent::MouseCursorChanged(cursor) => {
-                                runtime.mouse_cursor = *cursor;
+                                runtime.protocol.mouse_cursor = *cursor;
                                 mouse_cursor_changed = true;
                             }
                             TerminalEvent::MouseCursorControl(_) => {}
@@ -1342,21 +1436,21 @@ impl ApplicationHandler<AppEvent> for ToyotermApplication {
                             | TerminalEvent::ColorStackPush
                             | TerminalEvent::ColorStackPop => {}
                             TerminalEvent::TabColorChanged { component, value } => {
-                                runtime.tab_color.set(*component, *value);
+                                runtime.protocol.tab_color.set(*component, *value);
                             }
                             TerminalEvent::TabColorSet(color) => {
-                                runtime.tab_color =
+                                runtime.protocol.tab_color =
                                     TabColorState([Some(color[0]), Some(color[1]), Some(color[2])]);
                             }
                             TerminalEvent::TabColorReset => {
-                                runtime.tab_color = TabColorState::default();
+                                runtime.protocol.tab_color = TabColorState::default();
                             }
                             TerminalEvent::SessionStatusChanged(update) => {
-                                runtime.session_status.apply(update);
+                                runtime.protocol.session_status.apply(update);
                             }
                             TerminalEvent::ProgressChanged(progress) => {
-                                runtime.progress =
-                                    apply_terminal_progress(runtime.progress, *progress);
+                                runtime.protocol.progress =
+                                    apply_terminal_progress(runtime.protocol.progress, *progress);
                             }
                             TerminalEvent::ClipboardStore(text) => {
                                 osc52_copies.push(text.clone());
@@ -1381,16 +1475,16 @@ impl ApplicationHandler<AppEvent> for ToyotermApplication {
                                     source_focused,
                                     source_visible,
                                 )
-                                && runtime.last_notification_at.is_none_or(|last| {
+                                && runtime.protocol.last_notification_at.is_none_or(|last| {
                                     last.elapsed() >= OSC_NOTIFICATION_INTERVAL
                                 }) =>
                             {
-                                runtime.last_notification_at = Some(Instant::now());
+                                runtime.protocol.last_notification_at = Some(Instant::now());
                                 if let Some(id) = id
-                                    && (runtime.active_notifications.contains_key(id)
-                                        || runtime.active_notifications.len() < 32)
+                                    && (runtime.protocol.active_notifications.contains_key(id)
+                                        || runtime.protocol.active_notifications.len() < 32)
                                 {
-                                    runtime.active_notifications.insert(
+                                    runtime.protocol.active_notifications.insert(
                                         id.clone(),
                                         notification_expiry(*timeout_ms, Instant::now()),
                                     );
@@ -1412,9 +1506,10 @@ impl ApplicationHandler<AppEvent> for ToyotermApplication {
                             }
                             TerminalEvent::Notification { .. } => {}
                             TerminalEvent::NotificationClose(id) => {
-                                let was_active = runtime.active_notifications.remove(id).is_some();
+                                let was_active =
+                                    runtime.protocol.active_notifications.remove(id).is_some();
                                 if was_active
-                                    && let Some(sender) = self.notification_sender.as_ref()
+                                    && let Some(sender) = self.platform.notification_sender.as_ref()
                                     && let Err(error) =
                                         sender.close(notification_platform_id(pane, id))
                                 {
@@ -1424,10 +1519,10 @@ impl ApplicationHandler<AppEvent> for ToyotermApplication {
                             TerminalEvent::NotificationAliveQuery(request_id) => {
                                 let response = notification_alive_response(
                                     request_id,
-                                    &mut runtime.active_notifications,
+                                    &mut runtime.protocol.active_notifications,
                                     Instant::now(),
                                 );
-                                if let Some(session) = runtime.pty_session.as_mut()
+                                if let Some(session) = runtime.process.pty_session.as_mut()
                                     && let Err(error) = session.write(response.as_bytes())
                                 {
                                     tracing::error!(
@@ -1441,7 +1536,7 @@ impl ApplicationHandler<AppEvent> for ToyotermApplication {
                                 }
                             }
                             TerminalEvent::PtyWrite(response) => {
-                                if let Some(session) = runtime.pty_session.as_mut()
+                                if let Some(session) = runtime.process.pty_session.as_mut()
                                     && let Err(error) = session.write(response.as_bytes())
                                 {
                                     tracing::error!(
@@ -1455,7 +1550,7 @@ impl ApplicationHandler<AppEvent> for ToyotermApplication {
                                 }
                             }
                             TerminalEvent::Bell { visual_bell } => {
-                                runtime.visual_bell_deadline =
+                                runtime.protocol.visual_bell_deadline =
                                     visual_bell_deadline(*visual_bell, Instant::now());
                             }
                         }
@@ -1465,11 +1560,11 @@ impl ApplicationHandler<AppEvent> for ToyotermApplication {
                 // allocation for a later PTY read instead of repeatedly
                 // allocating and freeing buffers during sustained output.
                 pending.recycle(bytes);
-                if mouse_cursor_changed && let Some(window) = self.window.as_ref() {
+                if mouse_cursor_changed && let Some(window) = self.platform.window.as_ref() {
                     self.update_mouse_cursor(window);
                 }
                 if let Some(request) = attention_request
-                    && let Some(window) = self.window.as_ref()
+                    && let Some(window) = self.platform.window.as_ref()
                 {
                     window.request_user_attention(match request {
                         TerminalAttention::Indefinite => Some(UserAttentionType::Critical),
@@ -1491,38 +1586,40 @@ impl ApplicationHandler<AppEvent> for ToyotermApplication {
                     }
                 }
                 if let Some(notification) = notification
-                    && let Some(sender) = self.notification_sender.as_ref()
+                    && let Some(sender) = self.platform.notification_sender.as_ref()
                     && let Err(error) = sender.send(notification)
                 {
                     tracing::warn!(target: "toyoterm::notification", %error, "queue OSC notification failed");
                 }
                 for event in terminal_events {
                     if let Some(runtime_event) = ruby_event_from_terminal_event(pane, event) {
-                        self.runtime_events.push_back(runtime_event);
+                        self.scripting.runtime_events.push_back(runtime_event);
                     }
                 }
                 if let Err(error) = self.deliver_runtime_events() {
                     self.fail(event_loop, error);
                     return;
                 }
-                if self.pane_layout.rect(pane).is_some() {
+                if self.ui.pane_layout.rect(pane).is_some() {
                     // Winit coalesces redraw requests. Keep parsing PTY bytes
                     // immediately to preserve ordering, but defer the costly
                     // full-grid snapshot and text shaping until the matching
                     // redraw. This prevents bursty alternate-screen output
                     // (notably Neovim exit) from building a render backlog.
-                    self.terminal_render_pending = true;
-                    if let Some(window) = self.window.as_ref() {
+                    self.ui.terminal_render_pending = true;
+                    if let Some(window) = self.platform.window.as_ref() {
                         window.request_redraw();
                     }
                 }
             }
             AppEvent::Eof { pane } => {
+                self.scripting.invalidate_context();
                 if let Err(error) = self.close_exited_pane(event_loop, pane) {
                     self.fail(event_loop, error);
                 }
             }
             AppEvent::Error { pane, message } => {
+                self.scripting.invalidate_context();
                 tracing::error!(
                     target: "toyoterm::pty",
                     operation = "read PTY output",
@@ -1536,7 +1633,9 @@ impl ApplicationHandler<AppEvent> for ToyotermApplication {
                 if let IpcRequest::Eval(source) = request {
                     match self.submit_script(ScriptInvocation::Eval(source)) {
                         Ok(id) => {
-                            self.eval_waiters.insert(id, EvalWaiter::Ipc(response));
+                            self.scripting
+                                .eval_waiters
+                                .insert(id, EvalWaiter::Ipc(response));
                         }
                         Err(error) => {
                             let _ = response.send(Err(error));
@@ -1545,7 +1644,9 @@ impl ApplicationHandler<AppEvent> for ToyotermApplication {
                 } else if matches!(request, IpcRequest::Reload) {
                     match self.submit_script(ScriptInvocation::Reload) {
                         Ok(id) => {
-                            self.eval_waiters.insert(id, EvalWaiter::Ipc(response));
+                            self.scripting
+                                .eval_waiters
+                                .insert(id, EvalWaiter::Ipc(response));
                         }
                         Err(error) => {
                             let _ = response.send(Err(error));
@@ -1560,17 +1661,17 @@ impl ApplicationHandler<AppEvent> for ToyotermApplication {
                 if let Err(error) = self.handle_script_completion(*completion) {
                     tracing::warn!(target: "toyoterm::script", %error, "apply script result failed");
                 }
-                self.script_in_flight = false;
+                self.scripting.in_flight = false;
                 if let Err(error) = self.start_next_script() {
                     tracing::warn!(target: "toyoterm::script", %error, "submit queued script request failed");
                 }
-                if let Some(window) = self.window.clone() {
+                if let Some(window) = self.platform.window.clone() {
                     self.sync_active_renderer(window.scale_factor());
                     window.request_redraw();
                 }
             }
             AppEvent::AsyncCompleted { id, output } => {
-                if self.cancelled_async_tasks.remove(&id) {
+                if self.scripting.cancelled_async_tasks.remove(&id) {
                     return;
                 }
                 let invocation = ScriptInvocation::AsyncCallback { id, output };
@@ -1580,9 +1681,9 @@ impl ApplicationHandler<AppEvent> for ToyotermApplication {
             }
             AppEvent::NotificationFeedback(feedback) => {
                 let response = notification_feedback_response(&feedback);
-                if let Some(runtime) = self.pane_runtimes.get_mut(&feedback.pane) {
-                    runtime.active_notifications.remove(&feedback.id);
-                    if let Some(session) = runtime.pty_session.as_mut()
+                if let Some(runtime) = self.terminal_runtime.pane_runtimes.get_mut(&feedback.pane) {
+                    runtime.protocol.active_notifications.remove(&feedback.id);
+                    if let Some(session) = runtime.process.pty_session.as_mut()
                         && let Err(error) = session.write(response.as_bytes())
                     {
                         tracing::error!(
@@ -1670,14 +1771,14 @@ fn should_open_osc_url(
 
 impl ToyotermApplication {
     fn shutdown(&mut self) {
-        if let Some(window) = self.window.as_ref() {
+        if let Some(window) = self.platform.window.as_ref() {
             window.set_ime_allowed(false);
         }
-        for (_, mut runtime) in self.pane_runtimes.drain() {
+        for (_, mut runtime) in self.terminal_runtime.pane_runtimes.drain() {
             runtime.terminate();
         }
-        self.renderer = None;
-        self.window = None;
+        self.platform.renderer = None;
+        self.platform.window = None;
     }
 
     fn new(
@@ -1726,75 +1827,88 @@ impl ToyotermApplication {
             error
         })
         .ok();
+        let cell_metrics = CellMetrics {
+            width: 9.0 * font_scale,
+            height: f64::from(config.font.size * config.ui.line_height),
+            horizontal_padding: config.ui.padding_x.round() as u32,
+            vertical_padding: config.ui.padding_y.round() as u32,
+            font_size: config.font.size,
+        };
         Ok(Self {
             event_proxy,
-            window: None,
-            renderer: None,
-            occlusion: WindowOcclusion::default(),
-            pane_runtimes: HashMap::new(),
-            pending_pane_launches,
-            pane_layout: PaneLayout::default(),
-            tab_layout: TabStripLayout::default(),
-            workspace_layout: WorkspaceStripLayout::default(),
-            search_open: false,
-            search_query: String::new(),
-            search_result: SearchResult::default(),
-            selector: None,
-            _ipc_server: ipc_server,
-            config_error_layout: ConfigErrorLayout::default(),
-            config_error_notice: startup_config_error.map(|message| ConfigErrorNotice {
-                message,
-                log_expanded: false,
-            }),
-            ime_preedit: None,
-            modifiers: ModifiersState::empty(),
-            alt_graph_active: false,
-            leader_deadline: None,
-            mouse_position: PhysicalPosition::new(0.0, 0.0),
-            pressed_mouse_button: None,
-            last_mouse_cell: None,
-            wheel_line_accumulator: 0.0,
-            selecting: false,
-            visual_selection: None,
-            click_tracker: ClickTracker::default(),
-            clipboard: None,
-            pending_clipboard_writes: Vec::new(),
-            notification_sender,
-            pane_badges: HashMap::new(),
-            runtime_events: VecDeque::new(),
-            next_script_request: 1,
-            script_in_flight: false,
-            pending_script: VecDeque::new(),
-            script_event_drops: 0,
-            eval_waiters: HashMap::new(),
-            cell_metrics: CellMetrics {
-                width: 9.0 * font_scale,
-                height: f64::from(config.font.size * config.ui.line_height),
-                horizontal_padding: config.ui.padding_x.round() as u32,
-                vertical_padding: config.ui.padding_y.round() as u32,
-                font_size: config.font.size,
+            platform: PlatformState {
+                window: None,
+                renderer: None,
+                occlusion: WindowOcclusion::default(),
+                clipboard: None,
+                notification_sender,
+                #[cfg(target_os = "linux")]
+                app_id,
             },
-            script_thread,
-            script_snapshot,
-            bar_items: HashMap::new(),
-            bar_pending: None,
-            next_bar_at: HashMap::new(),
-            cancelled_async_tasks: HashSet::new(),
-            terminal_render_pending: false,
+            terminal_runtime: TerminalRuntime {
+                pane_runtimes: HashMap::new(),
+                pending_pane_launches,
+            },
+            scripting: ScriptRuntimeState {
+                thread: script_thread,
+                snapshot: Arc::new(script_snapshot),
+                next_request_id: 1,
+                in_flight: false,
+                pending: VecDeque::new(),
+                runtime_events: VecDeque::new(),
+                event_drops: 0,
+                eval_waiters: HashMap::new(),
+                cancelled_async_tasks: HashSet::new(),
+                cached_model: None,
+                cached_handles: None,
+                context_dirty: true,
+            },
+            ui: UiState {
+                pane_layout: PaneLayout::default(),
+                tab_layout: TabStripLayout::default(),
+                workspace_layout: WorkspaceStripLayout::default(),
+                search_open: false,
+                search_query: String::new(),
+                search_result: SearchResult::default(),
+                selector: None,
+                config_error_layout: ConfigErrorLayout::default(),
+                config_error_notice: startup_config_error.map(|message| ConfigErrorNotice {
+                    message,
+                    log_expanded: false,
+                }),
+                ime_preedit: None,
+                modifiers: ModifiersState::empty(),
+                alt_graph_active: false,
+                leader_deadline: None,
+                mouse_position: PhysicalPosition::new(0.0, 0.0),
+                pressed_mouse_button: None,
+                last_mouse_cell: None,
+                wheel_line_accumulator: 0.0,
+                selecting: false,
+                visual_selection: None,
+                click_tracker: ClickTracker::default(),
+                pending_clipboard_writes: Vec::new(),
+                pane_badges: HashMap::new(),
+                cell_metrics,
+                bar_items: HashMap::new(),
+                bar_pending: None,
+                next_bar_at: HashMap::new(),
+                terminal_render_pending: false,
+                render_style,
+                window_title_override,
+            },
+            _ipc_server: ipc_server,
             mux,
-            render_style,
             fatal_error: None,
             exit_after_startup,
-            window_title_override,
-            #[cfg(target_os = "linux")]
-            app_id,
         })
     }
 
     fn base_window_title(&self) -> &str {
-        self.window_title_override
+        self.ui
+            .window_title_override
             .as_deref()
-            .unwrap_or(&self.script_snapshot.config.window.title)
+            .unwrap_or(&self.scripting.snapshot.config.window.title)
     }
 
     fn fail(&mut self, event_loop: &ActiveEventLoop, error: String) {

@@ -5,7 +5,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, mpsc};
 use std::thread;
 
-use toyoterm_api::{Command, NativeCommand, PaneId, SplitDirection};
+use toyoterm_api::{Command, ConfigCommand, NativeCommand, PaneId, SplitDirection};
 
 const MAGIC: &[u8; 4] = b"TYIP";
 const VERSION: u16 = 1;
@@ -29,7 +29,7 @@ impl IpcRequest {
         current_pane: Option<PaneId>,
     ) -> Result<Option<NativeCommand>, String> {
         Ok(match self {
-            Self::Reload => Some(NativeCommand::ReloadConfig),
+            Self::Reload => Some(NativeCommand::Config(ConfigCommand::Reload)),
             Self::SendText { pane, text } => Some(NativeCommand::Mux(Command::SendText {
                 pane: *pane,
                 text: text.clone(),
@@ -865,7 +865,7 @@ mod tests {
         let pane = PaneId(9);
         assert_eq!(
             IpcRequest::Reload.native_command(Some(pane)).unwrap(),
-            Some(NativeCommand::ReloadConfig)
+            Some(NativeCommand::Config(ConfigCommand::Reload))
         );
         assert_eq!(
             IpcRequest::Split {

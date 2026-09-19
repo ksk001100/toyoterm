@@ -84,9 +84,9 @@ pub struct ScriptSnapshot {
 
 #[derive(Clone, Debug)]
 pub struct ScriptContext {
-    pub model: RubyObjectModel,
-    pub handles: Vec<NativeHandle>,
-    pub clipboard: Option<String>,
+    pub model: Arc<RubyObjectModel>,
+    pub handles: Arc<[NativeHandle]>,
+    pub clipboard: Option<Arc<str>>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]

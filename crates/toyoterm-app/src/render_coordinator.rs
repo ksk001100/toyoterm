@@ -3,24 +3,26 @@ use super::*;
 impl ToyotermApplication {
     pub(super) fn replace_renderer(&mut self, style: RenderStyle) -> Result<(), String> {
         let window = self
+            .platform
             .window
             .clone()
             .ok_or_else(|| "recreate GPU renderer: window is unavailable".to_owned())?;
         // Rebuild on platforms requiring a new surface when transparency
         // changes. Windows keeps an alpha-capable surface at all opacities;
         // macOS reconfigures the existing Metal layer.
-        self.renderer = None;
+        self.platform.renderer = None;
         let mut renderer = pollster::block_on(GpuRenderer::new(window.clone(), style))
             .map_err(|error| format!("recreate GPU renderer: {error}"))?;
         renderer.resize(window.inner_size());
-        self.cell_metrics.width =
-            f64::from(renderer.terminal_cell_width(self.cell_metrics.font_size));
-        self.renderer = Some(renderer);
+        self.ui.cell_metrics.width =
+            f64::from(renderer.terminal_cell_width(self.ui.cell_metrics.font_size));
+        self.platform.renderer = Some(renderer);
         Ok(())
     }
 
     pub(super) fn recover_renderer(&mut self) -> Result<(), String> {
         let window = self
+            .platform
             .window
             .clone()
             .ok_or_else(|| "recover GPU renderer: window is unavailable".to_owned())?;
@@ -31,11 +33,13 @@ impl ToyotermApplication {
             scale_factor = window.scale_factor(),
             "recreating renderer after GPU device loss"
         );
-        let mut renderer =
-            pollster::block_on(GpuRenderer::new(window.clone(), self.render_style.clone()))
-                .map_err(|error| format!("recover GPU renderer: {error}"))?;
+        let mut renderer = pollster::block_on(GpuRenderer::new(
+            window.clone(),
+            self.ui.render_style.clone(),
+        ))
+        .map_err(|error| format!("recover GPU renderer: {error}"))?;
         renderer.resize(window.inner_size());
-        self.renderer = Some(renderer);
+        self.platform.renderer = Some(renderer);
         self.sync_active_renderer(window.scale_factor());
         window.request_redraw();
         tracing::info!(target: "toyoterm::render", "GPU renderer recovery completed");
@@ -50,40 +54,47 @@ impl ToyotermApplication {
             .current_tab()
             .and_then(|tab| self.mux.zoomed_pane(tab));
         let snapshots = self
+            .ui
             .pane_layout
             .panes()
             .iter()
             .filter_map(|placement| {
-                self.pane_runtimes.get(&placement.pane).map(|runtime| {
-                    let is_active = active == Some(placement.pane);
-                    let visual_cursor = is_active && self.visual_selection.is_some();
-                    let mut cursor = runtime.terminal.cursor();
-                    if visual_cursor && let Some(visual) = self.visual_selection {
-                        cursor.column = visual.current.column;
-                        cursor.row = visual.current.row;
-                        cursor.visible = true;
-                        cursor.shape = CursorShape::Block;
-                    }
-                    (
-                        placement.pane,
-                        runtime.terminal.snapshot(),
-                        runtime.terminal.render_colors(),
-                        cursor,
-                        runtime.cursor_line_highlight,
-                        runtime
-                            .visual_bell_deadline
-                            .is_some_and(|deadline| deadline > now),
-                        runtime
-                            .cursor_fireworks_deadline
-                            .is_some_and(|deadline| deadline > now),
-                        placement.rect,
-                        is_active,
-                        self.pane_badges
-                            .get(&placement.pane)
-                            .or(runtime.osc_badge.as_ref())
-                            .cloned(),
-                    )
-                })
+                self.terminal_runtime
+                    .pane_runtimes
+                    .get(&placement.pane)
+                    .map(|runtime| {
+                        let is_active = active == Some(placement.pane);
+                        let visual_cursor = is_active && self.ui.visual_selection.is_some();
+                        let mut cursor = runtime.terminal.cursor();
+                        if visual_cursor && let Some(visual) = self.ui.visual_selection {
+                            cursor.column = visual.current.column;
+                            cursor.row = visual.current.row;
+                            cursor.visible = true;
+                            cursor.shape = CursorShape::Block;
+                        }
+                        (
+                            placement.pane,
+                            runtime.terminal.snapshot(),
+                            runtime.terminal.render_colors(),
+                            cursor,
+                            runtime.protocol.cursor_line_highlight,
+                            runtime
+                                .protocol
+                                .visual_bell_deadline
+                                .is_some_and(|deadline| deadline > now),
+                            runtime
+                                .protocol
+                                .cursor_fireworks_deadline
+                                .is_some_and(|deadline| deadline > now),
+                            placement.rect,
+                            is_active,
+                            self.ui
+                                .pane_badges
+                                .get(&placement.pane)
+                                .or(runtime.metadata.osc_badge.as_ref())
+                                .cloned(),
+                        )
+                    })
             })
             .collect::<Vec<_>>();
         let panes = snapshots
@@ -119,6 +130,7 @@ impl ToyotermApplication {
             .collect::<Vec<_>>();
         let active_tab = self.mux.current_tab();
         let tab_titles = self
+            .ui
             .tab_layout
             .tabs()
             .iter()
@@ -132,29 +144,29 @@ impl ToyotermApplication {
                 if let Some(progress) = self
                     .mux
                     .active_pane(placement.tab)
-                    .and_then(|pane| self.pane_runtimes.get(&pane))
-                    .and_then(|runtime| runtime.progress)
+                    .and_then(|pane| self.terminal_runtime.pane_runtimes.get(&pane))
+                    .and_then(|runtime| runtime.protocol.progress)
                 {
                     title.push_str(&progress_title_suffix(progress));
                 }
                 let background = self
                     .mux
                     .active_pane(placement.tab)
-                    .and_then(|pane| self.pane_runtimes.get(&pane))
-                    .and_then(|runtime| runtime.tab_color.complete());
+                    .and_then(|pane| self.terminal_runtime.pane_runtimes.get(&pane))
+                    .and_then(|runtime| runtime.protocol.tab_color.complete());
                 let session = self
                     .mux
                     .active_pane(placement.tab)
-                    .and_then(|pane| self.pane_runtimes.get(&pane));
+                    .and_then(|pane| self.terminal_runtime.pane_runtimes.get(&pane));
                 (
                     placement.tab,
                     title,
                     placement.rect,
                     active_tab == Some(placement.tab),
                     background,
-                    session.and_then(|runtime| runtime.session_status.status.as_deref()),
-                    session.and_then(|runtime| runtime.session_status.status_color),
-                    session.and_then(|runtime| runtime.session_status.indicator),
+                    session.and_then(|runtime| runtime.protocol.session_status.status.as_deref()),
+                    session.and_then(|runtime| runtime.protocol.session_status.status_color),
+                    session.and_then(|runtime| runtime.protocol.session_status.indicator),
                 )
             })
             .collect::<Vec<_>>();
@@ -177,6 +189,7 @@ impl ToyotermApplication {
             .collect::<Vec<_>>();
         let active_workspace = self.mux.current_workspace();
         let workspace_titles = self
+            .ui
             .workspace_layout
             .workspaces()
             .iter()
@@ -201,23 +214,24 @@ impl ToyotermApplication {
             })
             .collect::<Vec<_>>();
         let config_error_message = self
+            .ui
             .config_error_notice
             .as_ref()
             .map(ConfigErrorNotice::display_message);
-        let config_error = self.config_error_notice.as_ref().and_then(|notice| {
+        let config_error = self.ui.config_error_notice.as_ref().and_then(|notice| {
             config_error_message
                 .as_deref()
                 .map(|message| ConfigErrorRenderData {
                     message,
-                    notice_rect: self.config_error_layout.notice(),
-                    open_log_rect: self.config_error_layout.open_log(),
-                    dismiss_rect: self.config_error_layout.dismiss(),
+                    notice_rect: self.ui.config_error_layout.notice(),
+                    open_log_rect: self.ui.config_error_layout.open_log(),
+                    dismiss_rect: self.ui.config_error_layout.dismiss(),
                     log_expanded: notice.log_expanded,
                 })
         });
-        let layout = self.cell_metrics.text_layout(scale_factor);
+        let layout = self.ui.cell_metrics.text_layout(scale_factor);
         let search_text = self.search_render_text();
-        let search_rect = self.window.as_ref().map(|window| {
+        let search_rect = self.platform.window.as_ref().map(|window| {
             let size = window.inner_size();
             let width = size
                 .width
@@ -232,23 +246,23 @@ impl ToyotermApplication {
                 height,
             )
         });
-        let selector_view = self.selector.as_ref().and_then(|selector| {
-            self.window.as_ref().map(|window| {
+        let selector_view = self.ui.selector.as_ref().and_then(|selector| {
+            self.platform.window.as_ref().map(|window| {
                 selector_render_view(
                     selector,
-                    self.ime_preedit.as_deref(),
+                    self.ui.ime_preedit.as_deref(),
                     window.inner_size(),
                     layout,
                     scale_factor,
                 )
             })
         });
-        if let Some(renderer) = self.renderer.as_mut() {
+        if let Some(renderer) = self.platform.renderer.as_mut() {
             renderer.update_panes(&panes, layout);
             renderer.update_tabs(&tabs, layout);
             renderer.update_workspaces(&workspaces, layout);
             renderer.update_search(
-                self.search_open.then(|| SearchRenderData {
+                self.ui.search_open.then(|| SearchRenderData {
                     rect: search_rect.unwrap_or_default(),
                     text: &search_text,
                 }),
@@ -265,29 +279,35 @@ impl ToyotermApplication {
                 layout,
             );
             let window_size = self
+                .platform
                 .window
                 .as_ref()
                 .map(|window| window.inner_size())
                 .unwrap_or_default();
             let notification_height = self
+                .ui
                 .config_error_notice
                 .as_ref()
                 .map(|notice| config_error_height(scale_factor, notice.log_expanded))
                 .unwrap_or(0);
-            let chrome_height = workspace_bar_height(&self.script_snapshot.config, scale_factor)
-                .saturating_add(tab_bar_height(&self.script_snapshot.config, scale_factor))
+            let chrome_height = workspace_bar_height(&self.scripting.snapshot.config, scale_factor)
+                .saturating_add(tab_bar_height(
+                    &self.scripting.snapshot.config,
+                    scale_factor,
+                ))
                 .saturating_add(notification_height)
                 .min(window_size.height);
             let (_, bar_rects) = edge_bar_layout(
                 window_size,
                 chrome_height,
-                &self.script_snapshot.config,
+                &self.scripting.snapshot.config,
                 scale_factor,
             );
             let rendered_items = bar_rects
                 .iter()
                 .map(|(position, _)| {
-                    self.bar_items
+                    self.ui
+                        .bar_items
                         .get(position)
                         .into_iter()
                         .flatten()
@@ -317,44 +337,44 @@ impl ToyotermApplication {
                 .collect::<Vec<_>>();
             renderer.update_status_bars(&statuses, layout);
             renderer.update_config_error(config_error, layout);
-            renderer.update_preedit(self.ime_preedit.as_deref(), layout);
+            renderer.update_preedit(self.ui.ime_preedit.as_deref(), layout);
         }
         self.update_ime_cursor_area(scale_factor);
         self.update_window_title();
     }
 
     pub(super) fn search_render_text(&self) -> String {
-        let status = if self.search_query.is_empty() {
+        let status = if self.ui.search_query.is_empty() {
             "Type to search".to_owned()
-        } else if self.search_result.total == 0 {
+        } else if self.ui.search_result.total == 0 {
             "No matches".to_owned()
         } else {
             format!(
                 "{} / {}",
-                self.search_result.current, self.search_result.total
+                self.ui.search_result.current, self.ui.search_result.total
             )
         };
         format!(
             "Find: {}▏  {}  (Enter next, Shift+Enter previous, Esc close)",
-            self.search_query, status
+            self.ui.search_query, status
         )
     }
 
     pub(super) fn update_ime_cursor_area(&self, scale_factor: f64) {
-        let Some(window) = self.window.as_ref() else {
+        let Some(window) = self.platform.window.as_ref() else {
             return;
         };
         let Some(pane) = self.mux.current_pane() else {
             return;
         };
-        let Some(rect) = self.pane_layout.rect(pane) else {
+        let Some(rect) = self.ui.pane_layout.rect(pane) else {
             return;
         };
         let Some(terminal) = self.active_terminal() else {
             return;
         };
         let cursor = terminal.cursor();
-        let layout = self.cell_metrics.text_layout(scale_factor);
+        let layout = self.ui.cell_metrics.text_layout(scale_factor);
         window.set_ime_cursor_area(
             PhysicalPosition::new(
                 f64::from(rect.x)
@@ -372,14 +392,14 @@ impl ToyotermApplication {
     }
 
     pub(super) fn update_window_title(&self) {
-        let Some(window) = self.window.as_ref() else {
+        let Some(window) = self.platform.window.as_ref() else {
             return;
         };
         let Some(pane) = self.mux.current_pane() else {
             window.set_title(self.base_window_title());
             return;
         };
-        let Some(runtime) = self.pane_runtimes.get(&pane) else {
+        let Some(runtime) = self.terminal_runtime.pane_runtimes.get(&pane) else {
             window.set_title(self.base_window_title());
             return;
         };
@@ -395,10 +415,12 @@ impl ToyotermApplication {
             .map(|workspace| format!("{workspace} · "))
             .unwrap_or_default();
         let pid = runtime
+            .process
             .process_id
             .map(|pid| format!(" · pid {pid}"))
             .unwrap_or_default();
         let cwd = runtime
+            .metadata
             .cwd
             .as_ref()
             .map(|cwd| format!(" · {}", cwd.display()))
@@ -406,7 +428,7 @@ impl ToyotermApplication {
         window.set_title(&format!(
             "{} — {workspace}{tab}{}{pid}{cwd}",
             self.base_window_title(),
-            runtime.title
+            runtime.metadata.title
         ));
     }
 }

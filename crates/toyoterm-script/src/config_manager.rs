@@ -3,13 +3,8 @@ use super::*;
 pub struct ConfigManager {
     pub(super) runtime: MrubyRuntime,
     pub(super) config: ToyotermConfig,
-    pub(super) keybindings: HashSet<String>,
-    pub(super) native_actions: HashMap<String, NativeAction>,
-    pub(super) event_names: HashSet<String>,
-    pub(super) user_command_names: HashSet<String>,
-    pub(super) plugins: Vec<PluginMetadata>,
+    pub(super) registrations: RegistrySnapshot,
     source_path: Option<PathBuf>,
-    plugin_dir: Option<PathBuf>,
 }
 
 pub(super) struct LoadedConfig {
@@ -24,17 +19,18 @@ pub(super) struct LoadedConfig {
 
 impl ConfigManager {
     pub fn new() -> Result<Self, ScriptError> {
-        let loaded = load_config("", "(default config)", &[], None)?;
+        let loaded = load_config("", "(default config)", None)?;
         Ok(Self {
             runtime: loaded.runtime,
             config: loaded.config,
-            keybindings: loaded.keybindings,
-            native_actions: loaded.native_actions,
-            event_names: loaded.event_names,
-            user_command_names: loaded.user_command_names,
-            plugins: loaded.plugins,
+            registrations: RegistrySnapshot {
+                keybindings: loaded.keybindings,
+                native_actions: loaded.native_actions,
+                event_names: loaded.event_names,
+                user_command_names: loaded.user_command_names,
+                plugins: loaded.plugins,
+            },
             source_path: None,
-            plugin_dir: None,
         })
     }
 
@@ -86,63 +82,19 @@ impl ConfigManager {
     }
 
     fn refresh_registrations(&mut self) -> Result<(), ScriptError> {
-        let dynamic_count = self.ruby_usize("Toyoterm.__config.__binding_count")?;
-        let mut keybindings = HashSet::with_capacity(dynamic_count);
-        for index in 0..dynamic_count {
-            keybindings.insert(
-                self.runtime
-                    .eval(&format!("Toyoterm.__config.__binding_key({index})"))?,
-            );
-        }
-
-        let static_count = self.ruby_usize("Toyoterm.__config.__static_binding_count")?;
-        let mut native_actions = HashMap::with_capacity(static_count);
-        for index in 0..static_count {
-            let key = self
-                .runtime
-                .eval(&format!("Toyoterm.__config.__static_binding_key({index})"))?;
-            let action = self.runtime.eval(&format!(
-                "Toyoterm.__config.__static_binding_action({index})"
-            ))?;
-            let argument = self.runtime.eval(&format!(
-                "Toyoterm.__config.__static_binding_argument({index})"
-            ))?;
-            native_actions.insert(key, decode_native_action(&action, &argument)?);
-        }
-
-        let event_count = self.ruby_usize("Toyoterm.__event_count")?;
-        let mut event_names = HashSet::with_capacity(event_count);
-        for index in 0..event_count {
-            event_names.insert(
-                self.runtime
-                    .eval(&format!("Toyoterm.__event_name({index})"))?,
-            );
-        }
-
-        let command_count = self.ruby_usize("Toyoterm.__command_count")?;
-        let mut user_command_names = HashSet::with_capacity(command_count);
-        for index in 0..command_count {
-            user_command_names.insert(
-                self.runtime
-                    .eval(&format!("Toyoterm.__command_name({index})"))?,
-            );
-        }
-
-        self.keybindings = keybindings;
-        self.native_actions = native_actions;
-        self.event_names = event_names;
-        self.user_command_names = user_command_names;
+        let plugins = self.registrations.plugins.clone();
+        self.registrations = RegistrySnapshot::read(&mut self.runtime, plugins)?;
         Ok(())
     }
 
     pub(super) fn snapshot(&self) -> ScriptSnapshot {
         ScriptSnapshot {
             config: self.config.clone(),
-            native_actions: self.native_actions.clone(),
-            keybindings: self.keybindings.clone(),
-            event_names: self.event_names.clone(),
-            user_command_names: self.user_command_names.clone(),
-            plugins: self.plugins.clone(),
+            native_actions: self.registrations.native_actions.clone(),
+            keybindings: self.registrations.keybindings.clone(),
+            event_names: self.registrations.event_names.clone(),
+            user_command_names: self.registrations.user_command_names.clone(),
+            plugins: self.registrations.plugins.clone(),
         }
     }
 
@@ -160,8 +112,6 @@ impl ConfigManager {
         let env_path = std::env::var_os("TOYOTERM_CONFIG_FILE").filter(|path| !path.is_empty());
         let default_path = default_config_path();
         let mut manager = Self::new()?;
-        manager.plugin_dir = default_plugin_dir();
-        manager.reload_named("", "(default config)")?;
         let Some(path) = resolve_config_path(explicit_path, env_path.as_deref(), default_path)
         else {
             return Ok((manager, None));
@@ -201,20 +151,17 @@ impl ConfigManager {
         source: &str,
         filename: &str,
     ) -> Result<&ToyotermConfig, ScriptError> {
-        let plugin_paths = self
-            .plugin_dir
-            .as_deref()
-            .map(discover_plugins)
-            .unwrap_or_default();
         let source_dir = self.source_path.as_deref().and_then(Path::parent);
-        let loaded = load_config(source, filename, &plugin_paths, source_dir)?;
+        let loaded = load_config(source, filename, source_dir)?;
         self.runtime = loaded.runtime;
         self.config = loaded.config;
-        self.keybindings = loaded.keybindings;
-        self.native_actions = loaded.native_actions;
-        self.event_names = loaded.event_names;
-        self.user_command_names = loaded.user_command_names;
-        self.plugins = loaded.plugins;
+        self.registrations = RegistrySnapshot {
+            keybindings: loaded.keybindings,
+            native_actions: loaded.native_actions,
+            event_names: loaded.event_names,
+            user_command_names: loaded.user_command_names,
+            plugins: loaded.plugins,
+        };
         tracing::info!(target: "toyoterm::config", filename, "config loaded");
         Ok(&self.config)
     }
@@ -224,7 +171,7 @@ impl ConfigManager {
     }
 
     pub fn plugins(&self) -> &[PluginMetadata] {
-        &self.plugins
+        &self.registrations.plugins
     }
 
     /// Evaluates interactive Ruby and returns the value's `inspect` representation.
@@ -240,15 +187,21 @@ impl ConfigManager {
     }
 
     pub fn native_action(&self, key: &str) -> Option<NativeAction> {
-        self.native_actions.get(&key.to_uppercase()).cloned()
+        self.registrations
+            .native_actions
+            .get(&key.to_uppercase())
+            .cloned()
     }
 
     pub fn has_dynamic_keybinding(&self, key: &str) -> bool {
-        self.keybindings.contains(&key.to_uppercase())
+        self.registrations.keybindings.contains(&key.to_uppercase())
     }
 
     pub fn user_command_names(&self) -> impl Iterator<Item = &str> {
-        self.user_command_names.iter().map(String::as_str)
+        self.registrations
+            .user_command_names
+            .iter()
+            .map(String::as_str)
     }
 
     pub fn trigger_user_command(
@@ -256,7 +209,7 @@ impl ConfigManager {
         name: &str,
         current_pane: PaneId,
     ) -> Result<bool, ScriptError> {
-        if !self.user_command_names.contains(name) {
+        if !self.registrations.user_command_names.contains(name) {
             return Err(ScriptError::new(
                 "invoke user command",
                 format!("undefined user command: {name}"),
@@ -342,7 +295,7 @@ impl ConfigManager {
         current_pane: PaneId,
     ) -> Result<bool, ScriptError> {
         let key = key.to_uppercase();
-        if !self.keybindings.contains(&key) {
+        if !self.registrations.keybindings.contains(&key) {
             return Ok(false);
         }
         self.set_current_pane(current_pane)?;
@@ -366,7 +319,7 @@ impl ConfigManager {
         current_pane: PaneId,
     ) -> Result<bool, ScriptError> {
         let name = kind.as_str();
-        if !self.event_names.contains(name) {
+        if !self.registrations.event_names.contains(name) {
             return Ok(false);
         }
         self.set_current_pane(current_pane)?;
@@ -384,7 +337,7 @@ impl ConfigManager {
     }
 
     pub fn emit_native_event(&mut self, event: &RubyEvent) -> Result<bool, ScriptError> {
-        if !self.event_names.contains(event.name()) {
+        if !self.registrations.event_names.contains(event.name()) {
             return Ok(false);
         }
         let started = Instant::now();
@@ -466,7 +419,7 @@ impl ConfigManager {
                                 )
                             })
                     };
-                    commands.push(NativeCommand::InvokeAction {
+                    commands.push(NativeCommand::Action(ActionCommand::Invoke {
                         action,
                         context: ActionContext {
                             workspace: WorkspaceId(resolve_bootstrap_id(
@@ -480,7 +433,7 @@ impl ConfigManager {
                             tab: TabId(resolve_bootstrap_id(context_value(2)?, current_tab.0)),
                             pane: PaneId(resolve_bootstrap_id(context_value(3)?, current_pane.0)),
                         },
-                    });
+                    }));
                 }
                 "send_text" => commands.push(NativeCommand::Mux(Command::SendText {
                     pane,
@@ -490,11 +443,13 @@ impl ConfigManager {
                     pane,
                     direction: parse_direction(&payload)?,
                 })),
-                "split_with_launch" => commands.push(NativeCommand::SplitWithLaunch {
-                    pane,
-                    direction: parse_direction(&payload)?,
-                    launch: self.read_current_launch_spec()?,
-                }),
+                "split_with_launch" => {
+                    commands.push(NativeCommand::Pane(PaneCommand::SplitWithLaunch {
+                        pane,
+                        direction: parse_direction(&payload)?,
+                        launch: CommandCollector::new(&mut self.runtime).read_launch_spec()?,
+                    }))
+                }
                 "close_pane" => commands.push(NativeCommand::Mux(Command::ClosePane(pane))),
                 "activate_pane" => commands.push(NativeCommand::Mux(Command::ActivatePane(pane))),
                 "close_tab" => commands.push(NativeCommand::Mux(Command::CloseTab(TabId(
@@ -506,10 +461,12 @@ impl ConfigManager {
                 "new_tab" => commands.push(NativeCommand::Mux(Command::NewTabIn(WindowId(
                     resolve_bootstrap_id(raw_id, current_window.0),
                 )))),
-                "new_tab_with_launch" => commands.push(NativeCommand::NewTabWithLaunch {
-                    window: WindowId(resolve_bootstrap_id(raw_id, current_window.0)),
-                    launch: self.read_current_launch_spec()?,
-                }),
+                "new_tab_with_launch" => {
+                    commands.push(NativeCommand::Window(WindowCommand::NewTabWithLaunch {
+                        window: WindowId(resolve_bootstrap_id(raw_id, current_window.0)),
+                        launch: CommandCollector::new(&mut self.runtime).read_launch_spec()?,
+                    }))
+                }
                 "close_window" => commands.push(NativeCommand::Mux(Command::CloseWindow(
                     WindowId(resolve_bootstrap_id(raw_id, current_window.0)),
                 ))),
@@ -528,19 +485,22 @@ impl ConfigManager {
                     WorkspaceId(resolve_bootstrap_id(raw_id, current_workspace.0)),
                 ))),
                 "create_window_with_launch" => {
-                    commands.push(NativeCommand::CreateWindowWithLaunch {
+                    commands.push(NativeCommand::Window(WindowCommand::CreateWithLaunch {
                         workspace: WorkspaceId(resolve_bootstrap_id(raw_id, current_workspace.0)),
-                        launch: self.read_current_launch_spec()?,
-                    })
+                        launch: CommandCollector::new(&mut self.runtime).read_launch_spec()?,
+                    }))
                 }
-                "clipboard_write" => commands.push(NativeCommand::ClipboardWrite(payload)),
-                "set_pane_badge" => commands.push(NativeCommand::SetPaneBadge {
+                "clipboard_write" => {
+                    commands.push(NativeCommand::Clipboard(ClipboardCommand::Write(payload)))
+                }
+                "set_pane_badge" => commands.push(NativeCommand::Pane(PaneCommand::SetBadge {
                     pane,
                     badge: Some(payload),
-                }),
-                "clear_pane_badge" => {
-                    commands.push(NativeCommand::SetPaneBadge { pane, badge: None })
-                }
+                })),
+                "clear_pane_badge" => commands.push(NativeCommand::Pane(PaneCommand::SetBadge {
+                    pane,
+                    badge: None,
+                })),
                 "search_pane" => {
                     let direction = match self
                         .runtime
@@ -556,11 +516,11 @@ impl ConfigManager {
                             ));
                         }
                     };
-                    commands.push(NativeCommand::SearchPane {
+                    commands.push(NativeCommand::Pane(PaneCommand::Search {
                         pane,
                         query: payload,
                         direction,
-                    });
+                    }));
                 }
                 "open_selector" => {
                     let id = payload.parse::<u64>().map_err(|_| {
@@ -584,9 +544,13 @@ impl ConfigManager {
                                 .eval(&format!("Toyoterm.__current_selector_item({index})"))?,
                         );
                     }
-                    commands.push(NativeCommand::OpenSelector { id, title, items });
+                    commands.push(NativeCommand::Ui(UiCommand::OpenSelector {
+                        id,
+                        title,
+                        items,
+                    }));
                 }
-                "reload_config" => commands.push(NativeCommand::ReloadConfig),
+                "reload_config" => commands.push(NativeCommand::Config(ConfigCommand::Reload)),
                 other => {
                     return Err(ScriptError::new(
                         "decode mruby command",
@@ -596,49 +560,6 @@ impl ConfigManager {
             }
         }
         Ok(commands)
-    }
-
-    fn read_current_launch_spec(&mut self) -> Result<PaneLaunchSpec, ScriptError> {
-        let program = self
-            .ruby_bool("Toyoterm.__current_launch_has_program")?
-            .then(|| self.runtime.eval("Toyoterm.__current_launch_program"))
-            .transpose()?;
-        let arg_count = self.ruby_usize("Toyoterm.__current_launch_arg_count")?;
-        let mut args = Vec::with_capacity(arg_count);
-        for index in 0..arg_count {
-            args.push(
-                self.runtime
-                    .eval(&format!("Toyoterm.__current_launch_arg({index})"))?,
-            );
-        }
-        let cwd = self
-            .ruby_bool("Toyoterm.__current_launch_has_cwd")?
-            .then(|| self.runtime.eval("Toyoterm.__current_launch_cwd"))
-            .transpose()?;
-        let env_count = self.ruby_usize("Toyoterm.__current_launch_env_count")?;
-        let mut environment = Vec::with_capacity(env_count);
-        for index in 0..env_count {
-            let key = self
-                .runtime
-                .eval(&format!("Toyoterm.__current_launch_env_key({index})"))?;
-            let value = if self.ruby_bool(&format!(
-                "Toyoterm.__current_launch_env_value_is_nil({index})"
-            ))? {
-                None
-            } else {
-                Some(
-                    self.runtime
-                        .eval(&format!("Toyoterm.__current_launch_env_value({index})"))?,
-                )
-            };
-            environment.push((key, value));
-        }
-        Ok(PaneLaunchSpec {
-            program,
-            args,
-            cwd,
-            environment,
-        })
     }
 
     pub fn drain_async_requests(&mut self) -> Result<Vec<AsyncSpawnRequest>, ScriptError> {
@@ -1006,7 +927,6 @@ pub(super) fn resolve_config_path(
 pub(super) fn load_config(
     source: &str,
     filename: &str,
-    plugin_paths: &[PathBuf],
     source_dir: Option<&Path>,
 ) -> Result<LoadedConfig, ScriptError> {
     let mut runtime = MrubyRuntime::new()?;
@@ -1027,62 +947,50 @@ pub(super) fn load_config(
     // SAFETY: The DSL has created the Toyoterm module in this exclusively owned VM.
     unsafe { toyoterm_mruby_install_host_api(runtime.state.as_ptr()) };
     runtime.set_environment()?;
+    configure_load_paths(&mut runtime, source_dir)?;
     runtime.eval_with_filename(source, filename)?;
-    let plugins = load_plugins(&mut runtime, plugin_paths, source_dir);
+    let plugins = collect_registered_plugins(&mut runtime)?;
 
     let config = read_config(&mut runtime, source_dir, None)?;
-    let binding_count = runtime
-        .eval("Toyoterm.__config.__binding_count")?
-        .parse::<usize>()
-        .map_err(|_| ScriptError::new("load key bindings", "binding count is invalid"))?;
-    let mut keybindings = HashSet::with_capacity(binding_count);
-    for index in 0..binding_count {
-        keybindings.insert(runtime.eval(&format!("Toyoterm.__config.__binding_key({index})"))?);
-    }
-
-    let static_count = runtime
-        .eval("Toyoterm.__config.__static_binding_count")?
-        .parse::<usize>()
-        .map_err(|_| ScriptError::new("load key bindings", "static binding count is invalid"))?;
-    let mut native_actions = HashMap::with_capacity(static_count);
-    for index in 0..static_count {
-        let key = runtime.eval(&format!("Toyoterm.__config.__static_binding_key({index})"))?;
-        let action = runtime.eval(&format!(
-            "Toyoterm.__config.__static_binding_action({index})"
-        ))?;
-        let argument = runtime.eval(&format!(
-            "Toyoterm.__config.__static_binding_argument({index})"
-        ))?;
-        native_actions.insert(key, decode_native_action(&action, &argument)?);
-    }
-
-    let event_count = runtime
-        .eval("Toyoterm.__event_count")?
-        .parse::<usize>()
-        .map_err(|_| ScriptError::new("load events", "event count is invalid"))?;
-    let mut event_names = HashSet::with_capacity(event_count);
-    for index in 0..event_count {
-        event_names.insert(runtime.eval(&format!("Toyoterm.__event_name({index})"))?);
-    }
-
-    let user_command_count = runtime
-        .eval("Toyoterm.__command_count")?
-        .parse::<usize>()
-        .map_err(|_| ScriptError::new("load user commands", "command count is invalid"))?;
-    let mut user_command_names = HashSet::with_capacity(user_command_count);
-    for index in 0..user_command_count {
-        user_command_names.insert(runtime.eval(&format!("Toyoterm.__command_name({index})"))?);
-    }
+    let registrations = RegistrySnapshot::read(&mut runtime, plugins)?;
 
     Ok(LoadedConfig {
         runtime,
         config,
-        keybindings,
-        native_actions,
-        event_names,
-        user_command_names,
-        plugins,
+        keybindings: registrations.keybindings,
+        native_actions: registrations.native_actions,
+        event_names: registrations.event_names,
+        user_command_names: registrations.user_command_names,
+        plugins: registrations.plugins,
     })
+}
+
+fn configure_load_paths(
+    runtime: &mut MrubyRuntime,
+    source_dir: Option<&Path>,
+) -> Result<(), ScriptError> {
+    let mut paths = Vec::new();
+    if let Some(source_dir) = source_dir {
+        paths.push(source_dir.to_owned());
+        paths.push(source_dir.join("lib"));
+    }
+    if let Some(user_dir) = default_config_path()
+        .as_deref()
+        .and_then(Path::parent)
+        .map(Path::to_owned)
+    {
+        paths.push(user_dir.clone());
+        paths.push(user_dir.join("lib"));
+    }
+    let mut seen = HashSet::new();
+    paths.retain(|path| seen.insert(path.clone()));
+    let values = paths
+        .iter()
+        .map(|path| ruby_string_literal(&path.display().to_string()))
+        .collect::<Vec<_>>()
+        .join(", ");
+    runtime.eval(&format!("Toyoterm.__set_load_paths([{values}])"))?;
+    Ok(())
 }
 
 fn read_config(

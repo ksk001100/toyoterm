@@ -33,7 +33,12 @@ unbounded queue of separately allocated 8 KiB application events while
 preserving byte order and EOF ordering.
 
 Script requests carry an immutable mux/object-model snapshot and clipboard
-snapshot. Script completions carry inspected values, context-bound
+snapshot. The object model, handle list, and clipboard text use `Arc` ownership
+so cloning a request context cannot deep-clone the snapshot; no lock or mutable
+native state crosses the boundary. Equal object-model and handle snapshots
+reuse their previous `Arc`; trace logging records construction time, reuse, and
+pane count for lightweight scaling measurements. Script completions carry
+inspected values, context-bound
 `NativeCommand`s, asynchronous spawn and cancellation requests, script log
 records, and validated configuration snapshots or registries when they change,
 including immutable image pixels. Before applying a non-global action, the main

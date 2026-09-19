@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::{HashMap, HashSet};
 use std::ffi::{CStr, CString, c_char, c_void};
 use std::fmt;
 use std::marker::PhantomData;
@@ -7,7 +7,7 @@ use std::process::Command as ProcessCommand;
 use std::ptr::NonNull;
 use std::rc::Rc;
 use std::slice;
-use std::sync::mpsc;
+use std::sync::{Arc, mpsc};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
@@ -15,14 +15,15 @@ use std::time::{Duration, Instant};
 use std::os::windows::process::CommandExt;
 
 use toyoterm_api::{
-    ActionContext, Command, HandleKind, NativeAction, NativeCommand, NativeHandle, PaneId,
-    PaneLaunchSpec, PaneSearchDirection, ScriptEventKind, SplitDirection, TabId, WindowId,
-    WorkspaceId,
+    ActionCommand, ActionContext, ClipboardCommand, Command, ConfigCommand, HandleKind,
+    NativeAction, NativeCommand, NativeHandle, PaneCommand, PaneId, PaneLaunchSpec,
+    PaneSearchDirection, ScriptEventKind, SplitDirection, TabId, UiCommand, WindowCommand,
+    WindowId, WorkspaceId,
 };
 use toyoterm_config::home_directory;
 pub use toyoterm_config::{
     BehaviorConfig, ColorConfig, FontConfig, LeaderConfig, StatusBarConfig, StatusBarPosition,
-    ToyotermConfig, UiConfig, WindowConfig, default_config_path, default_plugin_dir,
+    ToyotermConfig, UiConfig, WindowConfig, default_config_path,
 };
 
 const SLOW_CALLBACK_THRESHOLD: Duration = Duration::from_millis(100);
@@ -374,11 +375,15 @@ pub use runtime::MrubyRuntime;
 mod config_manager;
 pub use config_manager::ConfigManager;
 use config_manager::run_script_request;
+mod command_collector;
+use command_collector::CommandCollector;
 #[cfg(test)]
 use config_manager::{is_slow_callback, load_config, resolve_config_path};
 mod plugin;
 use plugin::*;
 mod parsing;
 use parsing::*;
+mod registry;
+use registry::RegistrySnapshot;
 #[cfg(test)]
 mod tests;

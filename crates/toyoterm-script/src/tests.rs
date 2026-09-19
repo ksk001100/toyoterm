@@ -1,7 +1,7 @@
 use super::*;
 
 fn invoked_action(action: NativeAction, pane: PaneId) -> NativeCommand {
-    NativeCommand::InvokeAction {
+    NativeCommand::Action(ActionCommand::Invoke {
         action,
         context: ActionContext {
             workspace: WorkspaceId(0),
@@ -9,7 +9,7 @@ fn invoked_action(action: NativeAction, pane: PaneId) -> NativeCommand {
             tab: TabId(0),
             pane,
         },
-    }
+    })
 }
 
 #[test]
@@ -25,6 +25,7 @@ fn removed_dsl_methods_and_action_aliases_are_rejected() {
         "Toyoterm.current_pane.focus",
         "Toyoterm.workspace(:old)",
         "Toyoterm.switch_workspace(:old)",
+        "Toyoterm.plugin('old')",
         "Toyoterm::BarConfig.new.add(:left, 'old')",
         "Toyoterm::BarConfig.new.group(:left) { |_| }",
     ] {
@@ -256,7 +257,7 @@ fn configuration_sections_return_objects_and_handles_use_consistent_verbs() {
     assert_eq!(commands.len(), 5);
     assert!(matches!(
         commands[4],
-        NativeCommand::CreateWindowWithLaunch { .. }
+        NativeCommand::Window(WindowCommand::CreateWithLaunch { .. })
     ));
     assert!(
         manager
@@ -318,13 +319,15 @@ fn script_test_context() -> ScriptContext {
                 screen_text: "prompt>".into(),
                 zoomed: false,
             }],
-        },
+        }
+        .into(),
         handles: vec![
             WorkspaceId(1).into(),
             WindowId(2).into(),
             TabId(3).into(),
             PaneId(4).into(),
-        ],
+        ]
+        .into(),
         clipboard: None,
     }
 }
@@ -551,14 +554,14 @@ fn registration_handles_support_removal_replacement_and_event_validation() {
         .eval("$subscription = Toyoterm.on(:bell) { }; $command = Toyoterm.command(:build) { }")
         .unwrap();
     manager.refresh_config_snapshot().unwrap();
-    assert!(manager.event_names.contains("bell"));
-    assert!(manager.user_command_names.contains("build"));
+    assert!(manager.registrations.event_names.contains("bell"));
+    assert!(manager.registrations.user_command_names.contains("build"));
 
     manager
         .eval("$subscription.remove; $replacement = Toyoterm.command(:build, replace: true) { |ctx| ctx.pane.send_text('new') }")
         .unwrap();
     manager.refresh_config_snapshot().unwrap();
-    assert!(!manager.event_names.contains("bell"));
+    assert!(!manager.registrations.event_names.contains("bell"));
     assert_eq!(manager.eval("$subscription.active?").unwrap(), "false");
     assert_eq!(manager.eval("$command.active?").unwrap(), "false");
     assert_eq!(manager.eval("$replacement.active?").unwrap(), "true");
@@ -633,7 +636,7 @@ fn dynamic_actions_capture_the_callback_object_context() {
         manager
             .drain_commands_with_context(WorkspaceId(10), WindowId(20), TabId(30), PaneId(40))
             .unwrap(),
-        vec![NativeCommand::InvokeAction {
+        vec![NativeCommand::Action(ActionCommand::Invoke {
             action: NativeAction::ToggleZoom,
             context: ActionContext {
                 workspace: WorkspaceId(10),
@@ -641,7 +644,7 @@ fn dynamic_actions_capture_the_callback_object_context() {
                 tab: TabId(30),
                 pane: PaneId(40),
             },
-        }]
+        })]
     );
 }
 
@@ -661,46 +664,6 @@ fn async_callbacks_receive_origin_context_and_launch_error_metadata() {
     );
     assert_eq!(manager.eval("$async_result.launch_error?").unwrap(), "true");
     assert_eq!(manager.eval("$async_result.error_kind").unwrap(), "launch");
-}
-
-#[test]
-fn plugins_are_evaluated_in_generated_namespaces() {
-    let directory = temporary_test_directory("plugin-namespace");
-    let failed_plugin = directory.join("failed.rb");
-    let plugin = directory.join("namespaced.rb");
-    std::fs::write(
-        &failed_plugin,
-        "PLUGIN_LOCAL_CONSTANT = 41\nraise 'failed plugin'",
-    )
-    .unwrap();
-    std::fs::write(
-        &plugin,
-        "PLUGIN_LOCAL_CONSTANT = 42\nToyoterm::Plugin.define('namespaced') { |p| p.version = '0.1.0' }",
-    )
-    .unwrap();
-    let mut manager = ConfigManager::new().unwrap();
-    assert!(load_plugin(&mut manager.runtime, &failed_plugin).is_err());
-    let metadata = load_plugin(&mut manager.runtime, &plugin).unwrap();
-    assert_eq!(metadata.name, "namespaced");
-    assert_eq!(
-        manager
-            .eval("Object.const_defined?(:PLUGIN_LOCAL_CONSTANT)")
-            .unwrap(),
-        "false"
-    );
-    assert_eq!(
-        manager
-            .eval("Toyoterm::PluginNamespaces::Plugin1::PLUGIN_LOCAL_CONSTANT")
-            .unwrap(),
-        "41"
-    );
-    assert_eq!(
-        manager
-            .eval("Toyoterm::PluginNamespaces::Plugin2::PLUGIN_LOCAL_CONSTANT")
-            .unwrap(),
-        "42"
-    );
-    std::fs::remove_dir_all(directory).unwrap();
 }
 
 #[test]
@@ -1009,7 +972,15 @@ fn loads_local_plugins_with_metadata_and_registrations() {
     )
     .unwrap();
 
-    let loaded = load_config("", "(config)", std::slice::from_ref(&plugin), None).unwrap();
+    let loaded = load_config(
+        &format!(
+            "require({})",
+            ruby_string_literal(&plugin.display().to_string())
+        ),
+        &directory.join("config.rb").display().to_string(),
+        Some(&directory),
+    )
+    .unwrap();
     assert_eq!(
         loaded.plugins,
         [PluginMetadata {
@@ -1027,6 +998,43 @@ fn loads_local_plugins_with_metadata_and_registrations() {
         loaded.native_actions.get("CTRL+SHIFT+G"),
         Some(&NativeAction::UserCommand("git_root".into()))
     );
+    std::fs::remove_dir_all(directory).unwrap();
+}
+
+#[test]
+fn require_loads_plain_ruby_from_the_config_lib_directory() {
+    let directory = temporary_test_directory("require-library");
+    let library_directory = directory.join("lib");
+    std::fs::create_dir_all(&library_directory).unwrap();
+    std::fs::write(
+        library_directory.join("helper.rb"),
+        "require_relative 'nested'; REQUIRED_HELPER_VALUE = NESTED_HELPER_VALUE + 1",
+    )
+    .unwrap();
+    std::fs::write(
+        library_directory.join("nested.rb"),
+        "NESTED_HELPER_VALUE = 41",
+    )
+    .unwrap();
+
+    let mut loaded = load_config(
+        "raise 'require failed' unless require('helper'); raise 'constant unavailable' unless REQUIRED_HELPER_VALUE == 42; raise 'duplicate require' if require('helper')",
+        &directory.join("config.rb").display().to_string(),
+        Some(&directory),
+    )
+    .unwrap();
+    assert_eq!(loaded.runtime.eval("REQUIRED_HELPER_VALUE").unwrap(), "42");
+    assert_eq!(
+        loaded
+            .runtime
+            .eval(&format!(
+                "$LOAD_PATH.include?({})",
+                ruby_string_literal(&library_directory.display().to_string())
+            ))
+            .unwrap(),
+        "true"
+    );
+    assert!(loaded.plugins.is_empty());
     std::fs::remove_dir_all(directory).unwrap();
 }
 
@@ -1058,7 +1066,7 @@ fn loads_and_selects_a_theme_defined_by_a_plugin() {
 
     let mut loaded = load_config(
         r##"
-            Toyoterm.plugin "night.rb"
+            require "night"
             Toyoterm.configure do |config|
               config.theme = "moon"
               config.colors.cursor = "#ffffff"
@@ -1066,7 +1074,6 @@ fn loads_and_selects_a_theme_defined_by_a_plugin() {
             end
         "##,
         &directory.join("config.rb").display().to_string(),
-        &[],
         Some(&directory),
     )
     .unwrap();
@@ -1100,11 +1107,9 @@ fn rejects_an_unknown_theme_without_replacing_the_active_config() {
 }
 
 #[test]
-fn plugin_failures_are_isolated_and_rolled_back() {
-    let directory = temporary_test_directory("plugin-isolation");
-    let broken = directory.join("10-broken.rb");
-    let incompatible = directory.join("20-incompatible.rb");
-    let healthy = directory.join("30-healthy.rb");
+fn required_plugin_failure_rejects_config_and_preserves_the_active_vm() {
+    let directory = temporary_test_directory("plugin-failure");
+    let broken = directory.join("broken.rb");
     std::fs::write(
         &broken,
         r#"
@@ -1116,50 +1121,24 @@ fn plugin_failures_are_isolated_and_rolled_back() {
             "#,
     )
     .unwrap();
-    std::fs::write(
-        &incompatible,
-        r#"
-            Toyoterm::Plugin.define "future" do |plugin|
-              plugin.version = "1.0.0"
-              plugin.api_requirement = ">= 1.0.0"
-              plugin.command(:also_leaked) { }
-            end
-            "#,
-    )
-    .unwrap();
-    std::fs::write(
-        &healthy,
-        r#"
-            Toyoterm::Plugin.define "healthy" do |plugin|
-              plugin.version = "0.2.0"
-              plugin.command(:works) { }
-            end
-            "#,
-    )
-    .unwrap();
-
-    let loaded = load_config(
-        "",
-        "(config)",
-        &[broken, incompatible, healthy.clone()],
-        None,
-    )
-    .unwrap();
-    assert_eq!(
-        loaded
-            .plugins
-            .iter()
-            .map(|plugin| plugin.name.as_str())
-            .collect::<Vec<_>>(),
-        ["healthy"]
-    );
-    assert_eq!(loaded.user_command_names, HashSet::from(["works".into()]));
-    assert_eq!(loaded.plugins[0].path, healthy);
+    let mut manager = ConfigManager::new().unwrap();
+    manager
+        .reload(r##"Toyoterm.configure { |config| config.colors.background = "#123456" }"##)
+        .unwrap();
+    let error = manager
+        .reload(&format!(
+            "require({})",
+            ruby_string_literal(&broken.display().to_string())
+        ))
+        .unwrap_err();
+    assert!(error.message().contains("boom"));
+    assert_eq!(manager.config().colors.background, "#123456");
+    assert!(manager.plugins().is_empty());
     std::fs::remove_dir_all(directory).unwrap();
 }
 
 #[test]
-fn explicit_plugins_resolve_relative_to_the_config_and_keep_declaration_order() {
+fn required_plugins_resolve_relative_to_the_config_and_keep_declaration_order() {
     let directory = temporary_test_directory("explicit-plugins");
     let plugins = directory.join("plugins");
     std::fs::create_dir(&plugins).unwrap();
@@ -1173,9 +1152,8 @@ fn explicit_plugins_resolve_relative_to_the_config_and_keep_declaration_order() 
         .unwrap();
     }
     let loaded = load_config(
-        "Toyoterm.plugin 'plugins/second.rb'; Toyoterm.plugin 'plugins/first.rb'",
+        "require_relative 'plugins/second'; require_relative 'plugins/first'",
         &directory.join("config.rb").display().to_string(),
-        &[],
         Some(&directory),
     )
     .unwrap();
@@ -1191,39 +1169,20 @@ fn explicit_plugins_resolve_relative_to_the_config_and_keep_declaration_order() 
 }
 
 #[test]
-fn automatic_plugins_are_sorted_and_duplicate_names_do_not_stop_later_plugins() {
-    let directory = temporary_test_directory("plugin-order");
-    for (file, name) in [
-        ("20-duplicate.rb", "shared"),
-        ("10-first.rb", "shared"),
-        ("30-last.rb", "last"),
-        ("ignored.txt", "ignored"),
-    ] {
-        std::fs::write(
-            directory.join(file),
-            format!(
-                "Toyoterm::Plugin.define {name:?} do |plugin|\n  plugin.version = \"0.1.0\"\nend\n"
-            ),
-        )
-        .unwrap();
-    }
-    let paths = discover_plugins(&directory);
-    assert_eq!(
-        paths
-            .iter()
-            .filter_map(|path| path.file_name().and_then(|name| name.to_str()))
-            .collect::<Vec<_>>(),
-        ["10-first.rb", "20-duplicate.rb", "30-last.rb"]
-    );
-    let loaded = load_config("", "(config)", &paths, None).unwrap();
-    assert_eq!(
-        loaded
-            .plugins
-            .iter()
-            .map(|plugin| plugin.name.as_str())
-            .collect::<Vec<_>>(),
-        ["shared", "last"]
-    );
+fn unrequired_plugin_files_are_not_loaded() {
+    let directory = temporary_test_directory("plugin-no-auto-load");
+    std::fs::write(
+        directory.join("unrequested.rb"),
+        "Toyoterm::Plugin.define('unrequested') { |plugin| plugin.version = '0.1.0' }",
+    )
+    .unwrap();
+    let loaded = load_config(
+        "",
+        &directory.join("config.rb").display().to_string(),
+        Some(&directory),
+    )
+    .unwrap();
+    assert!(loaded.plugins.is_empty());
     std::fs::remove_dir_all(directory).unwrap();
 }
 
@@ -1666,18 +1625,18 @@ fn exposes_the_synced_ruby_object_model() {
     assert_eq!(manager.eval("Toyoterm.current_pane.badge").unwrap(), "dev");
     assert_eq!(
         manager.drain_commands(PaneId(40)).unwrap(),
-        vec![NativeCommand::SetPaneBadge {
+        vec![NativeCommand::Pane(PaneCommand::SetBadge {
             pane: PaneId(40),
             badge: Some("dev".into()),
-        }]
+        })]
     );
     manager.eval("Toyoterm.current_pane.badge = nil").unwrap();
     assert_eq!(
         manager.drain_commands(PaneId(40)).unwrap(),
-        vec![NativeCommand::SetPaneBadge {
+        vec![NativeCommand::Pane(PaneCommand::SetBadge {
             pane: PaneId(40),
             badge: None,
-        }]
+        })]
     );
 }
 
@@ -1855,7 +1814,7 @@ fn converts_custom_pane_launches_to_native_commands() {
             .drain_commands_with_context(WorkspaceId(10), WindowId(20), TabId(30), PaneId(40))
             .unwrap(),
         vec![
-            NativeCommand::SplitWithLaunch {
+            NativeCommand::Pane(PaneCommand::SplitWithLaunch {
                 pane: PaneId(40),
                 direction: SplitDirection::Right,
                 launch: PaneLaunchSpec {
@@ -1867,8 +1826,8 @@ fn converts_custom_pane_launches_to_native_commands() {
                         ("OLD_TOKEN".into(), None),
                     ],
                 },
-            },
-            NativeCommand::NewTabWithLaunch {
+            }),
+            NativeCommand::Window(WindowCommand::NewTabWithLaunch {
                 window: WindowId(20),
                 launch: PaneLaunchSpec {
                     program: Some("btop".into()),
@@ -1876,8 +1835,8 @@ fn converts_custom_pane_launches_to_native_commands() {
                     cwd: None,
                     environment: Vec::new(),
                 },
-            },
-            NativeCommand::NewTabWithLaunch {
+            }),
+            NativeCommand::Window(WindowCommand::NewTabWithLaunch {
                 window: WindowId(20),
                 launch: PaneLaunchSpec {
                     program: None,
@@ -1885,8 +1844,8 @@ fn converts_custom_pane_launches_to_native_commands() {
                     cwd: Some("/tmp".into()),
                     environment: Vec::new(),
                 },
-            },
-            NativeCommand::CreateWindowWithLaunch {
+            }),
+            NativeCommand::Window(WindowCommand::CreateWithLaunch {
                 workspace: WorkspaceId(10),
                 launch: PaneLaunchSpec {
                     program: Some("tail".into()),
@@ -1894,7 +1853,7 @@ fn converts_custom_pane_launches_to_native_commands() {
                     cwd: None,
                     environment: vec![("LC_ALL".into(), Some("C".into()))],
                 },
-            },
+            }),
         ]
     );
 }
@@ -1954,16 +1913,16 @@ fn converts_pane_searches_to_native_commands() {
     assert_eq!(
         manager.drain_commands(PaneId(42)).unwrap(),
         vec![
-            NativeCommand::SearchPane {
+            NativeCommand::Pane(PaneCommand::Search {
                 pane: PaneId(42),
                 query: "error".into(),
                 direction: PaneSearchDirection::Next,
-            },
-            NativeCommand::SearchPane {
+            }),
+            NativeCommand::Pane(PaneCommand::Search {
                 pane: PaneId(42),
                 query: "warning".into(),
                 direction: PaneSearchDirection::Previous,
-            },
+            }),
         ]
     );
 }
@@ -2063,7 +2022,9 @@ fn exposes_clipboard_read_and_write_to_ruby() {
         .unwrap();
     assert_eq!(
         manager.drain_commands(PaneId(42)).unwrap(),
-        vec![NativeCommand::ClipboardWrite("copied from Ruby".into())]
+        vec![NativeCommand::Clipboard(ClipboardCommand::Write(
+            "copied from Ruby".into()
+        ))]
     );
 }
 
@@ -2655,7 +2616,7 @@ fn exposes_reload_requests_from_ruby_keybindings() {
     );
     assert_eq!(
         manager.drain_commands(PaneId(4)).unwrap(),
-        vec![NativeCommand::ReloadConfig]
+        vec![NativeCommand::Config(ConfigCommand::Reload)]
     );
     assert!(manager.drain_commands(PaneId(4)).unwrap().is_empty());
 }
@@ -3183,11 +3144,11 @@ fn select_queues_a_native_overlay_and_resumes_its_callback() {
     .unwrap();
     assert_eq!(
         result.commands,
-        vec![NativeCommand::OpenSelector {
+        vec![NativeCommand::Ui(UiCommand::OpenSelector {
             id: 1,
             title: "Theme".into(),
             items: vec!["Ayu".into(), "Solarized Dark".into()],
-        }]
+        })]
     );
 
     let result = run_script_request(
@@ -3201,10 +3162,10 @@ fn select_queues_a_native_overlay_and_resumes_its_callback() {
     .unwrap();
     assert_eq!(
         result.commands,
-        vec![NativeCommand::SetPaneBadge {
+        vec![NativeCommand::Pane(PaneCommand::SetBadge {
             pane: PaneId(4),
             badge: Some("Solarized Dark".into()),
-        }]
+        })]
     );
 }
 
@@ -3231,7 +3192,7 @@ fn select_callback_can_apply_a_plugin_theme() {
     let mut manager = ConfigManager::new().unwrap();
     manager
         .reload(&format!(
-            "Toyoterm.plugin({})",
+            "require({})",
             ruby_string_literal(&plugin.display().to_string())
         ))
         .unwrap();
@@ -3245,7 +3206,7 @@ fn select_callback_can_apply_a_plugin_theme() {
     )
     .unwrap();
     let id = match &opened.commands[0] {
-        NativeCommand::OpenSelector { id, items, .. } => {
+        NativeCommand::Ui(UiCommand::OpenSelector { id, items, .. }) => {
             assert_eq!(items, &["night", "day"]);
             *id
         }
@@ -3281,7 +3242,7 @@ fn select_cancel_passes_nil_and_releases_the_pending_slot() {
     };
     let first = open(&mut manager).unwrap();
     let id = match &first.commands[0] {
-        NativeCommand::OpenSelector { id, .. } => *id,
+        NativeCommand::Ui(UiCommand::OpenSelector { id, .. }) => *id,
         command => panic!("expected selector command, got {command:?}"),
     };
     run_script_request(
@@ -3339,7 +3300,7 @@ fn select_validates_input_and_rolls_back_pending_callbacks() {
     )
     .unwrap();
     let id = match result.commands[0] {
-        NativeCommand::OpenSelector { id, .. } => id,
+        NativeCommand::Ui(UiCommand::OpenSelector { id, .. }) => id,
         ref command => panic!("expected selector command, got {command:?}"),
     };
     let error = run_script_request(

@@ -47,3 +47,26 @@ dependency allowlist, the small allowlist of test-only dependencies, and cycle
 freedom. CI runs this check on Linux, macOS, and Windows. When adding a crate or
 dependency, update the script and this document in the same change so the new
 direction is an explicit design decision.
+
+Within `toyoterm-app`, `ToyotermApplication` is the composition coordinator,
+not the owner of every individual field. `PlatformState` owns the window,
+renderer, clipboard, and notification service; `TerminalRuntime` owns pane and
+PTY runtimes; `ScriptRuntimeState` owns the bounded request/event queues and
+the script-thread endpoint; and `UiState` owns transient layout and interaction
+state. A pane runtime is further split into terminal VT state, native process
+lifecycle, pane metadata, and protocol/session metadata. Dropping its
+`ProcessRuntime` retains the PTY termination guarantee.
+
+Native commands keep a small top-level domain boundary (`Mux`, `Action`,
+`Pane`, `Window`, `Ui`, `Clipboard`, and `Config`). Adding an operation within
+one of those domains does not grow an unrelated application-wide command enum.
+Ruby callbacks, IPC mutations, and native keybindings converge on
+`apply_control_command`. It performs domain dispatch and returns the small set
+of coordinator effects without routing PTY bytes through a generic intent
+layer.
+
+Inside `toyoterm-script`, `ConfigManager` remains the transactional coordinator:
+fresh-VM load and validation precede the active-runtime swap. Registry decoding
+belongs to `registry`, launch-command conversion belongs to `command_collector`,
+plugin metadata validation belongs to `plugin`, immediate `require` resolution
+belongs to the Ruby DSL, and VM mechanics remain in `runtime`.

@@ -7,6 +7,18 @@ enum KeybindingDispatch {
     Unassigned,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum CommandOrigin {
+    Script,
+    Ipc,
+    Keybinding,
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub(super) struct ControlEffects {
+    pub(super) reload_config: bool,
+}
+
 fn action_is_global(action: &NativeAction) -> bool {
     matches!(
         action,
@@ -389,6 +401,98 @@ pub(super) fn dispatch_coordinator_command(
 }
 
 impl ToyotermApplication {
+    pub(super) fn apply_control_command(
+        &mut self,
+        command: NativeCommand,
+        origin: CommandOrigin,
+    ) -> Result<ControlEffects, String> {
+        self.scripting.invalidate_context();
+        if origin == CommandOrigin::Ipc
+            && !matches!(command, NativeCommand::Mux(_) | NativeCommand::Config(_))
+        {
+            return Err("native command domain is not exposed over IPC".to_owned());
+        }
+        let mut effects = ControlEffects::default();
+        match command {
+            NativeCommand::Mux(command) => match origin {
+                CommandOrigin::Script => {
+                    dispatch_coordinator_command(
+                        &mut self.mux,
+                        &mut self.scripting.runtime_events,
+                        command,
+                    )?;
+                }
+                CommandOrigin::Ipc | CommandOrigin::Keybinding => {
+                    self.dispatch_gui_command(command)?
+                }
+            },
+            NativeCommand::Action(ActionCommand::Invoke {
+                action: NativeAction::ReloadConfig,
+                ..
+            }) => effects.reload_config = true,
+            NativeCommand::Action(ActionCommand::Invoke { action, context }) => match origin {
+                CommandOrigin::Keybinding => self.execute_native_action(action)?,
+                CommandOrigin::Script => self.execute_context_action(action, context)?,
+                CommandOrigin::Ipc => unreachable!("IPC actions are rejected above"),
+            },
+            NativeCommand::Window(WindowCommand::CreateWithLaunch { workspace, launch }) => {
+                let pane = dispatch_pane_creation(
+                    &mut self.mux,
+                    &mut self.scripting.runtime_events,
+                    PaneCreation::NewWindow(workspace),
+                )?;
+                self.terminal_runtime
+                    .pending_pane_launches
+                    .insert(pane, launch);
+            }
+            NativeCommand::Window(WindowCommand::NewTabWithLaunch { window, launch }) => {
+                let pane = dispatch_pane_creation(
+                    &mut self.mux,
+                    &mut self.scripting.runtime_events,
+                    PaneCreation::NewTab(window),
+                )?;
+                self.terminal_runtime
+                    .pending_pane_launches
+                    .insert(pane, launch);
+            }
+            NativeCommand::Pane(PaneCommand::SplitWithLaunch {
+                pane,
+                direction,
+                launch,
+            }) => {
+                let pane = dispatch_pane_creation(
+                    &mut self.mux,
+                    &mut self.scripting.runtime_events,
+                    PaneCreation::Split { pane, direction },
+                )?;
+                self.terminal_runtime
+                    .pending_pane_launches
+                    .insert(pane, launch);
+            }
+            NativeCommand::Pane(PaneCommand::SetBadge { pane, badge }) => match badge {
+                Some(badge) => {
+                    self.ui.pane_badges.insert(pane, badge);
+                }
+                None => {
+                    self.ui.pane_badges.remove(&pane);
+                }
+            },
+            NativeCommand::Pane(PaneCommand::Search {
+                pane,
+                query,
+                direction,
+            }) => self.search_pane(pane, query, direction)?,
+            NativeCommand::Ui(UiCommand::OpenSelector { id, title, items }) => {
+                self.open_selector(id, title, items)
+            }
+            NativeCommand::Clipboard(ClipboardCommand::Write(text)) => {
+                self.ui.pending_clipboard_writes.push(text)
+            }
+            NativeCommand::Config(ConfigCommand::Reload) => effects.reload_config = true,
+        }
+        Ok(effects)
+    }
+
     pub(super) fn start_visual_selection(&mut self) {
         self.start_visual_mode();
         self.select_visual_selection();
@@ -409,14 +513,14 @@ impl ToyotermApplication {
         if let Some(terminal) = self.active_terminal_mut() {
             terminal.clear_selection();
         }
-        self.visual_selection = Some(VisualSelection {
+        self.ui.visual_selection = Some(VisualSelection {
             anchor: None,
             current: position,
         });
     }
 
     pub(super) fn select_visual_selection(&mut self) {
-        let Some(mut visual) = self.visual_selection else {
+        let Some(mut visual) = self.ui.visual_selection else {
             return;
         };
         visual.anchor = Some(visual.current);
@@ -427,11 +531,11 @@ impl ToyotermApplication {
                 SelectionKind::Simple,
             );
         }
-        self.visual_selection = Some(visual);
+        self.ui.visual_selection = Some(visual);
     }
 
     pub(super) fn exit_visual_mode(&mut self) {
-        if self.visual_selection.take().is_some()
+        if self.ui.visual_selection.take().is_some()
             && let Some(terminal) = self.active_terminal_mut()
         {
             terminal.clear_selection();
@@ -439,7 +543,7 @@ impl ToyotermApplication {
     }
 
     pub(super) fn move_visual_selection(&mut self, motion: SelectionMotion) {
-        let Some(mut selection) = self.visual_selection else {
+        let Some(mut selection) = self.ui.visual_selection else {
             return;
         };
         let Some(snapshot) = self.active_terminal().map(TerminalBackend::snapshot) else {
@@ -510,11 +614,11 @@ impl ToyotermApplication {
         {
             terminal.scroll_display(scroll);
         }
-        self.visual_selection = Some(selection);
+        self.ui.visual_selection = Some(selection);
     }
 
     pub(super) fn yank_selection(&mut self) -> Result<(), String> {
-        let Some(visual) = &self.visual_selection else {
+        let Some(visual) = &self.ui.visual_selection else {
             return Ok(());
         };
         if visual.anchor.is_none() {
@@ -541,9 +645,31 @@ impl ToyotermApplication {
             .mux
             .current_pane()
             .ok_or_else(|| "mux has no current pane".to_owned())?;
-        match resolve_keybinding(&self.script_snapshot, keys, self.visual_selection.is_some()) {
+        match resolve_keybinding(
+            &self.scripting.snapshot,
+            keys,
+            self.ui.visual_selection.is_some(),
+        ) {
             KeybindingDispatch::Native(action) => {
-                self.execute_native_action(action)?;
+                let context = ActionContext {
+                    workspace: self.mux.current_workspace(),
+                    window: self
+                        .mux
+                        .current_window()
+                        .ok_or_else(|| "mux has no current window".to_owned())?,
+                    tab: self
+                        .mux
+                        .current_tab()
+                        .ok_or_else(|| "mux has no current tab".to_owned())?,
+                    pane,
+                };
+                let effects = self.apply_control_command(
+                    NativeCommand::Action(ActionCommand::Invoke { action, context }),
+                    CommandOrigin::Keybinding,
+                )?;
+                if effects.reload_config {
+                    self.reload_config_with_notification()?;
+                }
                 Ok(true)
             }
             KeybindingDispatch::Ruby(key) => {
@@ -560,7 +686,7 @@ impl ToyotermApplication {
         modifiers: ModifiersState,
     ) -> Result<bool, String> {
         let now = Instant::now();
-        if let Some(deadline) = self.leader_deadline.take() {
+        if let Some(deadline) = self.ui.leader_deadline.take() {
             // A key repeat of the prefix must neither complete nor cancel the
             // leader sequence.  In particular, a user may keep a modifier
             // held while releasing and pressing the prefix key again (for
@@ -570,7 +696,7 @@ impl ToyotermApplication {
             // never extend the timeout or dispatch an action from the repeat.
             if event.repeat {
                 if now <= deadline {
-                    self.leader_deadline = Some(deadline);
+                    self.ui.leader_deadline = Some(deadline);
                 }
                 return Ok(true);
             }
@@ -588,7 +714,7 @@ impl ToyotermApplication {
             return Ok(false);
         }
 
-        let Some(leader) = self.script_snapshot.config.leader.as_ref() else {
+        let Some(leader) = self.scripting.snapshot.config.leader.as_ref() else {
             return Ok(false);
         };
         let matches_leader = keybinding_names(event, modifiers)
@@ -601,7 +727,7 @@ impl ToyotermApplication {
         if !matches_leader {
             return Ok(false);
         }
-        self.leader_deadline = Some(
+        self.ui.leader_deadline = Some(
             now.checked_add(Duration::from_millis(leader.timeout_ms))
                 .unwrap_or(now),
         );
@@ -658,7 +784,7 @@ impl ToyotermApplication {
                 Ok(())
             }
             NativeAction::ToggleVisualMode => {
-                if self.visual_selection.is_some() {
+                if self.ui.visual_selection.is_some() {
                     self.exit_visual_mode();
                 } else {
                     self.start_visual_mode();
@@ -701,6 +827,7 @@ impl ToyotermApplication {
 
     pub(super) fn maximize_window(&mut self) -> Result<(), String> {
         let window = self
+            .platform
             .window
             .as_ref()
             .ok_or_else(|| "native window is not available".to_owned())?;
@@ -710,6 +837,7 @@ impl ToyotermApplication {
 
     pub(super) fn toggle_maximize_window(&mut self) -> Result<(), String> {
         let window = self
+            .platform
             .window
             .as_ref()
             .ok_or_else(|| "native window is not available".to_owned())?;
@@ -719,6 +847,7 @@ impl ToyotermApplication {
 
     pub(super) fn minimize_window(&mut self) -> Result<(), String> {
         let window = self
+            .platform
             .window
             .as_ref()
             .ok_or_else(|| "native window is not available".to_owned())?;
@@ -728,6 +857,7 @@ impl ToyotermApplication {
 
     pub(super) fn toggle_fullscreen(&mut self) -> Result<(), String> {
         let window = self
+            .platform
             .window
             .as_ref()
             .ok_or_else(|| "native window is not available".to_owned())?;
@@ -742,9 +872,9 @@ impl ToyotermApplication {
 
     pub(super) fn open_search(&mut self) -> Result<(), String> {
         self.close_search();
-        self.search_open = true;
-        self.search_query.clear();
-        self.search_result = SearchResult::default();
+        self.ui.search_open = true;
+        self.ui.search_query.clear();
+        self.ui.search_result = SearchResult::default();
         if let Some(terminal) = self.active_terminal_mut() {
             terminal.clear_search();
         }
@@ -755,7 +885,7 @@ impl ToyotermApplication {
         let moved = self
             .active_terminal_mut()
             .is_some_and(|terminal| terminal.navigate_prompt(direction));
-        if moved && let Some(window) = self.window.as_ref() {
+        if moved && let Some(window) = self.platform.window.as_ref() {
             window.request_redraw();
         }
         Ok(())
@@ -765,7 +895,7 @@ impl ToyotermApplication {
         let moved = self
             .active_terminal_mut()
             .is_some_and(|terminal| terminal.navigate_mark(direction));
-        if moved && let Some(window) = self.window.as_ref() {
+        if moved && let Some(window) = self.platform.window.as_ref() {
             window.request_redraw();
         }
         Ok(())
@@ -775,7 +905,7 @@ impl ToyotermApplication {
         let selected = self
             .active_terminal_mut()
             .is_some_and(|terminal| terminal.select_last_command_output());
-        if selected && let Some(window) = self.window.as_ref() {
+        if selected && let Some(window) = self.platform.window.as_ref() {
             window.request_redraw();
         }
         Ok(())
@@ -785,7 +915,7 @@ impl ToyotermApplication {
         let selected = self
             .active_terminal_mut()
             .is_some_and(|terminal| terminal.select_command_output(direction));
-        if selected && let Some(window) = self.window.as_ref() {
+        if selected && let Some(window) = self.platform.window.as_ref() {
             window.request_redraw();
         }
         Ok(())
@@ -802,38 +932,39 @@ impl ToyotermApplication {
         }
         dispatch_coordinator_command(
             &mut self.mux,
-            &mut self.runtime_events,
+            &mut self.scripting.runtime_events,
             Command::ActivatePane(pane),
         )?;
         self.exit_visual_mode();
-        self.ime_preedit = None;
-        self.search_open = true;
-        self.search_query = query;
+        self.ui.ime_preedit = None;
+        self.ui.search_open = true;
+        self.ui.search_query = query;
         let direction = match direction {
             PaneSearchDirection::Next => SearchDirection::Next,
             PaneSearchDirection::Previous => SearchDirection::Previous,
         };
-        self.search_result = self
+        self.ui.search_result = self
+            .terminal_runtime
             .pane_runtimes
             .get_mut(&pane)
             .ok_or_else(|| format!("pane {pane} has no terminal runtime"))?
             .terminal
-            .search(&self.search_query, direction);
+            .search(&self.ui.search_query, direction);
         Ok(())
     }
 
     pub(super) fn close_search(&mut self) {
-        self.search_open = false;
-        self.search_query.clear();
-        self.search_result = SearchResult::default();
+        self.ui.search_open = false;
+        self.ui.search_query.clear();
+        self.ui.search_result = SearchResult::default();
         if let Some(terminal) = self.active_terminal_mut() {
             terminal.clear_search();
         }
     }
 
     pub(super) fn refresh_search(&mut self, direction: SearchDirection) {
-        let query = self.search_query.clone();
-        self.search_result = self
+        let query = self.ui.search_query.clone();
+        self.ui.search_result = self
             .active_terminal_mut()
             .map(|terminal| terminal.search(&query, direction))
             .unwrap_or_default();
@@ -848,11 +979,12 @@ impl ToyotermApplication {
                 SearchDirection::Next
             }),
             Key::Named(NamedKey::Backspace) => {
-                self.search_query.pop();
+                self.ui.search_query.pop();
                 self.refresh_search(SearchDirection::Next);
             }
             Key::Character(text) if !modifiers.control_key() && !modifiers.super_key() => {
-                self.search_query
+                self.ui
+                    .search_query
                     .push_str(event.text.as_deref().unwrap_or(text));
                 self.refresh_search(SearchDirection::Next);
             }
@@ -863,9 +995,9 @@ impl ToyotermApplication {
     pub(super) fn open_selector(&mut self, id: u64, title: String, items: Vec<String>) {
         self.close_search();
         self.exit_visual_mode();
-        self.leader_deadline = None;
-        self.ime_preedit = None;
-        self.selector = Some(SelectorOverlay::new(id, title, items));
+        self.ui.leader_deadline = None;
+        self.ui.ime_preedit = None;
+        self.ui.selector = Some(SelectorOverlay::new(id, title, items));
     }
 
     pub(super) fn handle_selector_key(
@@ -874,7 +1006,7 @@ impl ToyotermApplication {
         modifiers: ModifiersState,
     ) -> Result<(), String> {
         let mut completion = None;
-        let Some(selector) = self.selector.as_mut() else {
+        let Some(selector) = self.ui.selector.as_mut() else {
             return Ok(());
         };
         match &event.logical_key {
@@ -903,10 +1035,10 @@ impl ToyotermApplication {
     }
 
     pub(super) fn complete_selector(&mut self, selection: Option<String>) -> Result<(), String> {
-        let Some(selector) = self.selector.take() else {
+        let Some(selector) = self.ui.selector.take() else {
             return Ok(());
         };
-        self.ime_preedit = None;
+        self.ui.ime_preedit = None;
         self.submit_script(ScriptInvocation::SelectCallback {
             id: selector.id,
             selection,
@@ -985,15 +1117,16 @@ impl ToyotermApplication {
     }
 
     pub(super) fn dispatch_gui_command(&mut self, command: Command) -> Result<(), String> {
+        self.scripting.invalidate_context();
         let previous_pane = self.mux.current_pane();
-        dispatch_coordinator_command(&mut self.mux, &mut self.runtime_events, command)?;
+        dispatch_coordinator_command(&mut self.mux, &mut self.scripting.runtime_events, command)?;
         if self.mux.current_pane() != previous_pane {
             self.exit_visual_mode();
-            self.ime_preedit = None;
+            self.ui.ime_preedit = None;
         }
         self.reconcile_pane_runtimes()?;
         self.deliver_runtime_events()?;
-        if let Some(window) = self.window.clone() {
+        if let Some(window) = self.platform.window.clone() {
             self.sync_active_renderer(window.scale_factor());
             window.request_redraw();
         }
@@ -1014,32 +1147,10 @@ impl ToyotermApplication {
         let command = request
             .native_command(self.mux.current_pane())?
             .ok_or_else(|| "IPC request has no native command".to_owned())?;
-        match command {
-            NativeCommand::Mux(command) => {
-                self.dispatch_gui_command(command)?;
-                self.flush_mux_input()?;
-            }
-            NativeCommand::InvokeAction { .. } => {
-                return Err("native action commands are not exposed over IPC".to_owned());
-            }
-            NativeCommand::ReloadConfig => self.reload_config_with_notification()?,
-            NativeCommand::CreateWindowWithLaunch { .. }
-            | NativeCommand::NewTabWithLaunch { .. }
-            | NativeCommand::SplitWithLaunch { .. } => {
-                return Err("custom pane launch commands are not exposed over IPC".to_owned());
-            }
-            NativeCommand::SetPaneBadge { .. } => {
-                return Err("pane badge commands are not exposed over IPC".to_owned());
-            }
-            NativeCommand::SearchPane { .. } => {
-                return Err("pane search commands are not exposed over IPC".to_owned());
-            }
-            NativeCommand::OpenSelector { .. } => {
-                return Err("selector commands are not exposed over IPC".to_owned());
-            }
-            NativeCommand::ClipboardWrite(_) => {
-                return Err("clipboard commands are not exposed over IPC".to_owned());
-            }
+        let effects = self.apply_control_command(command, CommandOrigin::Ipc)?;
+        self.flush_mux_input()?;
+        if effects.reload_config {
+            self.reload_config_with_notification()?;
         }
         Ok("ok".to_owned())
     }
@@ -1050,18 +1161,18 @@ impl ToyotermApplication {
         panes.sort_unstable();
         let mut output = String::from("ID\tACTIVE\tPID\tCWD\tTITLE");
         for pane in panes {
-            let runtime = self.pane_runtimes.get(&pane);
+            let runtime = self.terminal_runtime.pane_runtimes.get(&pane);
             let pid = runtime
-                .and_then(|runtime| runtime.process_id)
+                .and_then(|runtime| runtime.process.process_id)
                 .map(|pid| pid.to_string())
                 .unwrap_or_else(|| "-".into());
             let cwd = runtime
-                .and_then(|runtime| runtime.cwd.as_ref())
+                .and_then(|runtime| runtime.metadata.cwd.as_ref())
                 .map(|path| path.display().to_string())
                 .unwrap_or_else(|| "-".into())
                 .replace(['\t', '\n'], " ");
             let title = runtime
-                .map(|runtime| runtime.title.replace(['\t', '\n'], " "))
+                .map(|runtime| runtime.metadata.title.replace(['\t', '\n'], " "))
                 .unwrap_or_else(|| format!("Pane {}", pane.0));
             output.push_str(&format!(
                 "\n{}\t{}\t{}\t{}\t{}",
@@ -1088,7 +1199,7 @@ impl ToyotermApplication {
             .mux
             .current_pane()
             .ok_or_else(|| "mux has no current pane".to_owned())?;
-        if let Some(neighbor) = self.pane_layout.neighbor(pane, direction) {
+        if let Some(neighbor) = self.ui.pane_layout.neighbor(pane, direction) {
             self.dispatch_gui_command(Command::ActivatePane(neighbor))?;
         }
         Ok(())
@@ -1100,8 +1211,8 @@ impl ToyotermApplication {
 
     pub(super) fn apply_script_snapshot(&mut self, snapshot: ScriptSnapshot) -> Result<(), String> {
         let config = snapshot.config.clone();
-        let previous_opacity = self.script_snapshot.config.window.opacity;
-        self.leader_deadline = None;
+        let previous_opacity = self.scripting.snapshot.config.window.opacity;
+        self.ui.leader_deadline = None;
         let mut render_style = RenderStyle::from_hex_with_ui(
             &config.font.family,
             config.font.fallback.clone(),
@@ -1138,12 +1249,12 @@ impl ToyotermApplication {
                 });
         render_style.background_image_opacity = config.window.background_image_opacity;
         let font_scale = f64::from(config.font.size) / 14.0;
-        self.cell_metrics.width = 9.0 * font_scale;
-        self.cell_metrics.height = f64::from(config.font.size * config.ui.line_height);
-        self.cell_metrics.horizontal_padding = config.ui.padding_x.round() as u32;
-        self.cell_metrics.vertical_padding = config.ui.padding_y.round() as u32;
-        self.cell_metrics.font_size = config.font.size;
-        for runtime in self.pane_runtimes.values_mut() {
+        self.ui.cell_metrics.width = 9.0 * font_scale;
+        self.ui.cell_metrics.height = f64::from(config.font.size * config.ui.line_height);
+        self.ui.cell_metrics.horizontal_padding = config.ui.padding_x.round() as u32;
+        self.ui.cell_metrics.vertical_padding = config.ui.padding_y.round() as u32;
+        self.ui.cell_metrics.font_size = config.font.size;
+        for runtime in self.terminal_runtime.pane_runtimes.values_mut() {
             runtime
                 .terminal
                 .set_scrollback_lines(config.scrollback_lines);
@@ -1158,18 +1269,19 @@ impl ToyotermApplication {
                 .terminal
                 .set_osc52_copy_enabled(config.behavior.allow_osc52_copy);
         }
-        self.render_style = render_style.clone();
-        self.script_snapshot = snapshot;
-        self.bar_items.clear();
-        self.bar_pending = None;
-        self.next_bar_at = self
-            .script_snapshot
+        self.ui.render_style = render_style.clone();
+        self.scripting.snapshot = Arc::new(snapshot);
+        self.ui.bar_items.clear();
+        self.ui.bar_pending = None;
+        self.ui.next_bar_at = self
+            .scripting
+            .snapshot
             .config
             .status_bars
             .iter()
             .map(|bar| (bar.position, Instant::now()))
             .collect();
-        if let Some(window) = self.window.clone() {
+        if let Some(window) = self.platform.window.clone() {
             #[cfg(not(target_os = "windows"))]
             window.set_transparent(config.window.opacity < 1.0);
             window.set_decorations(config.window.decorations);
@@ -1188,10 +1300,10 @@ impl ToyotermApplication {
             // Replacing it at that boundary can lose compositor transparency.
             if transparency_mode_changed && !cfg!(any(target_os = "macos", target_os = "windows")) {
                 self.replace_renderer(render_style.clone())?;
-            } else if let Some(renderer) = self.renderer.as_mut() {
+            } else if let Some(renderer) = self.platform.renderer.as_mut() {
                 renderer.set_style(render_style);
-                self.cell_metrics.width =
-                    f64::from(renderer.terminal_cell_width(self.cell_metrics.font_size));
+                self.ui.cell_metrics.width =
+                    f64::from(renderer.terminal_cell_width(self.ui.cell_metrics.font_size));
             }
             self.resize_panes(window.inner_size(), window.scale_factor())?;
             self.sync_active_renderer(window.scale_factor());
@@ -1208,12 +1320,12 @@ impl ToyotermApplication {
             .ok_or_else(|| "mux has no current pane".to_owned())?;
         let mut event = RubyEvent::new(kind);
         event.pane = Some(pane);
-        self.runtime_events.push_back(event);
+        self.scripting.runtime_events.push_back(event);
         self.deliver_runtime_events()
     }
 
     pub(super) fn collect_mux_events(&mut self) {
-        self.runtime_events.extend(
+        self.scripting.runtime_events.extend(
             self.mux
                 .drain_events()
                 .filter_map(ruby_event_from_mux_event),
@@ -1224,12 +1336,12 @@ impl ToyotermApplication {
         const MAX_EVENTS_PER_TURN: usize = 1_024;
         let mut delivered = 0;
         self.collect_mux_events();
-        while let Some(event) = self.runtime_events.pop_front() {
+        while let Some(event) = self.scripting.runtime_events.pop_front() {
             delivered += 1;
             if delivered > MAX_EVENTS_PER_TURN {
                 return Err("Ruby runtime event delivery exceeded 1024 events".to_owned());
             }
-            if !self.script_snapshot.event_names.contains(event.name()) {
+            if !self.scripting.snapshot.event_names.contains(event.name()) {
                 continue;
             }
             self.submit_script(ScriptInvocation::Event(event))?;

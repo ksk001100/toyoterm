@@ -100,6 +100,11 @@ CRubyの全標準ライブラリやgemは利用できません。組み込みラ
 キャンセルにも対応します。プレリリースAPIの`find_workspace` / `open_workspace`と
 `MuxWindow`についてはAPIリファレンスを参照してください。
 
+ローカルのRubyライブラリとプラグインは、`config.rb`から
+`require "name"`または`require_relative "path"`で明示的に読み込みます。
+設定ファイルと同じディレクトリ、およびその`lib/`を探索します。探索先は`$LOAD_PATH`からも
+参照でき、requireしたsourceはその場で評価されます。プラグインディレクトリは自動探索されません。
+
 ## 操作とドキュメント
 
 - [利用ガイド](docs/usage.md)：マウス操作、CLI、ログ、トラブルシューティング

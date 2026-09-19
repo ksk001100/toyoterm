@@ -198,23 +198,6 @@ pub fn default_config_path() -> Option<PathBuf> {
     }
 }
 
-pub fn default_plugin_dir() -> Option<PathBuf> {
-    #[cfg(windows)]
-    {
-        default_plugin_dir_windows(
-            std::env::var_os("APPDATA").as_deref(),
-            std::env::var_os("USERPROFILE").as_deref(),
-        )
-    }
-    #[cfg(not(windows))]
-    {
-        default_plugin_dir_unix(
-            std::env::var_os("XDG_CONFIG_HOME").as_deref(),
-            std::env::var_os("HOME").as_deref(),
-        )
-    }
-}
-
 pub fn candidate_config_paths() -> Vec<PathBuf> {
     #[cfg(windows)]
     {
@@ -274,31 +257,6 @@ pub(crate) fn default_config_path_windows(
     candidates.into_iter().next()
 }
 
-#[cfg(any(windows, test))]
-pub(crate) fn default_plugin_dir_windows(
-    appdata: Option<&std::ffi::OsStr>,
-    userprofile: Option<&std::ffi::OsStr>,
-) -> Option<PathBuf> {
-    let mut candidates = Vec::new();
-    if let Some(appdata) = appdata.filter(|s| !s.is_empty()) {
-        candidates.push(PathBuf::from(appdata).join("toyoterm").join("plugins"));
-    }
-    if let Some(userprofile) = userprofile.filter(|s| !s.is_empty()) {
-        candidates.push(
-            PathBuf::from(userprofile)
-                .join(".config")
-                .join("toyoterm")
-                .join("plugins"),
-        );
-    }
-    for path in &candidates {
-        if path.exists() {
-            return Some(path.clone());
-        }
-    }
-    candidates.into_iter().next()
-}
-
 #[cfg(any(not(windows), test))]
 pub(crate) fn candidate_config_paths_unix(
     xdg_config_home: Option<&std::ffi::OsStr>,
@@ -326,23 +284,6 @@ pub(crate) fn default_config_path_unix(
     candidate_config_paths_unix(xdg_config_home, home)
         .into_iter()
         .next()
-}
-
-#[cfg(any(not(windows), test))]
-pub(crate) fn default_plugin_dir_unix(
-    xdg_config_home: Option<&std::ffi::OsStr>,
-    home: Option<&std::ffi::OsStr>,
-) -> Option<PathBuf> {
-    if let Some(xdg) = xdg_config_home.filter(|s| !s.is_empty()) {
-        Some(PathBuf::from(xdg).join("toyoterm").join("plugins"))
-    } else {
-        home.filter(|s| !s.is_empty()).map(|home| {
-            PathBuf::from(home)
-                .join(".config")
-                .join("toyoterm")
-                .join("plugins")
-        })
-    }
 }
 
 fn home_directory_from_env(home: Option<OsString>) -> Option<PathBuf> {
@@ -402,10 +343,6 @@ mod tests {
             default_config_path_unix(Some(xdg), Some(home)),
             Some(PathBuf::from("/custom/xdg/toyoterm/config.rb"))
         );
-        assert_eq!(
-            default_plugin_dir_unix(Some(xdg), Some(home)),
-            Some(PathBuf::from("/custom/xdg/toyoterm/plugins"))
-        );
     }
 
     #[test]
@@ -419,10 +356,6 @@ mod tests {
         assert_eq!(
             default_config_path_unix(Some(empty_xdg), Some(home)),
             Some(PathBuf::from("/home/user/.config/toyoterm/config.rb"))
-        );
-        assert_eq!(
-            default_plugin_dir_unix(None, Some(home)),
-            Some(PathBuf::from("/home/user/.config/toyoterm/plugins"))
         );
     }
 
@@ -458,15 +391,6 @@ mod tests {
                     .join(".config")
                     .join("toyoterm")
                     .join("config.rb")
-            )
-        );
-        assert_eq!(
-            default_plugin_dir_windows(None, Some(userprofile)),
-            Some(
-                PathBuf::from(userprofile)
-                    .join(".config")
-                    .join("toyoterm")
-                    .join("plugins")
             )
         );
     }

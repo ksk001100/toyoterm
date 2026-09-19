@@ -1044,24 +1044,27 @@ potentially slow commands to prevent blocking the script thread.
 
 ## Plugins and themes
 
-At startup and reload, toyoterm loads `*.rb` directly inside the default plugins
-directory in lexicographic filename order. The main config is evaluated first,
-then automatic plugins load, followed by explicitly requested plugins in
-declaration order. `Toyoterm.plugin(path)` queues loading rather than immediately
-evaluating the file; plugin definitions are therefore not available while the
-main config is being evaluated. Theme selection is resolved during validation
-after plugins load.
-Linux/macOS/Unix use `$XDG_CONFIG_HOME/toyoterm/plugins/`, falling back to
-`~/.config/toyoterm/plugins/` when the variable is unset or empty. Windows checks
-`%APPDATA%\toyoterm\plugins` then `%USERPROFILE%\.config\toyoterm\plugins` and
-uses the first existing path (or the first available candidate if neither exists).
-This discovery is independent of the selected configuration file. Additional files can be requested with
-`Toyoterm.plugin(path)`. Relative paths resolve from the declaring file, `~/`
-expands to the home directory, and a canonical path is loaded only once.
-`Toyoterm.plugins` returns loaded definitions; `Toyoterm.themes` returns theme
-names.
+Use `require(feature) -> true | false` or
+`require_relative(feature) -> true | false` to load a trusted local Ruby source
+explicitly. `feature` must be a non-empty String;
+paths without an extension gain `.rb`. Relative features first resolve beside
+the declaring config/library and then below that directory's `lib/`. `~/`
+expands to the user home directory. `$LOAD_PATH` contains the config directory,
+its `lib/` directory, and the corresponding default user-library locations.
+Sources are evaluated immediately, so constants and methods are available to
+the following config statements. The first load returns `true`; a canonically
+duplicate path executes no code and returns `false`. Unreadable sources and
+Ruby exceptions reject the fresh config VM, preserving the active VM. A source
+may optionally call `Toyoterm::Plugin.define`; ordinary library files without
+plugin metadata are also accepted.
 
-Each plugin file must define exactly one plugin:
+`require` and `require_relative` are the only plugin-loading mechanisms.
+toyoterm does not scan a plugins directory, and `Toyoterm.plugin` is not part of
+the API. Theme selection is resolved during validation after all required
+sources load. `Toyoterm.plugins` returns loaded definitions;
+`Toyoterm.themes` returns theme names.
+
+A source that supplies plugin metadata must define exactly one plugin:
 
 ```ruby
 Toyoterm::Plugin.define "git-tools" do |plugin|
@@ -1080,8 +1083,8 @@ end
 The name must be non-empty and unique, and the String `version` is required.
 `api_requirement` is an optional String and constrains `Toyoterm.api_version` with comma-separated `=`,
 `<`, `<=`, `>`, or `>=` clauses. Invalid metadata, incompatible requirements,
-duplicate registrations, unreadable files, and Ruby exceptions disable only
-that plugin and roll back its registrations.
+duplicate registrations, unreadable files, and Ruby exceptions reject the fresh
+configuration VM and preserve the active VM.
 
 Plugins can register named color themes:
 
@@ -1098,17 +1101,15 @@ end
 
 A theme starts with the default colors and accepts every `config.colors` field.
 Select it with `config.theme = "moon"`; later explicit color assignments
-override it. Duplicate theme names disable the later plugin, while an unknown
-selected theme rejects the config.
+override it. Duplicate theme names and unknown selected themes reject the
+configuration.
 
 Plugins share the main configuration's VM and filesystem, process, environment,
 and clipboard authority. Loading a plugin is equivalent to allowing its source
-to execute as the toyoterm process. Each file is evaluated under a generated
-`Toyoterm::PluginNamespaces` module to prevent accidental top-level constant and
-class collisions; explicit mutation of global objects remains possible because
-plugins are trusted. Plugins may register commands, events, keys, and themes,
-but extending the configuration DSL is not a supported contract: the main
-configuration is evaluated before plugins are loaded.
+to execute as the toyoterm process. Required files are evaluated immediately in
+Ruby's top-level object context, so they must avoid accidental constant and class
+collisions. Plugins may register commands, events, keys, and themes; their
+definitions are available to configuration statements following the `require`.
 
 ## Live Ruby console
 

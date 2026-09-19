@@ -230,11 +230,43 @@ pub struct PaneLaunchSpec {
 #[derive(Clone, Debug, PartialEq)]
 pub enum NativeCommand {
     Mux(Command),
-    InvokeAction {
+    Action(ActionCommand),
+    Pane(PaneCommand),
+    Window(WindowCommand),
+    Ui(UiCommand),
+    Clipboard(ClipboardCommand),
+    Config(ConfigCommand),
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub enum ActionCommand {
+    Invoke {
         action: NativeAction,
         context: ActionContext,
     },
-    CreateWindowWithLaunch {
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub enum PaneCommand {
+    SplitWithLaunch {
+        pane: PaneId,
+        direction: SplitDirection,
+        launch: PaneLaunchSpec,
+    },
+    SetBadge {
+        pane: PaneId,
+        badge: Option<String>,
+    },
+    Search {
+        pane: PaneId,
+        query: String,
+        direction: PaneSearchDirection,
+    },
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub enum WindowCommand {
+    CreateWithLaunch {
         workspace: WorkspaceId,
         launch: PaneLaunchSpec,
     },
@@ -242,27 +274,25 @@ pub enum NativeCommand {
         window: WindowId,
         launch: PaneLaunchSpec,
     },
-    SplitWithLaunch {
-        pane: PaneId,
-        direction: SplitDirection,
-        launch: PaneLaunchSpec,
-    },
-    ClipboardWrite(String),
-    SetPaneBadge {
-        pane: PaneId,
-        badge: Option<String>,
-    },
-    SearchPane {
-        pane: PaneId,
-        query: String,
-        direction: PaneSearchDirection,
-    },
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub enum UiCommand {
     OpenSelector {
         id: u64,
         title: String,
         items: Vec<String>,
     },
-    ReloadConfig,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub enum ClipboardCommand {
+    Write(String),
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ConfigCommand {
+    Reload,
 }
 
 #[derive(Clone, Debug, PartialEq)]

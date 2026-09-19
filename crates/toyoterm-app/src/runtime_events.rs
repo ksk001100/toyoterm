@@ -57,8 +57,42 @@ fn enqueue_pending_script(
     PendingScriptEnqueue::Dropped
 }
 
+impl ScriptRuntimeState {
+    pub(super) fn invalidate_context(&mut self) {
+        self.context_dirty = true;
+    }
+
+    fn enqueue(&mut self, invocation: ScriptInvocation) -> (u64, PendingScriptEnqueue) {
+        let id = self.next_request_id;
+        self.next_request_id = self.next_request_id.wrapping_add(1).max(1);
+        let outcome = enqueue_pending_script(&mut self.pending, id, invocation);
+        if outcome == PendingScriptEnqueue::Dropped {
+            self.event_drops = self.event_drops.saturating_add(1);
+        }
+        (id, outcome)
+    }
+
+    fn take_next(&mut self) -> Option<(u64, ScriptInvocation)> {
+        (!self.in_flight)
+            .then(|| self.pending.pop_front())
+            .flatten()
+    }
+}
+
+fn reuse_immutable_snapshot<T: PartialEq>(cached: &mut Option<Arc<T>>, value: T) -> (Arc<T>, bool) {
+    if let Some(current) = cached.as_ref()
+        && current.as_ref() == &value
+    {
+        return (current.clone(), true);
+    }
+    let value = Arc::new(value);
+    *cached = Some(value.clone());
+    (value, false)
+}
+
 impl ToyotermApplication {
     pub(super) fn script_context(&mut self) -> Result<ScriptContext, String> {
+        let started = Instant::now();
         let clipboard = self
             .clipboard()
             .and_then(|clipboard| {
@@ -67,40 +101,79 @@ impl ToyotermApplication {
                     .map_err(|error| format!("read clipboard for Ruby: {error}"))
             })
             .ok();
+        let (model, handles, model_reused, handles_reused) = if !self.scripting.context_dirty {
+            if let (Some(model), Some(handles)) = (
+                self.scripting.cached_model.as_ref(),
+                self.scripting.cached_handles.as_ref(),
+            ) {
+                (model.clone(), handles.clone(), true, true)
+            } else {
+                return Err("script context cache is unexpectedly empty".to_owned());
+            }
+        } else {
+            let value = ruby_object_model(&self.mux, Some(&self.terminal_runtime.pane_runtimes))?;
+            let (model, model_reused) =
+                reuse_immutable_snapshot(&mut self.scripting.cached_model, value);
+            let native_handles = self.mux.native_handles();
+            let handles_reused = self
+                .scripting
+                .cached_handles
+                .as_ref()
+                .is_some_and(|cached| cached.as_ref() == native_handles.as_slice());
+            let handles = if handles_reused {
+                self.scripting
+                    .cached_handles
+                    .as_ref()
+                    .expect("checked cached handles")
+                    .clone()
+            } else {
+                let handles: Arc<[NativeHandle]> = native_handles.into();
+                self.scripting.cached_handles = Some(handles.clone());
+                handles
+            };
+            self.scripting.context_dirty = false;
+            (model, handles, model_reused, handles_reused)
+        };
+        tracing::trace!(
+            target: "toyoterm::script",
+            snapshot_build_us = started.elapsed().as_micros(),
+            model_reused,
+            handles_reused,
+            pane_count = model.panes.len(),
+            "built immutable script context"
+        );
         Ok(ScriptContext {
-            model: ruby_object_model(&self.mux, Some(&self.pane_runtimes))?,
-            handles: self.mux.native_handles(),
-            clipboard,
+            model,
+            handles,
+            clipboard: clipboard.map(Arc::from),
         })
     }
 
     pub(super) fn submit_script(&mut self, invocation: ScriptInvocation) -> Result<u64, String> {
-        let id = self.next_script_request;
-        self.next_script_request = self.next_script_request.wrapping_add(1).max(1);
         let event_name = match &invocation {
             ScriptInvocation::Event(event) => Some(event.name()),
             _ => None,
         };
-        match enqueue_pending_script(&mut self.pending_script, id, invocation) {
+        let (id, outcome) = self.scripting.enqueue(invocation);
+        match outcome {
             PendingScriptEnqueue::Queued => {}
             PendingScriptEnqueue::Coalesced => {
                 tracing::trace!(
                     target: "toyoterm::script",
                     event_name,
-                    pending_script = self.pending_script.len(),
-                    runtime_events = self.runtime_events.len(),
+                    pending_script = self.scripting.pending.len(),
+                    runtime_events = self.scripting.runtime_events.len(),
                     "coalesced stale queued Ruby event"
                 );
             }
             PendingScriptEnqueue::Dropped => {
-                self.script_event_drops = self.script_event_drops.saturating_add(1);
-                if self.script_event_drops.is_power_of_two() {
+                if self.scripting.event_drops.is_power_of_two() {
                     tracing::warn!(
                         target: "toyoterm::script",
                         event_name,
-                        dropped_events = self.script_event_drops,
-                        pending_script = self.pending_script.len(),
-                        runtime_events = self.runtime_events.len(),
+                        dropped_events = self.scripting.event_drops,
+                        pending_script = self.scripting.pending.len(),
+                        runtime_events = self.scripting.runtime_events.len(),
                         max_pending_events = MAX_PENDING_SCRIPT_EVENTS,
                         "dropping Ruby event because the script queue is saturated"
                     );
@@ -109,9 +182,9 @@ impl ToyotermApplication {
         }
         tracing::trace!(
             target: "toyoterm::script",
-            pending_script = self.pending_script.len(),
-            runtime_events = self.runtime_events.len(),
-            script_in_flight = self.script_in_flight,
+            pending_script = self.scripting.pending.len(),
+            runtime_events = self.scripting.runtime_events.len(),
+            script_in_flight = self.scripting.in_flight,
             "script queue state"
         );
         self.start_next_script()?;
@@ -119,10 +192,7 @@ impl ToyotermApplication {
     }
 
     pub(super) fn start_next_script(&mut self) -> Result<(), String> {
-        if self.script_in_flight {
-            return Ok(());
-        }
-        let Some((id, invocation)) = self.pending_script.pop_front() else {
+        let Some((id, invocation)) = self.scripting.take_next() else {
             return Ok(());
         };
         let request = ScriptRequest {
@@ -130,10 +200,11 @@ impl ToyotermApplication {
             context: self.script_context()?,
             invocation,
         };
-        self.script_thread
+        self.scripting
+            .thread
             .submit(request)
             .map_err(|error| error.to_string())?;
-        self.script_in_flight = true;
+        self.scripting.in_flight = true;
         Ok(())
     }
 
@@ -141,7 +212,7 @@ impl ToyotermApplication {
         &mut self,
         completion: ScriptCompletion,
     ) -> Result<(), String> {
-        let waiter = self.eval_waiters.remove(&completion.id);
+        let waiter = self.scripting.eval_waiters.remove(&completion.id);
         let is_reload = matches!(completion.invocation, ScriptInvocation::Reload);
         let bar_position = match &completion.invocation {
             ScriptInvocation::Bar { position } => Some(*position),
@@ -159,14 +230,15 @@ impl ToyotermApplication {
                     "script request failed"
                 );
                 if is_reload {
-                    self.config_error_notice = Some(ConfigErrorNotice {
+                    self.ui.config_error_notice = Some(ConfigErrorNotice {
                         message: message.clone(),
                         log_expanded: false,
                     });
                 }
                 if let Some(position) = bar_position {
-                    self.bar_pending = None;
-                    self.next_bar_at
+                    self.ui.bar_pending = None;
+                    self.ui
+                        .next_bar_at
                         .insert(position, Instant::now() + Duration::from_secs(1));
                 }
                 self.finish_eval(waiter, Err(message));
@@ -175,13 +247,16 @@ impl ToyotermApplication {
         };
 
         if let Some(position) = bar_position {
-            self.bar_pending = None;
-            self.bar_items
+            self.ui.bar_pending = None;
+            self.ui
+                .bar_items
                 .insert(position, result.bar.take().unwrap_or_default());
             if let Some(interval) = result.bar_next_refresh {
-                self.next_bar_at.insert(position, Instant::now() + interval);
+                self.ui
+                    .next_bar_at
+                    .insert(position, Instant::now() + interval);
             } else {
-                self.next_bar_at.remove(&position);
+                self.ui.next_bar_at.remove(&position);
             }
         }
         for log in std::mem::take(&mut result.logs) {
@@ -198,79 +273,18 @@ impl ToyotermApplication {
         let apply_result: Result<(), String> = (|| {
             if is_reload {
                 // Reload replaces the mruby VM, so its callback-owned badge state is gone too.
-                self.pane_badges.clear();
-                self.selector = None;
+                self.ui.pane_badges.clear();
+                self.ui.selector = None;
             }
             if let Some(snapshot) = result.snapshot {
-                self.config_error_notice = None;
+                self.ui.config_error_notice = None;
                 self.apply_script_snapshot(snapshot)?;
             }
             let mut reload_requested = false;
             for command in result.commands {
-                match command {
-                    NativeCommand::Mux(command) => {
-                        command_dispatch::dispatch_coordinator_command(
-                            &mut self.mux,
-                            &mut self.runtime_events,
-                            command,
-                        )?;
-                    }
-                    NativeCommand::InvokeAction {
-                        action: NativeAction::ReloadConfig,
-                        ..
-                    } => {
-                        reload_requested = true;
-                    }
-                    NativeCommand::InvokeAction { action, context } => {
-                        self.execute_context_action(action, context)?
-                    }
-                    NativeCommand::CreateWindowWithLaunch { workspace, launch } => {
-                        let pane = command_dispatch::dispatch_pane_creation(
-                            &mut self.mux,
-                            &mut self.runtime_events,
-                            command_dispatch::PaneCreation::NewWindow(workspace),
-                        )?;
-                        self.pending_pane_launches.insert(pane, launch);
-                    }
-                    NativeCommand::NewTabWithLaunch { window, launch } => {
-                        let pane = command_dispatch::dispatch_pane_creation(
-                            &mut self.mux,
-                            &mut self.runtime_events,
-                            command_dispatch::PaneCreation::NewTab(window),
-                        )?;
-                        self.pending_pane_launches.insert(pane, launch);
-                    }
-                    NativeCommand::SplitWithLaunch {
-                        pane,
-                        direction,
-                        launch,
-                    } => {
-                        let created = command_dispatch::dispatch_pane_creation(
-                            &mut self.mux,
-                            &mut self.runtime_events,
-                            command_dispatch::PaneCreation::Split { pane, direction },
-                        )?;
-                        self.pending_pane_launches.insert(created, launch);
-                    }
-                    NativeCommand::ClipboardWrite(text) => self.pending_clipboard_writes.push(text),
-                    NativeCommand::SetPaneBadge { pane, badge } => match badge {
-                        Some(badge) => {
-                            self.pane_badges.insert(pane, badge);
-                        }
-                        None => {
-                            self.pane_badges.remove(&pane);
-                        }
-                    },
-                    NativeCommand::SearchPane {
-                        pane,
-                        query,
-                        direction,
-                    } => self.search_pane(pane, query, direction)?,
-                    NativeCommand::OpenSelector { id, title, items } => {
-                        self.open_selector(id, title, items)
-                    }
-                    NativeCommand::ReloadConfig => reload_requested = true,
-                }
+                reload_requested |= self
+                    .apply_control_command(command, command_dispatch::CommandOrigin::Script)?
+                    .reload_config;
             }
             self.flush_script_clipboard_writes()?;
             self.reconcile_pane_runtimes()?;
@@ -301,15 +315,16 @@ impl ToyotermApplication {
                         .map_err(|error| format!("report async worker launch failure: {error}"))?;
                 }
             }
-            self.cancelled_async_tasks
+            self.scripting
+                .cancelled_async_tasks
                 .extend(result.async_cancellations);
             if matches!(
                 completion.invocation,
                 ScriptInvocation::AsyncCallback { .. }
             ) {
                 let now = Instant::now();
-                for bar in &self.script_snapshot.config.status_bars {
-                    self.next_bar_at.insert(bar.position, now);
+                for bar in &self.scripting.snapshot.config.status_bars {
+                    self.ui.next_bar_at.insert(bar.position, now);
                 }
             }
             if reload_requested && !is_reload {
@@ -339,10 +354,10 @@ impl ToyotermApplication {
     }
 
     pub(super) fn flush_script_clipboard_writes(&mut self) -> Result<(), String> {
-        if self.pending_clipboard_writes.is_empty() {
+        if self.ui.pending_clipboard_writes.is_empty() {
             return Ok(());
         }
-        let writes = std::mem::take(&mut self.pending_clipboard_writes);
+        let writes = std::mem::take(&mut self.ui.pending_clipboard_writes);
         for text in writes {
             self.clipboard()?
                 .set_text(text)
@@ -412,6 +427,20 @@ fn execute_async_spawn(program: &str, args: &[String], cwd: Option<&str>) -> Asy
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn immutable_snapshot_cache_reuses_equal_values() {
+        let mut cache = None;
+        let (first, reused) = reuse_immutable_snapshot(&mut cache, vec![1, 2, 3]);
+        assert!(!reused);
+        let (second, reused) = reuse_immutable_snapshot(&mut cache, vec![1, 2, 3]);
+        assert!(reused);
+        assert!(Arc::ptr_eq(&first, &second));
+
+        let (third, reused) = reuse_immutable_snapshot(&mut cache, vec![1, 2, 4]);
+        assert!(!reused);
+        assert!(!Arc::ptr_eq(&second, &third));
+    }
 
     fn event(kind: ScriptEventKind, pane: u64, title: &str) -> ScriptInvocation {
         let mut event = RubyEvent::new(kind);

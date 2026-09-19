@@ -75,29 +75,33 @@ pub(super) fn ruby_object_model(
                     panes.push(RubyPane {
                         id: pane_id,
                         title: runtime
-                            .map(|runtime| runtime.title.clone())
+                            .map(|runtime| runtime.metadata.title.clone())
                             .unwrap_or_else(|| format!("Pane {}", pane_id.0)),
-                        icon_title: runtime.and_then(|runtime| runtime.icon_title.clone()),
+                        icon_title: runtime.and_then(|runtime| runtime.metadata.icon_title.clone()),
                         cwd: runtime
-                            .and_then(|runtime| runtime.cwd.as_ref())
+                            .and_then(|runtime| runtime.metadata.cwd.as_ref())
                             .map(|cwd| cwd.display().to_string()),
-                        remote_host: runtime.and_then(|runtime| runtime.remote_host.clone()),
+                        remote_host: runtime
+                            .and_then(|runtime| runtime.metadata.remote_host.clone()),
                         shell_integration_version: runtime
-                            .and_then(|runtime| runtime.shell_integration_version),
+                            .and_then(|runtime| runtime.protocol.shell_integration_version),
                         shell_integration_shell: runtime
-                            .and_then(|runtime| runtime.shell_integration_shell.clone()),
+                            .and_then(|runtime| runtime.protocol.shell_integration_shell.clone()),
                         user_vars: runtime
                             .map(|runtime| {
                                 runtime
+                                    .protocol
                                     .user_vars
                                     .iter()
                                     .map(|(name, value)| (name.clone(), value.clone()))
                                     .collect()
                             })
                             .unwrap_or_default(),
-                        pid: runtime.and_then(|runtime| runtime.process_id),
-                        command_running: runtime.is_some_and(|runtime| runtime.command_running),
-                        last_exit_status: runtime.and_then(|runtime| runtime.last_exit_status),
+                        pid: runtime.and_then(|runtime| runtime.process.process_id),
+                        command_running: runtime
+                            .is_some_and(|runtime| runtime.protocol.command_running),
+                        last_exit_status: runtime
+                            .and_then(|runtime| runtime.protocol.last_exit_status),
                         screen_text: runtime
                             .map(|runtime| runtime.terminal.visible_text())
                             .unwrap_or_default(),
@@ -155,15 +159,12 @@ pub(super) fn dispatch_script_commands(
             NativeCommand::Mux(command) => {
                 mux.dispatch(command).map_err(|error| error.to_string())?;
             }
-            NativeCommand::InvokeAction { .. } => {}
-            NativeCommand::ClipboardWrite(text) => effects.clipboard_writes.push(text),
-            NativeCommand::CreateWindowWithLaunch { .. }
-            | NativeCommand::NewTabWithLaunch { .. }
-            | NativeCommand::SplitWithLaunch { .. } => {}
-            NativeCommand::SetPaneBadge { .. } => {}
-            NativeCommand::SearchPane { .. } => {}
-            NativeCommand::OpenSelector { .. } => {}
-            NativeCommand::ReloadConfig => effects.reload_requested = true,
+            NativeCommand::Action(_) => {}
+            NativeCommand::Clipboard(ClipboardCommand::Write(text)) => {
+                effects.clipboard_writes.push(text)
+            }
+            NativeCommand::Window(_) | NativeCommand::Pane(_) | NativeCommand::Ui(_) => {}
+            NativeCommand::Config(ConfigCommand::Reload) => effects.reload_requested = true,
         }
     }
     Ok(effects)

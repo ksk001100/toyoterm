@@ -273,29 +273,24 @@ fn reports_bounded_iterm_session_variables() {
     user_vars.insert("gitBranch".into(), "main".into());
     let mut runtime = PaneRuntime {
         terminal: AlacrittyTerminalBackend::new(80, 24),
-        pty_session: None,
-        process_id: None,
-        title: "build server".into(),
-        icon_title: Some("build".into()),
-        osc_badge: None,
-        cursor_line_highlight: false,
-        cwd: Some(PathBuf::from("/srv/project")),
-        remote_host: Some("alice@example.com".into()),
-        shell_integration_version: Some(1),
-        shell_integration_shell: Some("bash".into()),
-        user_vars,
-        command_running: false,
-        last_exit_status: None,
-        progress: None,
-        tab_color: TabColorState::default(),
-        session_status: SessionStatusState::default(),
-        mouse_cursor: CursorIcon::Default,
-        last_notification_at: None,
-        active_notifications: BTreeMap::new(),
-        last_open_url_at: None,
-        visual_bell_deadline: None,
-        cursor_fireworks_deadline: None,
-        exited: false,
+        process: ProcessRuntime {
+            pty_session: None,
+            process_id: None,
+            exited: false,
+        },
+        metadata: PaneMetadata {
+            title: "build server".into(),
+            icon_title: Some("build".into()),
+            osc_badge: None,
+            cwd: Some(PathBuf::from("/srv/project")),
+            remote_host: Some("alice@example.com".into()),
+        },
+        protocol: PaneProtocolState {
+            shell_integration_version: Some(1),
+            shell_integration_shell: Some("bash".into()),
+            user_vars,
+            ..PaneProtocolState::default()
+        },
     };
 
     assert_eq!(
@@ -351,9 +346,12 @@ fn reports_bounded_iterm_session_variables() {
         Some("unknown=")
     );
     apply_iterm_badge_format(&mut runtime, r"\(session.name):\(user.gitBranch)");
-    assert_eq!(runtime.osc_badge.as_deref(), Some("build server:main"));
+    assert_eq!(
+        runtime.metadata.osc_badge.as_deref(),
+        Some("build server:main")
+    );
     apply_iterm_badge_format(&mut runtime, "");
-    assert_eq!(runtime.osc_badge, None);
+    assert_eq!(runtime.metadata.osc_badge, None);
 }
 
 #[cfg(unix)]
@@ -464,29 +462,19 @@ fn pane_runtime_kills_its_child_when_dropped_during_shutdown() {
     {
         let _runtime = PaneRuntime {
             terminal: AlacrittyTerminalBackend::new(80, 24),
-            pty_session: Some(Box::new(KillTrackingSession(kills.clone()))),
-            process_id: Some(42),
-            title: "test".into(),
-            icon_title: None,
-            osc_badge: None,
-            cursor_line_highlight: false,
-            cwd: None,
-            remote_host: None,
-            shell_integration_version: None,
-            shell_integration_shell: None,
-            user_vars: BTreeMap::new(),
-            command_running: false,
-            last_exit_status: None,
-            progress: None,
-            tab_color: TabColorState::default(),
-            session_status: SessionStatusState::default(),
-            mouse_cursor: CursorIcon::Default,
-            last_notification_at: None,
-            active_notifications: BTreeMap::new(),
-            last_open_url_at: None,
-            visual_bell_deadline: None,
-            cursor_fireworks_deadline: None,
-            exited: false,
+            process: ProcessRuntime {
+                pty_session: Some(Box::new(KillTrackingSession(kills.clone()))),
+                process_id: Some(42),
+                exited: false,
+            },
+            metadata: PaneMetadata {
+                title: "test".into(),
+                icon_title: None,
+                osc_badge: None,
+                cwd: None,
+                remote_host: None,
+            },
+            protocol: PaneProtocolState::default(),
         };
     }
 

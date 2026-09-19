@@ -105,6 +105,12 @@ a read-only configuration snapshot. Async tasks release completed results from
 the VM registry and support callback/result cancellation. See the API reference
 for the pre-release `find_workspace` / `open_workspace` and `MuxWindow` names.
 
+Load local Ruby libraries and plugins explicitly from `config.rb` with
+`require "name"` or `require_relative "path"`. toyoterm searches beside the
+config and in its `lib/` directory. These locations are exposed through
+`$LOAD_PATH`, and required sources are evaluated immediately. Plugin directories
+are not scanned automatically.
+
 ## Usage and documentation
 
 - [Usage guide](docs/usage.md): mouse controls, CLI, logs, and troubleshooting

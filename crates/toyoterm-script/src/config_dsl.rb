@@ -1,7 +1,5 @@
 
 module Toyoterm
-  module PluginNamespaces
-  end
   VERSION = "__TOYOTERM_VERSION__".freeze
   API_VERSION = "__TOYOTERM_API_VERSION__".freeze
   CAPABILITIES = [
@@ -1437,12 +1435,13 @@ module Toyoterm
 
   class Plugin
     class Definition
-      attr_reader :name, :version, :api_requirement
+      attr_reader :name, :version, :api_requirement, :path
 
       def initialize(name)
         @name = Toyoterm.__identifier(name, "plugin name")
         @version = nil
         @api_requirement = nil
+        @path = Toyoterm.__current_plugin_path
       end
 
       def version=(value)
@@ -1516,8 +1515,9 @@ module Toyoterm
   @pane_badges = {}
   @plugins = []
   @themes = {}
-  @plugin_requests = []
   @current_plugin_path = nil
+  @load_paths = []
+  @loaded_features = []
   @async_task_id = 0
   @async_callbacks = {}
   @async_tasks = {}
@@ -1526,7 +1526,6 @@ module Toyoterm
   @current_async_request = nil
   @registration_id = 0
   @logs = []
-  @plugin_namespace_id = 0
   @select_id = 0
   @select_callbacks = {}
 
@@ -1735,10 +1734,44 @@ module Toyoterm
     nil
   end
 
-  def self.plugin(path)
-    path = __string(path, "plugin path")
-    @plugin_requests << [path, @current_plugin_path]
+  def self.__set_load_paths(paths)
+    @load_paths = paths.map { |path| __string(path, "load path") }.freeze
+    $LOAD_PATH = @load_paths.dup
     nil
+  end
+
+  def self.__require(feature, relative)
+    feature = __string(feature, "require feature")
+    feature = "#{feature}.rb" if File.extname(feature).empty?
+    candidates = if feature.start_with?("~/")
+      home = ENV["HOME"] || ENV["USERPROFILE"]
+      home ? [File.join(home, feature[2..-1])] : []
+    elsif feature.start_with?("/", "\\") ||
+          (feature.length > 2 && feature[1] == ":" && ["/", "\\"].include?(feature[2]))
+      [feature]
+    elsif relative
+      base = @current_plugin_path ? File.dirname(@current_plugin_path) : @load_paths[0]
+      base ? [File.join(base, feature)] : []
+    else
+      @load_paths.map { |path| File.join(path, feature) }
+    end
+    path = candidates.find { |candidate| File.file?(candidate) }
+    raise LoadError, "cannot load such file -- #{feature}" unless path
+    path = File.expand_path(path)
+    return false if @loaded_features.include?(path)
+
+    @loaded_features << path
+    previous_path = @current_plugin_path
+    @current_plugin_path = path
+    begin
+      Object.module_eval(File.read(path), path, 1)
+    rescue Exception => error
+      @loaded_features.delete(path)
+      raise error
+    ensure
+      @current_plugin_path = previous_path
+    end
+    true
   end
 
   def self.plugins
@@ -1771,16 +1804,8 @@ module Toyoterm
     !@current_plugin_path.nil?
   end
 
-  def self.__next_plugin_namespace_id
-    @plugin_namespace_id += 1
-  end
-
-  def self.__begin_plugin(path)
-    @current_plugin_path = path
-  end
-
-  def self.__end_plugin
-    @current_plugin_path = nil
+  def self.__current_plugin_path
+    @current_plugin_path
   end
 
   def self.__register_plugin(plugin)
@@ -1798,7 +1823,6 @@ module Toyoterm
       @user_commands.dup,
       event_handlers,
       @config.__plugin_checkpoint,
-      @plugin_requests.length,
       @themes.dup
     ]
   end
@@ -1808,24 +1832,7 @@ module Toyoterm
     @user_commands = checkpoint[1]
     @event_handlers = checkpoint[2]
     @config.__rollback_plugin(checkpoint[3])
-    @plugin_requests.pop while @plugin_requests.length > checkpoint[4]
-    @themes = checkpoint[5]
-  end
-
-  def self.__plugin_request_count
-    @plugin_requests.length
-  end
-
-  def self.__plugin_request_path(index)
-    @plugin_requests[index][0]
-  end
-
-  def self.__plugin_request_parent(index)
-    @plugin_requests[index][1] || ""
-  end
-
-  def self.__discard_plugin_requests(count)
-    @plugin_requests.shift(count)
+    @themes = checkpoint[4]
   end
 
   def self.__plugin_count
@@ -1842,6 +1849,10 @@ module Toyoterm
 
   def self.__plugin_requires(index)
     @plugins[index].api_requirement
+  end
+
+  def self.__plugin_path(index)
+    @plugins[index].path
   end
 
   def self.__replace_env(entries)
@@ -2386,5 +2397,18 @@ module Toyoterm
 
   def self.__current_async_cwd
     @current_async_request[3]
+  end
+end
+
+# mruby does not bundle filesystem-backed require. toyoterm resolves and
+# evaluates trusted local Ruby sources immediately on the owning script thread.
+# Duplicate expanded paths are ignored by the loader.
+module Kernel
+  def require(feature)
+    Toyoterm.__require(feature, false)
+  end
+
+  def require_relative(feature)
+    Toyoterm.__require(feature, true)
   end
 end

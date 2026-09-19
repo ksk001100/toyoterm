@@ -59,10 +59,11 @@ pub(super) fn pty_command_for_launch(
 impl ToyotermApplication {
     pub(super) fn update_mouse_cursor(&self, window: &Window) {
         let cursor = self
+            .ui
             .pane_layout
-            .pane_at(self.mouse_position.x, self.mouse_position.y)
-            .and_then(|pane| self.pane_runtimes.get(&pane))
-            .map(|runtime| runtime.mouse_cursor)
+            .pane_at(self.ui.mouse_position.x, self.ui.mouse_position.y)
+            .and_then(|pane| self.terminal_runtime.pane_runtimes.get(&pane))
+            .map(|runtime| runtime.protocol.mouse_cursor)
             .unwrap_or_default();
         window.set_cursor(cursor);
     }
@@ -73,8 +74,10 @@ impl ToyotermApplication {
         size: PtySize,
         launch: Option<&PaneLaunchSpec>,
     ) -> Result<PaneRuntime, String> {
-        let command =
-            pty_command_for_launch(self.script_snapshot.config.default_shell.as_deref(), launch);
+        let command = pty_command_for_launch(
+            self.scripting.snapshot.config.default_shell.as_deref(),
+            launch,
+        );
         let mut session = NativePty.spawn(command, size).map_err(|error| {
             tracing::error!(
                 target: "toyoterm::pty",
@@ -102,57 +105,53 @@ impl ToyotermApplication {
         let mut terminal = AlacrittyTerminalBackend::with_scrollback(
             size.columns,
             size.rows,
-            self.script_snapshot.config.scrollback_lines,
+            self.scripting.snapshot.config.scrollback_lines,
         );
         terminal.set_default_colors(
-            self.render_style.foreground,
-            self.render_style.background,
-            self.render_style.cursor,
-            self.render_style.selection,
-            self.render_style.ansi,
+            self.ui.render_style.foreground,
+            self.ui.render_style.background,
+            self.ui.render_style.cursor,
+            self.ui.render_style.selection,
+            self.ui.render_style.ansi,
         );
-        terminal.set_osc52_copy_enabled(self.script_snapshot.config.behavior.allow_osc52_copy);
+        terminal.set_osc52_copy_enabled(self.scripting.snapshot.config.behavior.allow_osc52_copy);
         terminal.set_cell_size(
             size.pixel_width / size.columns.max(1),
             size.pixel_height / size.rows.max(1),
         );
         terminal.set_cell_scale_factor(
-            self.window
+            self.platform
+                .window
                 .as_ref()
                 .map_or(1.0, |window| window.scale_factor()),
         );
         Ok(PaneRuntime {
             terminal,
-            pty_session: Some(session),
-            process_id,
-            title: format!("Pane {}", pane.0),
-            icon_title: None,
-            osc_badge: None,
-            cursor_line_highlight: false,
-            cwd: launch
-                .and_then(|spec| spec.cwd.as_deref().map(PathBuf::from))
-                .or_else(|| std::env::current_dir().ok()),
-            remote_host: None,
-            shell_integration_version: None,
-            shell_integration_shell: None,
-            user_vars: BTreeMap::new(),
-            command_running: false,
-            last_exit_status: None,
-            progress: None,
-            tab_color: TabColorState::default(),
-            session_status: SessionStatusState::default(),
-            mouse_cursor: CursorIcon::Default,
-            last_notification_at: None,
-            active_notifications: BTreeMap::new(),
-            last_open_url_at: None,
-            visual_bell_deadline: None,
-            cursor_fireworks_deadline: None,
-            exited: false,
+            process: ProcessRuntime {
+                pty_session: Some(session),
+                process_id,
+                exited: false,
+            },
+            metadata: PaneMetadata {
+                title: format!("Pane {}", pane.0),
+                icon_title: None,
+                osc_badge: None,
+                cwd: launch
+                    .and_then(|spec| spec.cwd.as_deref().map(PathBuf::from))
+                    .or_else(|| std::env::current_dir().ok()),
+                remote_host: None,
+            },
+            protocol: PaneProtocolState::default(),
         })
     }
 
     pub(super) fn flush_mux_input(&mut self) -> Result<(), String> {
-        let panes = self.pane_runtimes.keys().copied().collect::<Vec<_>>();
+        let panes = self
+            .terminal_runtime
+            .pane_runtimes
+            .keys()
+            .copied()
+            .collect::<Vec<_>>();
         for pane in panes {
             let bytes = self
                 .mux
@@ -170,18 +169,19 @@ impl ToyotermApplication {
         window_size: PhysicalSize<u32>,
         scale_factor: f64,
     ) -> Result<(), String> {
-        self.tab_layout = self.calculate_tab_layout(window_size, scale_factor);
-        self.workspace_layout = self.calculate_workspace_layout(window_size, scale_factor);
-        self.config_error_layout = self.calculate_config_error_layout(window_size, scale_factor);
-        self.pane_layout = self.calculate_pane_layout(window_size, scale_factor);
+        self.ui.tab_layout = self.calculate_tab_layout(window_size, scale_factor);
+        self.ui.workspace_layout = self.calculate_workspace_layout(window_size, scale_factor);
+        self.ui.config_error_layout = self.calculate_config_error_layout(window_size, scale_factor);
+        self.ui.pane_layout = self.calculate_pane_layout(window_size, scale_factor);
         let sizes = self
+            .ui
             .pane_layout
             .panes()
             .iter()
             .map(|placement| {
                 (
                     placement.pane,
-                    self.cell_metrics.terminal_size_at_scale(
+                    self.ui.cell_metrics.terminal_size_at_scale(
                         PhysicalSize::new(placement.rect.width, placement.rect.height),
                         scale_factor,
                     ),
@@ -189,14 +189,14 @@ impl ToyotermApplication {
             })
             .collect::<Vec<_>>();
         for (pane, size) in sizes {
-            if let Some(runtime) = self.pane_runtimes.get_mut(&pane) {
+            if let Some(runtime) = self.terminal_runtime.pane_runtimes.get_mut(&pane) {
                 runtime.terminal.resize(size.columns, size.rows);
                 runtime.terminal.set_cell_size(
                     size.pixel_width / size.columns.max(1),
                     size.pixel_height / size.rows.max(1),
                 );
                 runtime.terminal.set_cell_scale_factor(scale_factor);
-                if let Some(session) = runtime.pty_session.as_mut() {
+                if let Some(session) = runtime.process.pty_session.as_mut() {
                     session.resize(size).map_err(|error| {
                         tracing::error!(
                             target: "toyoterm::pty",
@@ -233,6 +233,7 @@ impl ToyotermApplication {
 
     fn write_pane_input(&mut self, pane: PaneId, bytes: &[u8]) -> Result<(), String> {
         let runtime = self
+            .terminal_runtime
             .pane_runtimes
             .get_mut(&pane)
             .ok_or_else(|| format!("pane {pane} has no runtime"))?;
@@ -242,10 +243,11 @@ impl ToyotermApplication {
 
     pub(super) fn write_pane_pty(&mut self, pane: PaneId, bytes: &[u8]) -> Result<(), String> {
         let runtime = self
+            .terminal_runtime
             .pane_runtimes
             .get_mut(&pane)
             .ok_or_else(|| format!("pane {pane} has no runtime"))?;
-        if let Some(session) = runtime.pty_session.as_mut() {
+        if let Some(session) = runtime.process.pty_session.as_mut() {
             session.write(bytes).map_err(|error| {
                 tracing::error!(
                     target: "toyoterm::pty",
@@ -263,15 +265,20 @@ impl ToyotermApplication {
 
     pub(super) fn reconcile_pane_runtimes(&mut self) -> Result<(), String> {
         let live_panes = self.mux.pane_ids().collect::<HashSet<_>>();
-        self.pane_badges.retain(|pane, _| live_panes.contains(pane));
-        self.pending_pane_launches
+        self.ui
+            .pane_badges
+            .retain(|pane, _| live_panes.contains(pane));
+        self.terminal_runtime
+            .pending_pane_launches
             .retain(|pane, _| live_panes.contains(pane));
         self.refresh_pane_layout();
         let size = self
+            .platform
             .window
             .as_ref()
             .map(|window| {
-                self.cell_metrics
+                self.ui
+                    .cell_metrics
                     .terminal_size_at_scale(window.inner_size(), window.scale_factor())
             })
             .unwrap_or_default();
@@ -279,15 +286,16 @@ impl ToyotermApplication {
     }
 
     pub(super) fn refresh_pane_layout(&mut self) {
-        let Some(window) = self.window.as_ref() else {
+        let Some(window) = self.platform.window.as_ref() else {
             return;
         };
-        self.tab_layout = self.calculate_tab_layout(window.inner_size(), window.scale_factor());
-        self.workspace_layout =
+        self.ui.tab_layout = self.calculate_tab_layout(window.inner_size(), window.scale_factor());
+        self.ui.workspace_layout =
             self.calculate_workspace_layout(window.inner_size(), window.scale_factor());
-        self.config_error_layout =
+        self.ui.config_error_layout =
             self.calculate_config_error_layout(window.inner_size(), window.scale_factor());
-        self.pane_layout = self.calculate_pane_layout(window.inner_size(), window.scale_factor());
+        self.ui.pane_layout =
+            self.calculate_pane_layout(window.inner_size(), window.scale_factor());
     }
 
     pub(super) fn calculate_workspace_layout(
@@ -301,9 +309,12 @@ impl ToyotermApplication {
                 0,
                 0,
                 window_size.width,
-                workspace_bar_height(&self.script_snapshot.config, scale_factor),
+                workspace_bar_height(&self.scripting.snapshot.config, scale_factor),
             ),
-            scaled_ui_size(self.script_snapshot.config.ui.workspace_width, scale_factor),
+            scaled_ui_size(
+                self.scripting.snapshot.config.ui.workspace_width,
+                scale_factor,
+            ),
         )
     }
 
@@ -312,16 +323,17 @@ impl ToyotermApplication {
         window_size: PhysicalSize<u32>,
         scale_factor: f64,
     ) -> ConfigErrorLayout {
-        let Some(notice) = self.config_error_notice.as_ref() else {
+        let Some(notice) = self.ui.config_error_notice.as_ref() else {
             return ConfigErrorLayout::default();
         };
-        let y = workspace_bar_height(&self.script_snapshot.config, scale_factor)
-            .saturating_add(tab_bar_height(&self.script_snapshot.config, scale_factor));
+        let y = workspace_bar_height(&self.scripting.snapshot.config, scale_factor).saturating_add(
+            tab_bar_height(&self.scripting.snapshot.config, scale_factor),
+        );
         let height = config_error_height(scale_factor, notice.log_expanded)
             .min(window_size.height.saturating_sub(y));
         ConfigErrorLayout::calculate(
             PaneRect::new(0, y, window_size.width, height),
-            tab_bar_height(&self.script_snapshot.config, scale_factor),
+            tab_bar_height(&self.scripting.snapshot.config, scale_factor),
         )
     }
 
@@ -340,11 +352,11 @@ impl ToyotermApplication {
             tabs,
             PaneRect::new(
                 0,
-                workspace_bar_height(&self.script_snapshot.config, scale_factor),
+                workspace_bar_height(&self.scripting.snapshot.config, scale_factor),
                 window_size.width,
-                tab_bar_height(&self.script_snapshot.config, scale_factor),
+                tab_bar_height(&self.scripting.snapshot.config, scale_factor),
             ),
-            scaled_ui_size(self.script_snapshot.config.ui.tab_width, scale_factor),
+            scaled_ui_size(self.scripting.snapshot.config.ui.tab_width, scale_factor),
         )
     }
 
@@ -360,25 +372,29 @@ impl ToyotermApplication {
             return PaneLayout::default();
         };
         let notification_height = self
+            .ui
             .config_error_notice
             .as_ref()
             .map(|notice| config_error_height(scale_factor, notice.log_expanded))
             .unwrap_or(0);
-        let chrome_height = workspace_bar_height(&self.script_snapshot.config, scale_factor)
-            .saturating_add(tab_bar_height(&self.script_snapshot.config, scale_factor))
+        let chrome_height = workspace_bar_height(&self.scripting.snapshot.config, scale_factor)
+            .saturating_add(tab_bar_height(
+                &self.scripting.snapshot.config,
+                scale_factor,
+            ))
             .saturating_add(notification_height)
             .min(window_size.height);
         let (pane_rect, _) = edge_bar_layout(
             window_size,
             chrome_height,
-            &self.script_snapshot.config,
+            &self.scripting.snapshot.config,
             scale_factor,
         );
         PaneLayout::calculate(
             root,
             pane_rect,
             scaled_ui_size(
-                self.script_snapshot.config.ui.pane_divider_width,
+                self.scripting.snapshot.config.ui.pane_divider_width,
                 scale_factor,
             ),
         )
@@ -387,30 +403,35 @@ impl ToyotermApplication {
     pub(super) fn sync_pane_runtimes(&mut self, size: PtySize) -> Result<(), String> {
         let desired = self.mux.pane_ids().collect::<HashSet<_>>();
         let stale = self
+            .terminal_runtime
             .pane_runtimes
             .keys()
             .filter(|pane| !desired.contains(pane))
             .copied()
             .collect::<Vec<_>>();
         for pane in stale {
-            if let Some(mut runtime) = self.pane_runtimes.remove(&pane) {
+            if let Some(mut runtime) = self.terminal_runtime.pane_runtimes.remove(&pane) {
                 runtime.terminate();
             }
         }
 
         let mut missing = desired
             .into_iter()
-            .filter(|pane| !self.pane_runtimes.contains_key(pane))
+            .filter(|pane| !self.terminal_runtime.pane_runtimes.contains_key(pane))
             .collect::<Vec<_>>();
         missing.sort_unstable();
         for pane in missing {
-            let launch = self.pending_pane_launches.get(&pane).cloned();
+            let launch = self
+                .terminal_runtime
+                .pending_pane_launches
+                .get(&pane)
+                .cloned();
             let runtime = self.start_shell(pane, size, launch.as_ref())?;
-            self.pending_pane_launches.remove(&pane);
-            self.pane_runtimes.insert(pane, runtime);
+            self.terminal_runtime.pending_pane_launches.remove(&pane);
+            self.terminal_runtime.pane_runtimes.insert(pane, runtime);
         }
         self.flush_mux_input()?;
-        if let Some(window) = self.window.clone() {
+        if let Some(window) = self.platform.window.clone() {
             self.resize_panes(window.inner_size(), window.scale_factor())?;
         }
         Ok(())
@@ -419,28 +440,29 @@ impl ToyotermApplication {
     pub(super) fn active_terminal(&self) -> Option<&AlacrittyTerminalBackend> {
         self.mux
             .current_pane()
-            .and_then(|pane| self.pane_runtimes.get(&pane))
+            .and_then(|pane| self.terminal_runtime.pane_runtimes.get(&pane))
             .map(|runtime| &runtime.terminal)
     }
 
     pub(super) fn active_terminal_mut(&mut self) -> Option<&mut AlacrittyTerminalBackend> {
         let pane = self.mux.current_pane()?;
-        self.pane_runtimes
+        self.terminal_runtime
+            .pane_runtimes
             .get_mut(&pane)
             .map(|runtime| &mut runtime.terminal)
     }
 
     pub(super) fn mark_pane_exited(&mut self, pane: PaneId, error: Option<String>) {
-        if let Some(runtime) = self.pane_runtimes.get_mut(&pane) {
-            runtime.pty_session = None;
-            runtime.exited = true;
-            runtime.title = match error {
+        if let Some(runtime) = self.terminal_runtime.pane_runtimes.get_mut(&pane) {
+            runtime.process.pty_session = None;
+            runtime.process.exited = true;
+            runtime.metadata.title = match error {
                 Some(error) => format!("Pane {} (error: {error})", pane.0),
                 None => format!("Pane {} (exited)", pane.0),
             };
         }
         if self.mux.current_pane() == Some(pane)
-            && let Some(window) = self.window.clone()
+            && let Some(window) = self.platform.window.clone()
         {
             self.sync_active_renderer(window.scale_factor());
             window.request_redraw();
@@ -454,7 +476,7 @@ impl ToyotermApplication {
     ) -> Result<(), String> {
         // Closing a pane also closes its PTY reader, which can leave a stale
         // EOF event in the queue. There is nothing left to reconcile then.
-        if !self.pane_runtimes.contains_key(&pane) {
+        if !self.terminal_runtime.pane_runtimes.contains_key(&pane) {
             return Ok(());
         }
         if self
@@ -467,7 +489,7 @@ impl ToyotermApplication {
         }
         self.reconcile_pane_runtimes()?;
         self.deliver_runtime_events()?;
-        if let Some(window) = self.window.clone() {
+        if let Some(window) = self.platform.window.clone() {
             self.sync_active_renderer(window.scale_factor());
             window.request_redraw();
         }
@@ -483,12 +505,12 @@ impl ToyotermApplication {
         let lines = match delta {
             MouseScrollDelta::LineDelta(_, vertical) => f64::from(vertical),
             MouseScrollDelta::PixelDelta(position) => {
-                position.y / (self.cell_metrics.height * window.scale_factor()).max(1.0)
+                position.y / (self.ui.cell_metrics.height * window.scale_factor()).max(1.0)
             }
-        } * f64::from(self.script_snapshot.config.behavior.scroll_lines);
-        self.wheel_line_accumulator += lines;
-        let steps = self.wheel_line_accumulator.trunc() as i32;
-        self.wheel_line_accumulator -= f64::from(steps);
+        } * f64::from(self.scripting.snapshot.config.behavior.scroll_lines);
+        self.ui.wheel_line_accumulator += lines;
+        let steps = self.ui.wheel_line_accumulator.trunc() as i32;
+        self.ui.wheel_line_accumulator -= f64::from(steps);
         if steps == 0 {
             return;
         }
@@ -497,14 +519,14 @@ impl ToyotermApplication {
             .active_terminal()
             .map(TerminalBackend::mode)
             .unwrap_or_default();
-        if mode.mouse_reporting && !self.modifiers.shift_key() {
+        if mode.mouse_reporting && !self.ui.modifiers.shift_key() {
             let (column, row) = self.clamped_mouse_cell(window.scale_factor());
             let direction = if steps > 0 {
                 MouseWheelDirection::Up
             } else {
                 MouseWheelDirection::Down
             };
-            let modifiers = key_modifiers(self.modifiers);
+            let modifiers = key_modifiers(self.ui.modifiers);
             let sequence = encode_mouse_wheel(direction, column, row, modifiers, mode.sgr_mouse);
             let mut bytes = Vec::with_capacity(sequence.len() * steps.unsigned_abs() as usize);
             for _ in 0..steps.unsigned_abs() {
@@ -513,7 +535,7 @@ impl ToyotermApplication {
             if let Err(error) = self.write_pty(&bytes) {
                 self.fail(event_loop, error);
             }
-        } else if mode.alternate_screen && mode.alternate_scroll && !self.modifiers.shift_key() {
+        } else if mode.alternate_screen && mode.alternate_scroll && !self.ui.modifiers.shift_key() {
             let key = if steps > 0 {
                 TerminalKey::ArrowUp
             } else {
@@ -542,18 +564,18 @@ impl ToyotermApplication {
         let rect = self
             .mux
             .current_pane()
-            .and_then(|pane| self.pane_layout.rect(pane))
+            .and_then(|pane| self.ui.pane_layout.rect(pane))
             .unwrap_or_default();
-        let x = (self.mouse_position.x
+        let x = (self.ui.mouse_position.x
             - f64::from(rect.x)
-            - f64::from(self.cell_metrics.horizontal_padding) * scale_factor)
+            - f64::from(self.ui.cell_metrics.horizontal_padding) * scale_factor)
             .max(0.0);
-        let y = (self.mouse_position.y
+        let y = (self.ui.mouse_position.y
             - f64::from(rect.y)
-            - f64::from(self.cell_metrics.vertical_padding) * scale_factor)
+            - f64::from(self.ui.cell_metrics.vertical_padding) * scale_factor)
             .max(0.0);
-        let column = (x / (self.cell_metrics.width * scale_factor).max(1.0)).floor() as u32;
-        let row = (y / (self.cell_metrics.height * scale_factor).max(1.0)).floor() as u32;
+        let column = (x / (self.ui.cell_metrics.width * scale_factor).max(1.0)).floor() as u32;
+        let row = (y / (self.ui.cell_metrics.height * scale_factor).max(1.0)).floor() as u32;
         (
             column.min(u16::MAX.into()) as u16,
             row.min(u16::MAX.into()) as u16,
@@ -583,31 +605,34 @@ impl ToyotermApplication {
     ) {
         if button == MouseButton::Left
             && state == ElementState::Pressed
-            && self.visual_selection.is_some()
+            && self.ui.visual_selection.is_some()
         {
             self.exit_visual_mode();
         }
         if button == MouseButton::Left && state == ElementState::Pressed {
-            if self.search_open {
+            if self.ui.search_open {
                 self.close_search();
                 self.sync_active_renderer(window.scale_factor());
                 window.request_redraw();
             }
-            if self.config_error_notice.is_some()
+            if self.ui.config_error_notice.is_some()
                 && self
+                    .ui
                     .config_error_layout
                     .notice()
-                    .contains(self.mouse_position.x, self.mouse_position.y)
+                    .contains(self.ui.mouse_position.x, self.ui.mouse_position.y)
             {
                 let open_log = self
+                    .ui
                     .config_error_layout
-                    .open_log_contains(self.mouse_position.x, self.mouse_position.y);
+                    .open_log_contains(self.ui.mouse_position.x, self.ui.mouse_position.y);
                 let dismiss = self
+                    .ui
                     .config_error_layout
-                    .dismiss_contains(self.mouse_position.x, self.mouse_position.y);
+                    .dismiss_contains(self.ui.mouse_position.x, self.ui.mouse_position.y);
                 if dismiss {
-                    self.config_error_notice = None;
-                } else if let Some(notice) = self.config_error_notice.as_mut()
+                    self.ui.config_error_notice = None;
+                } else if let Some(notice) = self.ui.config_error_notice.as_mut()
                     && open_log
                 {
                     notice.log_expanded = !notice.log_expanded;
@@ -624,8 +649,9 @@ impl ToyotermApplication {
                 return;
             }
             if let Some(workspace) = self
+                .ui
                 .workspace_layout
-                .workspace_at(self.mouse_position.x, self.mouse_position.y)
+                .workspace_at(self.ui.mouse_position.x, self.ui.mouse_position.y)
             {
                 if self.mux.current_workspace() != workspace
                     && let Err(error) =
@@ -636,8 +662,9 @@ impl ToyotermApplication {
                 return;
             }
             if let Some(tab) = self
+                .ui
                 .tab_layout
-                .tab_at(self.mouse_position.x, self.mouse_position.y)
+                .tab_at(self.ui.mouse_position.x, self.ui.mouse_position.y)
             {
                 if self.mux.current_tab() != Some(tab)
                     && let Err(error) = self.dispatch_gui_command(Command::ActivateTab(tab))
@@ -647,8 +674,9 @@ impl ToyotermApplication {
                 return;
             }
             let hovered = self
+                .ui
                 .pane_layout
-                .pane_at(self.mouse_position.x, self.mouse_position.y);
+                .pane_at(self.ui.mouse_position.x, self.ui.mouse_position.y);
             let Some(hovered) = hovered else {
                 return;
             };
@@ -658,7 +686,7 @@ impl ToyotermApplication {
                 tracing::warn!(target: "toyoterm::mux", %error, pane = %hovered, "focus pane failed");
                 return;
             }
-            if has_link_modifier(self.modifiers, current_shortcut_platform()) {
+            if has_link_modifier(self.ui.modifiers, current_shortcut_platform()) {
                 let (column, row) = self.clamped_mouse_cell(window.scale_factor());
                 if let Some(url) = self
                     .active_terminal()
@@ -673,8 +701,9 @@ impl ToyotermApplication {
             }
         } else if state == ElementState::Pressed {
             let hovered = self
+                .ui
                 .pane_layout
-                .pane_at(self.mouse_position.x, self.mouse_position.y);
+                .pane_at(self.ui.mouse_position.x, self.ui.mouse_position.y);
             let Some(hovered) = hovered else {
                 return;
             };
@@ -686,14 +715,14 @@ impl ToyotermApplication {
             }
         }
 
-        if self.selecting {
+        if self.ui.selecting {
             if state == ElementState::Released {
                 let (column, row) = self.clamped_mouse_cell(window.scale_factor());
                 if let Some(terminal) = self.active_terminal_mut() {
                     terminal.update_selection(column, row);
                 }
-                self.selecting = false;
-                if self.script_snapshot.config.behavior.copy_on_select
+                self.ui.selecting = false;
+                if self.scripting.snapshot.config.behavior.copy_on_select
                     && let Err(error) = self.copy_selection()
                 {
                     tracing::warn!(target: "toyoterm::app", %error, "copy-on-select failed");
@@ -710,14 +739,14 @@ impl ToyotermApplication {
             .unwrap_or_default();
         let term_button = terminal_mouse_button(button);
 
-        if mode.mouse_reporting && !self.modifiers.shift_key() {
+        if mode.mouse_reporting && !self.ui.modifiers.shift_key() {
             let (column, row) = self.clamped_mouse_cell(window.scale_factor());
-            let modifiers = key_modifiers(self.modifiers);
+            let modifiers = key_modifiers(self.ui.modifiers);
             match state {
                 ElementState::Pressed => {
                     if let Some(btn) = term_button {
-                        self.pressed_mouse_button = Some(btn);
-                        self.last_mouse_cell = Some((column, row));
+                        self.ui.pressed_mouse_button = Some(btn);
+                        self.ui.last_mouse_cell = Some((column, row));
                         let sequence = encode_mouse_event(
                             MouseEventKind::Press(btn),
                             column,
@@ -731,8 +760,8 @@ impl ToyotermApplication {
                     }
                 }
                 ElementState::Released => {
-                    let btn = term_button.or(self.pressed_mouse_button);
-                    self.pressed_mouse_button = None;
+                    let btn = term_button.or(self.ui.pressed_mouse_button);
+                    self.ui.pressed_mouse_button = None;
                     if let Some(btn) = btn {
                         let sequence = encode_mouse_event(
                             MouseEventKind::Release(btn),
@@ -751,10 +780,10 @@ impl ToyotermApplication {
         }
 
         if state == ElementState::Released
-            && let Some(btn) = self.pressed_mouse_button.take()
+            && let Some(btn) = self.ui.pressed_mouse_button.take()
         {
             let (column, row) = self.clamped_mouse_cell(window.scale_factor());
-            let modifiers = key_modifiers(self.modifiers);
+            let modifiers = key_modifiers(self.ui.modifiers);
             let sequence = encode_mouse_event(
                 MouseEventKind::Release(btn),
                 column,
@@ -776,6 +805,7 @@ impl ToyotermApplication {
                         return;
                     };
                     let click_count = self
+                        .ui
                         .click_tracker
                         .register(Instant::now(), ClickTarget { pane, column, row });
                     let kind = match click_count {
@@ -787,7 +817,7 @@ impl ToyotermApplication {
                         terminal.clear_selection();
                         terminal.start_selection(column, row, kind);
                     }
-                    self.selecting = true;
+                    self.ui.selecting = true;
                 }
                 ElementState::Released => return,
             }
@@ -801,17 +831,18 @@ impl ToyotermApplication {
             .active_terminal()
             .map(TerminalBackend::mode)
             .unwrap_or_default();
-        if !mode.mouse_reporting || self.modifiers.shift_key() {
+        if !mode.mouse_reporting || self.ui.modifiers.shift_key() {
             return;
         }
 
-        let is_drag = self.pressed_mouse_button.is_some();
+        let is_drag = self.ui.pressed_mouse_button.is_some();
         let should_report = if is_drag {
             mode.mouse_drag || mode.mouse_motion
         } else {
             if self
+                .ui
                 .pane_layout
-                .pane_at(self.mouse_position.x, self.mouse_position.y)
+                .pane_at(self.ui.mouse_position.x, self.ui.mouse_position.y)
                 != self.mux.current_pane()
             {
                 return;
@@ -824,13 +855,13 @@ impl ToyotermApplication {
         }
 
         let (column, row) = self.clamped_mouse_cell(window.scale_factor());
-        if self.last_mouse_cell == Some((column, row)) {
+        if self.ui.last_mouse_cell == Some((column, row)) {
             return;
         }
-        self.last_mouse_cell = Some((column, row));
+        self.ui.last_mouse_cell = Some((column, row));
 
-        let modifiers = key_modifiers(self.modifiers);
-        let kind = match self.pressed_mouse_button {
+        let modifiers = key_modifiers(self.ui.modifiers);
+        let kind = match self.ui.pressed_mouse_button {
             Some(btn) => MouseEventKind::Drag(btn),
             None => MouseEventKind::Move,
         };
@@ -867,11 +898,15 @@ impl ToyotermApplication {
     }
 
     pub(super) fn clipboard(&mut self) -> Result<&mut Clipboard, String> {
-        if self.clipboard.is_none() {
-            self.clipboard =
+        if self.platform.clipboard.is_none() {
+            self.platform.clipboard =
                 Some(Clipboard::new().map_err(|error| format!("initialize clipboard: {error}"))?);
         }
-        Ok(self.clipboard.as_mut().expect("clipboard was initialized"))
+        Ok(self
+            .platform
+            .clipboard
+            .as_mut()
+            .expect("clipboard was initialized"))
     }
 }
 
