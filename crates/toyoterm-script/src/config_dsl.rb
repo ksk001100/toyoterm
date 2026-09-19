@@ -271,6 +271,10 @@ module Toyoterm
       end
     end
 
+    def __next_at
+      @widgets.map { |_, widget| widget.__next_at }.compact.min
+    end
+
     private
 
     def validate_position(position)
@@ -289,27 +293,26 @@ module Toyoterm
       @widgets = []
     end
 
-    def add(value = nil, &block)
+    def add(value = nil, interval: 1.0, &block)
       if block && !value.nil?
         raise ArgumentError, "bar section widget accepts either a value or a block, not both"
       end
-      @widgets << (block || value)
+      validate_interval(interval)
+      @widgets << BarWidget.new(block || value, interval.to_f)
       self
     end
 
     def add_async(program, *args, interval: 1.0, initial: "", cwd: nil, &block)
-      unless interval.is_a?(Numeric) && interval.to_f.finite? && interval >= 0.1
-        raise ArgumentError, "async bar interval must be at least 0.1 seconds"
-      end
+      validate_interval(interval)
       initial = Toyoterm.__string(initial, "async bar initial text", false, true)
       raise ArgumentError, "async bar initial text cannot contain NUL" if initial.include?("\0")
       @widgets << AsyncBarWidget.new(program, args, interval.to_f, initial, cwd, block)
       self
     end
 
-    def call(context)
+    def call(context, force = false)
       @widgets.map do |widget|
-        value = widget.respond_to?(:call) ? widget.call(context) : widget
+        value = widget.respond_to?(:call) ? widget.call(context, force) : widget
         value.nil? ? "" : value.to_s
       end
         .reject { |text| text.nil? || text.empty? }
@@ -328,6 +331,55 @@ module Toyoterm
         widget.__rollback(state) if state && widget.respond_to?(:__rollback)
       end
     end
+
+    def __next_at
+      @widgets.map { |widget| widget.__next_at }.compact.min
+    end
+
+    private
+
+    def validate_interval(interval)
+      unless interval.is_a?(Numeric) && interval.to_f.finite? && interval >= 0.1
+        raise ArgumentError, "bar widget interval must be at least 0.1 seconds"
+      end
+    end
+  end
+
+  class BarWidget
+    def initialize(value, interval)
+      @value = value
+      @interval = interval
+      @result = nil
+      @initialized = false
+      @next_at = 0.0
+    end
+
+    def call(context, force = false)
+      unless @value.respond_to?(:call)
+        @initialized = true
+        @result = @value
+        return @result
+      end
+      now = Time.now.to_f
+      if force || !@initialized || now >= @next_at
+        @result = @value.call(context)
+        @initialized = true
+        @next_at = Time.now.to_f + @interval
+      end
+      @result
+    end
+
+    def __next_at
+      @value.respond_to?(:call) ? @next_at : nil
+    end
+
+    def __checkpoint
+      [@result, @initialized, @next_at]
+    end
+
+    def __rollback(checkpoint)
+      @result, @initialized, @next_at = checkpoint
+    end
   end
 
   class AsyncBarWidget
@@ -343,7 +395,7 @@ module Toyoterm
       @next_at = 0.0
     end
 
-    def call(context)
+    def call(context, _force = false)
       now = Time.now.to_f
       if @task && @task.complete?
         @result = @task.result
@@ -367,6 +419,10 @@ module Toyoterm
 
     def __rollback(checkpoint)
       @task, @result, @next_at = checkpoint
+    end
+
+    def __next_at
+      @task ? nil : @next_at
     end
   end
 
@@ -442,8 +498,8 @@ module Toyoterm
       self.title = @title
     end
 
-    def bar(position, interval: 1.0, &block)
-      Toyoterm.__register_window_bar(position, interval, &block)
+    def bar(position, &block)
+      Toyoterm.__register_window_bar(position, &block)
     end
   end
 
@@ -1814,7 +1870,7 @@ module Toyoterm
   # request. Keep a VM-side checkpoint so invalid changes can be rolled back.
   def self.__begin_config_transaction
     bars = {}
-    @window_bars.each { |position, entry| bars[position] = [entry[0], entry[1].__copy] }
+    @window_bars.each { |position, bar| bars[position] = bar.__copy }
     @config_transaction = [
       __plugin_checkpoint, bars, @pane_badges.dup,
       __async_request_checkpoint, @logs.length
@@ -1897,18 +1953,16 @@ module Toyoterm
     end
   end
 
-  def self.__register_window_bar(position, interval, &block)
+  def self.__register_window_bar(position, &block)
     raise ArgumentError, "window bar requires a block" unless block
     raise ArgumentError, "window bar position must be :top or :bottom" unless position.is_a?(Symbol)
     unless [:top, :bottom].include?(position)
       raise ArgumentError, "window bar position must be :top or :bottom"
     end
     raise ArgumentError, "window bar is already configured for #{position}" if @window_bars.key?(position)
-    interval = __number(interval, "window bar interval")
-    raise ArgumentError, "window bar interval must be at least 0.1 seconds" if interval < 0.1
     bar = BarConfig.new
     block.call(bar)
-    @window_bars[position] = [interval, bar]
+    @window_bars[position] = bar
     bar
   end
 
@@ -1920,36 +1974,30 @@ module Toyoterm
     @window_bars.keys[index]
   end
 
-  def self.__bar_interval(index)
-    interval = @window_bars.values[index][0]
-    unless interval.is_a?(Numeric)
-      raise TypeError, "window bar interval must be numeric"
-    end
-    interval
-  end
-
-  def self.__invoke_bar(position)
-    entry = @window_bars[position.to_sym]
-    return nil unless entry
+  def self.__invoke_bar(position, force = false)
+    bar = @window_bars[position.to_sym]
+    return nil unless bar
     context = BarContext.new(current_workspace, current_window, current_tab, current_pane)
     checkpoint = __command_checkpoint
     badge_checkpoint = __badge_checkpoint
     async_checkpoint = __async_request_checkpoint
-    bar_checkpoint = entry[1].__checkpoint
+    bar_checkpoint = bar.__checkpoint
     begin
-      widgets = entry[1].__widgets.map do |widget|
-        value = widget[1].respond_to?(:call) ? widget[1].call(context) : widget[1]
+      widgets = bar.__widgets.map do |widget|
+        value = widget[1].respond_to?(:call) ? widget[1].call(context, force) : widget[1]
         text = value.nil? ? "" : value.to_s
         raise ArgumentError, "bar widget text cannot contain NUL" if text.include?("\0")
         [widget[0], text]
       end
-      widgets.inject("#{widgets.length};") do |encoded, widget|
+      next_at = bar.__next_at
+      delay = next_at ? [next_at - Time.now.to_f, 0.0].max.to_s : ""
+      widgets.inject("#{delay};#{widgets.length};") do |encoded, widget|
         alignment = { left: "l", center: "c", right: "r" }[widget[0]]
         encoded << alignment << "#{widget[1].bytesize}:" << widget[1]
       end
     rescue => error
       __rollback_async_requests(async_checkpoint)
-      entry[1].__rollback(bar_checkpoint)
+      bar.__rollback(bar_checkpoint)
       raise error
     ensure
       __rollback_commands(checkpoint)
@@ -2026,7 +2074,7 @@ module Toyoterm
 
   def self.__callback_checkpoint
     bars = {}
-    @window_bars.each { |position, entry| bars[position] = [entry[0], entry[1].__copy] }
+    @window_bars.each { |position, bar| bars[position] = bar.__copy }
     [
       __command_checkpoint, __badge_checkpoint, __async_request_checkpoint,
       __plugin_checkpoint, bars, @logs.length

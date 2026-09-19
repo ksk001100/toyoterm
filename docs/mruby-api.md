@@ -858,12 +858,11 @@ are lossless and are not subject to the event limit.
 
 ## Window bars
 
-`config.window.bar(position, interval: 1.0) { |bar| ... }` configures a window
+`config.window.bar(position) { |bar| ... }` configures a window
 bar. `position` accepts only `:top` or `:bottom`; any other value raises
 `ArgumentError`. One bar may be registered at each position, and registering a
-duplicate raises `ArgumentError`. The finite numeric interval must be at least
-0.1 seconds; other values fail configuration validation. Both bars use
-`config.ui.status_bar_height`. The method returns the configured
+duplicate raises `ArgumentError`. Both bars use `config.ui.status_bar_height`.
+The method returns the configured
 `Toyoterm::BarConfig` object. Omitting the block raises `ArgumentError`.
 
 `bar.section(alignment, separator: " | ") { |section| ... }` appends an aligned
@@ -876,39 +875,48 @@ containing NUL raise `ArgumentError`; a non-String separator raises `TypeError`.
 
 ```ruby
 Toyoterm.configure do |config|
-  config.window.bar :bottom, interval: 1.0 do |bar|
-    bar.section(:left) { |section| section.add { |context| context.workspace.name } }
+  config.window.bar :bottom do |bar|
+    bar.section(:left) do |section|
+      section.add(interval: 1.0) { |context| context.workspace.name }
+    end
     bar.section(:center) { |section| section.add("toyoterm") }
-    bar.section(:right) { |section| section.add { |context| context.pane.cwd } }
+    bar.section(:right) do |section|
+      section.add(interval: 5.0) { |context| context.pane.cwd }
+    end
   end
 end
 ```
 
-`Toyoterm::BarSection#add(value = nil) { |context| ... }` appends a fixed value
-or a synchronous block and returns the section. Supply either a non-`nil` value
-or a block, not both. `Toyoterm::BarContext` exposes `workspace`, `window`,
-`tab`, and `pane`; each result is converted to a string. `nil` and empty results
-are omitted without leaving a separator. Text containing NUL raises
-`ArgumentError` when the bar is rendered.
+`Toyoterm::BarSection#add(value = nil, interval: 1.0) { |context| ... }` appends
+a fixed value or a synchronous block and returns the section. Supply either a
+non-`nil` value or a block, not both. Each block keeps its last result and is
+evaluated independently when its interval expires; other widgets continue to
+display their cached values. The finite numeric interval must be at least 0.1
+seconds. Fixed values do not schedule refreshes. `Toyoterm::BarContext` exposes
+`workspace`, `window`, `tab`, and `pane`; each result is converted to a string.
+`nil` and empty results are omitted without leaving a separator. Text containing
+NUL raises `ArgumentError` when the bar is rendered.
 
-A position is hidden when no bar is configured for it. Each bar keeps its own
-interval and is run serially on the script thread. Commands and pane badge
-changes queued by widget callbacks are always discarded. If any widget raises,
-the bar keeps its previous rendered content and is retried after its configured
-interval.
+A position is hidden when no bar is configured for it. Widget callbacks run
+serially on the script thread. The host schedules each bar for its nearest
+widget deadline, while widgets that are not due reuse their cached values.
+Commands and pane badge changes queued by widget callbacks are always discarded.
+If any widget raises, the bar keeps its previous rendered content and retries
+after one second.
 
 Widgets can launch background asynchronous tasks via `Toyoterm.async` without
 blocking bar evaluation. Asynchronous tasks queued during bar rendering are
 retained when the widget callback succeeds (unlike native mutations, which are
 discarded). Keep the returned task in the bar closure and read its result when
-it completes; toyoterm immediately schedules a bar refresh after completion:
+it completes; completion wakes the bar scheduler, and the block observes the
+result when its own `add` interval next expires:
 
 ```ruby
 Toyoterm.configure do |config|
-  config.window.bar :bottom, interval: 1.0 do |bar|
+  config.window.bar :bottom do |bar|
     weather_task = nil
     bar.section(:right) do |section|
-      section.add do
+      section.add(interval: 1.0) do
         weather_task ||= Toyoterm.async("curl", "-s", "https://wttr.in/Tokyo?format=1")
         if weather_task.complete? && weather_task.success?
           weather_task.result.stdout.strip

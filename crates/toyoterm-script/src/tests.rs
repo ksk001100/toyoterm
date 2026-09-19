@@ -369,7 +369,7 @@ fn window_bar_uses_typed_context_and_discards_commands() {
         .reload(
             r#"
                 Toyoterm.configure do |config|
-                  config.window.bar(:bottom, interval: 0.25) do |bar|
+                  config.window.bar(:bottom) do |bar|
                     bar.section(:left, separator: " ") do |section|
                       section.add do |ctx|
                         ctx.pane.send_text("must not run")
@@ -394,7 +394,6 @@ fn window_bar_uses_typed_context_and_discards_commands() {
         manager.config().status_bars,
         vec![StatusBarConfig {
             position: StatusBarPosition::Bottom,
-            interval: Duration::from_millis(250),
         }]
     );
     assert_eq!(
@@ -424,7 +423,7 @@ fn repeated_status_bar_requests_keep_the_gc_arena_bounded() {
         .reload(
             r#"
                 Toyoterm.configure do |config|
-                  config.window.bar(:bottom, interval: 0.1) do |bar|
+                  config.window.bar(:bottom) do |bar|
                     bar.section(:left) { |section| section.add { |context| context.workspace.name } }
                     bar.section(:right) { |section| section.add { |context| context.pane.cwd } }
                   end
@@ -718,7 +717,7 @@ fn eval_errors_restore_the_gc_arena_after_copying_the_exception() {
 }
 
 #[test]
-fn window_bar_interval_defaults_to_one_second_and_rejects_values_below_100ms() {
+fn bar_widget_interval_defaults_to_one_second_and_rejects_values_below_100ms() {
     let mut manager = ConfigManager::new().unwrap();
     manager
         .reload(
@@ -729,14 +728,17 @@ fn window_bar_interval_defaults_to_one_second_and_rejects_values_below_100ms() {
         manager.config().status_bars,
         vec![StatusBarConfig {
             position: StatusBarPosition::Bottom,
-            interval: Duration::from_secs(1),
         }]
     );
 
     let error = manager
-        .reload("Toyoterm.configure { |c| c.window.bar(:bottom, interval: 0.099) { |bar| bar.section(:left) { |section| section.add('too fast') } } }")
+        .reload("Toyoterm.configure { |c| c.window.bar(:bottom) { |bar| bar.section(:left) { |section| section.add(interval: 0.099) { 'too fast' } } } }")
         .unwrap_err();
     assert!(error.message().contains("at least 0.1 seconds"));
+
+    manager
+        .reload("Toyoterm.configure { |c| c.window.bar(:bottom, interval: 1.0) { |_| } }")
+        .unwrap_err();
     assert_eq!(
         manager.render_bar(StatusBarPosition::Bottom).unwrap(),
         vec![BarItem {
@@ -747,6 +749,43 @@ fn window_bar_interval_defaults_to_one_second_and_rejects_values_below_100ms() {
 }
 
 #[test]
+fn bar_widgets_refresh_independently_and_cache_values_until_due() {
+    let mut manager = ConfigManager::new().unwrap();
+    manager
+        .reload(
+            r#"
+              $left_calls = 0
+              $right_calls = 0
+              Toyoterm.configure do |config|
+                config.window.bar(:bottom) do |bar|
+                  bar.section(:left) do |section|
+                    section.add(interval: 0.1) { $left_calls += 1; "left#{$left_calls}" }
+                  end
+                  bar.section(:right) do |section|
+                    section.add(interval: 5.0) { $right_calls += 1; "right#{$right_calls}" }
+                  end
+                end
+              end
+            "#,
+        )
+        .unwrap();
+
+    let (items, next_refresh) = manager
+        .render_bar_with_schedule(StatusBarPosition::Bottom, false)
+        .unwrap();
+    assert_eq!(items[0].text, "left1");
+    assert_eq!(items[1].text, "right1");
+    assert!(next_refresh.is_some_and(|delay| delay <= Duration::from_millis(100)));
+
+    std::thread::sleep(Duration::from_millis(120));
+    let (items, _) = manager
+        .render_bar_with_schedule(StatusBarPosition::Bottom, false)
+        .unwrap();
+    assert_eq!(items[0].text, "left2");
+    assert_eq!(items[1].text, "right1");
+}
+
+#[test]
 fn window_bar_supports_top_and_bottom_only() {
     let mut manager = ConfigManager::new().unwrap();
     manager
@@ -754,7 +793,7 @@ fn window_bar_supports_top_and_bottom_only() {
             r#"
                 Toyoterm.configure do |config|
                   config.window.bar(:top) { |bar| bar.section(:left) { |section| section.add("TOP") } }
-                  config.window.bar(:bottom, interval: 2.0) { |bar| bar.section(:right) { |section| section.add("BOTTOM") } }
+                  config.window.bar(:bottom) { |bar| bar.section(:right) { |section| section.add("BOTTOM") } }
                 end
             "#,
         )
@@ -3603,7 +3642,7 @@ fn async_api_works_inside_window_bar_widgets() {
             r#"
             $status_text = "initial"
             Toyoterm.configure do |config|
-              config.window.bar :bottom, interval: 1.0 do |bar|
+              config.window.bar :bottom do |bar|
                 bar.section(:left) do |section|
                   section.add do
                     Toyoterm.async("ping", "1.1.1.1") do |res|
@@ -3643,7 +3682,7 @@ fn async_task_can_be_retained_in_bar_closure_without_global_state() {
         .reload(
             r#"
             Toyoterm.configure do |config|
-              config.window.bar :bottom, interval: 1.0 do |bar|
+              config.window.bar :bottom do |bar|
                 task = nil
                 bar.section(:left) do |section|
                   section.add do
@@ -3679,7 +3718,7 @@ fn async_bar_section_renders_multiple_tasks_with_a_separator() {
         .reload(
             r#"
             Toyoterm.configure do |config|
-              config.window.bar :bottom, interval: 1.0 do |bar|
+              config.window.bar :bottom do |bar|
                 bar.section(:right, separator: " | ") do |section|
                   section.add_async("printf", "clock", initial: "clock...") do |result|
                     result.success? ? result.stdout : ""
@@ -3724,7 +3763,7 @@ fn bar_section_mixes_synchronous_and_asynchronous_widgets() {
         .reload(
             r#"
             Toyoterm.configure do |config|
-              config.window.bar :top, interval: 1.0 do |bar|
+              config.window.bar :top do |bar|
                 bar.section(:right, separator: " | ") do |section|
                   updates = 0
                   section.add_async("printf", "clock", initial: "clock...") do |result|

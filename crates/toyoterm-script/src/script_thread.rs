@@ -136,6 +136,7 @@ pub struct ScriptCompletion {
 pub struct ScriptResult {
     pub value: Option<String>,
     pub bar: Option<Vec<BarItem>>,
+    pub bar_next_refresh: Option<Duration>,
     pub commands: Vec<NativeCommand>,
     pub snapshot: Option<ScriptSnapshot>,
     pub async_requests: Vec<AsyncSpawnRequest>,

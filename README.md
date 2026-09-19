@@ -97,8 +97,8 @@ External commands can be captured synchronously with `Toyoterm.spawn`, or run in
 the background without blocking the script thread via `Toyoterm.async`. It
 returns an `AsyncTask` that can be retained in a widget closure without global
 state; pass `cwd:` to run a command in a specific working directory.
-For status bars, `bar.section(...)` joins synchronous values and independent
-`add_async(...)` tasks with a separator.
+For status bars, `bar.section(...)` joins values whose `add(...)` and
+`add_async(...)` refresh intervals are managed independently.
 The scripting API exposes `Toyoterm.version`, `Toyoterm.api_version`, feature
 detection, native logging, removable registrations, context-bound actions, and
 a read-only configuration snapshot. Async tasks release completed results from

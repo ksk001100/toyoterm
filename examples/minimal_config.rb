@@ -16,7 +16,7 @@ Toyoterm.configure do |config|
   end
 
   config.window.opacity = 1.0
-  config.window.bar :bottom, interval: 1.0 do |bar|
+  config.window.bar :bottom do |bar|
     bar.section(:left) { |section| section.add { |context| context.workspace.name } }
     bar.section(:right) { |section| section.add { |context| context.pane.cwd } }
   end

@@ -1172,9 +1172,11 @@ impl ApplicationHandler<AppEvent> for ToyotermApplication {
             return;
         }
         for bar in &self.script_snapshot.config.status_bars {
-            self.next_bar_at.entry(bar.position).or_insert(now);
+            if !self.bar_items.contains_key(&bar.position) {
+                self.next_bar_at.entry(bar.position).or_insert(now);
+            }
         }
-        let Some((position, deadline, interval)) = self
+        let Some((position, deadline)) = self
             .script_snapshot
             .config
             .status_bars
@@ -1182,9 +1184,9 @@ impl ApplicationHandler<AppEvent> for ToyotermApplication {
             .filter_map(|bar| {
                 self.next_bar_at
                     .get(&bar.position)
-                    .map(|deadline| (bar.position, *deadline, bar.interval))
+                    .map(|deadline| (bar.position, *deadline))
             })
-            .min_by_key(|(_, deadline, _)| *deadline)
+            .min_by_key(|(_, deadline)| *deadline)
         else {
             set_wait_control_flow(event_loop, next_terminal_at);
             return;
@@ -1204,7 +1206,7 @@ impl ApplicationHandler<AppEvent> for ToyotermApplication {
             }
             Err(error) => {
                 tracing::warn!(target: "toyoterm::script", %error, "submit bar callback failed");
-                let deadline = now + interval;
+                let deadline = now + Duration::from_secs(1);
                 self.next_bar_at.insert(position, deadline);
                 set_wait_control_flow(
                     event_loop,
@@ -2618,10 +2620,7 @@ mod tests {
     fn window_bars_reserve_the_top_and_bottom_edges() {
         let config = ToyotermConfig {
             status_bars: [StatusBarPosition::Top, StatusBarPosition::Bottom]
-                .map(|position| toyoterm_config::StatusBarConfig {
-                    position,
-                    interval: Duration::from_secs(1),
-                })
+                .map(|position| toyoterm_config::StatusBarConfig { position })
                 .into(),
             ..ToyotermConfig::default()
         };

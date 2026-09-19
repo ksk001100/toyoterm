@@ -166,16 +166,8 @@ impl ToyotermApplication {
                 }
                 if let Some(position) = bar_position {
                     self.bar_pending = None;
-                    if let Some(interval) = self
-                        .script_snapshot
-                        .config
-                        .status_bars
-                        .iter()
-                        .find(|bar| bar.position == position)
-                        .map(|bar| bar.interval)
-                    {
-                        self.next_bar_at.insert(position, Instant::now() + interval);
-                    }
+                    self.next_bar_at
+                        .insert(position, Instant::now() + Duration::from_secs(1));
                 }
                 self.finish_eval(waiter, Err(message));
                 return Ok(());
@@ -186,15 +178,10 @@ impl ToyotermApplication {
             self.bar_pending = None;
             self.bar_items
                 .insert(position, result.bar.take().unwrap_or_default());
-            if let Some(interval) = self
-                .script_snapshot
-                .config
-                .status_bars
-                .iter()
-                .find(|bar| bar.position == position)
-                .map(|bar| bar.interval)
-            {
+            if let Some(interval) = result.bar_next_refresh {
                 self.next_bar_at.insert(position, Instant::now() + interval);
+            } else {
+                self.next_bar_at.remove(&position);
             }
         }
         for log in std::mem::take(&mut result.logs) {

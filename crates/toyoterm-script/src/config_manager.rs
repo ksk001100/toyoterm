@@ -277,6 +277,14 @@ impl ConfigManager {
     }
 
     pub fn render_bar(&mut self, position: StatusBarPosition) -> Result<Vec<BarItem>, ScriptError> {
+        Ok(self.render_bar_with_schedule(position, true)?.0)
+    }
+
+    pub(super) fn render_bar_with_schedule(
+        &mut self,
+        position: StatusBarPosition,
+        force: bool,
+    ) -> Result<(Vec<BarItem>, Option<Duration>), ScriptError> {
         let position = match position {
             StatusBarPosition::Top => "top",
             StatusBarPosition::Bottom => "bottom",
@@ -284,7 +292,7 @@ impl ConfigManager {
         let encoded = self.eval_callback(
             CallbackKind::Bar,
             position,
-            &format!("Toyoterm.__invoke_bar(:{position})"),
+            &format!("Toyoterm.__invoke_bar(:{position}, {force})"),
         )?;
         decode_bar_items(&encoded)
     }
@@ -767,17 +775,32 @@ impl ConfigManager {
     }
 }
 
-fn decode_bar_items(encoded: &str) -> Result<Vec<BarItem>, ScriptError> {
+fn decode_bar_items(encoded: &str) -> Result<(Vec<BarItem>, Option<Duration>), ScriptError> {
     let invalid = || ScriptError::new("render bar", "bar callback returned invalid widget data");
     let bytes = encoded.as_bytes();
     let separator = bytes
         .iter()
         .position(|byte| *byte == b';')
         .ok_or_else(invalid)?;
-    let count = encoded[..separator]
+    let next_refresh = if separator == 0 {
+        None
+    } else {
+        let seconds = encoded[..separator].parse::<f64>().map_err(|_| invalid())?;
+        if !seconds.is_finite() || seconds < 0.0 {
+            return Err(invalid());
+        }
+        Some(Duration::try_from_secs_f64(seconds).map_err(|_| invalid())?)
+    };
+    let count_start = separator + 1;
+    let count_end = bytes[count_start..]
+        .iter()
+        .position(|byte| *byte == b';')
+        .map(|offset| count_start + offset)
+        .ok_or_else(invalid)?;
+    let count = encoded[count_start..count_end]
         .parse::<usize>()
         .map_err(|_| invalid())?;
-    let mut cursor = separator + 1;
+    let mut cursor = count_end + 1;
     let mut items = Vec::with_capacity(count);
     for _ in 0..count {
         let alignment = match bytes.get(cursor) {
@@ -806,13 +829,14 @@ fn decode_bar_items(encoded: &str) -> Result<Vec<BarItem>, ScriptError> {
     if cursor != bytes.len() {
         return Err(invalid());
     }
-    Ok(items)
+    Ok((items, next_refresh))
 }
 
 #[derive(Default)]
 struct ScriptRequestOutput {
     value: Option<String>,
     bar: Option<Vec<BarItem>>,
+    bar_next_refresh: Option<Duration>,
     snapshot: Option<ScriptSnapshot>,
 }
 
@@ -856,10 +880,14 @@ pub(super) fn run_script_request(
                     ..ScriptRequestOutput::default()
                 }
             }
-            ScriptInvocation::Bar { position } => ScriptRequestOutput {
-                bar: Some(manager.render_bar(*position)?),
-                ..ScriptRequestOutput::default()
-            },
+            ScriptInvocation::Bar { position } => {
+                let (bar, bar_next_refresh) = manager.render_bar_with_schedule(*position, false)?;
+                ScriptRequestOutput {
+                    bar: Some(bar),
+                    bar_next_refresh,
+                    ..ScriptRequestOutput::default()
+                }
+            }
             ScriptInvocation::AsyncCallback { id, output } => {
                 manager.invoke_async_callback_with_launch_error(
                     *id,
@@ -879,6 +907,7 @@ pub(super) fn run_script_request(
     let ScriptRequestOutput {
         value,
         bar,
+        bar_next_refresh,
         mut snapshot,
     } = match request_result {
         Ok(result) => result,
@@ -914,6 +943,7 @@ pub(super) fn run_script_request(
     let result = ScriptResult {
         value,
         bar,
+        bar_next_refresh,
         commands,
         snapshot,
         async_requests,
@@ -1222,20 +1252,7 @@ fn read_config(
                 return Err(ScriptError::new("validate bar", "bar position is invalid"));
             }
         };
-        let value = runtime.eval(&format!("Toyoterm.__bar_interval({index})"))?;
-        let seconds = value
-            .parse::<f64>()
-            .map_err(|_| ScriptError::new("validate bar", "bar interval must be numeric"))?;
-        if !seconds.is_finite() || seconds < 0.1 {
-            return Err(ScriptError::new(
-                "validate bar",
-                "bar interval must be at least 0.1 seconds",
-            ));
-        }
-        status_bars.push(StatusBarConfig {
-            position,
-            interval: Duration::from_secs_f64(seconds),
-        });
+        status_bars.push(StatusBarConfig { position });
     }
 
     let ansi_count = runtime

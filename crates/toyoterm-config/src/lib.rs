@@ -1,6 +1,5 @@
 use std::ffi::OsString;
 use std::path::PathBuf;
-use std::time::Duration;
 
 mod background;
 pub use background::BackgroundImage;
@@ -64,7 +63,6 @@ pub enum StatusBarPosition {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct StatusBarConfig {
     pub position: StatusBarPosition,
-    pub interval: Duration,
 }
 
 #[derive(Clone, Debug, PartialEq)]

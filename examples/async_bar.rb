@@ -15,8 +15,8 @@ Toyoterm.configure do |config|
     ctrl_shift("r").reload_config
   end
 
-  # Configure the bottom status bar with a 1-second update interval.
-  config.window.bar :bottom, interval: 1.0 do |bar|
+  # Configure the bottom status bar. Each dynamic item owns its update interval.
+  config.window.bar :bottom do |bar|
     bar.section(:left, separator: " ") do |section|
       section.add { |context| context.workspace.name }
       section.add("toyoterm")
