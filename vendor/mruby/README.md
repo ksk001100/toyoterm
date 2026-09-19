@@ -65,9 +65,11 @@ ruby "$env:TOYOTERM_ROOT\vendor\mruby\postprocess.rb" windows `
   "$env:TOYOTERM_ROOT\vendor\mruby\mruby-windows.h"
 ```
 
-The postprocessor normalizes generated line endings. For the Windows artifact,
-it also applies the small amalgamation-only include ordering fix required by
-mruby 4.0's Windows IO and Time sources. The individual upstream source files
-compile normally; the fix is needed only after they are concatenated.
+The postprocessor normalizes generated line endings. For the POSIX artifact, it
+restores portable `struct stat` timestamp access after an earlier amalgamated
+source undefines the usual compatibility macros. For the Windows artifact, it
+also applies the small amalgamation-only include ordering fix required by mruby
+4.0's Windows IO and Time sources. The individual upstream source files compile
+normally; these fixes are needed only after they are concatenated.
 
 The source is distributed under the MIT license in `LICENSE`.

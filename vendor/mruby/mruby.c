@@ -108177,20 +108177,13 @@ void GENERATED_TMP_mrb_mruby_io_gem_final(mrb_state *mrb) {
 static void
 convert_stat(const struct stat *src, mrb_io_stat *dst)
 {
-  /* Extract time values FIRST while macros are still defined.
-   * On POSIX systems, st_atime may be a macro for st_atim.tv_sec */
+  /* An earlier amalgamated source undefines the st_*time compatibility
+   * macros, so access the platform's underlying timespec members directly. */
   time_t atime_val, mtime_val, ctime_val;
-#if defined(st_atime)
-  /* st_atime is a macro - use it to extract from src */
-  atime_val = src->st_atime;
-  mtime_val = src->st_mtime;
-  ctime_val = src->st_ctime;
-#elif defined(__APPLE__) || defined(__FreeBSD__) || \
-      defined(__OpenBSD__) || defined(__NetBSD__) || defined(__DragonFly__)
-  /* BSD/macOS: st_atime is typically a direct member */
-  atime_val = src->st_atime;
-  mtime_val = src->st_mtime;
-  ctime_val = src->st_ctime;
+#if defined(__APPLE__) || defined(__NetBSD__)
+  atime_val = src->st_atimespec.tv_sec;
+  mtime_val = src->st_mtimespec.tv_sec;
+  ctime_val = src->st_ctimespec.tv_sec;
 #else
   /* POSIX.1-2008: use st_atim.tv_sec directly */
   atime_val = src->st_atim.tv_sec;
