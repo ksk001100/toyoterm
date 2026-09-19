@@ -57,39 +57,6 @@ fn return_host_error(message: String, error: *mut *mut c_char) -> i32 {
     1
 }
 
-/// Reads a file for the mruby host API. Paths are UTF-8 on every supported platform while file
-/// contents remain arbitrary bytes.
-///
-/// # Safety
-///
-/// `path` must address `path_length` readable bytes. All three out-pointers must be valid for
-/// writes; the caller owns any returned buffer and must release it with the matching free function.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn toyoterm_host_read_file(
-    path: *const u8,
-    path_length: usize,
-    output: *mut *mut u8,
-    output_length: *mut usize,
-    error: *mut *mut c_char,
-) -> i32 {
-    // SAFETY: The C shim supplies a live Ruby string buffer bounded by `path_length`.
-    let path = unsafe { slice::from_raw_parts(path, path_length) };
-    let path = match std::str::from_utf8(path) {
-        Ok(path) => path,
-        Err(_) => return return_host_error("path must be valid UTF-8".to_owned(), error),
-    };
-    match std::fs::read(path) {
-        Ok(bytes) => {
-            return_host_bytes(bytes, output, output_length);
-            0
-        }
-        Err(cause) => return_host_error(
-            format!("read {}: {cause}", Path::new(path).display()),
-            error,
-        ),
-    }
-}
-
 #[cfg(windows)]
 fn normalize_spawn_cwd(cwd: &str) -> std::borrow::Cow<'_, str> {
     let bytes = cwd.as_bytes();

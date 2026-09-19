@@ -2,11 +2,12 @@
 #include <stdint.h>
 #include <string.h>
 
+#ifdef _WIN32
+#include "mruby-windows.h"
+#else
 #include "mruby.h"
+#endif
 
-extern int toyoterm_host_read_file(const uint8_t *path, size_t path_length,
-                                   uint8_t **output, size_t *output_length,
-                                   char **error);
 extern int toyoterm_host_spawn(const uint8_t *const *arguments,
                                const size_t *lengths, size_t count,
                                const uint8_t *cwd, size_t cwd_length,
@@ -255,28 +256,6 @@ static mrb_value integer_array(mrb_state *mrb, const uint64_t *values,
   return array;
 }
 
-static mrb_value host_read_file(mrb_state *mrb, mrb_value self) {
-  (void)self;
-  mrb_value path;
-  mrb_get_args(mrb, "S", &path);
-  uint8_t *output = NULL;
-  size_t output_length = 0;
-  char *error = NULL;
-  int status = toyoterm_host_read_file(
-      (const uint8_t *)RSTRING_PTR(path), (size_t)RSTRING_LEN(path), &output,
-      &output_length, &error);
-  if (status != 0) {
-    mrb_value message = mrb_str_new_cstr(mrb, error == NULL ? "read file failed" : error);
-    toyoterm_host_string_free(error);
-    mrb_exc_raise(mrb, mrb_exc_new_str(mrb, E_RUNTIME_ERROR, message));
-  }
-  mrb_value result =
-      mrb_str_new(mrb, output == NULL ? "" : (const char *)output,
-                  (mrb_int)output_length);
-  toyoterm_host_bytes_free(output, output_length);
-  return result;
-}
-
 static mrb_value host_spawn(mrb_state *mrb, mrb_value self) {
   (void)self;
   mrb_value arguments;
@@ -348,8 +327,6 @@ void toyoterm_mruby_install_host_api(void *state) {
   mrb_state *mrb = (mrb_state *)state;
   int arena_index = mrb_gc_arena_save(mrb);
   struct RClass *module = mrb_module_get(mrb, "Toyoterm");
-  mrb_define_module_function(mrb, module, "__host_read_file", host_read_file,
-                             MRB_ARGS_REQ(1));
   mrb_define_module_function(mrb, module, "__host_spawn", host_spawn,
                              MRB_ARGS_REQ(2));
   mrb_gc_arena_restore(mrb, arena_index);

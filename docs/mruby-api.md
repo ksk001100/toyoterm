@@ -13,29 +13,31 @@ See the [usage guide](usage.md) for CLI commands and troubleshooting, or the
 
 - [Loading configuration](#loading-configuration)
 - [Bundled Ruby libraries](#bundled-ruby-libraries)
+- [Filesystem APIs](#filesystem-apis)
 - [Configuration DSL](#configuration-dsl)
 - [Key bindings](#key-bindings)
 - [Commands and object model](#commands-and-object-model)
 - [Selection overlays](#selection-overlays)
 - [Runtime events](#runtime-events)
 - [Window bars](#window-bars)
-- [Host APIs](#platform-clipboard-environment-files-and-processes)
+- [Host APIs](#platform-clipboard-environment-and-processes)
 - [Plugins and themes](#plugins-and-themes)
 - [Live Ruby console](#live-ruby-console)
 - [Callback execution model](#callback-execution-model)
 
 ## Bundled Ruby libraries
 
-The embedded runtime includes `mruby-error` and the `stdlib`, `stdlib-ext`,
-`math`, and `metaprog` core gemboxes. Their APIs are available directly in
-configuration, callbacks, commands, plugins, and the live console; no `require`
-call is needed.
+The embedded runtime includes `mruby-error`, `mruby-errno`, `mruby-io`, and
+`mruby-dir`, plus the `stdlib`, `stdlib-ext`, `math`, and `metaprog` core
+gemboxes. Their APIs are available directly in configuration, callbacks,
+commands, plugins, and the live console; no `require` call is needed.
 
 | Group | Included capabilities |
 | --- | --- |
 | Collections and iteration | `Set`, `Enumerator`, `Enumerator::Lazy`, `Enumerator::Chain`, and extended `Array`, `Hash`, `Enumerable`, and `Range` methods |
 | Objects and control flow | `Fiber`, `ObjectSpace`, `catch` / `throw`, and extended `Object`, `Kernel`, `Module`, `Class`, `Numeric`, `Symbol`, and top-level methods |
 | Standard data types | `Struct`, `Data`, `Time`, `Random`, `Array#pack`, `String#unpack`, and `sprintf` |
+| Filesystem | `IO`, `File`, and `Dir`, including file I/O, path helpers, directory listing, and globbing |
 | Math | `Math`, `Rational`, `Complex`, and multi-precision integers |
 | Metaprogramming | source compilation and `eval`, `Binding`, `Proc#binding`, reflection, `Method`, and `UnboundMethod` |
 
@@ -65,12 +67,49 @@ rollback rules as the rest of the scripting API. `Method#source_location` is
 available, but may return `nil` because toyoterm does not enable mruby debug
 information in production builds.
 
-OS-dependent `mruby-io`, `mruby-dir`, `mruby-socket`, and `mruby-task` are not
-bundled. Neither are `mruby-sleep`, `mruby-exit`, command binaries, or test gems.
-Use the [host APIs](#platform-clipboard-environment-files-and-processes) for
-files and processes. Keeping platform HAL gems out of the amalgamation preserves
-one runtime build across Linux, macOS, and Windows; it also avoids introducing
-blocking socket or task-scheduler behavior into the single script thread.
+`mruby-socket` and `mruby-task` are not bundled. Neither are `mruby-sleep`,
+`mruby-exit`, command binaries, or test gems. The vendored POSIX and Windows
+amalgamations use mruby's corresponding filesystem HAL. Socket access and an
+additional task scheduler remain outside the runtime model.
+
+## Filesystem APIs
+
+General-purpose filesystem work uses Ruby APIs rather than application-specific
+wrappers. The following methods are available to configuration, plugins,
+callbacks, commands, and the live console:
+
+- `File.read(path, length = nil, offset = 0, mode: "r")`
+- `File.write(path, data, offset = nil, mode: "w")`
+- `File.open`, `File.delete`, `File.rename`, `File.exist?`, `File.file?`,
+  `File.directory?`, `File.size`, and `File.mtime`
+- `File.basename`, `File.dirname`, `File.extname`, `File.join`,
+  `File.expand_path`, and `File.realpath`
+- `Dir.entries`, `Dir.children`, `Dir.glob`, `Dir.pwd`, `Dir.mkdir`,
+  `Dir.chdir`, and `Dir.rmdir`
+
+`Dir.glob(pattern)` accepts a String or an Array of Strings and supports `*`,
+`**`, `?`, and bracket character classes. It returns sorted paths; with a block,
+it yields each path and returns `nil`. mruby 4.0 does not provide `File::Stat`,
+so use `File.size`, `File.mtime`, and the file/directory predicates instead.
+I/O errors use mruby's `SystemCallError` / `Errno` exceptions.
+
+```ruby
+files = Dir.glob(File.join(context.pane.cwd, "**", "*.rb"))
+           .select { |path| File.file?(path) }
+
+Toyoterm.select(title: "Ruby files", items: files) do |file, context|
+  context.pane.send_text("nvim #{file}\n") if file
+end
+```
+
+Ruby configuration and plugins are trusted local code. They can read, write,
+and delete files and launch processes with the same permissions as the
+toyoterm process. They are not sandboxed.
+
+File and directory methods are synchronous. Reading from a network filesystem,
+walking a very large tree, or doing frequent filesystem work in bar or event
+callbacks blocks the single scripting runtime until the operation completes.
+It does not block PTY parsing or rendering, but it delays later Ruby work.
 
 ## Loading configuration
 
@@ -902,7 +941,7 @@ bar.section(:right, separator: " | ") do |section|
   end
 
   section.add do |_ctx|
-    battery = Toyoterm.read_file("/sys/class/power_supply/BAT0/capacity").strip
+    battery = File.read("/sys/class/power_supply/BAT0/capacity").strip
     battery.empty? ? "" : "#{battery}%"
   rescue
     ""
@@ -922,7 +961,7 @@ are omitted without leaving a separator. Use `Toyoterm.supports?(:bar_sections)`
 to detect this API.
 
 
-## Platform, clipboard, environment, files, and processes
+## Platform, clipboard, environment, and processes
 
 Configuration and plugins are trusted code. These APIs are intentionally not
 sandboxed and carry the authority of the toyoterm process.
@@ -942,8 +981,6 @@ sandboxed and carry the authority of the toyoterm process.
   `:windows`. Targets outside those three return `:other`.
 - `Toyoterm.env` returns a copy of the environment captured when the VM was
   created. Non-UTF-8 entries are omitted; changing the Hash affects no process.
-- `Toyoterm.read_file(path)` returns a byte-preserving String. The UTF-8 path
-  must not contain NUL; I/O failures raise `RuntimeError`.
 - `Toyoterm.spawn(program, *args, cwd: nil)` runs synchronously on the script
   thread and captures byte-preserving output. The program, arguments, and a
   non-`nil` `cwd` must be Strings and cannot contain NUL; `cwd` must not be empty. When supplied,

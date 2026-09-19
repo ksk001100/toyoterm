@@ -7,7 +7,7 @@ source and binary releases.
 
 Project: [mruby](https://github.com/mruby/mruby)
 
-Vendored form: amalgamated `mruby.c` and `mruby.h`
+Vendored form: POSIX and Windows amalgamated sources and headers
 
 Source revision: `831da26b9021de0369d17b71b5667e2941a1a32d`
 

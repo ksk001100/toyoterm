@@ -864,6 +864,7 @@ fn exposes_bundled_portable_standard_library_gemboxes() {
                 raise "pack" unless [65, 66].pack("C*").unpack("C*") == [65, 66]
                 raise "sprintf" unless sprintf("%s-%02d", "ruby", 7) == "ruby-07"
                 raise "time" unless Time.at(0).to_i == 0
+                raise "current time" unless Time.now.is_a?(Time)
 
                 random = Random.new(1234).rand(100)
                 raise "random" unless random >= 0 && random < 100
@@ -2045,29 +2046,89 @@ fn exposes_environment_as_an_isolated_string_hash() {
 }
 
 #[test]
-fn read_file_preserves_arbitrary_bytes_and_maps_io_errors() {
-    let unique = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap()
-        .as_nanos();
-    let path = std::env::temp_dir().join(format!(
-        "toyoterm-ruby-read-{}-{unique}.bin",
-        std::process::id()
-    ));
-    std::fs::write(&path, b"left\0\xffright").unwrap();
-    let literal = ruby_string_literal(path.to_str().unwrap());
+fn exposes_standard_file_io_and_path_helpers() {
+    let directory = temporary_test_directory("ruby-file");
+    let file = directory.join("sample.data.rb");
+    let directory_literal = ruby_string_literal(directory.to_str().unwrap());
+    let file_literal = ruby_string_literal(file.to_str().unwrap());
     let mut manager = ConfigManager::new().unwrap();
+
     assert_eq!(
         manager
-            .eval(&format!("Toyoterm.read_file({literal}).bytes.join(',')"))
+            .eval(&format!(
+                r#"path = {file_literal}; written = File.write(path, "hello"); [written, File.read(path), File.exist?(path), File.file?(path), File.directory?({directory_literal}), File.size(path), File.basename(path), File.extname(path), File.basename(File.dirname(path)), File.basename(File.join({directory_literal}, "nested", "child.rb"))].join("|")"#
+            ))
+            .unwrap(),
+        format!(
+            "5|hello|true|true|true|5|sample.data.rb|.rb|{}|child.rb",
+            directory.file_name().unwrap().to_str().unwrap()
+        )
+    );
+    assert_eq!(
+        manager
+            .eval(&format!("File.mtime({file_literal}).is_a?(Time)"))
+            .unwrap(),
+        "true"
+    );
+    std::fs::remove_dir_all(directory).unwrap();
+}
+
+#[test]
+fn file_read_preserves_arbitrary_bytes_and_block_open_closes_descriptors() {
+    let directory = temporary_test_directory("ruby-file-descriptor");
+    let file = directory.join("bytes.bin");
+    std::fs::write(&file, b"left\0\xffright").unwrap();
+    let file_literal = ruby_string_literal(file.to_str().unwrap());
+    let mut manager = ConfigManager::new().unwrap();
+
+    assert_eq!(
+        manager
+            .eval(&format!("File.read({file_literal}).bytes.join(',')"))
             .unwrap(),
         "108,101,102,116,0,255,114,105,103,104,116"
     );
-    std::fs::remove_file(&path).unwrap();
-    let error = manager
-        .eval(&format!("Toyoterm.read_file({literal})"))
-        .unwrap_err();
-    assert!(error.message().contains("read"));
+    assert_eq!(
+        manager
+            .eval(&format!(
+                "1000.times {{ File.open({file_literal}) {{ |file| file.read }} }}; File.delete({file_literal}); File.exist?({file_literal})"
+            ))
+            .unwrap(),
+        "false"
+    );
+
+    std::fs::remove_dir_all(directory).unwrap();
+}
+
+#[test]
+fn exposes_standard_directory_listing_and_globbing() {
+    let directory = temporary_test_directory("ruby-dir");
+    let nested = directory.join("nested");
+    std::fs::create_dir(&nested).unwrap();
+    std::fs::write(directory.join("top.rb"), b"top").unwrap();
+    std::fs::write(directory.join("top.txt"), b"top").unwrap();
+    std::fs::write(nested.join("child.rb"), b"child").unwrap();
+    let directory_literal = ruby_string_literal(directory.to_str().unwrap());
+    let nested_literal = ruby_string_literal(nested.to_str().unwrap());
+    let mut manager = ConfigManager::new().unwrap();
+
+    assert_eq!(
+        manager
+            .eval(&format!(
+                r#"root = {directory_literal}; entries = Dir.entries(root); children = Dir.children(root); direct = Dir.glob(File.join(root, "*.rb")).map {{ |path| File.basename(path) }}; recursive = Dir.glob(File.join(root, "**", "*.rb")).map {{ |path| File.basename(path) }}; [entries.include?("."), entries.include?(".."), children.include?("."), direct.sort.join(","), recursive.sort.join(","), Dir.pwd.empty?].join("|")"#
+            ))
+            .unwrap(),
+        "true|true|false|top.rb|child.rb,top.rb|false"
+    );
+    assert_eq!(
+        manager
+            .eval(&format!(
+                "path = File.join({nested_literal}, 'created'); Dir.mkdir(path); result = File.directory?(path); Dir.rmdir(path); result"
+            ))
+            .unwrap(),
+        "true"
+    );
+
+    std::fs::remove_dir_all(directory).unwrap();
 }
 
 #[cfg(unix)]

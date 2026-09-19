@@ -1621,11 +1621,6 @@ module Toyoterm
     :__TOYOTERM_PLATFORM__
   end
 
-  def self.read_file(path)
-    path = __string(path, "path")
-    __host_read_file(path)
-  end
-
   def self.spawn(program, *args, cwd: nil)
     program = __string(program, "program")
     values = [program] + args.map { |arg| __string(arg, "process argument", false, true) }

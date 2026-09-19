@@ -5,7 +5,9 @@
 ** This file is auto-generated. Do not edit directly.
 */
 
-#include "mruby.h"
+#include "mruby-windows.h"
+#include <winsock2.h>
+#include <io.h>
 
 /* ======== Internal headers ======== */
 /* Forward declarations for amalgamation */
@@ -58063,10 +58065,12 @@ double round(double x) {
 typedef long suseconds_t;
 
 #if (!defined __MINGW64__) && (!defined __MINGW32__)
+#if 0 /* winsock2.h supplies struct timeval */
 struct timeval {
   time_t tv_sec;
   suseconds_t tv_usec;
 };
+#endif
 #endif
 
 /*
@@ -108133,36 +108137,29 @@ void GENERATED_TMP_mrb_mruby_io_gem_final(mrb_state *mrb) {
 #undef peek
 #endif
 
-/* ======== hal-posix-io: src/io_hal.c ======== */
+/* ======== hal-win-io: src/io_hal.c ======== */
 /*
-** io_hal.c - POSIX HAL implementation for mruby-io
+** io_hal.c - Windows HAL implementation for mruby-io
 **
 ** See Copyright Notice in mruby.h
 **
-** POSIX implementation for I/O operations using standard POSIX APIs.
-** Supported platforms: Linux, macOS, BSD, Unix
+** Windows implementation for I/O operations using Win32 APIs.
+** Supported platforms: Windows, MinGW
 */
 
 // #include <mruby.h> - in amalgam header
 // #include "io_hal.h" - in amalgam header
 
+#include <windows.h>
+// #include <io.h> - in amalgam header
+#include <fcntl.h>
 #include <sys/types.h>
 #include <sys/stat.h>
-#include <sys/time.h>
-#include <sys/wait.h>
-#include <sys/file.h>
-#include <sys/param.h>
-
-#include <fcntl.h>
-#include <unistd.h>
 #include <errno.h>
 #include <stdlib.h>
 #include <string.h>
-#include <pwd.h>
-
-#ifndef __DJGPP__
-#include <libgen.h>
-#endif
+#include <direct.h>
+#include <stdint.h>
 
 /* Maximum path length */
 #ifndef PATH_MAX
@@ -108173,58 +108170,50 @@ void GENERATED_TMP_mrb_mruby_io_gem_final(mrb_state *mrb) {
  * Helper Functions
  */
 
-/* Convert POSIX struct stat to mrb_io_stat */
+/* Convert Windows struct _stat64 to mrb_io_stat */
 static void
-convert_stat(const struct stat *src, mrb_io_stat *dst)
+convert_stat(const struct _stat64 *src, mrb_io_stat *dst)
 {
-  /* Extract time values FIRST while macros are still defined.
-   * On POSIX systems, st_atime may be a macro for st_atim.tv_sec */
-  time_t atime_val, mtime_val, ctime_val;
-#if defined(st_atime)
-  /* st_atime is a macro - use it to extract from src */
-  atime_val = src->st_atime;
-  mtime_val = src->st_mtime;
-  ctime_val = src->st_ctime;
-#elif defined(__APPLE__) || defined(__FreeBSD__) || \
-      defined(__OpenBSD__) || defined(__NetBSD__) || defined(__DragonFly__)
-  /* BSD/macOS: st_atime is typically a direct member */
-  atime_val = src->st_atime;
-  mtime_val = src->st_mtime;
-  ctime_val = src->st_ctime;
-#else
-  /* POSIX.1-2008: use st_atim.tv_sec directly */
-  atime_val = src->st_atim.tv_sec;
-  mtime_val = src->st_mtim.tv_sec;
-  ctime_val = src->st_ctim.tv_sec;
-#endif
-
-  /* Undefine macros to avoid interference with mrb_io_stat fields */
-#undef st_atime
-#undef st_mtime
-#undef st_ctime
-
   dst->st_dev = (uint64_t)src->st_dev;
   dst->st_ino = (uint64_t)src->st_ino;
   dst->st_mode = (uint32_t)src->st_mode;
   dst->st_nlink = (uint32_t)src->st_nlink;
-  dst->st_uid = (uint32_t)src->st_uid;
-  dst->st_gid = (uint32_t)src->st_gid;
+  dst->st_uid = 0;  /* Windows doesn't have Unix-style UIDs */
+  dst->st_gid = 0;  /* Windows doesn't have Unix-style GIDs */
   dst->st_rdev = (uint64_t)src->st_rdev;
   dst->st_size = (int64_t)src->st_size;
-  dst->st_atime = (int64_t)atime_val;
-  dst->st_mtime = (int64_t)mtime_val;
-  dst->st_ctime = (int64_t)ctime_val;
-
-#ifdef HAVE_STRUCT_STAT_ST_BLKSIZE
-  dst->st_blksize = (int64_t)src->st_blksize;
-#else
+  dst->st_atime = (int64_t)src->st_atime;
+  dst->st_mtime = (int64_t)src->st_mtime;
+  dst->st_ctime = (int64_t)src->st_ctime;
   dst->st_blksize = 512;
-#endif
-#ifdef HAVE_STRUCT_STAT_ST_BLOCKS
-  dst->st_blocks = (int64_t)src->st_blocks;
-#else
   dst->st_blocks = (dst->st_size + 511) / 512;
-#endif
+}
+
+/* Convert errno to Windows errno */
+static void
+set_errno_from_win_error(DWORD error)
+{
+  switch (error) {
+    case ERROR_FILE_NOT_FOUND:
+    case ERROR_PATH_NOT_FOUND:
+      errno = ENOENT;
+      break;
+    case ERROR_ACCESS_DENIED:
+      errno = EACCES;
+      break;
+    case ERROR_NOT_ENOUGH_MEMORY:
+      errno = ENOMEM;
+      break;
+    case ERROR_INVALID_HANDLE:
+      errno = EBADF;
+      break;
+    case ERROR_ALREADY_EXISTS:
+      errno = EEXIST;
+      break;
+    default:
+      errno = EIO;
+      break;
+  }
 }
 
 /*
@@ -108234,10 +108223,10 @@ convert_stat(const struct stat *src, mrb_io_stat *dst)
 int
 mrb_hal_io_stat(mrb_state *mrb, const char *path, mrb_io_stat *st)
 {
-  struct stat s;
+  struct _stat64 s;
   (void)mrb;
 
-  if (stat(path, &s) == -1) {
+  if (_stat64(path, &s) == -1) {
     return -1;
   }
   convert_stat(&s, st);
@@ -108247,10 +108236,10 @@ mrb_hal_io_stat(mrb_state *mrb, const char *path, mrb_io_stat *st)
 int
 mrb_hal_io_fstat(mrb_state *mrb, int fd, mrb_io_stat *st)
 {
-  struct stat s;
+  struct _stat64 s;
   (void)mrb;
 
-  if (fstat(fd, &s) == -1) {
+  if (_fstat64(fd, &s) == -1) {
     return -1;
   }
   convert_stat(&s, st);
@@ -108260,36 +108249,30 @@ mrb_hal_io_fstat(mrb_state *mrb, int fd, mrb_io_stat *st)
 int
 mrb_hal_io_lstat(mrb_state *mrb, const char *path, mrb_io_stat *st)
 {
-  struct stat s;
-  (void)mrb;
-
-  if (lstat(path, &s) == -1) {
-    return -1;
-  }
-  convert_stat(&s, st);
-  return 0;
+  /* Windows doesn't distinguish lstat from stat */
+  return mrb_hal_io_stat(mrb, path, st);
 }
 
 int
 mrb_hal_io_chmod(mrb_state *mrb, const char *path, uint32_t mode)
 {
   (void)mrb;
-  return chmod(path, (mode_t)mode);
+  return _chmod(path, (int)mode);
 }
 
 uint32_t
 mrb_hal_io_umask(mrb_state *mrb, int32_t mask)
 {
-  mode_t old;
+  int old;
   (void)mrb;
 
   if (mask < 0) {
     /* Just query current value */
-    old = umask(0);
-    umask(old);
+    old = _umask(0);
+    _umask(old);
   }
   else {
-    old = umask((mode_t)mask);
+    old = _umask((int)mask);
   }
   return (uint32_t)old;
 }
@@ -108298,20 +108281,45 @@ int
 mrb_hal_io_ftruncate(mrb_state *mrb, int fd, int64_t length)
 {
   (void)mrb;
-  return ftruncate(fd, (off_t)length);
+  return _chsize_s(fd, length);
 }
 
 int
 mrb_hal_io_flock(mrb_state *mrb, int fd, int operation)
 {
+  HANDLE h;
+  OVERLAPPED overlapped;
+  DWORD flags = 0;
   (void)mrb;
 
-  while (flock(fd, operation) == -1) {
-    if (errno == EINTR) {
-      continue;  /* Retry on interrupt */
-    }
+  h = (HANDLE)_get_osfhandle(fd);
+  if (h == INVALID_HANDLE_VALUE) {
+    errno = EBADF;
     return -1;
   }
+
+  memset(&overlapped, 0, sizeof(overlapped));
+
+  if (operation & MRB_IO_LOCK_UN) {
+    if (!UnlockFileEx(h, 0, MAXDWORD, MAXDWORD, &overlapped)) {
+      set_errno_from_win_error(GetLastError());
+      return -1;
+    }
+    return 0;
+  }
+
+  if (operation & MRB_IO_LOCK_EX) {
+    flags |= LOCKFILE_EXCLUSIVE_LOCK;
+  }
+  if (operation & MRB_IO_LOCK_NB) {
+    flags |= LOCKFILE_FAIL_IMMEDIATELY;
+  }
+
+  if (!LockFileEx(h, flags, 0, MAXDWORD, MAXDWORD, &overlapped)) {
+    set_errno_from_win_error(GetLastError());
+    return -1;
+  }
+
   return 0;
 }
 
@@ -108319,7 +108327,7 @@ int
 mrb_hal_io_unlink(mrb_state *mrb, const char *path)
 {
   (void)mrb;
-  return unlink(path);
+  return _unlink(path);
 }
 
 int
@@ -108332,32 +108340,43 @@ mrb_hal_io_rename(mrb_state *mrb, const char *oldpath, const char *newpath)
 int
 mrb_hal_io_symlink(mrb_state *mrb, const char *target, const char *linkpath)
 {
-  (void)mrb;
-  return symlink(target, linkpath);
+  (void)target;
+  (void)linkpath;
+  /* Symlinks require special privileges on Windows */
+  mrb_raise(mrb, E_NOTIMP_ERROR, "symlink is not supported on Windows");
+  return -1;  /* not reached */
 }
 
 int64_t
 mrb_hal_io_readlink(mrb_state *mrb, const char *path, char *buf, size_t bufsize)
 {
-  ssize_t rc;
-  (void)mrb;
-
-  rc = readlink(path, buf, bufsize);
-  return (int64_t)rc;
+  (void)path;
+  (void)buf;
+  (void)bufsize;
+  /* Symlinks require special handling on Windows */
+  mrb_raise(mrb, E_NOTIMP_ERROR, "readlink is not supported on Windows");
+  return -1;  /* not reached */
 }
 
 char*
 mrb_hal_io_realpath(mrb_state *mrb, const char *path, char *resolved)
 {
+  DWORD ret;
   (void)mrb;
-  return realpath(path, resolved);
+
+  ret = GetFullPathName(path, PATH_MAX, resolved, NULL);
+  if (ret == 0 || ret >= PATH_MAX) {
+    set_errno_from_win_error(GetLastError());
+    return NULL;
+  }
+  return resolved;
 }
 
 char*
 mrb_hal_io_getcwd(mrb_state *mrb, char *buf, size_t size)
 {
   (void)mrb;
-  return getcwd(buf, size);
+  return _getcwd(buf, (int)size);
 }
 
 const char*
@@ -108371,23 +108390,26 @@ const char*
 mrb_hal_io_gethome(mrb_state *mrb, const char *username)
 {
   const char *home;
+  (void)mrb;
 
-  if (username == NULL || *username == '\0') {
-    /* Get current user's home */
-    home = getenv("HOME");
-    if (home == NULL) {
-      errno = ENOENT;
-      return NULL;
-    }
+  if (username != NULL && *username != '\0') {
+    /* Windows doesn't have a simple way to get other users' home directories */
+    errno = ENOSYS;
+    return NULL;
   }
-  else {
-    /* Get specified user's home */
-    struct passwd *pwd = getpwnam(username);
-    if (pwd == NULL) {
-      errno = ENOENT;
-      return NULL;
+
+  /* Try USERPROFILE first, then HOMEDRIVE+HOMEPATH */
+  home = getenv("USERPROFILE");
+  if (home == NULL) {
+    const char *homedrive = getenv("HOMEDRIVE");
+    const char *homepath = getenv("HOMEPATH");
+    if (homedrive && homepath) {
+      static char homebuf[PATH_MAX];
+      snprintf(homebuf, PATH_MAX, "%s%s", homedrive, homepath);
+      return homebuf;
     }
-    home = pwd->pw_dir;
+    errno = ENOENT;
+    return NULL;
   }
 
   return home;
@@ -108403,20 +108425,16 @@ mrb_hal_io_open(mrb_state *mrb, const char *path, int flags, uint32_t mode)
   int fd;
   (void)mrb;
 
-  fd = open(path, flags, (mode_t)mode);
+  /* Windows uses _open with slightly different flags */
+  fd = _open(path, flags | _O_BINARY, (int)mode);
   if (fd == -1) {
     return -1;
   }
 
   /* Set close-on-exec for non-standard descriptors */
-#if defined(F_GETFD) && defined(F_SETFD) && defined(FD_CLOEXEC)
   if (fd > 2) {
-    int fd_flags = fcntl(fd, F_GETFD);
-    if (fd_flags != -1) {
-      fcntl(fd, F_SETFD, fd_flags | FD_CLOEXEC);
-    }
+    SetHandleInformation((HANDLE)_get_osfhandle(fd), HANDLE_FLAG_INHERIT, 0);
   }
-#endif
 
   return fd;
 }
@@ -108425,47 +108443,47 @@ int
 mrb_hal_io_close(mrb_state *mrb, int fd)
 {
   (void)mrb;
-  return close(fd);
+  return _close(fd);
 }
 
 int64_t
 mrb_hal_io_read(mrb_state *mrb, int fd, void *buf, size_t count)
 {
-  ssize_t n;
+  int n;
   (void)mrb;
 
-  n = read(fd, buf, count);
+  n = _read(fd, buf, (unsigned int)count);
   return (int64_t)n;
 }
 
 int64_t
 mrb_hal_io_write(mrb_state *mrb, int fd, const void *buf, size_t count)
 {
-  ssize_t n;
+  int n;
   (void)mrb;
 
-  n = write(fd, buf, count);
+  n = _write(fd, buf, (unsigned int)count);
   return (int64_t)n;
 }
 
 int64_t
 mrb_hal_io_lseek(mrb_state *mrb, int fd, int64_t offset, int whence)
 {
-  off_t pos;
-  int posix_whence;
+  __int64 pos;
+  int win_whence;
   (void)mrb;
 
-  /* Convert MRB_IO_SEEK_* to POSIX SEEK_* */
+  /* Convert MRB_IO_SEEK_* to Windows SEEK_* */
   switch (whence) {
-    case MRB_IO_SEEK_SET: posix_whence = SEEK_SET; break;
-    case MRB_IO_SEEK_CUR: posix_whence = SEEK_CUR; break;
-    case MRB_IO_SEEK_END: posix_whence = SEEK_END; break;
+    case MRB_IO_SEEK_SET: win_whence = SEEK_SET; break;
+    case MRB_IO_SEEK_CUR: win_whence = SEEK_CUR; break;
+    case MRB_IO_SEEK_END: win_whence = SEEK_END; break;
     default:
       errno = EINVAL;
       return -1;
   }
 
-  pos = lseek(fd, (off_t)offset, posix_whence);
+  pos = _lseeki64(fd, (__int64)offset, win_whence);
   return (int64_t)pos;
 }
 
@@ -108475,20 +108493,15 @@ mrb_hal_io_dup(mrb_state *mrb, int fd)
   int new_fd;
   (void)mrb;
 
-  new_fd = dup(fd);
+  new_fd = _dup(fd);
   if (new_fd == -1) {
     return -1;
   }
 
   /* Set close-on-exec */
-#if defined(F_GETFD) && defined(F_SETFD) && defined(FD_CLOEXEC)
   if (new_fd > 2) {
-    int fd_flags = fcntl(new_fd, F_GETFD);
-    if (fd_flags != -1) {
-      fcntl(new_fd, F_SETFD, fd_flags | FD_CLOEXEC);
-    }
+    SetHandleInformation((HANDLE)_get_osfhandle(new_fd), HANDLE_FLAG_INHERIT, 0);
   }
-#endif
 
   return new_fd;
 }
@@ -108496,15 +108509,20 @@ mrb_hal_io_dup(mrb_state *mrb, int fd)
 int
 mrb_hal_io_fcntl(mrb_state *mrb, int fd, int cmd, int arg)
 {
+  /* Windows has limited fcntl support */
   (void)mrb;
-  return fcntl(fd, cmd, arg);
+  (void)fd;
+  (void)cmd;
+  (void)arg;
+  errno = ENOSYS;
+  return -1;
 }
 
 int
 mrb_hal_io_isatty(mrb_state *mrb, int fd)
 {
   (void)mrb;
-  return isatty(fd) ? 1 : 0;
+  return _isatty(fd) ? 1 : 0;
 }
 
 int
@@ -108513,20 +108531,14 @@ mrb_hal_io_pipe(mrb_state *mrb, int fds[2])
   int ret;
   (void)mrb;
 
-  ret = pipe(fds);
+  ret = _pipe(fds, 4096, _O_BINARY);
   if (ret == -1) {
     return -1;
   }
 
   /* Set close-on-exec on both ends */
-#if defined(F_GETFD) && defined(F_SETFD) && defined(FD_CLOEXEC)
-  for (int i = 0; i < 2; i++) {
-    int fd_flags = fcntl(fds[i], F_GETFD);
-    if (fd_flags != -1) {
-      fcntl(fds[i], F_SETFD, fd_flags | FD_CLOEXEC);
-    }
-  }
-#endif
+  SetHandleInformation((HANDLE)_get_osfhandle(fds[0]), HANDLE_FLAG_INHERIT, 0);
+  SetHandleInformation((HANDLE)_get_osfhandle(fds[1]), HANDLE_FLAG_INHERIT, 0);
 
   return 0;
 }
@@ -108540,7 +108552,13 @@ mrb_hal_io_spawn_process(mrb_state *mrb, const char *cmd,
                           int stdin_fd, int stdout_fd, int stderr_fd,
                           int *pid)
 {
-  pid_t child_pid;
+  STARTUPINFO si;
+  PROCESS_INFORMATION pi;
+  HANDLE h_stdin = INVALID_HANDLE_VALUE;
+  HANDLE h_stdout = INVALID_HANDLE_VALUE;
+  HANDLE h_stderr = INVALID_HANDLE_VALUE;
+  char cmdline[8192];
+  BOOL ret;
   (void)mrb;
 
   /* Skip leading whitespace */
@@ -108553,69 +108571,98 @@ mrb_hal_io_spawn_process(mrb_state *mrb, const char *cmd,
     return -1;
   }
 
-  child_pid = fork();
-  if (child_pid == -1) {
-    /* Fork failed */
+  /* Build command line - use cmd.exe to execute */
+  snprintf(cmdline, sizeof(cmdline), "cmd.exe /c %s", cmd);
+
+  /* Setup startup info */
+  memset(&si, 0, sizeof(si));
+  si.cb = sizeof(si);
+  si.dwFlags = STARTF_USESTDHANDLES;
+
+  /* Convert file descriptors to handles and make them inheritable */
+  if (stdin_fd != -1) {
+    h_stdin = (HANDLE)_get_osfhandle(stdin_fd);
+    SetHandleInformation(h_stdin, HANDLE_FLAG_INHERIT, HANDLE_FLAG_INHERIT);
+    si.hStdInput = h_stdin;
+  }
+  else {
+    si.hStdInput = GetStdHandle(STD_INPUT_HANDLE);
+  }
+
+  if (stdout_fd != -1) {
+    h_stdout = (HANDLE)_get_osfhandle(stdout_fd);
+    SetHandleInformation(h_stdout, HANDLE_FLAG_INHERIT, HANDLE_FLAG_INHERIT);
+    si.hStdOutput = h_stdout;
+  }
+  else {
+    si.hStdOutput = GetStdHandle(STD_OUTPUT_HANDLE);
+  }
+
+  if (stderr_fd != -1) {
+    h_stderr = (HANDLE)_get_osfhandle(stderr_fd);
+    SetHandleInformation(h_stderr, HANDLE_FLAG_INHERIT, HANDLE_FLAG_INHERIT);
+    si.hStdError = h_stderr;
+  }
+  else {
+    si.hStdError = GetStdHandle(STD_ERROR_HANDLE);
+  }
+
+  /* Create process */
+  memset(&pi, 0, sizeof(pi));
+  ret = CreateProcess(NULL, cmdline, NULL, NULL, TRUE, 0, NULL, NULL, &si, &pi);
+
+  if (!ret) {
+    set_errno_from_win_error(GetLastError());
     return -1;
   }
 
-  if (child_pid == 0) {
-    /* Child process */
+  /* Close thread handle - we don't need it */
+  CloseHandle(pi.hThread);
 
-    /* Redirect stdin */
-    if (stdin_fd != -1) {
-      dup2(stdin_fd, STDIN_FILENO);
-      if (stdin_fd > 2) close(stdin_fd);
-    }
+  /* Store process handle as PID (will be used in waitpid) */
+  *pid = (int)(intptr_t)pi.hProcess;
 
-    /* Redirect stdout */
-    if (stdout_fd != -1) {
-      dup2(stdout_fd, STDOUT_FILENO);
-      if (stdout_fd > 2) close(stdout_fd);
-    }
-
-    /* Redirect stderr */
-    if (stderr_fd != -1) {
-      dup2(stderr_fd, STDERR_FILENO);
-      if (stderr_fd > 2) close(stderr_fd);
-    }
-
-    /* Close all other file descriptors */
-    int max_fd = sysconf(_SC_OPEN_MAX);
-    if (max_fd == -1) max_fd = 1024;
-    for (int i = 3; i < max_fd; i++) {
-      close(i);
-    }
-
-    /* Execute command via shell */
-    execl("/bin/sh", "sh", "-c", cmd, (char*)NULL);
-
-    /* If execl returns, it failed */
-    _exit(127);
-  }
-
-  /* Parent process */
-  *pid = (int)child_pid;
   return 0;
 }
 
 int
 mrb_hal_io_waitpid(mrb_state *mrb, int pid, int *status, int options)
 {
-  pid_t result;
-  int stat;
+  HANDLE h = (HANDLE)(intptr_t)pid;
+  DWORD wait_result;
+  DWORD exit_code;
+  DWORD timeout;
   (void)mrb;
 
-  result = waitpid((pid_t)pid, &stat, options);
-  if (result == -1) {
+  /* Convert options to timeout */
+  timeout = (options != 0) ? 0 : INFINITE;
+
+  wait_result = WaitForSingleObject(h, timeout);
+
+  if (wait_result == WAIT_TIMEOUT) {
+    return 0;  /* Non-blocking wait, no change */
+  }
+
+  if (wait_result != WAIT_OBJECT_0) {
+    set_errno_from_win_error(GetLastError());
+    return -1;
+  }
+
+  /* Get exit code */
+  if (!GetExitCodeProcess(h, &exit_code)) {
+    set_errno_from_win_error(GetLastError());
     return -1;
   }
 
   if (status != NULL) {
-    *status = stat;
+    /* Store exit code in status (shifted to match Unix convention) */
+    *status = (int)(exit_code << 8);
   }
 
-  return (int)result;
+  /* Close process handle */
+  CloseHandle(h);
+
+  return pid;
 }
 
 /*
@@ -108655,10 +108702,11 @@ void
 mrb_hal_io_fdset_set(mrb_state *mrb, int fd, mrb_io_fdset *fdset)
 {
   (void)mrb;
-  if (fd < 0 || fd >= FD_SETSIZE) {
-    mrb_raise(mrb, E_ARGUMENT_ERROR, "fd is out of range");
-    return;
+  if (fdset->fds.fd_count >= FD_SETSIZE) {
+      mrb_raise(mrb, E_ARGUMENT_ERROR, "too many sockets for fd_set");
+      return;
   }
+
   if (fdset) {
     FD_SET(fd, &fdset->fds);
   }
@@ -108668,10 +108716,6 @@ int
 mrb_hal_io_fdset_isset(mrb_state *mrb, int fd, mrb_io_fdset *fdset)
 {
   (void)mrb;
-  if (fd < 0 || fd >= FD_SETSIZE) {
-    mrb_raise(mrb, E_ARGUMENT_ERROR, "fd is out of range");
-    return 0;
-  }
   if (fdset) {
     return FD_ISSET(fd, &fdset->fds);
   }
@@ -108691,14 +108735,15 @@ mrb_hal_io_select(mrb_state *mrb, int nfds,
   struct timeval *tv = NULL;
   struct timeval tv_storage;
   (void)mrb;
+  (void)nfds;  /* Windows select() doesn't use nfds */
 
   if (timeout) {
-    tv_storage.tv_sec = (time_t)timeout->tv_sec;
-    tv_storage.tv_usec = (suseconds_t)timeout->tv_usec;
+    tv_storage.tv_sec = (long)timeout->tv_sec;
+    tv_storage.tv_usec = (long)timeout->tv_usec;
     tv = &tv_storage;
   }
 
-  return select(nfds, r, w, e, tv);
+  return select(0, r, w, e, tv);
 }
 
 /*
@@ -108709,14 +108754,17 @@ void
 mrb_hal_io_init(mrb_state *mrb)
 {
   (void)mrb;
-  /* No special initialization needed for POSIX */
+  /* Initialize Winsock for select() support */
+  WSADATA wsaData;
+  WSAStartup(MAKEWORD(2, 2), &wsaData);
 }
 
 void
 mrb_hal_io_final(mrb_state *mrb)
 {
   (void)mrb;
-  /* No special cleanup needed for POSIX */
+  /* Cleanup Winsock */
+  WSACleanup();
 }
 
 /*
@@ -108724,20 +108772,20 @@ mrb_hal_io_final(mrb_state *mrb)
  */
 
 void
-mrb_hal_posix_io_gem_init(mrb_state *mrb)
+mrb_hal_win_io_gem_init(mrb_state *mrb)
 {
   (void)mrb;
   /* HAL interface functions are called by mruby-io gem */
 }
 
 void
-mrb_hal_posix_io_gem_final(mrb_state *mrb)
+mrb_hal_win_io_gem_final(mrb_state *mrb)
 {
   (void)mrb;
   /* Cleanup handled by mrb_hal_io_final called from mruby-io */
 }
 
-/* ======== hal-posix-io: gem_init.c ======== */
+/* ======== hal-win-io: gem_init.c ======== */
 /*
  * This file is loading the irep
  * Ruby GEM code.
@@ -108749,18 +108797,18 @@ mrb_hal_posix_io_gem_final(mrb_state *mrb)
  *   All manual changes will get lost.
  */
 // #include <mruby.h> - in amalgam header
-void mrb_hal_posix_io_gem_init(mrb_state *mrb);
-void mrb_hal_posix_io_gem_final(mrb_state *mrb);
+void mrb_hal_win_io_gem_init(mrb_state *mrb);
+void mrb_hal_win_io_gem_final(mrb_state *mrb);
 
-void GENERATED_TMP_mrb_hal_posix_io_gem_init(mrb_state *mrb) {
-  mrb_hal_posix_io_gem_init(mrb);
+void GENERATED_TMP_mrb_hal_win_io_gem_init(mrb_state *mrb) {
+  mrb_hal_win_io_gem_init(mrb);
 }
 
-void GENERATED_TMP_mrb_hal_posix_io_gem_final(mrb_state *mrb) {
-  mrb_hal_posix_io_gem_final(mrb);
+void GENERATED_TMP_mrb_hal_win_io_gem_final(mrb_state *mrb) {
+  mrb_hal_win_io_gem_final(mrb);
 }
 
-/* Cleanup macros from hal-posix-io to avoid conflicts */
+/* Cleanup macros from hal-win-io to avoid conflicts */
 #ifdef mrb_stat
 #undef mrb_stat
 #endif
@@ -109519,32 +109567,38 @@ void GENERATED_TMP_mrb_mruby_dir_gem_final(mrb_state *mrb) {
 #undef peek
 #endif
 
-/* ======== hal-posix-dir: src/dir_hal.c ======== */
+/* ======== hal-win-dir: src/dir_hal.c ======== */
 /*
-** dir_hal.c - POSIX HAL implementation for mruby-dir
+** dir_hal.c - Windows HAL implementation for mruby-dir
 **
 ** See Copyright Notice in mruby.h
 **
-** POSIX implementation for directory operations using standard POSIX APIs.
-** Supported platforms: Linux, macOS, BSD, Unix
+** Windows implementation for directory operations using _findfirst/_findnext APIs.
+** Provides POSIX-compatible interface on Windows.
+**
+** Based on dirent.c by Kevlin Henney (kevlin@acm.org, kevlin@curbralan.com)
+** Original implementation: Created March 1997. Updated June 2003 and July 2012.
+** See end of file for Kevlin Henney's copyright notice.
 */
 
 // #include <mruby.h> - in amalgam header
 // #include "dir_hal.h" - in amalgam header
 
+#include <windows.h>
+#include <direct.h>
+// #include <io.h> - in amalgam header
 #include <sys/types.h>
 #include <sys/stat.h>
-#include <dirent.h>
-#include <unistd.h>
 #include <errno.h>
+#include <stdlib.h>
+#include <string.h>
 
-#ifdef HAVE_SYS_PARAM_H
-#include <sys/param.h>
-#endif
-
-/* On POSIX, mrb_dir_handle wraps DIR */
+/* Windows directory handle implementation */
 struct mrb_dir_handle {
-  DIR *dir;
+  intptr_t handle;          /* _findfirst/_findnext handle */
+  struct _finddata_t info;  /* Current entry info */
+  char *pattern;            /* Search pattern with wildcard */
+  int first;                /* Flag: haven't read first entry yet */
 };
 
 /*
@@ -109554,21 +109608,46 @@ struct mrb_dir_handle {
 mrb_dir_handle*
 mrb_hal_dir_open(mrb_state *mrb, const char *path)
 {
-  DIR *dir = opendir(path);
-  if (dir == NULL) {
+  mrb_dir_handle *handle;
+  size_t len = strlen(path);
+  const char *suffix;
+
+  /* Add wildcard suffix if needed */
+  suffix = (len > 0 && (path[len-1] == '/' || path[len-1] == '\\')) ? "*" : "/*";
+
+  handle = (mrb_dir_handle*)mrb_malloc(mrb, sizeof(mrb_dir_handle));
+  handle->pattern = (char*)mrb_malloc(mrb, len + strlen(suffix) + 1);
+  strcpy(handle->pattern, path);
+  strcat(handle->pattern, suffix);
+
+  handle->handle = _findfirst(handle->pattern, &handle->info);
+  if (handle->handle == -1) {
+    mrb_free(mrb, handle->pattern);
+    mrb_free(mrb, handle);
     return NULL;
   }
 
-  mrb_dir_handle *handle = (mrb_dir_handle*)mrb_malloc(mrb, sizeof(mrb_dir_handle));
-  handle->dir = dir;
+  handle->first = 1;
   return handle;
 }
 
 int
 mrb_hal_dir_close(mrb_state *mrb, mrb_dir_handle *handle)
 {
-  int result = closedir(handle->dir);
+  int result = -1;
+
+  if (handle->handle != -1) {
+    result = _findclose(handle->handle);
+  }
+
+  mrb_free(mrb, handle->pattern);
   mrb_free(mrb, handle);
+
+  if (result == -1) {
+    /* Map all errors to EBADF */
+    errno = EBADF;
+  }
+
   return result;
 }
 
@@ -109576,15 +109655,40 @@ const char*
 mrb_hal_dir_read(mrb_state *mrb, mrb_dir_handle *handle)
 {
   (void)mrb;
-  struct dirent *dp = readdir(handle->dir);
-  return dp ? dp->d_name : NULL;
+
+  if (handle->handle == -1) {
+    errno = EBADF;
+    return NULL;
+  }
+
+  /* First call returns the result from _findfirst */
+  if (handle->first) {
+    handle->first = 0;
+    return handle->info.name;
+  }
+
+  /* Subsequent calls use _findnext */
+  if (_findnext(handle->handle, &handle->info) == -1) {
+    return NULL;
+  }
+
+  return handle->info.name;
 }
 
 void
 mrb_hal_dir_rewind(mrb_state *mrb, mrb_dir_handle *handle)
 {
   (void)mrb;
-  rewinddir(handle->dir);
+
+  if (handle->handle == -1) {
+    errno = EBADF;
+    return;
+  }
+
+  /* Close and reopen to rewind */
+  _findclose(handle->handle);
+  handle->handle = _findfirst(handle->pattern, &handle->info);
+  handle->first = 1;
 }
 
 /*
@@ -109594,30 +109698,19 @@ mrb_hal_dir_rewind(mrb_state *mrb, mrb_dir_handle *handle)
 int
 mrb_hal_dir_seek(mrb_state *mrb, mrb_dir_handle *handle, long pos)
 {
-#if defined(__ANDROID__)
-  /* Android doesn't have reliable seekdir */
+  /* Not supported on Windows */
   (void)mrb; (void)handle; (void)pos;
   errno = ENOSYS;
   return -1;
-#else
-  (void)mrb;
-  seekdir(handle->dir, pos);
-  return 0;
-#endif
 }
 
 long
 mrb_hal_dir_tell(mrb_state *mrb, mrb_dir_handle *handle)
 {
-#if defined(__ANDROID__)
-  /* Android doesn't have reliable telldir */
+  /* Not supported on Windows */
   (void)mrb; (void)handle;
   errno = ENOSYS;
   return -1;
-#else
-  (void)mrb;
-  return telldir(handle->dir);
-#endif
 }
 
 /*
@@ -109627,52 +109720,48 @@ mrb_hal_dir_tell(mrb_state *mrb, mrb_dir_handle *handle)
 int
 mrb_hal_dir_mkdir(mrb_state *mrb, const char *path, int mode)
 {
-  (void)mrb;
-  return mkdir(path, (mode_t)mode);
+  /* Windows _mkdir ignores mode parameter */
+  (void)mrb; (void)mode;
+  return _mkdir(path);
 }
 
 int
 mrb_hal_dir_rmdir(mrb_state *mrb, const char *path)
 {
   (void)mrb;
-  return rmdir(path);
+  return _rmdir(path);
 }
 
 int
 mrb_hal_dir_chdir(mrb_state *mrb, const char *path)
 {
   (void)mrb;
-  return chdir(path);
+  return _chdir(path);
 }
 
 int
 mrb_hal_dir_getcwd(mrb_state *mrb, char *buf, size_t size)
 {
   (void)mrb;
-  return getcwd(buf, size) ? 0 : -1;
+  return _getcwd(buf, (int)size) ? 0 : -1;
 }
 
 int
 mrb_hal_dir_chroot(mrb_state *mrb, const char *path)
 {
-#if defined(__ANDROID__) || defined(__MSDOS__)
-  /* Not available on these platforms */
+  /* Not available on Windows */
   (void)mrb; (void)path;
   errno = ENOSYS;
   return -1;
-#else
-  (void)mrb;
-  return chroot(path);
-#endif
 }
 
 int
 mrb_hal_dir_is_directory(mrb_state *mrb, const char *path)
 {
-  struct stat sb;
+  struct _stat sb;
   (void)mrb;
 
-  if (stat(path, &sb) == 0 && S_ISDIR(sb.st_mode)) {
+  if (_stat(path, &sb) == 0 && (sb.st_mode & _S_IFDIR)) {
     return 1;
   }
   return 0;
@@ -109686,14 +109775,14 @@ void
 mrb_hal_dir_init(mrb_state *mrb)
 {
   (void)mrb;
-  /* No initialization needed for POSIX */
+  /* No initialization needed for Windows */
 }
 
 void
 mrb_hal_dir_final(mrb_state *mrb)
 {
   (void)mrb;
-  /* No cleanup needed for POSIX */
+  /* No cleanup needed for Windows */
 }
 
 /*
@@ -109701,20 +109790,35 @@ mrb_hal_dir_final(mrb_state *mrb)
  */
 
 void
-mrb_hal_posix_dir_gem_init(mrb_state *mrb)
+mrb_hal_win_dir_gem_init(mrb_state *mrb)
 {
   (void)mrb;
   /* HAL interface functions are called by mruby-dir gem */
 }
 
 void
-mrb_hal_posix_dir_gem_final(mrb_state *mrb)
+mrb_hal_win_dir_gem_final(mrb_state *mrb)
 {
   (void)mrb;
   /* Cleanup handled by mrb_hal_dir_final called from mruby-dir */
 }
 
-/* ======== hal-posix-dir: gem_init.c ======== */
+/*
+** Portions derived from dirent.c by Kevlin Henney:
+**
+** Copyright Kevlin Henney, 1997, 2003, 2012. All rights reserved.
+**
+** Permission to use, copy, modify, and distribute this software and its
+** documentation for any purpose is hereby granted without fee, provided
+** that this copyright and permissions notice appear in all copies and
+** derivatives.
+**
+** This software is supplied "as is" without express or implied warranty.
+**
+** But that said, if there are any problems please get in touch.
+*/
+
+/* ======== hal-win-dir: gem_init.c ======== */
 /*
  * This file is loading the irep
  * Ruby GEM code.
@@ -109726,18 +109830,18 @@ mrb_hal_posix_dir_gem_final(mrb_state *mrb)
  *   All manual changes will get lost.
  */
 // #include <mruby.h> - in amalgam header
-void mrb_hal_posix_dir_gem_init(mrb_state *mrb);
-void mrb_hal_posix_dir_gem_final(mrb_state *mrb);
+void mrb_hal_win_dir_gem_init(mrb_state *mrb);
+void mrb_hal_win_dir_gem_final(mrb_state *mrb);
 
-void GENERATED_TMP_mrb_hal_posix_dir_gem_init(mrb_state *mrb) {
-  mrb_hal_posix_dir_gem_init(mrb);
+void GENERATED_TMP_mrb_hal_win_dir_gem_init(mrb_state *mrb) {
+  mrb_hal_win_dir_gem_init(mrb);
 }
 
-void GENERATED_TMP_mrb_hal_posix_dir_gem_final(mrb_state *mrb) {
-  mrb_hal_posix_dir_gem_final(mrb);
+void GENERATED_TMP_mrb_hal_win_dir_gem_final(mrb_state *mrb) {
+  mrb_hal_win_dir_gem_final(mrb);
 }
 
-/* Cleanup macros from hal-posix-dir to avoid conflicts */
+/* Cleanup macros from hal-win-dir to avoid conflicts */
 #ifdef mrb_stat
 #undef mrb_stat
 #endif
@@ -110351,12 +110455,12 @@ void GENERATED_TMP_mrb_mruby_errno_gem_init(mrb_state*);
 void GENERATED_TMP_mrb_mruby_errno_gem_final(mrb_state*);
 void GENERATED_TMP_mrb_mruby_io_gem_init(mrb_state*);
 void GENERATED_TMP_mrb_mruby_io_gem_final(mrb_state*);
-void GENERATED_TMP_mrb_hal_posix_io_gem_init(mrb_state*);
-void GENERATED_TMP_mrb_hal_posix_io_gem_final(mrb_state*);
+void GENERATED_TMP_mrb_hal_win_io_gem_init(mrb_state*);
+void GENERATED_TMP_mrb_hal_win_io_gem_final(mrb_state*);
 void GENERATED_TMP_mrb_mruby_dir_gem_init(mrb_state*);
 void GENERATED_TMP_mrb_mruby_dir_gem_final(mrb_state*);
-void GENERATED_TMP_mrb_hal_posix_dir_gem_init(mrb_state*);
-void GENERATED_TMP_mrb_hal_posix_dir_gem_final(mrb_state*);
+void GENERATED_TMP_mrb_hal_win_dir_gem_init(mrb_state*);
+void GENERATED_TMP_mrb_hal_win_dir_gem_final(mrb_state*);
 void GENERATED_TMP_mrb_toyoterm_filesystem_ext_gem_init(mrb_state*);
 void GENERATED_TMP_mrb_toyoterm_filesystem_ext_gem_final(mrb_state*);
 
@@ -110401,9 +110505,9 @@ static const struct {
   { GENERATED_TMP_mrb_mruby_proc_binding_gem_init, GENERATED_TMP_mrb_mruby_proc_binding_gem_final },
   { GENERATED_TMP_mrb_mruby_errno_gem_init, GENERATED_TMP_mrb_mruby_errno_gem_final },
   { GENERATED_TMP_mrb_mruby_io_gem_init, GENERATED_TMP_mrb_mruby_io_gem_final },
-  { GENERATED_TMP_mrb_hal_posix_io_gem_init, GENERATED_TMP_mrb_hal_posix_io_gem_final },
+  { GENERATED_TMP_mrb_hal_win_io_gem_init, GENERATED_TMP_mrb_hal_win_io_gem_final },
   { GENERATED_TMP_mrb_mruby_dir_gem_init, GENERATED_TMP_mrb_mruby_dir_gem_final },
-  { GENERATED_TMP_mrb_hal_posix_dir_gem_init, GENERATED_TMP_mrb_hal_posix_dir_gem_final },
+  { GENERATED_TMP_mrb_hal_win_dir_gem_init, GENERATED_TMP_mrb_hal_win_dir_gem_final },
   { GENERATED_TMP_mrb_toyoterm_filesystem_ext_gem_init, GENERATED_TMP_mrb_toyoterm_filesystem_ext_gem_final },
 };
 

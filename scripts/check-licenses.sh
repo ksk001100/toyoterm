@@ -11,6 +11,8 @@ vendor/mruby/LICENSE
 vendor/mruby/README.md
 vendor/mruby/mruby.c
 vendor/mruby/mruby.h
+vendor/mruby/mruby-windows.c
+vendor/mruby/mruby-windows.h
 vendor/conpty/LICENSE
 vendor/conpty/README.md
 vendor/conpty/win-x64/conpty.dll

@@ -90,9 +90,9 @@ including multiline definitions and variables retained between entries.
 Configuration and plugins are trusted code with filesystem, process,
 environment, and clipboard access. They are not sandboxed. The embedded runtime
 is mruby, so the complete CRuby standard library and gems are not available.
-The bundled runtime includes mruby's portable standard-library, math, and
-metaprogramming APIs; see the API reference for details. Platform-dependent
-I/O and socket gems remain excluded in favor of toyoterm's host APIs.
+The bundled runtime includes mruby's standard-library, math, metaprogramming,
+and filesystem APIs. Use ordinary Ruby `File` and `Dir` methods for filesystem
+work; socket APIs remain excluded. See the API reference for details.
 External commands can be captured synchronously with `Toyoterm.spawn`, or run in
 the background without blocking the script thread via `Toyoterm.async`. It
 returns an `AsyncTask` that can be retained in a widget closure without global
