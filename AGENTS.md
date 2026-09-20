@@ -7,9 +7,9 @@ toyoterm safely. It applies to the whole repository.
 
 toyoterm is an experimental terminal emulator written in Rust (edition 2024).
 The terminal hot path is native; embedded mruby is reserved for trusted
-configuration, callbacks, plugins, and commands. The primary development
-platform is Linux, but production code is expected to remain portable to macOS
-and Windows.
+configuration, callbacks, required Ruby libraries, and commands. The primary
+development platform is Linux, but production code is expected to remain
+portable to macOS and Windows.
 
 The repository is a Cargo workspace. Its default member and executable are
 `crates/toyoterm-cli` / `toyoterm`.
@@ -22,7 +22,8 @@ The repository is a Cargo workspace. Its default member and executable are
 - `crates/toyoterm-pty`: platform PTY spawning, I/O, resizing, and child lifecycle
 - `crates/toyoterm-render`: layout, GPU rendering, and text rendering
 - `crates/toyoterm-config`: configuration values and config-path discovery
-- `crates/toyoterm-script`: mruby VM, DSL, plugins, callbacks, and API conversion
+- `crates/toyoterm-script`: mruby VM, DSL, library loading, callbacks, and API
+  conversion
 - `crates/toyoterm-ipc`: local IPC transport shared by the app and CLI
 - `crates/toyoterm-app`: GUI lifecycle and native subsystem coordination
 - `crates/toyoterm-cli`: executable entry point and CLI subcommands
@@ -56,7 +57,7 @@ behavior.
 - Preserve ordering when touching script requests, command application, PTY
   reconciliation, or event dispatch. Slow Ruby may delay Ruby work, but must not
   block PTY parsing or rendering.
-- Configuration and local plugins are trusted code, not sandboxed code. Do not
+- Configuration and required Ruby libraries are trusted code, not sandboxed code. Do not
   claim or imply a security boundary that the implementation does not provide.
 - Keep platform-specific behavior behind existing abstractions and `cfg`
   boundaries. Do not fix one desktop backend by silently breaking another.
@@ -84,7 +85,7 @@ four-digit number; accepted ADRs are not rewritten to hide later reversals.
 - When user-facing behavior, configuration, or CLI syntax changes, update both
   `README.md` and `README.ja.md`, relevant examples, and focused docs together.
 - When adding, removing, renaming, or changing any Ruby-visible setting, DSL
-  method, callback context, object-model member, event, command, plugin hook, or
+  method, callback context, object-model member, event, command, library hook, or
   host API, update `docs/mruby-api.md` in the same change. Include signatures,
   accepted values, return values, errors, execution/rollback semantics, and an
   example where useful. Do not document methods beginning with `__` as public
