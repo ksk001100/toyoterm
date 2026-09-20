@@ -6,14 +6,10 @@ pub(super) struct RegistrySnapshot {
     pub(super) native_actions: HashMap<String, NativeAction>,
     pub(super) event_names: HashSet<String>,
     pub(super) user_command_names: HashSet<String>,
-    pub(super) plugins: Vec<PluginMetadata>,
 }
 
 impl RegistrySnapshot {
-    pub(super) fn read(
-        runtime: &mut MrubyRuntime,
-        plugins: Vec<PluginMetadata>,
-    ) -> Result<Self, ScriptError> {
+    pub(super) fn read(runtime: &mut MrubyRuntime) -> Result<Self, ScriptError> {
         let count = |runtime: &mut MrubyRuntime, expression: &str, operation: &'static str| {
             runtime
                 .eval(expression)?
@@ -65,7 +61,6 @@ impl RegistrySnapshot {
             native_actions,
             event_names,
             user_command_names,
-            plugins,
         })
     }
 }

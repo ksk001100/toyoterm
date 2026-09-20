@@ -14,7 +14,6 @@ pub(super) struct LoadedConfig {
     pub(super) native_actions: HashMap<String, NativeAction>,
     pub(super) event_names: HashSet<String>,
     pub(super) user_command_names: HashSet<String>,
-    pub(super) plugins: Vec<PluginMetadata>,
 }
 
 impl ConfigManager {
@@ -28,7 +27,6 @@ impl ConfigManager {
                 native_actions: loaded.native_actions,
                 event_names: loaded.event_names,
                 user_command_names: loaded.user_command_names,
-                plugins: loaded.plugins,
             },
             source_path: None,
         })
@@ -82,8 +80,7 @@ impl ConfigManager {
     }
 
     fn refresh_registrations(&mut self) -> Result<(), ScriptError> {
-        let plugins = self.registrations.plugins.clone();
-        self.registrations = RegistrySnapshot::read(&mut self.runtime, plugins)?;
+        self.registrations = RegistrySnapshot::read(&mut self.runtime)?;
         Ok(())
     }
 
@@ -94,7 +91,6 @@ impl ConfigManager {
             keybindings: self.registrations.keybindings.clone(),
             event_names: self.registrations.event_names.clone(),
             user_command_names: self.registrations.user_command_names.clone(),
-            plugins: self.registrations.plugins.clone(),
         }
     }
 
@@ -160,7 +156,6 @@ impl ConfigManager {
             native_actions: loaded.native_actions,
             event_names: loaded.event_names,
             user_command_names: loaded.user_command_names,
-            plugins: loaded.plugins,
         };
         tracing::info!(target: "toyoterm::config", filename, "config loaded");
         Ok(&self.config)
@@ -168,10 +163,6 @@ impl ConfigManager {
 
     pub fn eval(&mut self, source: &str) -> Result<String, ScriptError> {
         self.runtime.eval(source)
-    }
-
-    pub fn plugins(&self) -> &[PluginMetadata] {
-        &self.registrations.plugins
     }
 
     /// Evaluates interactive Ruby and returns the value's `inspect` representation.
@@ -934,7 +925,7 @@ pub(super) fn load_config(
         .replace("__TOYOTERM_PRIMARY_MODIFIER__", platform_primary_modifier())
         .replace("__TOYOTERM_PLATFORM__", platform_name())
         .replace("__TOYOTERM_VERSION__", env!("CARGO_PKG_VERSION"))
-        .replace("__TOYOTERM_API_VERSION__", PLUGIN_API_VERSION)
+        .replace("__TOYOTERM_API_VERSION__", RUBY_API_VERSION)
         .replace(
             "__TOYOTERM_NATIVE_EVENTS__",
             &ScriptEventKind::ALL
@@ -949,10 +940,8 @@ pub(super) fn load_config(
     runtime.set_environment()?;
     configure_load_paths(&mut runtime, source_dir)?;
     runtime.eval_with_filename(source, filename)?;
-    let plugins = collect_registered_plugins(&mut runtime)?;
-
     let config = read_config(&mut runtime, source_dir, None)?;
-    let registrations = RegistrySnapshot::read(&mut runtime, plugins)?;
+    let registrations = RegistrySnapshot::read(&mut runtime)?;
 
     Ok(LoadedConfig {
         runtime,
@@ -961,7 +950,6 @@ pub(super) fn load_config(
         native_actions: registrations.native_actions,
         event_names: registrations.event_names,
         user_command_names: registrations.user_command_names,
-        plugins: registrations.plugins,
     })
 }
 

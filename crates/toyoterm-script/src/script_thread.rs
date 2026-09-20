@@ -62,14 +62,6 @@ pub struct RubyEvent {
     pub exit_status: Option<i32>,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct PluginMetadata {
-    pub name: String,
-    pub version: String,
-    pub api_requirement: String,
-    pub path: PathBuf,
-}
-
 /// Immutable script registry mirrored on the main thread.  It contains no VM
 /// state and is safe to use for native key resolution and palette rendering.
 #[derive(Clone, Debug, PartialEq)]
@@ -79,7 +71,6 @@ pub struct ScriptSnapshot {
     pub keybindings: HashSet<String>,
     pub event_names: HashSet<String>,
     pub user_command_names: HashSet<String>,
-    pub plugins: Vec<PluginMetadata>,
 }
 
 #[derive(Clone, Debug)]

@@ -17,7 +17,6 @@ fn removed_dsl_methods_and_action_aliases_are_rejected() {
     let mut manager = ConfigManager::new().unwrap();
     for source in [
         "Toyoterm.configure { |c| c.bind('CTRL+A') {} }",
-        "Toyoterm::Plugin::Definition.new('test').bind('CTRL+A') {}",
         "Toyoterm.current_workspace.create_window",
         "Toyoterm.current_workspace.focus",
         "Toyoterm.current_window.focus",
@@ -38,6 +37,13 @@ fn removed_dsl_methods_and_action_aliases_are_rejected() {
     assert!(
         manager
             .eval("Toyoterm::Window")
+            .unwrap_err()
+            .message()
+            .contains("NameError")
+    );
+    assert!(
+        manager
+            .eval("Toyoterm::Plugin")
             .unwrap_err()
             .message()
             .contains("NameError")
@@ -591,7 +597,7 @@ fn exposes_api_introspection_logging_and_a_read_only_config_snapshot() {
     );
     assert_eq!(
         manager.eval("Toyoterm.api_version").unwrap(),
-        PLUGIN_API_VERSION
+        RUBY_API_VERSION
     );
     assert_eq!(
         manager
@@ -953,43 +959,33 @@ fn loads_the_configuration_dsl() {
 }
 
 #[test]
-fn loads_local_plugins_with_metadata_and_registrations() {
-    let directory = temporary_test_directory("plugins");
-    let plugin = directory.join("git.rb");
+fn required_ruby_source_registers_commands_events_and_keys() {
+    let directory = temporary_test_directory("ruby-library-registrations");
+    let library = directory.join("git.rb");
     std::fs::write(
-        &plugin,
-        r#"
-            Toyoterm::Plugin.define "git-tools" do |plugin|
-              plugin.version = "0.1.0"
-              plugin.api_requirement = ">= 0.1.0, < 0.2.0"
-              plugin.command(:git_root) { |ctx| ctx.pane.send_text("git root\n") }
-              plugin.on(:bell) { |event| event.pane.badge = "bell" }
-              plugin.keys.key("CTRL+G").run { |ctx| ctx.pane.send_text("git status\n") }
-              plugin.keys.ctrl("h").run { |ctx| ctx.pane.send_text("git log\n") }
-              plugin.keys { ctrl_shift("G").command(:git_root) }
+        &library,
+        r##"
+            prefix = "git"
+            Toyoterm.command(:git_root) { |ctx| ctx.pane.send_text("#{prefix} root\n") }
+            Toyoterm.on(:bell) { |event| event.pane.badge = "bell" }
+            Toyoterm.configure do |config|
+              config.keys.key("CTRL+G").run { |ctx| ctx.pane.send_text("git status\n") }
+              config.keys.ctrl("h").run { |ctx| ctx.pane.send_text("git log\n") }
+              config.keys { ctrl_shift("G").command(:git_root) }
             end
-            "#,
+            "##,
     )
     .unwrap();
 
-    let loaded = load_config(
+    let mut loaded = load_config(
         &format!(
             "require({})",
-            ruby_string_literal(&plugin.display().to_string())
+            ruby_string_literal(&library.display().to_string())
         ),
         &directory.join("config.rb").display().to_string(),
         Some(&directory),
     )
     .unwrap();
-    assert_eq!(
-        loaded.plugins,
-        [PluginMetadata {
-            name: "git-tools".into(),
-            version: "0.1.0".into(),
-            api_requirement: ">= 0.1.0, < 0.2.0".into(),
-            path: plugin.clone(),
-        }]
-    );
     assert!(loaded.user_command_names.contains("git_root"));
     assert!(loaded.event_names.contains("bell"));
     assert!(loaded.keybindings.contains("CTRL+G"));
@@ -997,6 +993,13 @@ fn loads_local_plugins_with_metadata_and_registrations() {
     assert_eq!(
         loaded.native_actions.get("CTRL+SHIFT+G"),
         Some(&NativeAction::UserCommand("git_root".into()))
+    );
+    assert_eq!(
+        loaded
+            .runtime
+            .eval("Toyoterm.__invoke_command(:git_root, Toyoterm.current_pane); Toyoterm.__next_command; Toyoterm.__current_command_payload")
+            .unwrap(),
+        "git root\n"
     );
     std::fs::remove_dir_all(directory).unwrap();
 }
@@ -1034,20 +1037,17 @@ fn require_loads_plain_ruby_from_the_config_lib_directory() {
             .unwrap(),
         "true"
     );
-    assert!(loaded.plugins.is_empty());
     std::fs::remove_dir_all(directory).unwrap();
 }
 
 #[test]
-fn loads_and_selects_a_theme_defined_by_a_plugin() {
-    let directory = temporary_test_directory("theme-plugin");
-    let plugin = directory.join("night.rb");
+fn loads_and_selects_a_theme_defined_by_a_ruby_library() {
+    let directory = temporary_test_directory("theme-library");
+    let library = directory.join("night.rb");
     std::fs::write(
-        &plugin,
+        &library,
         r##"
-            Toyoterm::Plugin.define "night-themes" do |plugin|
-              plugin.version = "0.1.0"
-              plugin.theme "moon" do |theme|
+              Toyoterm.theme "moon" do |theme|
                 theme.background = "#10131a"
                 theme.foreground = "#d8dee9"
                 theme.cursor = "#88c0d0"
@@ -1058,7 +1058,6 @@ fn loads_and_selects_a_theme_defined_by_a_plugin() {
                   "#4c566a", "#bf616a", "#a3be8c", "#ebcb8b",
                   "#81a1c1", "#b48ead", "#8fbcbb", "#eceff4"
                 ]
-              end
             end
         "##,
     )
@@ -1107,18 +1106,70 @@ fn rejects_an_unknown_theme_without_replacing_the_active_config() {
 }
 
 #[test]
-fn required_plugin_failure_rejects_config_and_preserves_the_active_vm() {
-    let directory = temporary_test_directory("plugin-failure");
+fn rejects_duplicate_theme_names() {
+    let mut manager = ConfigManager::new().unwrap();
+    let error = manager
+        .reload("Toyoterm.theme('moon') { |_| }; Toyoterm.theme('moon') { |_| }")
+        .unwrap_err();
+    assert!(error.message().contains("duplicate theme name: moon"));
+    assert_eq!(manager.eval("Toyoterm.themes.empty?").unwrap(), "true");
+}
+
+#[test]
+fn callback_failure_rolls_back_direct_registrations_and_themes() {
+    let mut manager = ConfigManager::new().unwrap();
+    manager
+        .reload(
+            "Toyoterm.command(:broken) do; Toyoterm.command(:leaked) { }; Toyoterm.on(:bell) { }; Toyoterm.theme('leaked') { |_| }; raise 'boom'; end",
+        )
+        .unwrap();
+
+    assert!(
+        run_script_request(
+            &mut manager,
+            &script_test_context(),
+            &ScriptInvocation::UserCommand {
+                name: "broken".into(),
+                pane: PaneId(4),
+            },
+        )
+        .is_err()
+    );
+    assert!(manager.trigger_user_command("leaked", PaneId(0)).is_err());
+    assert_eq!(manager.eval("Toyoterm.themes.empty?").unwrap(), "true");
+    manager.refresh_config_snapshot().unwrap();
+    assert!(!manager.registrations.event_names.contains("bell"));
+}
+
+#[test]
+fn successful_reload_replaces_the_registration_generation() {
+    let mut manager = ConfigManager::new().unwrap();
+    manager
+        .reload("Toyoterm.command(:old) { }; Toyoterm.on(:bell) { }; Toyoterm.theme('old') { |_| }")
+        .unwrap();
+    manager
+        .reload("Toyoterm.command(:new) { }; Toyoterm.on(:title_changed) { }; Toyoterm.theme('new') { |_| }")
+        .unwrap();
+
+    assert!(manager.trigger_user_command("old", PaneId(0)).is_err());
+    assert!(manager.trigger_user_command("new", PaneId(0)).is_ok());
+    assert_eq!(manager.eval("Toyoterm.themes.join(',')").unwrap(), "new");
+    assert_eq!(manager.registrations.event_names.len(), 1);
+    assert!(manager.registrations.event_names.contains("title_changed"));
+}
+
+#[test]
+fn required_source_failure_rejects_config_and_preserves_the_active_vm() {
+    let directory = temporary_test_directory("source-failure");
     let broken = directory.join("broken.rb");
     std::fs::write(
         &broken,
-        r#"
-            Toyoterm::Plugin.define "broken" do |plugin|
-              plugin.version = "0.1.0"
-              plugin.command(:leaked) { }
-              raise "boom"
-            end
-            "#,
+        r##"
+            Toyoterm.command(:leaked) { }
+            Toyoterm.on(:bell) { }
+            Toyoterm.theme("leaked") { |theme| theme.background = "#654321" }
+            raise "boom"
+            "##,
     )
     .unwrap();
     let mut manager = ConfigManager::new().unwrap();
@@ -1133,65 +1184,65 @@ fn required_plugin_failure_rejects_config_and_preserves_the_active_vm() {
         .unwrap_err();
     assert!(error.message().contains("boom"));
     assert_eq!(manager.config().colors.background, "#123456");
-    assert!(manager.plugins().is_empty());
+    assert_eq!(manager.eval("Toyoterm.themes.empty?").unwrap(), "true");
+    assert!(manager.trigger_user_command("leaked", PaneId(0)).is_err());
     std::fs::remove_dir_all(directory).unwrap();
 }
 
 #[test]
-fn required_plugins_resolve_relative_to_the_config_and_keep_declaration_order() {
-    let directory = temporary_test_directory("explicit-plugins");
-    let plugins = directory.join("plugins");
-    std::fs::create_dir(&plugins).unwrap();
+fn required_sources_resolve_relative_to_each_other_and_keep_declaration_order() {
+    let directory = temporary_test_directory("explicit-libraries");
+    let libraries = directory.join("lib");
+    std::fs::create_dir(&libraries).unwrap();
     for (file, name) in [("second.rb", "second"), ("first.rb", "first")] {
         std::fs::write(
-            plugins.join(file),
-            format!(
-                "Toyoterm::Plugin.define {name:?} do |plugin|\n  plugin.version = \"0.1.0\"\nend\n"
-            ),
+            libraries.join(file),
+            format!("Toyoterm.theme({name:?}) {{ |_theme| }}\n"),
         )
         .unwrap();
     }
-    let loaded = load_config(
-        "require_relative 'plugins/second'; require_relative 'plugins/first'",
+    let mut loaded = load_config(
+        "require_relative 'lib/second'; require_relative 'lib/first'",
         &directory.join("config.rb").display().to_string(),
         Some(&directory),
     )
     .unwrap();
     assert_eq!(
-        loaded
-            .plugins
-            .iter()
-            .map(|plugin| plugin.name.as_str())
-            .collect::<Vec<_>>(),
-        ["second", "first"]
+        loaded.runtime.eval("Toyoterm.themes.join(',')").unwrap(),
+        "second,first"
     );
     std::fs::remove_dir_all(directory).unwrap();
 }
 
 #[test]
-fn unrequired_plugin_files_are_not_loaded() {
-    let directory = temporary_test_directory("plugin-no-auto-load");
+fn unrequired_ruby_files_are_not_loaded() {
+    let directory = temporary_test_directory("library-no-auto-load");
     std::fs::write(
         directory.join("unrequested.rb"),
-        "Toyoterm::Plugin.define('unrequested') { |plugin| plugin.version = '0.1.0' }",
+        "Toyoterm.theme('unrequested') { |_theme| }",
     )
     .unwrap();
-    let loaded = load_config(
+    let mut loaded = load_config(
         "",
         &directory.join("config.rb").display().to_string(),
         Some(&directory),
     )
     .unwrap();
-    assert!(loaded.plugins.is_empty());
+    assert_eq!(
+        loaded.runtime.eval("Toyoterm.themes.empty?").unwrap(),
+        "true"
+    );
     std::fs::remove_dir_all(directory).unwrap();
 }
 
 #[test]
-fn plugin_versions_use_strict_semver_triplets() {
-    assert_eq!(parse_semver("0.1.0"), Ok((0, 1, 0)));
-    assert!(parse_semver("0.1").is_err());
-    assert!(parse_semver("0.01.0").is_err());
-    assert!(parse_semver("0.1.beta").is_err());
+fn plugin_namespace_and_registry_are_absent() {
+    let mut manager = ConfigManager::new().unwrap();
+    assert_eq!(
+        manager.eval("Toyoterm.const_defined?(:Plugin)").unwrap(),
+        "false"
+    );
+    assert!(manager.eval("Toyoterm.plugins").is_err());
 }
 
 fn temporary_test_directory(label: &str) -> PathBuf {
@@ -3170,20 +3221,17 @@ fn select_queues_a_native_overlay_and_resumes_its_callback() {
 }
 
 #[test]
-fn select_callback_can_apply_a_plugin_theme() {
+fn select_callback_can_apply_a_registered_theme() {
     let directory = temporary_test_directory("theme-selector");
-    let plugin = directory.join("themes.rb");
+    let library = directory.join("themes.rb");
     std::fs::write(
-        &plugin,
+        &library,
         r##"
-            Toyoterm::Plugin.define "selectable-themes" do |plugin|
-              plugin.version = "0.1.0"
-              plugin.theme("night") { |colors| colors.background = "#101010" }
-              plugin.theme("day") { |colors| colors.background = "#fafafa" }
-              plugin.command :choose_theme do
-                Toyoterm.select(title: "Theme", items: Toyoterm.themes) do |theme|
-                  Toyoterm.configure { |config| config.theme = theme } unless theme.nil?
-                end
+            Toyoterm.theme("night") { |colors| colors.background = "#101010" }
+            Toyoterm.theme("day") { |colors| colors.background = "#fafafa" }
+            Toyoterm.command :choose_theme do
+              Toyoterm.select(title: "Theme", items: Toyoterm.themes) do |theme|
+                Toyoterm.configure { |config| config.theme = theme } unless theme.nil?
               end
             end
         "##,
@@ -3193,7 +3241,7 @@ fn select_callback_can_apply_a_plugin_theme() {
     manager
         .reload(&format!(
             "require({})",
-            ruby_string_literal(&plugin.display().to_string())
+            ruby_string_literal(&library.display().to_string())
         ))
         .unwrap();
     let opened = run_script_request(

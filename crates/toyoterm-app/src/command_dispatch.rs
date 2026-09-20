@@ -1552,7 +1552,6 @@ mod tests {
             keybindings: HashSet::new(),
             event_names: HashSet::new(),
             user_command_names: HashSet::new(),
-            plugins: Vec::new(),
         };
         let mut ruby_invocations = 0;
 
@@ -1573,7 +1572,6 @@ mod tests {
             keybindings: HashSet::new(),
             event_names: HashSet::new(),
             user_command_names: HashSet::new(),
-            plugins: Vec::new(),
         };
         snapshot.native_actions.insert(
             "H".into(),

@@ -1,8 +1,8 @@
 # mruby configuration DSL and API
 
 toyoterm embeds mruby for configuration, key bindings, runtime events, status
-text, commands, and local plugins. This document is the reference for the Ruby
-surface intended for configuration and plugin authors.
+text, commands, local Ruby libraries, and themes. This document is the
+reference for the public Ruby surface.
 
 The runtime is mruby, not CRuby. CRuby gems, native extensions, and the complete
 CRuby standard library are unavailable unless toyoterm explicitly bundles them.
@@ -21,7 +21,8 @@ See the [usage guide](usage.md) for CLI commands and troubleshooting, or the
 - [Runtime events](#runtime-events)
 - [Window bars](#window-bars)
 - [Host APIs](#platform-clipboard-environment-and-processes)
-- [Plugins and themes](#plugins-and-themes)
+- [Loading Ruby libraries](#loading-ruby-libraries)
+- [Themes](#themes)
 - [Live Ruby console](#live-ruby-console)
 - [Callback execution model](#callback-execution-model)
 
@@ -30,7 +31,7 @@ See the [usage guide](usage.md) for CLI commands and troubleshooting, or the
 The embedded runtime includes `mruby-error`, `mruby-errno`, `mruby-io`, and
 `mruby-dir`, plus the `stdlib`, `stdlib-ext`, `math`, and `metaprog` core
 gemboxes. Their APIs are available directly in configuration, callbacks,
-commands, plugins, and the live console; no `require` call is needed.
+commands, required libraries, and the live console; no `require` call is needed.
 
 | Group | Included capabilities |
 | --- | --- |
@@ -49,7 +50,7 @@ This includes runtime method definition and reflection such as
 `itself`, and `instance_exec`. These are mruby APIs and can differ from the
 corresponding CRuby version.
 
-For example, a plugin can generate methods and retain a callable method object:
+For example, a Ruby library can generate methods and retain a callable method object:
 
 ```ruby
 class Greeting
@@ -75,7 +76,7 @@ additional task scheduler remain outside the runtime model.
 ## Filesystem APIs
 
 General-purpose filesystem work uses Ruby APIs rather than application-specific
-wrappers. The following methods are available to configuration, plugins,
+wrappers. The following methods are available to configuration, required libraries,
 callbacks, commands, and the live console:
 
 - `File.read(path, length = nil, offset = 0, mode: "r")`
@@ -102,7 +103,7 @@ Toyoterm.select(title: "Ruby files", items: files) do |file, context|
 end
 ```
 
-Ruby configuration and plugins are trusted local code. They can read, write,
+Ruby configuration and required libraries are trusted local code. They can read, write,
 and delete files and launch processes with the same permissions as the
 toyoterm process. They are not sandboxed.
 
@@ -176,8 +177,8 @@ a fresh VM; if it fails, the previous configuration remains active. Run
   `pane`. Events retain their event-specific fields; absent fields remain `nil`.
 
 The API is pre-release and does not retain compatibility aliases. Replace
-`config.bind(chord)` / `plugin.bind(chord)` with `config.keys.key(chord).run` /
-`plugin.keys.key(chord).run`, `focus` with `activate`, and `create_window` with
+`config.bind(chord)` with `config.keys.key(chord).run`, `focus` with `activate`,
+and `create_window` with
 `new_window`. Set themes with `config.theme = name`; `config.theme` is a getter
 only and passing an argument raises `ArgumentError`.
 
@@ -228,7 +229,7 @@ end
 | --- | --- | --- |
 | `default_shell` | `nil` | Program used for new terminal sessions. `nil` or an empty value uses the platform default. Reloading does not replace a running shell. |
 | `scrollback_lines` | `10_000` | Non-negative integer number of retained scrollback lines. |
-| `theme` / `theme=` | `nil` | Name of a plugin theme. An unknown or empty name rejects the configuration. |
+| `theme` / `theme=` | `nil` | Name registered with `Toyoterm.theme`. An unknown or empty name rejects the configuration. |
 
 ### `config.font`
 
@@ -531,8 +532,7 @@ Every key helper supports `run`, including `primary`, `leader`, and `physical`.
 omitting the block raises `ArgumentError`. Static and dynamic bindings share
 duplicate detection: registering the same chord more than once raises
 `ArgumentError`. Callback failures discard their queued commands and clipboard
-writes. `plugin.keys` supports the same syntax and plugin registration rollback.
-Use `config.keys.unbind(chord)` to remove an existing static or dynamic binding;
+writes. Use `config.keys.unbind(chord)` to remove an existing static or dynamic binding;
 it returns whether a binding was removed. Successful live-console registry
 changes are mirrored to the native key resolver immediately.
 
@@ -787,8 +787,8 @@ end
 ```
 
 Only one selection may be pending in a VM. A second call raises `RuntimeError`.
-`Toyoterm.select` is a runtime operation and cannot be called while a plugin
-file itself is loading; register it inside a command, key, event, or asynchronous
+`Toyoterm.select` is a runtime operation and cannot be called while a required
+Ruby source itself is loading; register it inside a command, key, event, or asynchronous
 callback instead.
 The overlay captures keyboard and IME input while open, so typed characters are
 not sent to the PTY. Reloading configuration closes an open overlay because it
@@ -971,7 +971,7 @@ to detect this API.
 
 ## Platform, clipboard, environment, and processes
 
-Configuration and plugins are trusted code. These APIs are intentionally not
+Configuration and required Ruby libraries are trusted code. These APIs are intentionally not
 sandboxed and carry the authority of the toyoterm process.
 
 - `Toyoterm.version` and `Toyoterm.api_version` return the application and Ruby
@@ -1042,74 +1042,90 @@ Long-running synchronous host calls delay later Ruby callbacks, but not PTY
 parsing or rendering. Use `Toyoterm.async` for network I/O, ping, or other
 potentially slow commands to prevent blocking the script thread.
 
-## Plugins and themes
+## Loading Ruby libraries
 
 Use `require(feature) -> true | false` or
 `require_relative(feature) -> true | false` to load a trusted local Ruby source
-explicitly. `feature` must be a non-empty String;
-paths without an extension gain `.rb`. Relative features first resolve beside
-the declaring config/library and then below that directory's `lib/`. `~/`
-expands to the user home directory. `$LOAD_PATH` contains the config directory,
-its `lib/` directory, and the corresponding default user-library locations.
-Sources are evaluated immediately, so constants and methods are available to
-the following config statements. The first load returns `true`; a canonically
-duplicate path executes no code and returns `false`. Unreadable sources and
-Ruby exceptions reject the fresh config VM, preserving the active VM. A source
-may optionally call `Toyoterm::Plugin.define`; ordinary library files without
-plugin metadata are also accepted.
+explicitly. `feature` must be a non-empty String; paths without an extension
+gain `.rb`. Relative features resolve beside the declaring config or library.
+`require` searches `$LOAD_PATH`, which contains the config directory, its
+`lib/` directory, and the corresponding default user-library locations. `~/`
+expands to the user home directory.
 
-`require` and `require_relative` are the only plugin-loading mechanisms.
-toyoterm does not scan a plugins directory, and `Toyoterm.plugin` is not part of
-the API. Theme selection is resolved during validation after all required
-sources load. `Toyoterm.plugins` returns loaded definitions;
-`Toyoterm.themes` returns theme names.
+Sources are evaluated immediately in Ruby's top-level object context. The first
+load returns `true`; a canonically duplicate path executes no code and returns
+`false`. toyoterm does not scan directories or provide another implicit loading
+mechanism. Unreadable sources and Ruby exceptions reject the fresh config VM and
+preserve the active VM.
 
-A source that supplies plugin metadata must define exactly one plugin:
+A required file calls the same public APIs as `config.rb` directly:
 
 ```ruby
-Toyoterm::Plugin.define "git-tools" do |plugin|
-  plugin.version = "0.1.0"
-  plugin.api_requirement = ">= 0.1.0, < 0.2.0"
+# lib/git.rb
+prefix = "git"
 
-  plugin.command(:git_root) do |context|
-    context.pane.send_text("git rev-parse --show-toplevel\n")
-  end
-  plugin.on(:bell) { |event| event.pane.badge = "bell" }
-  plugin.keys.ctrl("g").run { |context| context.pane.send_text("git status\n") }
-  plugin.keys { ctrl_shift("G").command(:git_root) }
+Toyoterm.command :git_root do |context|
+  context.pane.send_text("#{prefix} rev-parse --show-toplevel\n")
+end
+
+Toyoterm.on(:bell) { |event| event.pane.badge = "bell" }
+
+Toyoterm.configure do |config|
+  config.keys.ctrl_shift("g").command(:git_root)
 end
 ```
 
-The name must be non-empty and unique, and the String `version` is required.
-`api_requirement` is an optional String and constrains `Toyoterm.api_version` with comma-separated `=`,
-`<`, `<=`, `>`, or `>=` clauses. Invalid metadata, incompatible requirements,
-duplicate registrations, unreadable files, and Ruby exceptions reject the fresh
-configuration VM and preserve the active VM.
+Local variables and closures are the preferred helpers when implementation
+details should stay inside one file. For several private helpers, keep an
+anonymous `Module` in a local variable. To expose an intentional API to
+`config.rb`, define a named Ruby module. Avoid top-level `def` for private
+helpers because it adds a private method to the global `Object` namespace.
+toyoterm adds no export or private-helper mechanism.
 
-Plugins can register named color themes:
+Required sources share the configuration VM and its filesystem, process,
+environment, and clipboard authority. Loading a library is equivalent to
+allowing that source to execute as the toyoterm process. Successful reloads
+replace the whole VM, so commands, event handlers, themes, and callback Procs
+belong to the new configuration generation and do not accumulate. Failed
+reloads discard the fresh VM and preserve the active configuration generation.
+
+## Themes
+
+Register a named color theme with `Toyoterm.theme(name) { |colors| ... }`:
 
 ```ruby
-Toyoterm::Plugin.define "moon-theme" do |plugin|
-  plugin.version = "0.1.0"
-  plugin.theme "moon" do |colors|
-    colors.background = "#10131a"
-    colors.foreground = "#d8dee9"
-    colors.cursor = "#88c0d0"
-  end
+# themes/moon.rb
+Toyoterm.theme "moon" do |colors|
+  colors.background = "#10131a"
+  colors.foreground = "#d8dee9"
+  colors.cursor = "#88c0d0"
 end
 ```
 
-A theme starts with the default colors and accepts every `config.colors` field.
-Select it with `config.theme = "moon"`; later explicit color assignments
-override it. Duplicate theme names and unknown selected themes reject the
-configuration.
+Then require and select it from the configuration:
 
-Plugins share the main configuration's VM and filesystem, process, environment,
-and clipboard authority. Loading a plugin is equivalent to allowing its source
-to execute as the toyoterm process. Required files are evaluated immediately in
-Ruby's top-level object context, so they must avoid accidental constant and class
-collisions. Plugins may register commands, events, keys, and themes; their
-definitions are available to configuration statements following the `require`.
+```ruby
+require_relative "themes/moon"
+
+Toyoterm.configure do |config|
+  config.theme = "moon"
+  config.colors.cursor = "#ffffff"
+end
+```
+
+`name` accepts a non-empty String or Symbol. The method requires a block and
+returns the registered color configuration. A theme starts with default colors
+and accepts every `config.colors` field, including the ANSI array.
+`Toyoterm.themes` returns registered names in registration order.
+
+Theme lookup is validated after the complete configuration source and all of
+its required sources have been evaluated. Duplicate theme names and unknown
+selected themes raise `ArgumentError` and reject the configuration. Applying a
+theme happens before explicit `config.colors` assignments, so explicit scalar
+colors and individual ANSI entries override theme values. Theme registrations
+participate in the same configuration and callback transactions as commands,
+events, and keys: an exception rolls back partial registration, and a failed
+reload leaves the previous generation's theme registry intact.
 
 ## Live Ruby console
 

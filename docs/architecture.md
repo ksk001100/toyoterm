@@ -68,5 +68,5 @@ layer.
 Inside `toyoterm-script`, `ConfigManager` remains the transactional coordinator:
 fresh-VM load and validation precede the active-runtime swap. Registry decoding
 belongs to `registry`, launch-command conversion belongs to `command_collector`,
-plugin metadata validation belongs to `plugin`, immediate `require` resolution
-belongs to the Ruby DSL, and VM mechanics remain in `runtime`.
+immediate `require` resolution and registration transaction state belong to the
+Ruby DSL, and VM mechanics remain in `runtime`.

@@ -8,7 +8,7 @@
 | --- | --- |
 | [Installation](packaging.md) | Artifacts, install, upgrade, uninstall, and checksums |
 | [Usage](usage.md) | Controls, CLI, logs, configuration recovery, and rendering |
-| [mruby API](mruby-api.md) | Canonical configuration and plugin reference, defaults, validation, and execution semantics |
+| [mruby API](mruby-api.md) | Canonical configuration and Ruby API reference, defaults, validation, and execution semantics |
 | [Shell integration](shell-integration.md) | Shell setup, cwd reporting, and command lifecycle |
 | [OSC support](osc-support.md) | Supported OSC sequences, intentional restrictions, and prioritized backlog |
 | [Terminal images](image-protocols.md) | Sixel, Kitty, OSC 1337, limits, and a runnable chart |

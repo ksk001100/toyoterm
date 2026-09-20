@@ -975,7 +975,7 @@ module Toyoterm
       key = Toyoterm.__string(key, "key binding").upcase
       raise ArgumentError, "key binding cannot be empty" if key.empty?
       raise ArgumentError, "duplicate key binding: #{key}" if @bindings.key?(key) || @static_bindings.key?(key)
-      @bindings[key] = [block, Toyoterm.__registration_owner]
+      @bindings[key] = block
     end
 
     def keys(&block)
@@ -1006,7 +1006,7 @@ module Toyoterm
     def __register_static(key, action, argument)
       key = Toyoterm.__string(key, "key binding").upcase
       raise ArgumentError, "duplicate key binding: #{key}" if @bindings.key?(key) || @static_bindings.key?(key)
-      @static_bindings[key] = [action, argument, Toyoterm.__registration_owner]
+      @static_bindings[key] = [action, argument]
     end
 
     def __unbind(key)
@@ -1042,7 +1042,7 @@ module Toyoterm
     def __trigger_binding(key, pane)
       entry = @bindings[key.to_s.upcase]
       return false unless entry
-      callback = entry[0]
+      callback = entry
       checkpoint = Toyoterm.__command_checkpoint
       badge_checkpoint = Toyoterm.__badge_checkpoint
       async_checkpoint = Toyoterm.__async_request_checkpoint
@@ -1057,11 +1057,11 @@ module Toyoterm
       true
     end
 
-    def __plugin_checkpoint
+    def __registration_checkpoint
       [@bindings.dup, @static_bindings.dup, __checkpoint]
     end
 
-    def __rollback_plugin(checkpoint)
+    def __rollback_registrations(checkpoint)
       @bindings = checkpoint[0]
       @static_bindings = checkpoint[1]
       __restore(checkpoint[2])
@@ -1433,66 +1433,6 @@ module Toyoterm
     end
   end
 
-  class Plugin
-    class Definition
-      attr_reader :name, :version, :api_requirement, :path
-
-      def initialize(name)
-        @name = Toyoterm.__identifier(name, "plugin name")
-        @version = nil
-        @api_requirement = nil
-        @path = Toyoterm.__current_plugin_path
-      end
-
-      def version=(value)
-        @version = Toyoterm.__string(value, "plugin version")
-      end
-
-      def api_requirement=(value)
-        @api_requirement = Toyoterm.__string(
-          value, "plugin API requirement", true, true
-        )
-      end
-
-      def command(name, replace: false, &block)
-        Toyoterm.command(name, replace: replace, &block)
-      end
-
-      def on(name, &block)
-        Toyoterm.on(name, &block)
-      end
-
-      def keys(&block)
-        Toyoterm.__config.keys(&block)
-      end
-
-      def theme(name)
-        raise ArgumentError, "theme definition requires a block" unless block_given?
-        theme = ColorConfig.new
-        yield theme
-        Toyoterm.__register_theme(name, ColorConfig.new.__restore(theme.__snapshot))
-        theme
-      end
-
-      def __validate!
-        raise ArgumentError, "plugin name cannot be empty" if @name.empty?
-        raise ArgumentError, "plugin version is required" if @version.nil?
-        @api_requirement = "".freeze if @api_requirement.nil?
-      end
-    end
-
-    def self.define(name)
-      raise RuntimeError, "Plugin.define can only be used while loading a plugin" unless Toyoterm.__loading_plugin?
-      raise ArgumentError, "plugin definition requires a block" unless block_given?
-      definition = Definition.new(name)
-      yield definition
-      definition.__validate!
-      Toyoterm.__register_plugin(definition)
-      definition.freeze
-      definition
-    end
-  end
-
   @config = Config.new
   @current_pane = Pane.new(0)
   @current_tab = Tab.new(0)
@@ -1513,9 +1453,8 @@ module Toyoterm
   }
   @object_data = { workspace: {}, window: {}, tab: {}, pane: {} }
   @pane_badges = {}
-  @plugins = []
   @themes = {}
-  @current_plugin_path = nil
+  @current_source_path = nil
   @load_paths = []
   @loaded_features = []
   @async_task_id = 0
@@ -1708,7 +1647,7 @@ module Toyoterm
 
   def self.select(title: "Select", items:, &block)
     raise ArgumentError, "select requires a block" unless block
-    raise RuntimeError, "select cannot be used while loading a plugin" if __loading_plugin?
+    raise RuntimeError, "select cannot be used while loading a Ruby source" if __loading_source?
     title = __string(title, "select title", false, true)
     raise ArgumentError, "select title is too long" if title.bytesize > 256
     raise ArgumentError, "select title cannot contain a line break" if title.include?("\n") || title.include?("\r")
@@ -1750,7 +1689,7 @@ module Toyoterm
           (feature.length > 2 && feature[1] == ":" && ["/", "\\"].include?(feature[2]))
       [feature]
     elsif relative
-      base = @current_plugin_path ? File.dirname(@current_plugin_path) : @load_paths[0]
+      base = @current_source_path ? File.dirname(@current_source_path) : @load_paths[0]
       base ? [File.join(base, feature)] : []
     else
       @load_paths.map { |path| File.join(path, feature) }
@@ -1761,25 +1700,28 @@ module Toyoterm
     return false if @loaded_features.include?(path)
 
     @loaded_features << path
-    previous_path = @current_plugin_path
-    @current_plugin_path = path
+    previous_path = @current_source_path
+    @current_source_path = path
     begin
       Object.module_eval(File.read(path), path, 1)
     rescue Exception => error
       @loaded_features.delete(path)
       raise error
     ensure
-      @current_plugin_path = previous_path
+      @current_source_path = previous_path
     end
     true
   end
 
-  def self.plugins
-    @plugins.dup
-  end
-
   def self.themes
     @themes.keys.dup
+  end
+
+  def self.theme(name)
+    raise ArgumentError, "theme definition requires a block" unless block_given?
+    colors = ColorConfig.new
+    yield colors
+    __register_theme(name, ColorConfig.new.__restore(colors.__snapshot))
   end
 
   def self.__theme(name)
@@ -1800,59 +1742,26 @@ module Toyoterm
     nil
   end
 
-  def self.__loading_plugin?
-    !@current_plugin_path.nil?
+  def self.__loading_source?
+    !@current_source_path.nil?
   end
 
-  def self.__current_plugin_path
-    @current_plugin_path
-  end
-
-  def self.__register_plugin(plugin)
-    if @plugins.any? { |loaded| loaded.name == plugin.name }
-      raise ArgumentError, "duplicate plugin name: #{plugin.name}"
-    end
-    @plugins << plugin
-  end
-
-  def self.__plugin_checkpoint
+  def self.__registration_checkpoint
     event_handlers = {}
     @event_handlers.each { |name, handlers| event_handlers[name] = handlers.dup }
     [
-      @plugins.dup,
       @user_commands.dup,
       event_handlers,
-      @config.__plugin_checkpoint,
+      @config.__registration_checkpoint,
       @themes.dup
     ]
   end
 
-  def self.__rollback_plugin(checkpoint)
-    @plugins = checkpoint[0]
-    @user_commands = checkpoint[1]
-    @event_handlers = checkpoint[2]
-    @config.__rollback_plugin(checkpoint[3])
-    @themes = checkpoint[4]
-  end
-
-  def self.__plugin_count
-    @plugins.length
-  end
-
-  def self.__plugin_name(index)
-    @plugins[index].name
-  end
-
-  def self.__plugin_version(index)
-    @plugins[index].version
-  end
-
-  def self.__plugin_requires(index)
-    @plugins[index].api_requirement
-  end
-
-  def self.__plugin_path(index)
-    @plugins[index].path
+  def self.__rollback_registrations(checkpoint)
+    @user_commands = checkpoint[0]
+    @event_handlers = checkpoint[1]
+    @config.__rollback_registrations(checkpoint[2])
+    @themes = checkpoint[3]
   end
 
   def self.__replace_env(entries)
@@ -1883,7 +1792,7 @@ module Toyoterm
     bars = {}
     @window_bars.each { |position, bar| bars[position] = bar.__copy }
     @config_transaction = [
-      __plugin_checkpoint, bars, @pane_badges.dup,
+      __registration_checkpoint, bars, @pane_badges.dup,
       __async_request_checkpoint, @logs.length
     ]
     nil
@@ -1892,7 +1801,7 @@ module Toyoterm
   def self.__rollback_config_transaction
     checkpoint = @config_transaction
     return nil unless checkpoint
-    __rollback_plugin(checkpoint[0])
+    __rollback_registrations(checkpoint[0])
     @window_bars = checkpoint[1]
     @pane_badges = checkpoint[2]
     __rollback_async_requests(checkpoint[3])
@@ -1906,10 +1815,6 @@ module Toyoterm
     nil
   end
 
-  def self.__registration_owner
-    @current_plugin_path
-  end
-
   def self.on(name, &block)
     raise ArgumentError, "event handler requires a block" unless block
     name = Toyoterm.__identifier(name, "event name")
@@ -1917,7 +1822,7 @@ module Toyoterm
       raise ArgumentError, "unknown event: #{name}"
     end
     @registration_id += 1
-    (@event_handlers[name] ||= []) << [@registration_id, block, __registration_owner]
+    (@event_handlers[name] ||= []) << [@registration_id, block]
     Registration.new(:event, name, @registration_id)
   end
 
@@ -1928,7 +1833,7 @@ module Toyoterm
       raise ArgumentError, "duplicate user command: #{name}"
     end
     @registration_id += 1
-    @user_commands[name] = [@registration_id, block, __registration_owner]
+    @user_commands[name] = [@registration_id, block]
     Registration.new(:command, name, @registration_id)
   end
 
@@ -2088,7 +1993,7 @@ module Toyoterm
     @window_bars.each { |position, bar| bars[position] = bar.__copy }
     [
       __command_checkpoint, __badge_checkpoint, __async_request_checkpoint,
-      __plugin_checkpoint, bars, @logs.length
+      __registration_checkpoint, bars, @logs.length
     ]
   end
 
@@ -2096,7 +2001,7 @@ module Toyoterm
     __rollback_commands(checkpoint[0])
     __rollback_badges(checkpoint[1])
     __rollback_async_requests(checkpoint[2])
-    __rollback_plugin(checkpoint[3])
+    __rollback_registrations(checkpoint[3])
     @window_bars = checkpoint[4]
     @logs.pop while @logs.length > checkpoint[5]
     nil

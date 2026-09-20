@@ -29,7 +29,27 @@ pub use toyoterm_config::{
 const SLOW_CALLBACK_THRESHOLD: Duration = Duration::from_millis(100);
 #[cfg(windows)]
 const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-pub const PLUGIN_API_VERSION: &str = "0.1.0";
+pub const RUBY_API_VERSION: &str = "0.1.0";
+
+fn platform_primary_modifier() -> &'static str {
+    if cfg!(target_os = "macos") {
+        "SUPER"
+    } else {
+        "CTRL"
+    }
+}
+
+fn platform_name() -> &'static str {
+    if cfg!(target_os = "linux") {
+        "linux"
+    } else if cfg!(target_os = "macos") {
+        "macos"
+    } else if cfg!(target_os = "windows") {
+        "windows"
+    } else {
+        "other"
+    }
+}
 
 fn return_host_bytes(bytes: Vec<u8>, output: *mut *mut u8, length: *mut usize) {
     let mut bytes = bytes.into_boxed_slice();
@@ -379,8 +399,6 @@ mod command_collector;
 use command_collector::CommandCollector;
 #[cfg(test)]
 use config_manager::{is_slow_callback, load_config, resolve_config_path};
-mod plugin;
-use plugin::*;
 mod parsing;
 use parsing::*;
 mod registry;
