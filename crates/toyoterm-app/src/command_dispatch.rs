@@ -1,5 +1,19 @@
 use super::*;
 
+mod clipboard_controller;
+mod domain_handlers;
+mod ingress;
+mod ui_controller;
+
+use clipboard_controller::apply_clipboard_command;
+use domain_handlers::{apply_pane_command, apply_window_command};
+pub(super) use ingress::CommandOrigin;
+use ingress::{
+    ActionResolution, MuxDispatch, resolve_action_command, resolve_mux_dispatch,
+    validate_command_origin,
+};
+use ui_controller::apply_ui_command;
+
 #[derive(Debug, PartialEq)]
 enum KeybindingDispatch {
     Native(NativeAction),
@@ -7,49 +21,46 @@ enum KeybindingDispatch {
     Unassigned,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(super) enum CommandOrigin {
-    Script,
-    Ipc,
-    Keybinding,
-}
-
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub(super) struct ControlEffects {
     pub(super) reload_config: bool,
 }
 
-fn action_is_global(action: &NativeAction) -> bool {
-    matches!(
-        action,
-        NativeAction::ReloadConfig
-            | NativeAction::MaximizeWindow
-            | NativeAction::ToggleMaximize
-            | NativeAction::MinimizeWindow
-            | NativeAction::ToggleFullscreen
-            | NativeAction::NewWorkspace
-    )
-}
-
-fn context_activation_commands(action: &NativeAction, context: ActionContext) -> Vec<Command> {
-    if action_is_global(action) {
-        return Vec::new();
+impl ControlEffects {
+    fn reload_config() -> Self {
+        Self {
+            reload_config: true,
+        }
     }
-    vec![
-        Command::ActivateWorkspace(context.workspace),
-        Command::ActivateWindow(context.window),
-        Command::ActivateTab(context.tab),
-        Command::ActivatePane(context.pane),
-    ]
 }
 
-fn action_context_is_valid(mux: &Mux, context: ActionContext) -> bool {
-    mux.workspace_windows(context.workspace)
-        .is_some_and(|windows| windows.contains(&context.window))
-        && mux
-            .tabs(context.window)
-            .is_some_and(|tabs| tabs.contains(&context.tab))
-        && mux.pane_tab(context.pane) == Some(context.tab)
+enum DomainCommand {
+    Mux(Command),
+    Pane(PaneCommand),
+    Window(WindowCommand),
+    Ui(UiCommand),
+    Clipboard(ClipboardCommand),
+    Script(ScriptCommand),
+    Config(ConfigCommand),
+}
+
+fn route_domain_command(command: NativeCommand) -> Result<DomainCommand, String> {
+    match command {
+        NativeCommand::Mux(command) => Ok(DomainCommand::Mux(command)),
+        NativeCommand::Action(_) => Err("unresolved action reached domain dispatcher".to_owned()),
+        NativeCommand::Pane(command) => Ok(DomainCommand::Pane(command)),
+        NativeCommand::Window(command) => Ok(DomainCommand::Window(command)),
+        NativeCommand::Ui(command) => Ok(DomainCommand::Ui(command)),
+        NativeCommand::Clipboard(command) => Ok(DomainCommand::Clipboard(command)),
+        NativeCommand::Script(command) => Ok(DomainCommand::Script(command)),
+        NativeCommand::Config(command) => Ok(DomainCommand::Config(command)),
+    }
+}
+
+fn apply_config_command(command: ConfigCommand) -> ControlEffects {
+    match command {
+        ConfigCommand::Reload => ControlEffects::reload_config(),
+    }
 }
 
 fn resolve_keybinding(
@@ -407,226 +418,99 @@ impl ToyotermApplication {
         origin: CommandOrigin,
     ) -> Result<ControlEffects, String> {
         self.scripting.invalidate_context();
-        if origin == CommandOrigin::Ipc
-            && !matches!(command, NativeCommand::Mux(_) | NativeCommand::Config(_))
-        {
-            return Err("native command domain is not exposed over IPC".to_owned());
+        validate_command_origin(origin, &command)?;
+        if let NativeCommand::Action(command) = command {
+            let ActionResolution {
+                activation,
+                command,
+            } = resolve_action_command(command, origin, &self.mux, &self.ui.pane_layout)?;
+            for command in activation {
+                self.dispatch_gui_command(command)?;
+            }
+            return match command {
+                Some(command) => self.dispatch_domain_command(command, MuxDispatch::Gui),
+                None => Ok(ControlEffects::default()),
+            };
         }
-        let mut effects = ControlEffects::default();
-        match command {
-            NativeCommand::Mux(command) => match origin {
-                CommandOrigin::Script => {
-                    dispatch_coordinator_command(
-                        &mut self.mux,
-                        &mut self.scripting.runtime_events,
-                        command,
-                    )?;
+        self.dispatch_domain_command(command, resolve_mux_dispatch(origin))
+    }
+
+    fn dispatch_domain_command(
+        &mut self,
+        command: NativeCommand,
+        mux_dispatch: MuxDispatch,
+    ) -> Result<ControlEffects, String> {
+        let effects = match route_domain_command(command)? {
+            DomainCommand::Mux(command) => {
+                match mux_dispatch {
+                    MuxDispatch::Coordinator => {
+                        dispatch_coordinator_command(
+                            &mut self.mux,
+                            &mut self.scripting.runtime_events,
+                            command,
+                        )?;
+                    }
+                    MuxDispatch::Gui => self.dispatch_gui_command(command)?,
                 }
-                CommandOrigin::Ipc | CommandOrigin::Keybinding => {
-                    self.dispatch_gui_command(command)?
-                }
-            },
-            NativeCommand::Action(ActionCommand::Invoke {
-                action: NativeAction::ReloadConfig,
-                ..
-            }) => effects.reload_config = true,
-            NativeCommand::Action(ActionCommand::Invoke { action, context }) => match origin {
-                CommandOrigin::Keybinding => self.execute_native_action(action)?,
-                CommandOrigin::Script => self.execute_context_action(action, context)?,
-                CommandOrigin::Ipc => unreachable!("IPC actions are rejected above"),
-            },
-            NativeCommand::Window(WindowCommand::CreateWithLaunch { workspace, launch }) => {
-                let pane = dispatch_pane_creation(
+                ControlEffects::default()
+            }
+            DomainCommand::Pane(command) => {
+                let pane_effects = apply_pane_command(
+                    command,
                     &mut self.mux,
                     &mut self.scripting.runtime_events,
-                    PaneCreation::NewWindow(workspace),
+                    &mut self.terminal_runtime,
                 )?;
-                self.terminal_runtime
-                    .pending_pane_launches
-                    .insert(pane, launch);
-            }
-            NativeCommand::Window(WindowCommand::NewTabWithLaunch { window, launch }) => {
-                let pane = dispatch_pane_creation(
-                    &mut self.mux,
-                    &mut self.scripting.runtime_events,
-                    PaneCreation::NewTab(window),
-                )?;
-                self.terminal_runtime
-                    .pending_pane_launches
-                    .insert(pane, launch);
-            }
-            NativeCommand::Pane(PaneCommand::SplitWithLaunch {
-                pane,
-                direction,
-                launch,
-            }) => {
-                let pane = dispatch_pane_creation(
-                    &mut self.mux,
-                    &mut self.scripting.runtime_events,
-                    PaneCreation::Split { pane, direction },
-                )?;
-                self.terminal_runtime
-                    .pending_pane_launches
-                    .insert(pane, launch);
-            }
-            NativeCommand::Pane(PaneCommand::SetBadge { pane, badge }) => match badge {
-                Some(badge) => {
-                    self.ui.pane_badges.insert(pane, badge);
+                if let Some(search) = pane_effects.search {
+                    ui_controller::apply_pane_effect(
+                        search,
+                        &mut self.terminal_runtime,
+                        &mut self.ui,
+                    );
                 }
-                None => {
-                    self.ui.pane_badges.remove(&pane);
+                ControlEffects::default()
+            }
+            DomainCommand::Window(command) => apply_window_command(
+                command,
+                &mut self.mux,
+                &mut self.scripting.runtime_events,
+                &mut self.terminal_runtime,
+                &mut self.platform,
+            )
+            .map(|_| ControlEffects::default())?,
+            DomainCommand::Ui(command) => {
+                let ui_effects = apply_ui_command(
+                    command,
+                    self.mux.current_pane(),
+                    &mut self.terminal_runtime,
+                    &mut self.ui,
+                );
+                if ui_effects.request_redraw
+                    && let Some(window) = self.platform.window.as_ref()
+                {
+                    window.request_redraw();
                 }
-            },
-            NativeCommand::Pane(PaneCommand::Search {
-                pane,
-                query,
-                direction,
-            }) => self.search_pane(pane, query, direction)?,
-            NativeCommand::Ui(UiCommand::OpenSelector { id, title, items }) => {
-                self.open_selector(id, title, items)
+                ControlEffects::default()
             }
-            NativeCommand::Clipboard(ClipboardCommand::Write(text)) => {
-                self.ui.pending_clipboard_writes.push(text)
+            DomainCommand::Clipboard(command) => apply_clipboard_command(
+                command,
+                &mut self.platform,
+                &mut self.terminal_runtime,
+                &mut self.ui,
+            )
+            .map(|_| ControlEffects::default())?,
+            DomainCommand::Script(ScriptCommand::InvokeUserCommand { name, pane }) => {
+                self.submit_script(ScriptInvocation::UserCommand { name, pane })?;
+                ControlEffects::default()
             }
-            NativeCommand::Config(ConfigCommand::Reload) => effects.reload_config = true,
-        }
+            DomainCommand::Config(command) => apply_config_command(command),
+        };
         Ok(effects)
     }
 
-    pub(super) fn start_visual_selection(&mut self) {
-        self.start_visual_mode();
-        self.select_visual_selection();
-    }
-
-    pub(super) fn start_visual_mode(&mut self) {
-        let Some((cursor, snapshot)) = self
-            .active_terminal()
-            .map(|terminal| (terminal.cursor(), terminal.snapshot()))
-        else {
-            return;
-        };
-        let row = cursor.row.min(snapshot.rows.saturating_sub(1));
-        let position = VisualPosition {
-            column: snap_to_cell_start(&snapshot, row, cursor.column),
-            row,
-        };
-        if let Some(terminal) = self.active_terminal_mut() {
-            terminal.clear_selection();
-        }
-        self.ui.visual_selection = Some(VisualSelection {
-            anchor: None,
-            current: position,
-        });
-    }
-
-    pub(super) fn select_visual_selection(&mut self) {
-        let Some(mut visual) = self.ui.visual_selection else {
-            return;
-        };
-        visual.anchor = Some(visual.current);
-        if let Some(terminal) = self.active_terminal_mut() {
-            terminal.start_selection(
-                visual.current.column,
-                visual.current.row,
-                SelectionKind::Simple,
-            );
-        }
-        self.ui.visual_selection = Some(visual);
-    }
-
     pub(super) fn exit_visual_mode(&mut self) {
-        if self.ui.visual_selection.take().is_some()
-            && let Some(terminal) = self.active_terminal_mut()
-        {
-            terminal.clear_selection();
-        }
-    }
-
-    pub(super) fn move_visual_selection(&mut self, motion: SelectionMotion) {
-        let Some(mut selection) = self.ui.visual_selection else {
-            return;
-        };
-        let Some(snapshot) = self.active_terminal().map(TerminalBackend::snapshot) else {
-            return;
-        };
-        let max_row = snapshot.rows.saturating_sub(1);
-        let mut scroll = 0;
-        match motion {
-            SelectionMotion::Left => {
-                selection.current.column =
-                    visual_prev_column(&snapshot, selection.current.row, selection.current.column);
-            }
-            SelectionMotion::Right => {
-                selection.current.column =
-                    visual_next_column(&snapshot, selection.current.row, selection.current.column);
-            }
-            SelectionMotion::Up => {
-                if selection.current.row == 0 {
-                    scroll = 1;
-                } else {
-                    selection.current.row -= 1;
-                    selection.current.column = snap_to_cell_start(
-                        &snapshot,
-                        selection.current.row,
-                        selection.current.column,
-                    );
-                }
-            }
-            SelectionMotion::Down => {
-                if selection.current.row == max_row {
-                    scroll = -1;
-                } else {
-                    selection.current.row += 1;
-                    selection.current.column = snap_to_cell_start(
-                        &snapshot,
-                        selection.current.row,
-                        selection.current.column,
-                    );
-                }
-            }
-            SelectionMotion::LineStart => selection.current.column = 0,
-            SelectionMotion::LineEnd => {
-                selection.current.column =
-                    visual_last_cell_column(&snapshot, selection.current.row);
-            }
-            SelectionMotion::WordForward => {
-                let (col, row) =
-                    visual_next_word(&snapshot, selection.current.row, selection.current.column);
-                selection.current.column = col;
-                selection.current.row = row;
-            }
-            SelectionMotion::WordBackward => {
-                let (col, row) =
-                    visual_prev_word(&snapshot, selection.current.row, selection.current.column);
-                selection.current.column = col;
-                selection.current.row = row;
-            }
-        }
-        if let Some(terminal) = self.active_terminal_mut()
-            && selection.anchor.is_some()
-        {
-            if scroll != 0 {
-                terminal.scroll_display(scroll);
-            }
-            terminal.update_selection(selection.current.column, selection.current.row);
-        } else if scroll != 0
-            && let Some(terminal) = self.active_terminal_mut()
-        {
-            terminal.scroll_display(scroll);
-        }
-        self.ui.visual_selection = Some(selection);
-    }
-
-    pub(super) fn yank_selection(&mut self) -> Result<(), String> {
-        let Some(visual) = &self.ui.visual_selection else {
-            return Ok(());
-        };
-        if visual.anchor.is_none() {
-            return Ok(());
-        }
-        self.copy_selection()?;
-        self.exit_visual_mode();
-        Ok(())
+        let pane = self.mux.current_pane();
+        self.ui.exit_visual_mode(&mut self.terminal_runtime, pane);
     }
 
     pub(super) fn handle_keybinding(
@@ -734,270 +618,31 @@ impl ToyotermApplication {
         Ok(true)
     }
 
-    pub(super) fn execute_native_action(&mut self, action: NativeAction) -> Result<(), String> {
-        match action {
-            NativeAction::NewTab => self.dispatch_gui_command(Command::NewTab),
-            NativeAction::ClosePane => {
-                let pane = self
-                    .mux
-                    .current_pane()
-                    .ok_or_else(|| "mux has no current pane".to_owned())?;
-                self.dispatch_gui_command(Command::ClosePane(pane))
-            }
-            NativeAction::CloseTab => {
-                let tab = self
-                    .mux
-                    .current_tab()
-                    .ok_or_else(|| "mux has no current tab".to_owned())?;
-                self.dispatch_gui_command(Command::CloseTab(tab))
-            }
-            NativeAction::NewWorkspace => self.create_workspace(),
-            NativeAction::ReloadConfig => self.reload_config_with_notification(),
-            NativeAction::Search => self.open_search(),
-            NativeAction::MaximizeWindow => self.maximize_window(),
-            NativeAction::ToggleMaximize => self.toggle_maximize_window(),
-            NativeAction::MinimizeWindow => self.minimize_window(),
-            NativeAction::ToggleFullscreen => self.toggle_fullscreen(),
-            NativeAction::NextTab => self.cycle_tab(false),
-            NativeAction::PreviousTab => self.cycle_tab(true),
-            NativeAction::NextWorkspace => self.cycle_workspace(false),
-            NativeAction::PreviousWorkspace => self.cycle_workspace(true),
-            NativeAction::NextPrompt => self.navigate_prompt(SearchDirection::Next),
-            NativeAction::PreviousPrompt => self.navigate_prompt(SearchDirection::Previous),
-            NativeAction::NextMark => self.navigate_mark(SearchDirection::Next),
-            NativeAction::PreviousMark => self.navigate_mark(SearchDirection::Previous),
-            NativeAction::SelectNextCommandOutput => {
-                self.select_command_output(SearchDirection::Next)
-            }
-            NativeAction::SelectPreviousCommandOutput => {
-                self.select_command_output(SearchDirection::Previous)
-            }
-            NativeAction::SelectLastCommandOutput => self.select_last_command_output(),
-            NativeAction::CopySelection => self.copy_selection(),
-            NativeAction::PasteClipboard => self.paste_clipboard(),
-            NativeAction::StartVisualSelection => {
-                self.start_visual_selection();
-                Ok(())
-            }
-            NativeAction::StartVisualMode => {
-                self.start_visual_mode();
-                Ok(())
-            }
-            NativeAction::ToggleVisualMode => {
-                if self.ui.visual_selection.is_some() {
-                    self.exit_visual_mode();
-                } else {
-                    self.start_visual_mode();
-                }
-                Ok(())
-            }
-            NativeAction::SelectVisualSelection => {
-                self.select_visual_selection();
-                Ok(())
-            }
-            NativeAction::EndVisualSelection => {
-                self.exit_visual_mode();
-                Ok(())
-            }
-            NativeAction::MoveVisualSelection(motion) => {
-                self.move_visual_selection(motion);
-                Ok(())
-            }
-            NativeAction::YankSelection => self.yank_selection(),
-            NativeAction::UserCommand(name) => self.execute_user_command(&name),
-            NativeAction::Split(direction) => self.split_active_pane(direction),
-            NativeAction::ActivatePane(direction) => self.focus_neighbor(direction),
-            NativeAction::ToggleZoom => self.dispatch_gui_command(Command::ToggleZoom),
-        }
-    }
-
-    pub(super) fn execute_context_action(
-        &mut self,
-        action: NativeAction,
-        context: ActionContext,
-    ) -> Result<(), String> {
-        if !action_is_global(&action) && !action_context_is_valid(&self.mux, context) {
-            return Err("callback action target hierarchy is no longer valid".to_owned());
-        }
-        for command in context_activation_commands(&action, context) {
-            self.dispatch_gui_command(command)?;
-        }
-        self.execute_native_action(action)
-    }
-
-    pub(super) fn maximize_window(&mut self) -> Result<(), String> {
-        let window = self
-            .platform
-            .window
-            .as_ref()
-            .ok_or_else(|| "native window is not available".to_owned())?;
-        window.set_maximized(true);
-        Ok(())
-    }
-
-    pub(super) fn toggle_maximize_window(&mut self) -> Result<(), String> {
-        let window = self
-            .platform
-            .window
-            .as_ref()
-            .ok_or_else(|| "native window is not available".to_owned())?;
-        window.set_maximized(!window.is_maximized());
-        Ok(())
-    }
-
-    pub(super) fn minimize_window(&mut self) -> Result<(), String> {
-        let window = self
-            .platform
-            .window
-            .as_ref()
-            .ok_or_else(|| "native window is not available".to_owned())?;
-        window.set_minimized(true);
-        Ok(())
-    }
-
-    pub(super) fn toggle_fullscreen(&mut self) -> Result<(), String> {
-        let window = self
-            .platform
-            .window
-            .as_ref()
-            .ok_or_else(|| "native window is not available".to_owned())?;
-        let fullscreen = if window.fullscreen().is_some() {
-            None
-        } else {
-            Some(Fullscreen::Borderless(window.current_monitor()))
-        };
-        window.set_fullscreen(fullscreen);
-        Ok(())
-    }
-
-    pub(super) fn open_search(&mut self) -> Result<(), String> {
-        self.close_search();
-        self.ui.search_open = true;
-        self.ui.search_query.clear();
-        self.ui.search_result = SearchResult::default();
-        if let Some(terminal) = self.active_terminal_mut() {
-            terminal.clear_search();
-        }
-        Ok(())
-    }
-
-    fn navigate_prompt(&mut self, direction: SearchDirection) -> Result<(), String> {
-        let moved = self
-            .active_terminal_mut()
-            .is_some_and(|terminal| terminal.navigate_prompt(direction));
-        if moved && let Some(window) = self.platform.window.as_ref() {
-            window.request_redraw();
-        }
-        Ok(())
-    }
-
-    fn navigate_mark(&mut self, direction: SearchDirection) -> Result<(), String> {
-        let moved = self
-            .active_terminal_mut()
-            .is_some_and(|terminal| terminal.navigate_mark(direction));
-        if moved && let Some(window) = self.platform.window.as_ref() {
-            window.request_redraw();
-        }
-        Ok(())
-    }
-
-    fn select_last_command_output(&mut self) -> Result<(), String> {
-        let selected = self
-            .active_terminal_mut()
-            .is_some_and(|terminal| terminal.select_last_command_output());
-        if selected && let Some(window) = self.platform.window.as_ref() {
-            window.request_redraw();
-        }
-        Ok(())
-    }
-
-    fn select_command_output(&mut self, direction: SearchDirection) -> Result<(), String> {
-        let selected = self
-            .active_terminal_mut()
-            .is_some_and(|terminal| terminal.select_command_output(direction));
-        if selected && let Some(window) = self.platform.window.as_ref() {
-            window.request_redraw();
-        }
-        Ok(())
-    }
-
-    pub(super) fn search_pane(
-        &mut self,
-        pane: PaneId,
-        query: String,
-        direction: PaneSearchDirection,
-    ) -> Result<(), String> {
-        if query.is_empty() {
-            return Err("pane search query cannot be empty".to_owned());
-        }
-        dispatch_coordinator_command(
-            &mut self.mux,
-            &mut self.scripting.runtime_events,
-            Command::ActivatePane(pane),
-        )?;
-        self.exit_visual_mode();
-        self.ui.ime_preedit = None;
-        self.ui.search_open = true;
-        self.ui.search_query = query;
-        let direction = match direction {
-            PaneSearchDirection::Next => SearchDirection::Next,
-            PaneSearchDirection::Previous => SearchDirection::Previous,
-        };
-        self.ui.search_result = self
-            .terminal_runtime
-            .pane_runtimes
-            .get_mut(&pane)
-            .ok_or_else(|| format!("pane {pane} has no terminal runtime"))?
-            .terminal
-            .search(&self.ui.search_query, direction);
-        Ok(())
-    }
-
     pub(super) fn close_search(&mut self) {
-        self.ui.search_open = false;
-        self.ui.search_query.clear();
-        self.ui.search_result = SearchResult::default();
-        if let Some(terminal) = self.active_terminal_mut() {
-            terminal.clear_search();
-        }
+        ui_controller::close_search(
+            self.mux.current_pane(),
+            &mut self.terminal_runtime,
+            &mut self.ui,
+        );
     }
 
     pub(super) fn refresh_search(&mut self, direction: SearchDirection) {
-        let query = self.ui.search_query.clone();
-        self.ui.search_result = self
-            .active_terminal_mut()
-            .map(|terminal| terminal.search(&query, direction))
-            .unwrap_or_default();
+        ui_controller::refresh_search(
+            self.mux.current_pane(),
+            direction,
+            &mut self.terminal_runtime,
+            &mut self.ui,
+        );
     }
 
     pub(super) fn handle_search_key(&mut self, event: &KeyEvent, modifiers: ModifiersState) {
-        match &event.logical_key {
-            Key::Named(NamedKey::Escape) => self.close_search(),
-            Key::Named(NamedKey::Enter) => self.refresh_search(if modifiers.shift_key() {
-                SearchDirection::Previous
-            } else {
-                SearchDirection::Next
-            }),
-            Key::Named(NamedKey::Backspace) => {
-                self.ui.search_query.pop();
-                self.refresh_search(SearchDirection::Next);
-            }
-            Key::Character(text) if !modifiers.control_key() && !modifiers.super_key() => {
-                self.ui
-                    .search_query
-                    .push_str(event.text.as_deref().unwrap_or(text));
-                self.refresh_search(SearchDirection::Next);
-            }
-            _ => {}
-        }
-    }
-
-    pub(super) fn open_selector(&mut self, id: u64, title: String, items: Vec<String>) {
-        self.close_search();
-        self.exit_visual_mode();
-        self.ui.leader_deadline = None;
-        self.ui.ime_preedit = None;
-        self.ui.selector = Some(SelectorOverlay::new(id, title, items));
+        ui_controller::handle_search_key(
+            event,
+            modifiers,
+            self.mux.current_pane(),
+            &mut self.terminal_runtime,
+            &mut self.ui,
+        );
     }
 
     pub(super) fn handle_selector_key(
@@ -1005,115 +650,14 @@ impl ToyotermApplication {
         event: &KeyEvent,
         modifiers: ModifiersState,
     ) -> Result<(), String> {
-        let mut completion = None;
-        let Some(selector) = self.ui.selector.as_mut() else {
-            return Ok(());
-        };
-        match &event.logical_key {
-            Key::Named(NamedKey::Escape) => completion = Some(None),
-            Key::Named(NamedKey::Enter) => {
-                if let Some(selection) = selector.selected_item() {
-                    completion = Some(Some(selection));
-                }
-            }
-            Key::Named(NamedKey::ArrowUp) => selector.move_previous(),
-            Key::Named(NamedKey::ArrowDown) => selector.move_next(),
-            Key::Named(NamedKey::PageUp) => selector.page_previous(),
-            Key::Named(NamedKey::PageDown) => selector.page_next(),
-            Key::Named(NamedKey::Home) => selector.move_first(),
-            Key::Named(NamedKey::End) => selector.move_last(),
-            Key::Named(NamedKey::Backspace) => selector.pop_query(),
-            Key::Character(text) if !modifiers.control_key() && !modifiers.super_key() => {
-                selector.append_query(event.text.as_deref().unwrap_or(text));
-            }
-            _ => {}
-        }
-        if let Some(selection) = completion {
-            self.complete_selector(selection)?;
+        if let Some(completion) = ui_controller::handle_selector_key(event, modifiers, &mut self.ui)
+        {
+            self.submit_script(ScriptInvocation::SelectCallback {
+                id: completion.id,
+                selection: completion.selection,
+            })?;
         }
         Ok(())
-    }
-
-    pub(super) fn complete_selector(&mut self, selection: Option<String>) -> Result<(), String> {
-        let Some(selector) = self.ui.selector.take() else {
-            return Ok(());
-        };
-        self.ui.ime_preedit = None;
-        self.submit_script(ScriptInvocation::SelectCallback {
-            id: selector.id,
-            selection,
-        })?;
-        Ok(())
-    }
-
-    pub(super) fn execute_user_command(&mut self, name: &str) -> Result<(), String> {
-        let pane = self
-            .mux
-            .current_pane()
-            .ok_or_else(|| "mux has no current pane".to_owned())?;
-        self.submit_script(ScriptInvocation::UserCommand {
-            name: name.to_owned(),
-            pane,
-        })?;
-        Ok(())
-    }
-
-    pub(super) fn create_workspace(&mut self) -> Result<(), String> {
-        let mut suffix = self.mux.workspaces().len() + 1;
-        let name = loop {
-            let candidate = format!("Workspace {suffix}");
-            if self
-                .mux
-                .workspaces()
-                .into_iter()
-                .all(|workspace| self.mux.workspace_name(workspace) != Some(candidate.as_str()))
-            {
-                break candidate;
-            }
-            suffix += 1;
-        };
-        self.dispatch_gui_command(Command::SwitchWorkspace(name))
-    }
-
-    pub(super) fn cycle_workspace(&mut self, backwards: bool) -> Result<(), String> {
-        let workspaces = self.mux.workspaces();
-        let current = self.mux.current_workspace();
-        let current_index = workspaces
-            .iter()
-            .position(|workspace| *workspace == current)
-            .ok_or_else(|| format!("active workspace {current} is not registered"))?;
-        let next_index = if backwards {
-            (current_index + workspaces.len() - 1) % workspaces.len()
-        } else {
-            (current_index + 1) % workspaces.len()
-        };
-        self.dispatch_gui_command(Command::ActivateWorkspace(workspaces[next_index]))
-    }
-
-    pub(super) fn cycle_tab(&mut self, backwards: bool) -> Result<(), String> {
-        let window = self
-            .mux
-            .current_window()
-            .ok_or_else(|| "mux has no current window".to_owned())?;
-        let current = self
-            .mux
-            .current_tab()
-            .ok_or_else(|| "mux has no current tab".to_owned())?;
-        let tabs = self
-            .mux
-            .tabs(window)
-            .ok_or_else(|| format!("unknown window {window}"))?;
-        let current_index = tabs
-            .iter()
-            .position(|tab| *tab == current)
-            .ok_or_else(|| format!("active tab {current} is not in window {window}"))?;
-        let next_index = if backwards {
-            (current_index + tabs.len() - 1) % tabs.len()
-        } else {
-            (current_index + 1) % tabs.len()
-        };
-        let next = tabs[next_index];
-        self.dispatch_gui_command(Command::ActivateTab(next))
     }
 
     pub(super) fn dispatch_gui_command(&mut self, command: Command) -> Result<(), String> {
@@ -1184,25 +728,6 @@ impl ToyotermApplication {
             ));
         }
         output
-    }
-
-    pub(super) fn split_active_pane(&mut self, direction: SplitDirection) -> Result<(), String> {
-        let pane = self
-            .mux
-            .current_pane()
-            .ok_or_else(|| "mux has no current pane".to_owned())?;
-        self.dispatch_gui_command(Command::Split { pane, direction })
-    }
-
-    pub(super) fn focus_neighbor(&mut self, direction: SplitDirection) -> Result<(), String> {
-        let pane = self
-            .mux
-            .current_pane()
-            .ok_or_else(|| "mux has no current pane".to_owned())?;
-        if let Some(neighbor) = self.ui.pane_layout.neighbor(pane, direction) {
-            self.dispatch_gui_command(Command::ActivatePane(neighbor))?;
-        }
-        Ok(())
     }
 
     pub(super) fn reload_config_with_notification(&mut self) -> Result<(), String> {
@@ -1351,8 +876,405 @@ impl ToyotermApplication {
 }
 
 #[cfg(test)]
+fn test_ui_state() -> UiState {
+    UiState {
+        pane_layout: PaneLayout::default(),
+        tab_layout: TabStripLayout::default(),
+        workspace_layout: WorkspaceStripLayout::default(),
+        search_open: false,
+        search_query: String::new(),
+        search_result: SearchResult::default(),
+        selector: None,
+        config_error_layout: ConfigErrorLayout::default(),
+        config_error_notice: None,
+        ime_preedit: Some("preedit".into()),
+        modifiers: ModifiersState::empty(),
+        alt_graph_active: false,
+        leader_deadline: None,
+        mouse_position: PhysicalPosition::new(0.0, 0.0),
+        pressed_mouse_button: None,
+        last_mouse_cell: None,
+        wheel_line_accumulator: 0.0,
+        selecting: false,
+        visual_selection: None,
+        click_tracker: ClickTracker::default(),
+        pending_clipboard_writes: Vec::new(),
+        pane_badges: HashMap::new(),
+        cell_metrics: CellMetrics::default(),
+        bar_items: HashMap::new(),
+        bar_pending: None,
+        next_bar_at: HashMap::new(),
+        terminal_render_pending: false,
+        render_style: RenderStyle::default(),
+        window_title_override: None,
+    }
+}
+
+#[cfg(test)]
+fn test_terminal_runtime(panes: impl IntoIterator<Item = PaneId>) -> TerminalRuntime {
+    TerminalRuntime {
+        pane_runtimes: panes
+            .into_iter()
+            .map(|pane| {
+                (
+                    pane,
+                    PaneRuntime {
+                        terminal: AlacrittyTerminalBackend::new(80, 24),
+                        process: ProcessRuntime {
+                            pty_session: None,
+                            process_id: None,
+                            exited: false,
+                        },
+                        metadata: PaneMetadata {
+                            title: format!("Pane {}", pane.0),
+                            icon_title: None,
+                            osc_badge: None,
+                            cwd: None,
+                            remote_host: None,
+                        },
+                        protocol: PaneProtocolState::default(),
+                    },
+                )
+            })
+            .collect(),
+        pending_pane_launches: HashMap::new(),
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
+
+    fn action_context() -> ActionContext {
+        ActionContext {
+            workspace: toyoterm_api::WorkspaceId(1),
+            window: toyoterm_api::WindowId(2),
+            tab: toyoterm_api::TabId(3),
+            pane: PaneId(4),
+        }
+    }
+
+    fn launch_spec() -> PaneLaunchSpec {
+        PaneLaunchSpec {
+            program: Some("shell".into()),
+            args: vec!["--login".into()],
+            cwd: None,
+            environment: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn command_origin_policy_preserves_script_ipc_and_keybinding_permissions() {
+        let commands = [
+            NativeCommand::Mux(Command::NewTab),
+            NativeCommand::Action(ActionCommand::Invoke {
+                action: NativeAction::ToggleZoom,
+                context: action_context(),
+            }),
+            NativeCommand::Ui(UiCommand::SetPaneBadge {
+                pane: PaneId(1),
+                badge: Some("build".into()),
+            }),
+            NativeCommand::Window(WindowCommand::CreateWithLaunch {
+                workspace: toyoterm_api::WorkspaceId(1),
+                launch: launch_spec(),
+            }),
+            NativeCommand::Ui(UiCommand::OpenSelector {
+                id: 1,
+                title: "pick".into(),
+                items: vec!["one".into()],
+            }),
+            NativeCommand::Clipboard(ClipboardCommand::Write("text".into())),
+            NativeCommand::Script(ScriptCommand::InvokeUserCommand {
+                name: "build".into(),
+                pane: PaneId(1),
+            }),
+            NativeCommand::Config(ConfigCommand::Reload),
+        ];
+
+        for command in &commands {
+            assert!(validate_command_origin(CommandOrigin::Script, command).is_ok());
+            assert!(validate_command_origin(CommandOrigin::Keybinding, command).is_ok());
+        }
+        for command in &commands {
+            let expected = matches!(command, NativeCommand::Mux(_) | NativeCommand::Config(_));
+            assert_eq!(
+                validate_command_origin(CommandOrigin::Ipc, command).is_ok(),
+                expected
+            );
+        }
+    }
+
+    #[test]
+    fn native_command_envelope_routes_every_domain_to_its_handler_boundary() {
+        assert!(matches!(
+            route_domain_command(NativeCommand::Mux(Command::NewTab)),
+            Ok(DomainCommand::Mux(Command::NewTab))
+        ));
+        assert!(matches!(
+            route_domain_command(NativeCommand::Pane(PaneCommand::Search {
+                pane: PaneId(1),
+                query: "query".into(),
+                direction: PaneSearchDirection::Next,
+            })),
+            Ok(DomainCommand::Pane(PaneCommand::Search { .. }))
+        ));
+        assert!(matches!(
+            route_domain_command(NativeCommand::Window(WindowCommand::Minimize)),
+            Ok(DomainCommand::Window(WindowCommand::Minimize))
+        ));
+        assert!(matches!(
+            route_domain_command(NativeCommand::Ui(UiCommand::OpenSearch { pane: PaneId(1) })),
+            Ok(DomainCommand::Ui(UiCommand::OpenSearch { .. }))
+        ));
+        assert!(matches!(
+            route_domain_command(NativeCommand::Clipboard(ClipboardCommand::Write(
+                "text".into(),
+            ))),
+            Ok(DomainCommand::Clipboard(ClipboardCommand::Write(_)))
+        ));
+        assert!(matches!(
+            route_domain_command(NativeCommand::Script(ScriptCommand::InvokeUserCommand {
+                name: "build".into(),
+                pane: PaneId(1),
+            },)),
+            Ok(DomainCommand::Script(
+                ScriptCommand::InvokeUserCommand { .. }
+            ))
+        ));
+        assert!(matches!(
+            route_domain_command(NativeCommand::Config(ConfigCommand::Reload)),
+            Ok(DomainCommand::Config(ConfigCommand::Reload))
+        ));
+        assert!(
+            route_domain_command(NativeCommand::Action(ActionCommand::Invoke {
+                action: NativeAction::ToggleZoom,
+                context: action_context(),
+            }))
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn action_resolution_separates_user_actions_from_context_bound_execution() {
+        let mux = Mux::new();
+        let context = ActionContext {
+            workspace: mux.current_workspace(),
+            window: mux.current_window().unwrap(),
+            tab: mux.current_tab().unwrap(),
+            pane: mux.current_pane().unwrap(),
+        };
+        let pane_layout = PaneLayout::default();
+        let invoke = |action| ActionCommand::Invoke { action, context };
+
+        assert_eq!(
+            resolve_action_command(
+                invoke(NativeAction::ToggleZoom),
+                CommandOrigin::Keybinding,
+                &mux,
+                &pane_layout,
+            ),
+            Ok(ActionResolution {
+                activation: Vec::new(),
+                command: Some(NativeCommand::Mux(Command::ToggleZoom)),
+            })
+        );
+        assert_eq!(
+            resolve_action_command(
+                invoke(NativeAction::ToggleZoom),
+                CommandOrigin::Script,
+                &mux,
+                &pane_layout,
+            ),
+            Ok(ActionResolution {
+                activation: vec![
+                    Command::ActivateWorkspace(context.workspace),
+                    Command::ActivateWindow(context.window),
+                    Command::ActivateTab(context.tab),
+                    Command::ActivatePane(context.pane),
+                ],
+                command: Some(NativeCommand::Mux(Command::ToggleZoom)),
+            })
+        );
+        assert_eq!(
+            resolve_action_command(
+                invoke(NativeAction::ReloadConfig),
+                CommandOrigin::Script,
+                &mux,
+                &pane_layout,
+            ),
+            Ok(ActionResolution {
+                activation: Vec::new(),
+                command: Some(NativeCommand::Config(ConfigCommand::Reload)),
+            })
+        );
+        assert!(
+            resolve_action_command(
+                invoke(NativeAction::ToggleZoom),
+                CommandOrigin::Ipc,
+                &mux,
+                &pane_layout,
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn action_resolution_routes_actions_to_concrete_domains() {
+        let mux = Mux::new();
+        let context = ActionContext {
+            workspace: mux.current_workspace(),
+            window: mux.current_window().unwrap(),
+            tab: mux.current_tab().unwrap(),
+            pane: mux.current_pane().unwrap(),
+        };
+        let layout = PaneLayout::default();
+        let resolve = |action| {
+            resolve_action_command(
+                ActionCommand::Invoke { action, context },
+                CommandOrigin::Keybinding,
+                &mux,
+                &layout,
+            )
+            .unwrap()
+            .command
+            .unwrap()
+        };
+
+        assert!(matches!(
+            resolve(NativeAction::Split(SplitDirection::Right)),
+            NativeCommand::Mux(Command::Split { .. })
+        ));
+        assert!(matches!(
+            resolve(NativeAction::Search),
+            NativeCommand::Ui(UiCommand::OpenSearch { .. })
+        ));
+        assert!(matches!(
+            resolve(NativeAction::ToggleFullscreen),
+            NativeCommand::Window(WindowCommand::ToggleFullscreen)
+        ));
+        assert!(matches!(
+            resolve(NativeAction::CopySelection),
+            NativeCommand::Clipboard(ClipboardCommand::CopySelection { .. })
+        ));
+        assert!(matches!(
+            resolve(NativeAction::UserCommand("build".into())),
+            NativeCommand::Script(ScriptCommand::InvokeUserCommand { .. })
+        ));
+        assert!(matches!(
+            resolve(NativeAction::ReloadConfig),
+            NativeCommand::Config(ConfigCommand::Reload)
+        ));
+    }
+
+    #[test]
+    fn script_action_resolution_rejects_a_stale_context_before_dispatch() {
+        let mux = Mux::new();
+        let mut stale = action_context();
+        stale.pane = PaneId(u64::MAX);
+        assert!(
+            resolve_action_command(
+                ActionCommand::Invoke {
+                    action: NativeAction::ToggleZoom,
+                    context: stale,
+                },
+                CommandOrigin::Script,
+                &mux,
+                &PaneLayout::default(),
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn config_reload_is_returned_as_an_application_effect() {
+        assert_eq!(
+            apply_config_command(ConfigCommand::Reload),
+            ControlEffects::reload_config()
+        );
+    }
+
+    #[test]
+    fn pane_and_window_handlers_stage_launches_in_the_terminal_domain() {
+        let mut mux = Mux::new();
+        let mut events = VecDeque::new();
+        let mut terminal_runtime = TerminalRuntime {
+            pane_runtimes: HashMap::new(),
+            pending_pane_launches: HashMap::new(),
+        };
+        let original_pane = mux.current_pane().unwrap();
+        let original_window = mux.current_window().unwrap();
+        let mut platform = PlatformState {
+            window: None,
+            renderer: None,
+            occlusion: WindowOcclusion::default(),
+            clipboard: None,
+            notification_sender: None,
+            #[cfg(target_os = "linux")]
+            app_id: None,
+        };
+
+        domain_handlers::apply_window_command(
+            WindowCommand::NewTabWithLaunch {
+                window: original_window,
+                launch: launch_spec(),
+            },
+            &mut mux,
+            &mut events,
+            &mut terminal_runtime,
+            &mut platform,
+        )
+        .unwrap();
+        let tab_pane = mux.current_pane().unwrap();
+        assert_ne!(tab_pane, original_pane);
+        assert!(
+            terminal_runtime
+                .pending_pane_launches
+                .contains_key(&tab_pane)
+        );
+
+        let split_pane = domain_handlers::stage_pane_launch(
+            PaneCreation::Split {
+                pane: tab_pane,
+                direction: SplitDirection::Right,
+            },
+            launch_spec(),
+            &mut mux,
+            &mut events,
+            &mut terminal_runtime,
+        )
+        .unwrap();
+        assert_ne!(split_pane, tab_pane);
+        assert!(
+            terminal_runtime
+                .pending_pane_launches
+                .contains_key(&split_pane)
+        );
+
+        let workspace = mux.current_workspace();
+        let windows_before = mux.workspace_windows(workspace).unwrap().len();
+        domain_handlers::apply_window_command(
+            WindowCommand::CreateWithLaunch {
+                workspace,
+                launch: launch_spec(),
+            },
+            &mut mux,
+            &mut events,
+            &mut terminal_runtime,
+            &mut platform,
+        )
+        .unwrap();
+        let window_pane = mux.current_pane().unwrap();
+        assert_eq!(
+            mux.workspace_windows(workspace).unwrap().len(),
+            windows_before + 1
+        );
+        assert!(
+            terminal_runtime
+                .pending_pane_launches
+                .contains_key(&window_pane)
+        );
+    }
 
     #[test]
     fn callback_actions_reactivate_their_origin_context() {
@@ -1363,7 +1285,7 @@ mod tests {
             pane: PaneId(4),
         };
         assert_eq!(
-            context_activation_commands(&NativeAction::ToggleZoom, context),
+            ingress::context_activation_commands(&NativeAction::ToggleZoom, context),
             vec![
                 Command::ActivateWorkspace(context.workspace),
                 Command::ActivateWindow(context.window),
@@ -1371,7 +1293,10 @@ mod tests {
                 Command::ActivatePane(context.pane),
             ]
         );
-        assert!(context_activation_commands(&NativeAction::ToggleFullscreen, context).is_empty());
+        assert!(
+            ingress::context_activation_commands(&NativeAction::ToggleFullscreen, context)
+                .is_empty()
+        );
 
         let mut mux = Mux::new();
         let valid = ActionContext {
@@ -1380,12 +1305,12 @@ mod tests {
             tab: mux.current_tab().unwrap(),
             pane: mux.current_pane().unwrap(),
         };
-        assert!(action_context_is_valid(&mux, valid));
+        assert!(ingress::action_context_is_valid(&mux, valid));
         let first_pane = valid.pane;
         let CommandResult::Tab(second_tab) = mux.dispatch(Command::NewTab).unwrap() else {
             panic!("new tab did not return a tab");
         };
-        assert!(!action_context_is_valid(
+        assert!(!ingress::action_context_is_valid(
             &mux,
             ActionContext {
                 tab: second_tab,

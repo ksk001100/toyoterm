@@ -228,6 +228,12 @@ pub struct PaneLaunchSpec {
 }
 
 #[derive(Clone, Debug, PartialEq)]
+/// Transport envelope that routes an already-decoded native command to its
+/// owning application domain.
+///
+/// Unlike [`NativeAction`], command variants carry the concrete IDs and data
+/// needed for execution where the operation requires them. Application ingress
+/// resolves actions before domain handlers mutate native state.
 pub enum NativeCommand {
     Mux(Command),
     Action(ActionCommand),
@@ -235,10 +241,14 @@ pub enum NativeCommand {
     Window(WindowCommand),
     Ui(UiCommand),
     Clipboard(ClipboardCommand),
+    Script(ScriptCommand),
     Config(ConfigCommand),
 }
 
 #[derive(Clone, Debug, PartialEq)]
+/// A user-operation request captured with the hierarchy that was active when
+/// it was produced. The application validates or replaces that context at the
+/// ingress boundary before dispatching domain commands.
 pub enum ActionCommand {
     Invoke {
         action: NativeAction,
@@ -252,10 +262,6 @@ pub enum PaneCommand {
         pane: PaneId,
         direction: SplitDirection,
         launch: PaneLaunchSpec,
-    },
-    SetBadge {
-        pane: PaneId,
-        badge: Option<String>,
     },
     Search {
         pane: PaneId,
@@ -274,6 +280,10 @@ pub enum WindowCommand {
         window: WindowId,
         launch: PaneLaunchSpec,
     },
+    Maximize,
+    ToggleMaximize,
+    Minimize,
+    ToggleFullscreen,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -283,11 +293,60 @@ pub enum UiCommand {
         title: String,
         items: Vec<String>,
     },
+    SetPaneBadge {
+        pane: PaneId,
+        badge: Option<String>,
+    },
+    OpenSearch {
+        pane: PaneId,
+    },
+    NavigatePrompt {
+        pane: PaneId,
+        direction: PaneSearchDirection,
+    },
+    NavigateMark {
+        pane: PaneId,
+        direction: PaneSearchDirection,
+    },
+    SelectCommandOutput {
+        pane: PaneId,
+        direction: PaneSearchDirection,
+    },
+    SelectLastCommandOutput {
+        pane: PaneId,
+    },
+    StartVisualMode {
+        pane: PaneId,
+    },
+    ToggleVisualMode {
+        pane: PaneId,
+    },
+    StartVisualSelection {
+        pane: PaneId,
+    },
+    SelectVisualSelection {
+        pane: PaneId,
+    },
+    EndVisualSelection {
+        pane: PaneId,
+    },
+    MoveVisualSelection {
+        pane: PaneId,
+        motion: SelectionMotion,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum ClipboardCommand {
     Write(String),
+    CopySelection { pane: PaneId },
+    Paste { pane: PaneId },
+    YankSelection { pane: PaneId },
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub enum ScriptCommand {
+    InvokeUserCommand { name: String, pane: PaneId },
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

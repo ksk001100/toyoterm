@@ -58,12 +58,20 @@ lifecycle, pane metadata, and protocol/session metadata. Dropping its
 `ProcessRuntime` retains the PTY termination guarantee.
 
 Native commands keep a small top-level domain boundary (`Mux`, `Action`,
-`Pane`, `Window`, `Ui`, `Clipboard`, and `Config`). Adding an operation within
-one of those domains does not grow an unrelated application-wide command enum.
-Ruby callbacks, IPC mutations, and native keybindings converge on
-`apply_control_command`. It performs domain dispatch and returns the small set
-of coordinator effects without routing PTY bytes through a generic intent
-layer.
+`Pane`, `Window`, `Ui`, `Clipboard`, `Script`, and `Config`). `NativeCommand` is a
+transport envelope: adding an operation within one domain does not grow an
+unrelated application-wide command enum or put its implementation in the
+application root. Ruby callbacks, IPC mutations, and native keybindings
+converge on `apply_control_command`. An ingress policy first validates which
+domains an origin may use, then the action resolver turns every user-level
+`NativeAction` into an ID-resolved domain command. Context-bound script actions
+validate and reactivate their captured hierarchy before the resolved command is
+dispatched. Origin and `NativeAction` are not passed to domain handlers. Pane,
+window/platform, UI, clipboard, and script handlers receive only the subsystem
+state they mutate; pane badges belong to `UiCommand`, and config reload remains
+an application-level effect. The top-level dispatcher therefore performs
+routing and cross-domain coordination without routing PTY bytes through a
+generic intent layer.
 
 Inside `toyoterm-script`, `ConfigManager` remains the transactional coordinator:
 fresh-VM load and validation precede the active-runtime swap. Registry decoding

@@ -484,11 +484,11 @@ impl ConfigManager {
                 "clipboard_write" => {
                     commands.push(NativeCommand::Clipboard(ClipboardCommand::Write(payload)))
                 }
-                "set_pane_badge" => commands.push(NativeCommand::Pane(PaneCommand::SetBadge {
+                "set_pane_badge" => commands.push(NativeCommand::Ui(UiCommand::SetPaneBadge {
                     pane,
                     badge: Some(payload),
                 })),
-                "clear_pane_badge" => commands.push(NativeCommand::Pane(PaneCommand::SetBadge {
+                "clear_pane_badge" => commands.push(NativeCommand::Ui(UiCommand::SetPaneBadge {
                     pane,
                     badge: None,
                 })),

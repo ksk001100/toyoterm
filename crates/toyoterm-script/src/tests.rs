@@ -1676,7 +1676,7 @@ fn exposes_the_synced_ruby_object_model() {
     assert_eq!(manager.eval("Toyoterm.current_pane.badge").unwrap(), "dev");
     assert_eq!(
         manager.drain_commands(PaneId(40)).unwrap(),
-        vec![NativeCommand::Pane(PaneCommand::SetBadge {
+        vec![NativeCommand::Ui(UiCommand::SetPaneBadge {
             pane: PaneId(40),
             badge: Some("dev".into()),
         })]
@@ -1684,7 +1684,7 @@ fn exposes_the_synced_ruby_object_model() {
     manager.eval("Toyoterm.current_pane.badge = nil").unwrap();
     assert_eq!(
         manager.drain_commands(PaneId(40)).unwrap(),
-        vec![NativeCommand::Pane(PaneCommand::SetBadge {
+        vec![NativeCommand::Ui(UiCommand::SetPaneBadge {
             pane: PaneId(40),
             badge: None,
         })]
@@ -3213,7 +3213,7 @@ fn select_queues_a_native_overlay_and_resumes_its_callback() {
     .unwrap();
     assert_eq!(
         result.commands,
-        vec![NativeCommand::Pane(PaneCommand::SetBadge {
+        vec![NativeCommand::Ui(UiCommand::SetPaneBadge {
             pane: PaneId(4),
             badge: Some("Solarized Dark".into()),
         })]

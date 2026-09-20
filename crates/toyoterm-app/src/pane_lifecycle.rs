@@ -884,19 +884,6 @@ impl ToyotermApplication {
             .map_err(|error| format!("copy to clipboard: {error}"))
     }
 
-    pub(super) fn paste_clipboard(&mut self) -> Result<(), String> {
-        let mode = self
-            .active_terminal()
-            .map(TerminalBackend::mode)
-            .unwrap_or_default();
-        let text = self
-            .clipboard()?
-            .get_text()
-            .map_err(|error| format!("paste from clipboard: {error}"))?;
-        let bytes = encode_paste(&text, mode);
-        self.write_input(&bytes)
-    }
-
     pub(super) fn clipboard(&mut self) -> Result<&mut Clipboard, String> {
         if self.platform.clipboard.is_none() {
             self.platform.clipboard =

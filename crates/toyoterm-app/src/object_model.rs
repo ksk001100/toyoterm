@@ -163,7 +163,11 @@ pub(super) fn dispatch_script_commands(
             NativeCommand::Clipboard(ClipboardCommand::Write(text)) => {
                 effects.clipboard_writes.push(text)
             }
-            NativeCommand::Window(_) | NativeCommand::Pane(_) | NativeCommand::Ui(_) => {}
+            NativeCommand::Clipboard(_)
+            | NativeCommand::Window(_)
+            | NativeCommand::Pane(_)
+            | NativeCommand::Ui(_)
+            | NativeCommand::Script(_) => {}
             NativeCommand::Config(ConfigCommand::Reload) => effects.reload_requested = true,
         }
     }

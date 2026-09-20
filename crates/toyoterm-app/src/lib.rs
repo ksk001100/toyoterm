@@ -22,8 +22,8 @@ use winit::platform::wayland::WindowAttributesExtWayland;
 use winit::platform::windows::WindowAttributesExtWindows;
 
 use toyoterm_api::{
-    ActionCommand, ClipboardCommand, ConfigCommand, NativeHandle, PaneCommand, UiCommand,
-    WindowCommand,
+    ActionCommand, ClipboardCommand, ConfigCommand, NativeHandle, PaneCommand, ScriptCommand,
+    UiCommand, WindowCommand,
 };
 use toyoterm_script::{
     AsyncProcessOutput, BarItem, RubyEvent, RubyObjectModel, RubyPane, RubyTab, RubyWindow,
