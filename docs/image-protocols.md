@@ -17,7 +17,7 @@ python examples/terminal_images.py --protocol kitty
 | --- | --- |
 | Sixel (DCS `ESC P … q … ESC \\`) | Raster dimensions, repeat, carriage return, next sixel line, 256 color registers, RGB and DEC HLS definitions, transparent background (`P2=1`), and 7-bit or 8-bit DCS/ST controls |
 | Kitty (APC `ESC _ G … ESC \\`) | Direct base64 transmission (`t=d`), RGB/RGBA/PNG (`f=24/32/100`), zlib (`o=z`), chunking (`m`), transmit/query/display (`a=t/q/T/p`), image and placement IDs (`i/p`), cell sizes (`c/r`), cursor preservation (`C=1`), virtual placements (`U=1`) and Unicode placeholders, quiet replies (`q`), deletion of visible placements or an image ID (`d=a/A/i/I`), and 7-bit or 8-bit APC/ST controls |
-| iTerm2 (OSC 1337) | `File=inline=1` and `MultipartFile`/`FilePart`/`FileEnd`, base64 PNG/JPEG/GIF/BMP/WebP (the first frame of an animated image is displayed), optional byte `size`, `width`/`height` in cells, pixels, percent, or `auto`, `preserveAspectRatio`, BEL or 7-bit/8-bit ST termination |
+| iTerm2 (OSC 1337) | `File=inline=1` and `MultipartFile`/`FilePart`/`FileEnd`, base64 PNG/JPEG/GIF/BMP/WebP (the first frame of an animated image is displayed), optional byte `size`, `width`/`height` in cells, pixels, percent, or `auto`, `preserveAspectRatio`, BEL or 7-bit/8-bit ST termination; opt-in `inline=0` downloads to one configured absolute directory |
 
 Kitty replies use the normal PTY response channel. Queries decode and validate
 the image without retaining or displaying it. Unknown image IDs and unsupported
@@ -77,13 +77,26 @@ diacritics are not exposed to the text renderer.
   cropping, offsets, relative placement, and nonzero
   z-index are not implemented. Use direct transmission with supported placement
   keys. Deletion selectors other than `a/A/i/I` return an unsupported error.
-- OSC 1337 file downloads (`inline=0`), image animation, and formats other than
-  PNG/JPEG/GIF/BMP/WebP are not implemented.
+- OSC 1337 image animation and formats other than PNG/JPEG/GIF/BMP/WebP are not
+  implemented. Downloads accept arbitrary bounded bytes and do not decode them
+  as images.
 - Each control string and accumulated Kitty or iTerm2 transfer is limited to 32
   MiB. Each iTerm2 multipart control string is additionally limited to 1 MiB.
   Decoded RGBA is limited to 32 MiB and 4096 pixels per side. Image decoding also
   has a 32 MiB allocation budget. Oversized/malformed strings are discarded and
   normal text parsing resumes at the terminator.
+- Downloads are disabled unless both `behavior.allow_osc_file_downloads` and an
+  absolute `behavior.osc_download_directory` are configured. They are queued on
+  one bounded worker, never overwrite an existing file, strip path components,
+  sanitize portable filename hazards, and remove a partial file after a write
+  failure.
+- Kitty OSC 5113 uploads are disabled unless both
+  `behavior.allow_osc_file_uploads` and an absolute
+  `behavior.osc_upload_directory` are configured. Client paths are rebased
+  below that fixed root; traversal, special files, and absolute or escaping
+  symbolic links are rejected. Directory walks do not follow links and are
+  limited to 64 entries / 32 MiB per session. Reads and optional zlib encoding
+  use the bounded background transfer worker and 4 KiB protocol chunks.
 - Each pane holds up to 128 placements / 64 MiB of placed pixels, conservatively
   counting shared images. Oldest placements are evicted. Kitty's retained image
   store separately allows 128 images / 64 MiB and reports `ENOSPC` when full.

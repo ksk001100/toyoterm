@@ -88,6 +88,13 @@ pub struct BehaviorConfig {
     pub allow_osc_notifications: bool,
     pub allow_osc_attention_requests: bool,
     pub allow_osc_open_url: bool,
+    pub allow_osc_file_downloads: bool,
+    pub osc_download_directory: Option<PathBuf>,
+    pub allow_osc_file_uploads: bool,
+    pub osc_upload_directory: Option<PathBuf>,
+    pub allow_osc_background_image: bool,
+    pub osc_background_image_directory: Option<PathBuf>,
+    pub allow_osc_focus_requests: bool,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -162,6 +169,13 @@ impl Default for ToyotermConfig {
                 allow_osc_notifications: false,
                 allow_osc_attention_requests: false,
                 allow_osc_open_url: false,
+                allow_osc_file_downloads: false,
+                osc_download_directory: None,
+                allow_osc_file_uploads: false,
+                osc_upload_directory: None,
+                allow_osc_background_image: false,
+                osc_background_image_directory: None,
+                allow_osc_focus_requests: false,
             },
             default_shell: None,
             scrollback_lines: 10_000,
@@ -319,6 +333,13 @@ mod tests {
         assert!(!config.behavior.allow_osc_notifications);
         assert!(!config.behavior.allow_osc_attention_requests);
         assert!(!config.behavior.allow_osc_open_url);
+        assert!(!config.behavior.allow_osc_file_downloads);
+        assert!(config.behavior.osc_download_directory.is_none());
+        assert!(!config.behavior.allow_osc_file_uploads);
+        assert!(config.behavior.osc_upload_directory.is_none());
+        assert!(!config.behavior.allow_osc_background_image);
+        assert!(config.behavior.osc_background_image_directory.is_none());
+        assert!(!config.behavior.allow_osc_focus_requests);
         assert_eq!(config.leader, None);
         assert!(config.status_bars.is_empty());
     }

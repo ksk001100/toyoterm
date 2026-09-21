@@ -73,6 +73,7 @@ fn cell(column: u16, text: &str, background: CellColor) -> TerminalCell {
         column,
         text: text.into(),
         width: 1,
+        text_size: None,
         attributes: CellAttributes {
             background,
             ..CellAttributes::default()

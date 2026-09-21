@@ -12,6 +12,7 @@ pub(crate) mod stream;
 const MAX_BYTES: usize = 32 * 1024 * 1024;
 const MAX_STORED_BYTES: usize = 64 * 1024 * 1024;
 const MAX_IMAGES: usize = 128;
+const MAX_TEXT_BLOCKS: usize = 4_096;
 const MAX_SIDE: u32 = 4096;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -36,6 +37,15 @@ struct Placement {
     placement_id: u32,
     alternate: bool,
     kind: PlacementKind,
+}
+
+pub(crate) struct TextBlock {
+    pub text: String,
+    pub column: u16,
+    pub row: i32,
+    pub columns: u8,
+    pub size: crate::TextSize,
+    alternate: bool,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -84,6 +94,7 @@ struct ItermTransfer {
 #[derive(Default)]
 pub(crate) struct Graphics {
     placements: Vec<Placement>,
+    text_blocks: Vec<TextBlock>,
     stored: BTreeMap<u32, Pixels>,
     virtual_placements: Vec<VirtualPlacement>,
     kitty_transfer: Option<(BTreeMap<String, String>, Vec<u8>)>,
@@ -96,11 +107,23 @@ pub(crate) struct Graphics {
 pub(crate) struct GraphicResult {
     pub advance: Option<(u16, u16)>,
     pub reply: Option<String>,
+    pub download: Option<FileDownload>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct FileDownload {
+    pub name: Option<String>,
+    pub data: Vec<u8>,
+}
+
+enum ItermContent {
+    Image(Pixels, Option<(u32, u32)>),
+    Download(FileDownload),
 }
 
 impl Graphics {
     pub fn has_placements(&self) -> bool {
-        !self.placements.is_empty()
+        !self.placements.is_empty() || !self.text_blocks.is_empty()
     }
     pub fn new() -> Self {
         Self {
@@ -133,6 +156,7 @@ impl Graphics {
 
     pub fn reset(&mut self) {
         self.placements.clear();
+        self.text_blocks.clear();
         self.stored.clear();
         self.virtual_placements.clear();
         self.kitty_transfer = None;
@@ -244,6 +268,15 @@ impl Graphics {
     }
 
     pub fn clear(&mut self, alternate: bool, start: i32, end: i32) {
+        self.clear_images(alternate, start, end);
+        self.text_blocks.retain(|block| {
+            block.alternate != alternate
+                || block.row >= end
+                || block.row + i32::from(block.size.rows) <= start
+        });
+    }
+
+    pub fn clear_images(&mut self, alternate: bool, start: i32, end: i32) {
         self.placements.retain(|p| {
             p.alternate != alternate
                 || p.image.row >= end
@@ -252,6 +285,17 @@ impl Graphics {
     }
 
     pub fn clear_columns(&mut self, alternate: bool, row: i32, start: u16, end: u16) {
+        self.clear_image_columns(alternate, row, start, end);
+        self.text_blocks.retain(|block| {
+            block.alternate != alternate
+                || row < block.row
+                || row >= block.row + i32::from(block.size.rows)
+                || end <= block.column
+                || start >= block.column.saturating_add(u16::from(block.columns))
+        });
+    }
+
+    pub fn clear_image_columns(&mut self, alternate: bool, row: i32, start: u16, end: u16) {
         self.placements.retain(|placement| {
             placement.alternate != alternate
                 || row < placement.image.row
@@ -278,6 +322,13 @@ impl Graphics {
                         .column
                         .saturating_add(placement.image.columns)
         });
+        self.text_blocks.retain(|block| {
+            block.alternate != alternate
+                || row < block.row
+                || row >= block.row + i32::from(block.size.rows)
+                || end <= block.column
+                || start >= block.column.saturating_add(u16::from(block.columns))
+        });
     }
 
     pub fn scroll(&mut self, alternate: bool, top: i32, bottom: i32, amount: i32, history: usize) {
@@ -295,6 +346,180 @@ impl Graphics {
                 return p.image.row + i32::from(p.image.rows) > minimum && p.image.row < bottom;
             }
             true
+        });
+        self.text_blocks.retain_mut(|block| {
+            if block.alternate == alternate
+                && block.row < bottom
+                && (block.row >= top || (top == 0 && amount > 0))
+            {
+                block.row -= amount;
+                let minimum = if top == 0 && !alternate {
+                    -(history as i32)
+                } else {
+                    top
+                };
+                return block.row + i32::from(block.size.rows) > minimum && block.row < bottom;
+            }
+            true
+        });
+    }
+
+    pub fn add_text_block(
+        &mut self,
+        text: String,
+        column: u16,
+        row: i32,
+        columns: u8,
+        size: crate::TextSize,
+        alternate: bool,
+    ) {
+        self.text_blocks.push(TextBlock {
+            text,
+            column,
+            row,
+            columns,
+            size,
+            alternate,
+        });
+        if self.text_blocks.len() > MAX_TEXT_BLOCKS {
+            self.text_blocks.remove(0);
+        }
+    }
+
+    pub fn text_block_at(&self, alternate: bool, row: i32, column: u16) -> Option<&TextBlock> {
+        self.text_blocks.iter().rev().find(|block| {
+            block.alternate == alternate && block.row == row && block.column == column
+        })
+    }
+
+    pub fn text_block_row_end(&self, alternate: bool, row: i32) -> u16 {
+        self.text_blocks
+            .iter()
+            .filter(|block| block.alternate == alternate && block.row == row)
+            .map(|block| block.column.saturating_add(u16::from(block.columns)))
+            .max()
+            .unwrap_or(0)
+    }
+
+    pub fn text_block_covers(&self, alternate: bool, row: i32, column: u16) -> bool {
+        self.text_block_bounds_at(alternate, row, column).is_some()
+    }
+
+    pub fn text_block_bounds_at(
+        &self,
+        alternate: bool,
+        row: i32,
+        column: u16,
+    ) -> Option<(i32, u16, u16)> {
+        self.text_block_covering(alternate, row, column)
+            .map(|block| {
+                (
+                    block.row,
+                    block.column,
+                    block.column.saturating_add(u16::from(block.columns)),
+                )
+            })
+    }
+
+    pub fn text_block_covering(
+        &self,
+        alternate: bool,
+        row: i32,
+        column: u16,
+    ) -> Option<&TextBlock> {
+        self.text_blocks.iter().rev().find(|block| {
+            block.alternate == alternate
+                && row >= block.row
+                && row < block.row + i32::from(block.size.rows)
+                && column >= block.column
+                && column < block.column.saturating_add(u16::from(block.columns))
+        })
+    }
+
+    pub fn append_to_text_block(
+        &mut self,
+        alternate: bool,
+        row: i32,
+        column: u16,
+        character: char,
+    ) -> bool {
+        let Some(block) = self.text_blocks.iter_mut().rev().find(|block| {
+            block.alternate == alternate
+                && row >= block.row
+                && row < block.row + i32::from(block.size.rows)
+                && column >= block.column
+                && column < block.column.saturating_add(u16::from(block.columns))
+        }) else {
+            return false;
+        };
+        block.text.push(character);
+        true
+    }
+
+    pub fn insert_text_columns(
+        &mut self,
+        alternate: bool,
+        row: i32,
+        at: u16,
+        count: u16,
+        limit: u16,
+    ) {
+        self.text_blocks.retain_mut(|block| {
+            if block.alternate != alternate
+                || row < block.row
+                || row >= block.row + i32::from(block.size.rows)
+            {
+                return true;
+            }
+            let end = block.column.saturating_add(u16::from(block.columns));
+            if block.size.rows > 1 && end > at || block.column < at && end > at {
+                return false;
+            }
+            if block.column >= at {
+                block.column = block.column.saturating_add(count);
+                return block.column.saturating_add(u16::from(block.columns)) <= limit;
+            }
+            true
+        });
+    }
+
+    pub fn delete_text_columns(&mut self, alternate: bool, row: i32, at: u16, count: u16) {
+        let deleted_end = at.saturating_add(count);
+        self.text_blocks.retain_mut(|block| {
+            if block.alternate != alternate
+                || row < block.row
+                || row >= block.row + i32::from(block.size.rows)
+            {
+                return true;
+            }
+            let end = block.column.saturating_add(u16::from(block.columns));
+            if block.size.rows > 1 && end > at || block.column < deleted_end && end > at {
+                return false;
+            }
+            if block.column >= deleted_end {
+                block.column -= count.min(block.column);
+            }
+            true
+        });
+    }
+
+    pub fn prepare_insert_text_lines(&mut self, alternate: bool, at: i32, count: i32, bottom: i32) {
+        self.text_blocks.retain(|block| {
+            if block.alternate != alternate {
+                return true;
+            }
+            let end = block.row + i32::from(block.size.rows);
+            let split_at_insertion = block.row < at && end > at;
+            let clipped_after_shift = block.row >= at && end.saturating_add(count) > bottom;
+            !split_at_insertion && !clipped_after_shift
+        });
+    }
+
+    pub fn prepare_delete_text_lines(&mut self, alternate: bool, at: i32, count: i32) {
+        let deleted_end = at.saturating_add(count);
+        self.text_blocks.retain(|block| {
+            let end = block.row + i32::from(block.size.rows);
+            block.alternate != alternate || end <= at || block.row >= deleted_end
         });
     }
 
@@ -363,16 +588,19 @@ impl Graphics {
         let mut result = GraphicResult {
             advance: None,
             reply: None,
+            download: None,
         };
         if kind == b'_' {
             return self.kitty(payload, at, screen, alternate);
         }
         let decoded = if kind == b'P' {
-            sixel::decode(payload, terminal_background).map(|p| (p, None))
+            sixel::decode(payload, terminal_background).map(|p| ItermContent::Image(p, None))
         } else {
             self.iterm(payload, screen)
         };
-        if let Some((pixels, requested)) = decoded {
+        if let Some(ItermContent::Download(download)) = decoded {
+            result.download = Some(download);
+        } else if let Some(ItermContent::Image(pixels, requested)) = decoded {
             let cell = self.size();
             let display = requested.unwrap_or((pixels.width, pixels.height));
             let cells = (
@@ -397,11 +625,7 @@ impl Graphics {
         result
     }
 
-    fn iterm(
-        &mut self,
-        payload: &[u8],
-        screen: (u16, u16),
-    ) -> Option<(Pixels, Option<(u32, u32)>)> {
+    fn iterm(&mut self, payload: &[u8], screen: (u16, u16)) -> Option<ItermContent> {
         if let Some(payload) = payload.strip_prefix(b"1337;File=") {
             self.iterm_transfer = None;
             let (header, data) = payload.split_once_byte(b':');
@@ -411,7 +635,7 @@ impl Graphics {
         if let Some(header) = payload.strip_prefix(b"1337;MultipartFile=") {
             self.iterm_transfer = None;
             let keys = iterm_keys(header)?;
-            if value(&keys, "inline", "0") == "1" && header.len() <= MAX_BYTES {
+            if matches!(value(&keys, "inline", "0"), "0" | "1") && header.len() <= MAX_BYTES {
                 self.iterm_transfer = Some(ItermTransfer {
                     header: header.to_vec(),
                     data: Vec::new(),
@@ -454,6 +678,7 @@ impl Graphics {
         let mut result = GraphicResult {
             advance: None,
             reply: None,
+            download: None,
         };
         let Some(payload) = payload.strip_prefix(b"G") else {
             return result;
@@ -780,13 +1005,23 @@ fn iterm_file(
     data: &[u8],
     cell: (u32, u32),
     screen: (u16, u16),
-) -> Option<(Pixels, Option<(u32, u32)>)> {
+) -> Option<ItermContent> {
     let keys = iterm_keys(header)?;
-    if value(&keys, "inline", "0") != "1" {
+    let bytes = STANDARD.decode(data).ok()?;
+    if bytes.len() > MAX_BYTES {
         return None;
     }
-    let bytes = STANDARD.decode(data).ok()?;
     if keys.contains_key("size") && number(&keys, "size", 0) as usize != bytes.len() {
+        return None;
+    }
+    if value(&keys, "inline", "0") == "0" {
+        let name = match keys.get("name") {
+            Some(encoded) => Some(String::from_utf8(STANDARD.decode(encoded).ok()?).ok()?),
+            None => None,
+        };
+        return Some(ItermContent::Download(FileDownload { name, data: bytes }));
+    }
+    if value(&keys, "inline", "0") != "1" {
         return None;
     }
     let pixels = decode_image(&bytes, false)?;
@@ -822,5 +1057,5 @@ fn iterm_file(
     if width == 0 || height == 0 {
         return None;
     }
-    Some((pixels, Some((width, height))))
+    Some(ItermContent::Image(pixels, Some((width, height))))
 }

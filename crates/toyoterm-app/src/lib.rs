@@ -32,6 +32,7 @@ use toyoterm_script::{
 };
 
 mod command_dispatch;
+mod downloads;
 mod input;
 mod lifecycle;
 mod logging;
@@ -72,19 +73,55 @@ pub use toyoterm_terminal::{
     AlacrittyTerminalBackend, BindingKey, CursorShape, KeyChord, KeyModifiers, KeyPress, KeypadKey,
     MouseEventKind, MouseWheelDirection, NotificationOccasion, NotificationSound,
     NotificationUrgency, SearchDirection, SearchResult, SelectionKind, SessionStatusUpdate,
-    TabColorComponent, TerminalAttention, TerminalBackend, TerminalEvent, TerminalKey,
-    TerminalMode, TerminalMouseButton, TerminalProgress, encode_key, encode_mouse_event,
-    encode_mouse_wheel, encode_paste,
+    TabColorComponent, TerminalAttention, TerminalBackend, TerminalColorPreset, TerminalEvent,
+    TerminalKey, TerminalMode, TerminalMouseButton, TerminalProgress, encode_key,
+    encode_mouse_event, encode_mouse_wheel, encode_paste,
 };
 
 const MULTI_CLICK_INTERVAL: Duration = Duration::from_millis(500);
 const OSC_NOTIFICATION_INTERVAL: Duration = Duration::from_secs(2);
 const OSC_OPEN_URL_INTERVAL: Duration = Duration::from_secs(2);
+const OSC_FOCUS_REQUEST_INTERVAL: Duration = Duration::from_secs(2);
 const OSC_VISUAL_BELL_DURATION: Duration = Duration::from_millis(150);
 const OSC_CURSOR_FIREWORKS_DURATION: Duration = Duration::from_millis(350);
 const MAX_OSC_USER_VARS: usize = 64;
 const MAX_OSC_REPORT_VARIABLE_VALUE_BYTES: usize = 4 * 1024;
 const MAX_PENDING_PTY_OUTPUT_BYTES: usize = 1024 * 1024;
+
+fn terminal_color_presets(
+    snapshot: &ScriptSnapshot,
+) -> Result<Vec<(String, TerminalColorPreset)>, String> {
+    snapshot
+        .color_presets
+        .iter()
+        .map(|(name, colors)| {
+            let style = RenderStyle::from_hex_with_ansi(
+                "monospace",
+                Vec::new(),
+                400,
+                [
+                    &colors.background,
+                    &colors.foreground,
+                    &colors.cursor,
+                    &colors.selection,
+                ],
+                &colors.ansi,
+                1.0,
+            )
+            .map_err(|error| error.to_string())?;
+            Ok((
+                name.clone(),
+                TerminalColorPreset {
+                    foreground: style.foreground,
+                    background: style.background,
+                    cursor: style.cursor,
+                    selection: style.selection,
+                    ansi: style.ansi,
+                },
+            ))
+        })
+        .collect()
+}
 
 #[derive(Debug, Default)]
 struct PtyOutputState {
@@ -429,6 +466,14 @@ enum AppEvent {
         id: u64,
         output: AsyncProcessOutput,
     },
+    FileTransferResponse {
+        pane: PaneId,
+        responses: Vec<String>,
+    },
+    BackgroundImageLoaded {
+        root: PathBuf,
+        result: Result<Option<toyoterm_config::BackgroundImage>, String>,
+    },
     NotificationFeedback(NotificationFeedback),
 }
 
@@ -471,6 +516,7 @@ struct PaneProtocolState {
     last_notification_at: Option<Instant>,
     active_notifications: BTreeMap<String, Option<Instant>>,
     last_open_url_at: Option<Instant>,
+    last_focus_request_at: Option<Instant>,
     visual_bell_deadline: Option<Instant>,
     cursor_fireworks_deadline: Option<Instant>,
 }
@@ -491,6 +537,7 @@ impl Default for PaneProtocolState {
             last_notification_at: None,
             active_notifications: BTreeMap::new(),
             last_open_url_at: None,
+            last_focus_request_at: None,
             visual_bell_deadline: None,
             cursor_fireworks_deadline: None,
         }
@@ -775,6 +822,7 @@ fn ruby_event_from_terminal_event(pane: PaneId, event: TerminalEvent) -> Option<
         TerminalEvent::ItermBadgeFormatChanged(_) => return None,
         TerminalEvent::CursorLineHighlightChanged(_) => return None,
         TerminalEvent::AttentionRequested(_) => return None,
+        TerminalEvent::FocusRequested => return None,
         TerminalEvent::OpenUrlRequested(_) => return None,
         TerminalEvent::UserVarChanged { .. } => return None,
         TerminalEvent::MarkSet => return None,
@@ -789,7 +837,9 @@ fn ruby_event_from_terminal_event(pane: PaneId, event: TerminalEvent) -> Option<
         TerminalEvent::CapturedOutputCleared => return None,
         TerminalEvent::MouseCursorChanged(_) => return None,
         TerminalEvent::MouseCursorControl(_) => return None,
+        TerminalEvent::FontControl(_) | TerminalEvent::FontFamilyChanged(_) => return None,
         TerminalEvent::ColorControl(_)
+        | TerminalEvent::ColorPresetRequested(_)
         | TerminalEvent::ItermUiColorChanged { .. }
         | TerminalEvent::ItermUiColorReset(_)
         | TerminalEvent::ItermUiColorQuery { .. }
@@ -798,6 +848,9 @@ fn ruby_event_from_terminal_event(pane: PaneId, event: TerminalEvent) -> Option<
         | TerminalEvent::XtermSpecialColorQuery(_)
         | TerminalEvent::XtermSpecialColorReset(_)
         | TerminalEvent::XtermSpecialColorMode { .. }
+        | TerminalEvent::XtermAuxColorSet { .. }
+        | TerminalEvent::XtermAuxColorQuery(_)
+        | TerminalEvent::XtermAuxColorReset(_)
         | TerminalEvent::ColorStackPush
         | TerminalEvent::ColorStackPop
         | TerminalEvent::TabColorChanged { .. }
@@ -807,7 +860,13 @@ fn ruby_event_from_terminal_event(pane: PaneId, event: TerminalEvent) -> Option<
         TerminalEvent::ProgressChanged(_) => return None,
         TerminalEvent::ClipboardStore(_)
         | TerminalEvent::ClipboardCaptureStart
-        | TerminalEvent::ClipboardCaptureEnd => return None,
+        | TerminalEvent::ClipboardCaptureEnd
+        | TerminalEvent::FileDownload { .. }
+        | TerminalEvent::FileTransferCommit(_)
+        | TerminalEvent::FileUploadRequest { .. }
+        | TerminalEvent::FileUploadDataRequest { .. }
+        | TerminalEvent::FileUploadCancel(_)
+        | TerminalEvent::BackgroundImageRequested(_) => return None,
         TerminalEvent::Notification { .. }
         | TerminalEvent::NotificationClose(_)
         | TerminalEvent::NotificationAliveQuery(_) => return None,
@@ -1308,7 +1367,15 @@ impl ApplicationHandler<AppEvent> for ToyotermApplication {
                 let mut osc52_copies = Vec::new();
                 let mut notification = None;
                 let mut attention_request = None;
+                let mut focus_requested = false;
                 let mut open_urls = Vec::new();
+                let mut file_downloads = Vec::new();
+                let mut file_transfers = Vec::new();
+                let mut file_upload_requests = Vec::new();
+                let mut file_upload_data_requests = Vec::new();
+                let mut file_upload_cancellations = Vec::new();
+                let mut background_image_requests = Vec::new();
+                let mut font_family_change = None;
                 let allow_notifications = self
                     .scripting
                     .snapshot
@@ -1322,6 +1389,27 @@ impl ApplicationHandler<AppEvent> for ToyotermApplication {
                     .behavior
                     .allow_osc_attention_requests;
                 let allow_open_url = self.scripting.snapshot.config.behavior.allow_osc_open_url;
+                let allow_focus_requests = self
+                    .scripting
+                    .snapshot
+                    .config
+                    .behavior
+                    .allow_osc_focus_requests;
+                let download_directory = self
+                    .scripting
+                    .snapshot
+                    .config
+                    .behavior
+                    .allow_osc_file_downloads
+                    .then(|| {
+                        self.scripting
+                            .snapshot
+                            .config
+                            .behavior
+                            .osc_download_directory
+                            .clone()
+                    })
+                    .flatten();
                 let window_focused = self
                     .platform
                     .window
@@ -1387,6 +1475,17 @@ impl ApplicationHandler<AppEvent> for ToyotermApplication {
                                 attention_request = Some(*request);
                             }
                             TerminalEvent::AttentionRequested(_) => {}
+                            TerminalEvent::FocusRequested
+                                if should_request_focus(
+                                    allow_focus_requests,
+                                    runtime.protocol.last_focus_request_at,
+                                    Instant::now(),
+                                ) =>
+                            {
+                                runtime.protocol.last_focus_request_at = Some(Instant::now());
+                                focus_requested = true;
+                            }
+                            TerminalEvent::FocusRequested => {}
                             TerminalEvent::OpenUrlRequested(url)
                                 if should_open_osc_url(
                                     allow_open_url,
@@ -1424,12 +1523,20 @@ impl ApplicationHandler<AppEvent> for ToyotermApplication {
                                 mouse_cursor_changed = true;
                             }
                             TerminalEvent::MouseCursorControl(_) => {}
+                            TerminalEvent::FontControl(_) => {}
+                            TerminalEvent::FontFamilyChanged(family) => {
+                                font_family_change = Some(family.clone());
+                            }
                             TerminalEvent::ColorControl(_)
+                            | TerminalEvent::ColorPresetRequested(_)
                             | TerminalEvent::ItermDefaultColorQuery(_)
                             | TerminalEvent::XtermSpecialColorSet { .. }
                             | TerminalEvent::XtermSpecialColorQuery(_)
                             | TerminalEvent::XtermSpecialColorReset(_)
                             | TerminalEvent::XtermSpecialColorMode { .. }
+                            | TerminalEvent::XtermAuxColorSet { .. }
+                            | TerminalEvent::XtermAuxColorQuery(_)
+                            | TerminalEvent::XtermAuxColorReset(_)
                             | TerminalEvent::ItermUiColorChanged { .. }
                             | TerminalEvent::ItermUiColorReset(_)
                             | TerminalEvent::ItermUiColorQuery { .. }
@@ -1457,6 +1564,52 @@ impl ApplicationHandler<AppEvent> for ToyotermApplication {
                             }
                             TerminalEvent::ClipboardCaptureStart
                             | TerminalEvent::ClipboardCaptureEnd => {}
+                            TerminalEvent::FileDownload {
+                                name,
+                                data,
+                                permissions,
+                                modified_ns,
+                            } if download_directory.is_some() => {
+                                file_downloads.push((
+                                    name.clone(),
+                                    data.clone(),
+                                    *permissions,
+                                    *modified_ns,
+                                ));
+                            }
+                            TerminalEvent::FileDownload { .. } => {}
+                            TerminalEvent::FileTransferCommit(entries)
+                                if download_directory.is_some() =>
+                            {
+                                file_transfers.push(entries.clone());
+                            }
+                            TerminalEvent::FileTransferCommit(_) => {}
+                            TerminalEvent::FileUploadRequest {
+                                session_id,
+                                quiet,
+                                paths,
+                            } => file_upload_requests.push((
+                                session_id.clone(),
+                                *quiet,
+                                paths.clone(),
+                            )),
+                            TerminalEvent::FileUploadDataRequest {
+                                session_id,
+                                file_id,
+                                name,
+                                compressed,
+                            } => file_upload_data_requests.push((
+                                session_id.clone(),
+                                file_id.clone(),
+                                name.clone(),
+                                *compressed,
+                            )),
+                            TerminalEvent::FileUploadCancel(session_id) => {
+                                file_upload_cancellations.push(session_id.clone());
+                            }
+                            TerminalEvent::BackgroundImageRequested(path) => {
+                                background_image_requests.push(path.clone());
+                            }
                             TerminalEvent::Notification {
                                 id,
                                 title,
@@ -1573,6 +1726,9 @@ impl ApplicationHandler<AppEvent> for ToyotermApplication {
                         TerminalAttention::Fireworks => None,
                     });
                 }
+                if focus_requested && let Some(window) = self.platform.window.as_ref() {
+                    window.focus_window();
+                }
                 for url in open_urls {
                     if let Err(error) = open_allowed_url(&url) {
                         tracing::warn!(target: "toyoterm::app", %error, %url, "open OSC URL failed");
@@ -1583,6 +1739,118 @@ impl ApplicationHandler<AppEvent> for ToyotermApplication {
                         clipboard.set_text(text).map_err(|error| error.to_string())
                     }) {
                         tracing::warn!(target: "toyoterm::clipboard", %error, "OSC 52 clipboard copy failed");
+                    }
+                }
+                if let Some(directory) = download_directory.as_deref() {
+                    for (name, data, permissions, modified_ns) in file_downloads {
+                        if let Err(error) = downloads::queue(
+                            directory,
+                            name.as_deref(),
+                            data,
+                            permissions,
+                            modified_ns,
+                        ) {
+                            tracing::warn!(target: "toyoterm::download", %error, "queue OSC download failed");
+                        }
+                    }
+                    for entries in file_transfers {
+                        if let Err(error) = downloads::queue_transfer(directory, entries) {
+                            tracing::warn!(target: "toyoterm::download", %error, "queue OSC file transfer failed");
+                        }
+                    }
+                }
+                let upload_directory = self
+                    .scripting
+                    .snapshot
+                    .config
+                    .behavior
+                    .allow_osc_file_uploads
+                    .then(|| {
+                        self.scripting
+                            .snapshot
+                            .config
+                            .behavior
+                            .osc_upload_directory
+                            .clone()
+                    })
+                    .flatten();
+                if let Some(directory) = upload_directory.as_deref() {
+                    for (session_id, quiet, paths) in file_upload_requests {
+                        if let Err(error) = downloads::queue_upload_listing(
+                            pane,
+                            directory,
+                            session_id,
+                            quiet,
+                            paths,
+                            self.event_proxy.clone(),
+                        ) {
+                            tracing::warn!(target: "toyoterm::upload", %error, "queue OSC upload listing failed");
+                        }
+                    }
+                    for (session_id, file_id, name, compressed) in file_upload_data_requests {
+                        if let Err(error) = downloads::queue_upload_data(
+                            pane,
+                            session_id,
+                            file_id,
+                            name,
+                            compressed,
+                            self.event_proxy.clone(),
+                        ) {
+                            tracing::warn!(target: "toyoterm::upload", %error, "queue OSC upload data failed");
+                        }
+                    }
+                    for session_id in file_upload_cancellations {
+                        if let Err(error) = downloads::queue_upload_cancel(pane, session_id) {
+                            tracing::warn!(target: "toyoterm::upload", %error, "queue OSC upload cancellation failed");
+                        }
+                    }
+                }
+                let background_image_directory = self
+                    .scripting
+                    .snapshot
+                    .config
+                    .behavior
+                    .allow_osc_background_image
+                    .then(|| {
+                        self.scripting
+                            .snapshot
+                            .config
+                            .behavior
+                            .osc_background_image_directory
+                            .clone()
+                    })
+                    .flatten();
+                if let Some(directory) = background_image_directory.as_deref() {
+                    for path in background_image_requests {
+                        if let Err(error) = downloads::queue_background_image(
+                            directory,
+                            path,
+                            self.event_proxy.clone(),
+                        ) {
+                            tracing::warn!(target: "toyoterm::background", %error, "queue OSC background image failed");
+                        }
+                    }
+                }
+                if let Some(family) = font_family_change {
+                    self.ui.render_style.font_family = family.clone();
+                    for runtime in self.terminal_runtime.pane_runtimes.values_mut() {
+                        runtime.terminal.set_active_font_family(&family);
+                    }
+                    if let Some(window) = self.platform.window.clone() {
+                        if let Some(renderer) = self.platform.renderer.as_mut() {
+                            renderer.set_style(self.ui.render_style.clone());
+                            self.ui.cell_metrics.width = f64::from(
+                                renderer.terminal_cell_width(self.ui.cell_metrics.font_size),
+                            );
+                        }
+                        if let Err(error) =
+                            self.resize_panes(window.inner_size(), window.scale_factor())
+                        {
+                            tracing::warn!(target: "toyoterm::render", %error, "apply OSC font change failed");
+                        } else {
+                            self.sync_active_renderer(window.scale_factor());
+                            window.request_redraw();
+                        }
                     }
                 }
                 if let Some(notification) = notification
@@ -1679,6 +1947,51 @@ impl ApplicationHandler<AppEvent> for ToyotermApplication {
                     tracing::warn!(target: "toyoterm::script", %error, "submit async callback failed");
                 }
             }
+            AppEvent::FileTransferResponse { pane, responses } => {
+                if let Some(runtime) = self.terminal_runtime.pane_runtimes.get_mut(&pane)
+                    && let Some(session) = runtime.process.pty_session.as_mut()
+                {
+                    for response in responses {
+                        if let Err(error) = session.write(response.as_bytes()) {
+                            tracing::error!(
+                                target: "toyoterm::pty",
+                                operation = error.operation(),
+                                %pane,
+                                bytes = response.len(),
+                                %error,
+                                "write OSC 5113 upload response to pane PTY failed"
+                            );
+                            break;
+                        }
+                    }
+                }
+            }
+            AppEvent::BackgroundImageLoaded { root, result } => match result {
+                Ok(image) => {
+                    let behavior = &self.scripting.snapshot.config.behavior;
+                    if !behavior.allow_osc_background_image
+                        || behavior.osc_background_image_directory.as_deref()
+                            != Some(root.as_path())
+                    {
+                        return;
+                    }
+                    self.ui.render_style.background_image =
+                        image.map(|image| toyoterm_render::BackgroundImage {
+                            width: image.width,
+                            height: image.height,
+                            rgba: image.rgba,
+                        });
+                    if let Some(renderer) = self.platform.renderer.as_mut() {
+                        renderer.set_style(self.ui.render_style.clone());
+                    }
+                    if let Some(window) = self.platform.window.as_ref() {
+                        window.request_redraw();
+                    }
+                }
+                Err(error) => {
+                    tracing::warn!(target: "toyoterm::background", %error, "load OSC background image failed");
+                }
+            },
             AppEvent::NotificationFeedback(feedback) => {
                 let response = notification_feedback_response(&feedback);
                 if let Some(runtime) = self.terminal_runtime.pane_runtimes.get_mut(&feedback.pane) {
@@ -1767,6 +2080,12 @@ fn should_open_osc_url(
         && validate_allowed_url(url).is_ok()
         && last_opened_at
             .is_none_or(|last| now.saturating_duration_since(last) >= OSC_OPEN_URL_INTERVAL)
+}
+
+fn should_request_focus(enabled: bool, last_requested_at: Option<Instant>, now: Instant) -> bool {
+    enabled
+        && last_requested_at
+            .is_none_or(|last| now.saturating_duration_since(last) >= OSC_FOCUS_REQUEST_INTERVAL)
 }
 
 impl ToyotermApplication {

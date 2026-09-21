@@ -15,6 +15,8 @@ use super::{
     TerminalTransparentColor,
 };
 
+const OSC99_REPORTING_SUPPORTED: bool = cfg!(any(windows, unix));
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum TerminalEvent {
     TitleChanged(String),
@@ -30,6 +32,7 @@ pub enum TerminalEvent {
     ItermBadgeFormatChanged(String),
     CursorLineHighlightChanged(bool),
     AttentionRequested(TerminalAttention),
+    FocusRequested,
     OpenUrlRequested(String),
     UserVarChanged {
         name: String,
@@ -43,7 +46,10 @@ pub enum TerminalEvent {
     CapturedOutputCleared,
     MouseCursorChanged(CursorIcon),
     MouseCursorControl(String),
+    FontControl(String),
+    FontFamilyChanged(String),
     ColorControl(String),
+    ColorPresetRequested(String),
     XtermSpecialColorSet {
         index: u8,
         color: [u8; 3],
@@ -54,6 +60,12 @@ pub enum TerminalEvent {
         index: u8,
         enabled: bool,
     },
+    XtermAuxColorSet {
+        index: u8,
+        color: [u8; 3],
+    },
+    XtermAuxColorQuery(u8),
+    XtermAuxColorReset(u8),
     ItermDefaultColorQuery(i8),
     ItermUiColorChanged {
         role: ItermUiColorRole,
@@ -77,6 +89,26 @@ pub enum TerminalEvent {
     ClipboardStore(String),
     ClipboardCaptureStart,
     ClipboardCaptureEnd,
+    FileDownload {
+        name: Option<String>,
+        data: Vec<u8>,
+        permissions: Option<u32>,
+        modified_ns: Option<u64>,
+    },
+    FileTransferCommit(Vec<FileTransferEntry>),
+    FileUploadRequest {
+        session_id: String,
+        quiet: u8,
+        paths: Vec<FileUploadPath>,
+    },
+    FileUploadDataRequest {
+        session_id: String,
+        file_id: String,
+        name: String,
+        compressed: bool,
+    },
+    FileUploadCancel(String),
+    BackgroundImageRequested(Option<String>),
     Notification {
         id: Option<String>,
         title: Option<String>,
@@ -96,6 +128,31 @@ pub enum TerminalEvent {
     Bell {
         visual_bell: Option<[u8; 3]>,
     },
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum FileTransferEntryKind {
+    Regular,
+    Directory,
+    Symlink,
+    HardLink,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct FileTransferEntry {
+    pub id: String,
+    pub parent: Option<String>,
+    pub name: String,
+    pub kind: FileTransferEntryKind,
+    pub data: Vec<u8>,
+    pub permissions: Option<u32>,
+    pub modified_ns: Option<u64>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct FileUploadPath {
+    pub id: String,
+    pub name: String,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -361,10 +418,16 @@ impl ShellIntegrationParser {
                                 | b"6"
                                 | b"7"
                                 | b"9"
+                                | b"13"
+                                | b"14"
+                                | b"15"
+                                | b"16"
                                 | b"17"
+                                | b"18"
                                 | b"19"
                                 | b"21"
                                 | b"22"
+                                | b"50"
                                 | b"99"
                                 | b"105"
                                 | b"106"
@@ -491,6 +554,13 @@ fn parse_shell_integration_payload(
         {
             events.push(TerminalEvent::MouseCursorControl(control.to_owned()));
         }
+    } else if let Some(control) = payload.strip_prefix(b"50;") {
+        if control.len() <= 256
+            && let Ok(control) = std::str::from_utf8(control)
+            && !control.chars().any(char::is_control)
+        {
+            events.push(TerminalEvent::FontControl(control.to_owned()));
+        }
     } else if let Some(control) = payload.strip_prefix(b"21;") {
         if control.len() <= 8_192
             && let Ok(control) = std::str::from_utf8(control)
@@ -498,8 +568,18 @@ fn parse_shell_integration_payload(
         {
             events.push(TerminalEvent::ColorControl(control.to_owned()));
         }
+    } else if let Some(colors) = payload.strip_prefix(b"13;") {
+        parse_xterm_dynamic_colors(13, colors, events);
+    } else if let Some(colors) = payload.strip_prefix(b"14;") {
+        parse_xterm_dynamic_colors(14, colors, events);
+    } else if let Some(colors) = payload.strip_prefix(b"15;") {
+        parse_xterm_dynamic_colors(15, colors, events);
+    } else if let Some(colors) = payload.strip_prefix(b"16;") {
+        parse_xterm_dynamic_colors(16, colors, events);
     } else if let Some(color) = payload.strip_prefix(b"17;") {
         parse_xterm_ui_color(color, ItermUiColorRole::SelectionBackground, 17, events);
+    } else if let Some(colors) = payload.strip_prefix(b"18;") {
+        parse_xterm_dynamic_colors(18, colors, events);
     } else if let Some(color) = payload.strip_prefix(b"19;") {
         parse_xterm_ui_color(color, ItermUiColorRole::SelectionForeground, 19, events);
     } else if let Some(message) = payload.strip_prefix(b"9;") {
@@ -556,6 +636,10 @@ fn parse_shell_integration_payload(
         }
     } else if let Some(assignment) = payload.strip_prefix(b"1337;SetColors=") {
         parse_osc1337_set_colors(assignment, events);
+    } else if let Some(name) = payload.strip_prefix(b"1337;SetProfile=") {
+        if let Some(name) = bounded_preset_name(name) {
+            events.push(TerminalEvent::ColorPresetRequested(name));
+        }
     } else if let Some(path) = payload.strip_prefix(b"1337;CurrentDir=") {
         if !path.is_empty()
             && !path.contains(&0)
@@ -598,6 +682,8 @@ fn parse_shell_integration_payload(
         if let Some(request) = request {
             events.push(TerminalEvent::AttentionRequested(request));
         }
+    } else if matches!(payload, b"1337;StealFocus" | b"1337;Disinter") {
+        events.push(TerminalEvent::FocusRequested);
     } else if let Some(encoded_url) = payload.strip_prefix(b"1337;OpenURL=:") {
         if let Some(bytes) = decode_standard_base64(encoded_url)
             && bytes.len() <= MAX_OSC_URL_BYTES
@@ -606,6 +692,17 @@ fn parse_shell_integration_payload(
             && !url.chars().any(char::is_control)
         {
             events.push(TerminalEvent::OpenUrlRequested(url));
+        }
+    } else if let Some(encoded_path) = payload.strip_prefix(b"1337;SetBackgroundImageFile=") {
+        if encoded_path.is_empty() {
+            events.push(TerminalEvent::BackgroundImageRequested(None));
+        } else if let Some(bytes) = decode_standard_base64(encoded_path)
+            && bytes.len() <= super::MAX_OSC_BACKGROUND_IMAGE_PATH_BYTES
+            && let Ok(path) = String::from_utf8(bytes)
+            && !path.is_empty()
+            && !path.chars().any(char::is_control)
+        {
+            events.push(TerminalEvent::BackgroundImageRequested(Some(path)));
         }
     } else if allow_osc52_copy && payload == b"1337;CopyToClipboard=" {
         events.push(TerminalEvent::ClipboardCaptureStart);
@@ -650,6 +747,42 @@ fn parse_shell_integration_payload(
             .and_then(|status| std::str::from_utf8(status).ok())
             .and_then(|status| status.parse().ok());
         events.push(TerminalEvent::CommandFinished(status));
+    }
+}
+
+fn parse_xterm_dynamic_colors(start: u8, colors: &[u8], events: &mut Vec<TerminalEvent>) {
+    if colors.len() > 1024 {
+        return;
+    }
+    for (offset, color) in colors.split(|byte| *byte == b';').enumerate() {
+        let Ok(offset) = u8::try_from(offset) else {
+            break;
+        };
+        let Some(osc) = start.checked_add(offset).filter(|osc| *osc <= 19) else {
+            break;
+        };
+        match osc {
+            13..=16 | 18 => {
+                let index = match osc {
+                    13..=16 => osc - 13,
+                    18 => 4,
+                    _ => unreachable!(),
+                };
+                if color == b"?" {
+                    events.push(TerminalEvent::XtermAuxColorQuery(index));
+                } else if let Ok(color) = std::str::from_utf8(color)
+                    && let Some(Rgb { r, g, b }) = parse_kitty_color(color)
+                {
+                    events.push(TerminalEvent::XtermAuxColorSet {
+                        index,
+                        color: [r, g, b],
+                    });
+                }
+            }
+            17 => parse_xterm_ui_color(color, ItermUiColorRole::SelectionBackground, 17, events),
+            19 => parse_xterm_ui_color(color, ItermUiColorRole::SelectionForeground, 19, events),
+            _ => {}
+        }
     }
 }
 
@@ -780,6 +913,12 @@ fn parse_osc1337_set_colors(assignment: &[u8], events: &mut Vec<TerminalEvent>) 
     if value.contains(&b';') {
         return;
     }
+    if key == b"preset" {
+        if let Some(name) = bounded_preset_name(value) {
+            events.push(TerminalEvent::ColorPresetRequested(name));
+        }
+        return;
+    }
     if key == b"tab" {
         if value == b"default" {
             events.push(TerminalEvent::TabColorReset);
@@ -811,6 +950,14 @@ fn parse_osc1337_set_colors(assignment: &[u8], events: &mut Vec<TerminalEvent>) 
     events.push(TerminalEvent::ColorControl(format!(
         "{target}=#{red:02x}{green:02x}{blue:02x}"
     )));
+}
+
+fn bounded_preset_name(value: &[u8]) -> Option<String> {
+    (!value.is_empty() && value.len() <= 128)
+        .then(|| std::str::from_utf8(value).ok())
+        .flatten()
+        .filter(|name| !name.chars().any(char::is_control))
+        .map(str::to_owned)
 }
 
 fn parse_xterm_ui_color(
@@ -1002,12 +1149,17 @@ fn parse_xterm_special_color_control(osc: u16, control: &[u8], events: &mut Vec<
 
 fn bare_osc_event(command: &[u8]) -> Option<TerminalEvent> {
     match command {
+        b"113" => Some(TerminalEvent::XtermAuxColorReset(0)),
+        b"114" => Some(TerminalEvent::XtermAuxColorReset(1)),
+        b"115" => Some(TerminalEvent::XtermAuxColorReset(2)),
+        b"116" => Some(TerminalEvent::XtermAuxColorReset(3)),
         b"117" => Some(TerminalEvent::ItermUiColorReset(
             ItermUiColorRole::SelectionBackground,
         )),
         b"119" => Some(TerminalEvent::ItermUiColorReset(
             ItermUiColorRole::SelectionForeground,
         )),
+        b"118" => Some(TerminalEvent::XtermAuxColorReset(4)),
         b"105" => Some(TerminalEvent::XtermSpecialColorReset(None)),
         b"30001" => Some(TerminalEvent::ColorStackPush),
         b"30101" => Some(TerminalEvent::ColorStackPop),
@@ -1305,20 +1457,14 @@ fn parse_osc99_notification(
                 sound = Some(match value.as_slice() {
                     b"system" => NotificationSound::System,
                     b"silent" => NotificationSound::Silent,
-                    b"error" if cfg!(all(unix, not(target_os = "macos"))) => {
-                        NotificationSound::Error
-                    }
-                    b"warn" | b"warning" if cfg!(all(unix, not(target_os = "macos"))) => {
-                        NotificationSound::Warning
-                    }
-                    b"info" if cfg!(all(unix, not(target_os = "macos"))) => NotificationSound::Info,
-                    b"question" if cfg!(all(unix, not(target_os = "macos"))) => {
-                        NotificationSound::Question
-                    }
+                    b"error" => NotificationSound::Error,
+                    b"warn" | b"warning" => NotificationSound::Warning,
+                    b"info" => NotificationSound::Info,
+                    b"question" => NotificationSound::Question,
                     _ => return,
                 });
             }
-            "n" if cfg!(all(unix, not(target_os = "macos"))) && icon_name.is_none() => {
+            "n" if icon_name.is_none() => {
                 let Some(value) = decode_standard_base64(value.as_bytes()) else {
                     return;
                 };
@@ -1346,12 +1492,12 @@ fn parse_osc99_notification(
                         _ => return,
                     }
                 }
-                report_activation = Some(report && cfg!(windows));
+                report_activation = Some(report && OSC99_REPORTING_SUPPORTED);
             }
             "c" => {
                 report_close = Some(match value {
                     "0" => false,
-                    "1" => cfg!(windows),
+                    "1" => OSC99_REPORTING_SUPPORTED,
                     _ => return,
                 });
             }
@@ -1363,18 +1509,14 @@ fn parse_osc99_notification(
 
     if payload_type == "?" {
         let id = id.unwrap_or("0");
-        let payload_types = if cfg!(windows) {
-            "title,body,icon,buttons,alive"
+        let payload_types = "title,body,close,icon,buttons,alive";
+        let sounds = "system,silent,error,warn,warning,info,question";
+        let expiry = ":w=1";
+        let reports = if OSC99_REPORTING_SUPPORTED {
+            ":a=report:c=1"
         } else {
-            "title,body,close,icon,buttons,alive"
+            ""
         };
-        let sounds = if cfg!(all(unix, not(target_os = "macos"))) {
-            "system,silent,error,warn,warning,info,question"
-        } else {
-            "system,silent"
-        };
-        let expiry = if cfg!(windows) { "" } else { ":w=1" };
-        let reports = if cfg!(windows) { ":a=report:c=1" } else { "" };
         events.push(TerminalEvent::PtyWrite(format!(
             "\x1b]99;i={id}:p=?;o=always,unfocused,invisible:p={payload_types}:s={sounds}:u=0,1,2{expiry}{reports}\x1b\\"
         )));

@@ -1,8 +1,11 @@
 use super::*;
 
+const MAX_REGISTERED_THEMES: usize = 4_096;
+
 pub struct ConfigManager {
     pub(super) runtime: MrubyRuntime,
     pub(super) config: ToyotermConfig,
+    pub(super) color_presets: HashMap<String, ColorConfig>,
     pub(super) registrations: RegistrySnapshot,
     source_path: Option<PathBuf>,
 }
@@ -10,6 +13,7 @@ pub struct ConfigManager {
 pub(super) struct LoadedConfig {
     pub(super) runtime: MrubyRuntime,
     pub(super) config: ToyotermConfig,
+    pub(super) color_presets: HashMap<String, ColorConfig>,
     pub(super) keybindings: HashSet<String>,
     pub(super) native_actions: HashMap<String, NativeAction>,
     pub(super) event_names: HashSet<String>,
@@ -22,6 +26,7 @@ impl ConfigManager {
         Ok(Self {
             runtime: loaded.runtime,
             config: loaded.config,
+            color_presets: loaded.color_presets,
             registrations: RegistrySnapshot {
                 keybindings: loaded.keybindings,
                 native_actions: loaded.native_actions,
@@ -72,8 +77,10 @@ impl ConfigManager {
             self.source_path.as_deref().and_then(Path::parent),
             Some(&self.config),
         )?;
+        let color_presets = read_color_presets(&mut self.runtime)?;
         let previous = self.snapshot();
         self.config = config;
+        self.color_presets = color_presets;
         self.refresh_registrations()?;
         let current = self.snapshot();
         Ok((current != previous).then_some(current))
@@ -87,6 +94,7 @@ impl ConfigManager {
     pub(super) fn snapshot(&self) -> ScriptSnapshot {
         ScriptSnapshot {
             config: self.config.clone(),
+            color_presets: self.color_presets.clone(),
             native_actions: self.registrations.native_actions.clone(),
             keybindings: self.registrations.keybindings.clone(),
             event_names: self.registrations.event_names.clone(),
@@ -151,6 +159,7 @@ impl ConfigManager {
         let loaded = load_config(source, filename, source_dir)?;
         self.runtime = loaded.runtime;
         self.config = loaded.config;
+        self.color_presets = loaded.color_presets;
         self.registrations = RegistrySnapshot {
             keybindings: loaded.keybindings,
             native_actions: loaded.native_actions,
@@ -941,11 +950,13 @@ pub(super) fn load_config(
     configure_load_paths(&mut runtime, source_dir)?;
     runtime.eval_with_filename(source, filename)?;
     let config = read_config(&mut runtime, source_dir, None)?;
+    let color_presets = read_color_presets(&mut runtime)?;
     let registrations = RegistrySnapshot::read(&mut runtime)?;
 
     Ok(LoadedConfig {
         runtime,
         config,
+        color_presets,
         keybindings: registrations.keybindings,
         native_actions: registrations.native_actions,
         event_names: registrations.event_names,
@@ -979,6 +990,66 @@ fn configure_load_paths(
         .join(", ");
     runtime.eval(&format!("Toyoterm.__set_load_paths([{values}])"))?;
     Ok(())
+}
+
+fn read_color_presets(
+    runtime: &mut MrubyRuntime,
+) -> Result<HashMap<String, ColorConfig>, ScriptError> {
+    let count = runtime
+        .eval("Toyoterm.__theme_count")?
+        .parse::<usize>()
+        .map_err(|_| ScriptError::new("validate themes", "theme count is invalid"))?;
+    if count > MAX_REGISTERED_THEMES {
+        return Err(ScriptError::new(
+            "validate themes",
+            format!("at most {MAX_REGISTERED_THEMES} themes may be registered"),
+        ));
+    }
+    let mut presets = HashMap::with_capacity(count);
+    for index in 0..count {
+        let name = runtime.eval(&format!("Toyoterm.__theme_name({index})"))?;
+        if name.len() > 128 || name.chars().any(char::is_control) {
+            return Err(ScriptError::new(
+                "validate themes",
+                "theme names must be at most 128 bytes and contain no control characters",
+            ));
+        }
+        let prefix = format!("Toyoterm.__theme_at({index})");
+        let ansi_count = runtime
+            .eval(&format!("{prefix}.__ansi_count"))?
+            .parse::<usize>()
+            .map_err(|_| {
+                ScriptError::new("validate themes", "theme ANSI color count is invalid")
+            })?;
+        if ansi_count != 16 {
+            return Err(ScriptError::new(
+                "validate themes",
+                format!("theme {name} must contain exactly 16 ANSI colors"),
+            ));
+        }
+        let mut ansi = Vec::with_capacity(ansi_count);
+        for color_index in 0..ansi_count {
+            ansi.push(runtime.eval(&format!("{prefix}.__ansi_at({color_index})"))?);
+        }
+        let colors = ColorConfig {
+            background: runtime.eval(&format!("{prefix}.background"))?,
+            foreground: runtime.eval(&format!("{prefix}.foreground"))?,
+            cursor: runtime.eval(&format!("{prefix}.cursor"))?,
+            selection: runtime.eval(&format!("{prefix}.selection"))?,
+            ansi,
+            tab_bar: runtime.eval(&format!("{prefix}.tab_bar"))?,
+            tab_active: runtime.eval(&format!("{prefix}.tab_active"))?,
+            tab_inactive: runtime.eval(&format!("{prefix}.tab_inactive"))?,
+            workspace_bar: runtime.eval(&format!("{prefix}.workspace_bar"))?,
+            status_bar: runtime.eval(&format!("{prefix}.status_bar"))?,
+            pane_border: runtime.eval(&format!("{prefix}.pane_border"))?,
+            zoomed_pane_border: runtime.eval(&format!("{prefix}.zoomed_pane_border"))?,
+            search_match: runtime.eval(&format!("{prefix}.search_match"))?,
+            search_match_active: runtime.eval(&format!("{prefix}.search_match_active"))?,
+        };
+        presets.insert(name, colors);
+    }
+    Ok(presets)
 }
 
 fn read_config(
@@ -1299,6 +1370,41 @@ fn read_config(
                 "behavior.allow_osc_open_url",
                 "Toyoterm.__config.behavior.allow_osc_open_url",
             )?,
+            allow_osc_file_downloads: boolean(
+                runtime,
+                "behavior.allow_osc_file_downloads",
+                "Toyoterm.__config.behavior.allow_osc_file_downloads",
+            )?,
+            osc_download_directory: {
+                let path: String =
+                    runtime.eval("Toyoterm.__config.behavior.osc_download_directory")?;
+                (!path.is_empty()).then(|| PathBuf::from(path))
+            },
+            allow_osc_file_uploads: boolean(
+                runtime,
+                "behavior.allow_osc_file_uploads",
+                "Toyoterm.__config.behavior.allow_osc_file_uploads",
+            )?,
+            osc_upload_directory: {
+                let path: String =
+                    runtime.eval("Toyoterm.__config.behavior.osc_upload_directory")?;
+                (!path.is_empty()).then(|| PathBuf::from(path))
+            },
+            allow_osc_background_image: boolean(
+                runtime,
+                "behavior.allow_osc_background_image",
+                "Toyoterm.__config.behavior.allow_osc_background_image",
+            )?,
+            osc_background_image_directory: {
+                let path: String =
+                    runtime.eval("Toyoterm.__config.behavior.osc_background_image_directory")?;
+                (!path.is_empty()).then(|| PathBuf::from(path))
+            },
+            allow_osc_focus_requests: boolean(
+                runtime,
+                "behavior.allow_osc_focus_requests",
+                "Toyoterm.__config.behavior.allow_osc_focus_requests",
+            )?,
         },
         default_shell: if default_shell.is_empty() {
             defaults.default_shell
@@ -1330,6 +1436,39 @@ fn read_config(
         return Err(ScriptError::new(
             "validate config",
             "window.title cannot be empty",
+        ));
+    }
+    if config
+        .behavior
+        .osc_download_directory
+        .as_ref()
+        .is_some_and(|path| !path.is_absolute())
+    {
+        return Err(ScriptError::new(
+            "validate config",
+            "behavior.osc_download_directory must be an absolute path",
+        ));
+    }
+    if config
+        .behavior
+        .osc_upload_directory
+        .as_ref()
+        .is_some_and(|path| !path.is_absolute())
+    {
+        return Err(ScriptError::new(
+            "validate config",
+            "behavior.osc_upload_directory must be an absolute path",
+        ));
+    }
+    if config
+        .behavior
+        .osc_background_image_directory
+        .as_ref()
+        .is_some_and(|path| !path.is_absolute())
+    {
+        return Err(ScriptError::new(
+            "validate config",
+            "behavior.osc_background_image_directory must be an absolute path",
         ));
     }
     for (index, color) in config.colors.ansi.iter().enumerate() {

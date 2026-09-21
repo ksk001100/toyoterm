@@ -21,6 +21,13 @@ Terminal output can display Sixel, Kitty, and iTerm2 OSC 1337 images. Run
 `python examples/terminal_images.py` inside toyoterm for a color chart, and see
 [terminal images](image-protocols.md) for the supported subset and limits.
 
+Kitty OSC 66 text blocks support explicit widths, integer scales from 1–7,
+fractional scaling and horizontal/vertical alignment. Blocks occupy their
+declared cell rectangle, wrap as a unit, follow scrollback, and are removed or
+skipped atomically when ordinary terminal output intersects them. Combining
+marks, character and line editing controls, and mixed normal/multicell
+selection preserve whole logical blocks.
+
 When a shell exits, toyoterm closes its pane automatically. Empty tabs and workspaces are collapsed, and exiting the final pane closes toyoterm. A pane is retained after a PTY read error so the failure remains visible for diagnosis.
 
 ### Clipboard security
@@ -40,6 +47,43 @@ remain disabled, so terminal output cannot read clipboard contents. Configured
 copy/paste shortcuts and the trusted-configuration Ruby clipboard API remain
 available independently.
 
+### File-transfer security
+
+iTerm2 OSC 1337 `inline=0` and Kitty OSC 5113 downloads are disabled by default. To enable them,
+set `config.behavior.allow_osc_file_downloads = true` and set
+`config.behavior.osc_download_directory` to an existing absolute directory.
+Decoded transfers are limited to 32 MiB. Remote path components and unsafe
+filename characters are removed, existing files are never overwritten, and a
+bounded background worker performs writes without blocking terminal parsing.
+Kitty send sessions accept bounded simple regular files, directories, symbolic
+links, and hard links with optional zlib compression for file data. They
+acknowledge progress/cancellation and stage the complete session before commit.
+A single regular file is rebased to its sanitized final filename. A filesystem
+tree is committed below a collision-safe `Transferred files` directory; parent
+IDs are required to refer to an earlier directory, link targets are limited to
+the transferred tree, and external or escaping symbolic-link targets are rejected.
+
+Kitty OSC 5113 uploads (terminal-to-client receive sessions) use a separate
+permission and root. Set `config.behavior.allow_osc_file_uploads = true` and
+`config.behavior.osc_upload_directory` to an existing absolute directory.
+Requested `/...` and `~/...` protocol paths are always rebased below that root.
+Traversal and platform prefixes are rejected, directory walks do not follow
+symbolic links, and absolute or escaping symbolic-link targets are refused.
+Each session is limited to 64 entries and 32 MiB; data is returned in bounded
+4 KiB chunks from the background transfer worker, with optional zlib compression.
+
+### OSC background-image security
+
+iTerm2 OSC 1337 `SetBackgroundImageFile=` is disabled by default. Enable it with
+`config.behavior.allow_osc_background_image = true` and set
+`config.behavior.osc_background_image_directory` to an existing absolute,
+non-symbolic-link directory. Decoded relative, `/...`, and `~/...` paths are
+rebased below that root. Traversal, platform prefixes, directories, missing
+files, and links resolving outside the root are rejected. PNG/JPEG loading and
+decoding run on the bounded background worker and retain the standard
+8192×8192 / 256 MiB decoded-image limits. An empty value clears the wallpaper;
+reloading configuration restores the configured wallpaper.
+
 ### Notification security
 
 OSC 9, OSC 99, and OSC 777 desktop notifications are disabled by default because remote
@@ -47,19 +91,17 @@ output could otherwise create notification spam. Enable them with
 `config.behavior.allow_osc_notifications = true`. Legacy messages are plain UTF-8;
 OSC 99 additionally accepts its bounded padded/unpadded base64 and ID-based chunk forms.
 Its `always`, `unfocused`, and `invisible` delivery occasions, urgency, expiry,
-and `system`/`silent` sound choice are applied when the platform supports them. Linux
-also accepts and advertises the standard `error`, `warn`/`warning`, `info`, and
-`question` sound names. Reusing an identifier requests replacement from notification
-backends that support stable IDs.
-OSC 99 explicit close requests are supported on Linux and macOS; they are not advertised
-and are a no-op with the current Windows notification backend. At most 128 notification
-handles are retained for explicit close, with older handles closed on eviction.
-Positive expiry deadlines use the same bounded handle set and are closed by toyoterm on
-Linux/macOS even when the desktop service does not honor its timeout. Windows forwards
-the timeout as a best effort and therefore does not advertise `w=1`. A value of zero
+and every standard sound (`system`, `silent`, `error`, `warn`/`warning`, `info`, and
+`question`) are applied through platform-native mappings. Reusing an identifier requests
+replacement from notification backends that support stable IDs.
+OSC 99 explicit close requests are supported on Linux, macOS, and Windows. At most 128
+notification handles are retained for explicit close, with older handles closed on eviction.
+Positive expiry deadlines use the same bounded handle set and are closed by toyoterm even
+when the desktop service does not honor its timeout. A value of zero
 requests a non-expiring platform notification; `-1` keeps the platform default.
-Linux additionally maps the protocol's standard named sounds and safe `n=` icon names
-to the freedesktop notification service. Icon names are limited to 128 ASCII identifier
+The eight universal `n=` icon names use the desktop icon theme on Linux and bounded
+48×48 built-in RGBA fallbacks on macOS and Windows. Other safe application icon names
+are forwarded to the Linux icon theme. Icon names are limited to 128 ASCII identifier
 bytes; paths and control characters are rejected.
 Binary `p=icon` payloads accept PNG, JPEG, or GIF data when base64 encoded with `e=1`.
 Decoded input is limited to 1 MiB and 512×512 pixels. A bounded 16-entry least-recently-used
@@ -68,9 +110,12 @@ validated RGBA data to uniquely-created temporary PNG files and removes those fi
 the tracked notification is replaced, expires, is evicted, or the worker stops. Windows
 retains at most 128 icon files because its current backend cannot report explicit closure.
 The `p=buttons` payload accepts at most three non-empty labels of 128 UTF-8 bytes each;
-they are displayed as platform notification actions. On Windows, `a=report` activation
-and button results plus `c=1` close reports are returned only to the originating pane PTY;
-at most 128 response listeners can be active. Other platforms do not advertise reports.
+they are displayed as platform notification actions. On Linux, macOS, and Windows,
+`a=report` activation and button results plus `c=1` close reports are returned only to the
+originating pane PTY; at most 128 response listeners can be active. All platforms suppress
+the obsolete notification's close report when the same ID is replaced. macOS response waits
+are explicitly cancelled when a notification is replaced, expires, is evicted, or the worker
+stops, so they cannot accumulate after programmatic closure.
 Assembled title and body fields are limited to 4 KiB, identifiers are restricted to the
 protocol's safe character set, control characters are rejected, and delivery is rate limited
 to one notification per pane every two seconds. Notification delivery runs off the
@@ -85,6 +130,12 @@ can opt in with `config.behavior.allow_osc_attention_requests = true`. Values `y
 `once`, and `no` request indefinite attention, one-shot attention, or cancellation
 through the platform window API. `fireworks` renders a bounded 350 ms burst around
 the requesting pane's cursor without invoking a platform attention API.
+
+OSC 1337 `StealFocus` and `Disinter` are controlled separately because they can
+move the application to the foreground without a click. Enable them only for
+trusted output with `config.behavior.allow_osc_focus_requests = true`. Requests
+are limited to one per pane every two seconds; the window manager may still deny
+the focus change.
 
 ### OSC URL opening security
 

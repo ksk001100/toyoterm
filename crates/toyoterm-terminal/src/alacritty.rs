@@ -3,6 +3,7 @@ use super::graphics::{
     handler::{GraphicsHandler, SemanticMarkerKind, SemanticMarkers},
     stream::{Stream, Token},
 };
+use std::collections::{BTreeSet, HashMap};
 use std::sync::mpsc::{self, Receiver, Sender};
 
 use alacritty_terminal::Term;
@@ -16,12 +17,14 @@ use alacritty_terminal::vte::ansi::{
     Color, CursorShape as AlacrittyCursorShape, Handler, NamedColor, Processor, Rgb,
 };
 use cursor_icon::CursorIcon;
+use unicode_segmentation::UnicodeSegmentation;
+use unicode_width::UnicodeWidthStr;
 
 use super::{
     CellAttributes, CellColor, CommandZoneSpan, CursorShape, CursorState, SearchDirection,
     SearchMatchSpan, SearchResult, SelectionKind, SelectionSpan, TerminalBackend, TerminalCell,
     TerminalColors, TerminalMode, TerminalSnapshot, TerminalSpecialColors,
-    TerminalTransparentColor,
+    TerminalTransparentColor, TextAlignment, TextSize,
 };
 
 pub const DEFAULT_SCROLLBACK_LINES: usize = 10_000;
@@ -36,6 +39,7 @@ pub const MAX_OSC_SESSION_STATUS_BYTES: usize = 1024;
 pub const MAX_OSC_URL_BYTES: usize = 2 * 1024;
 pub const MAX_OSC_USER_VAR_NAME_BYTES: usize = 128;
 pub const MAX_OSC_USER_VAR_VALUE_BYTES: usize = 4 * 1024;
+pub const MAX_OSC_BACKGROUND_IMAGE_PATH_BYTES: usize = 4 * 1024;
 pub const MAX_OSC_NOTIFICATION_ICON_BYTES: usize = 1024 * 1024;
 // alacritty_terminal deliberately ignores SGR 5/6/25, but its cell flag
 // storage still has one unused bit. Keeping blink there makes the attribute
@@ -45,8 +49,10 @@ const MAX_SHELL_INTEGRATION_PAYLOAD_BYTES: usize = 8 * 1024;
 const MAX_ITERM_COPY_BASE64_BYTES: usize = MAX_OSC52_COPY_BYTES.div_ceil(3) * 4;
 const ITERM_COPY_PREFIX: &[u8] = b"1337;Copy=:";
 
+mod file_transfer;
 mod protocol;
 
+use file_transfer::KittyFileTransfers;
 #[cfg(test)]
 use protocol::parse_iterm_color;
 pub(crate) use protocol::{ClipboardCapture, MouseCursorStacks};
@@ -56,9 +62,9 @@ use protocol::{
     transparent_background_index,
 };
 pub use protocol::{
-    ItermUiColorRole, NotificationIcon, NotificationOccasion, NotificationReporting,
-    NotificationSound, NotificationUrgency, SessionStatusUpdate, TabColorComponent,
-    TerminalAttention, TerminalEvent, TerminalProgress,
+    FileTransferEntry, FileTransferEntryKind, FileUploadPath, ItermUiColorRole, NotificationIcon,
+    NotificationOccasion, NotificationReporting, NotificationSound, NotificationUrgency,
+    SessionStatusUpdate, TabColorComponent, TerminalAttention, TerminalEvent, TerminalProgress,
 };
 
 struct TerminalEventSender(Sender<TerminalEvent>);
@@ -86,12 +92,17 @@ pub struct AlacrittyTerminalBackend {
     events: Receiver<TerminalEvent>,
     event_sender: Sender<TerminalEvent>,
     default_colors: DefaultColors,
+    color_presets: HashMap<String, TerminalColorPreset>,
     allow_osc52_copy: bool,
+    kitty_file_transfers: KittyFileTransfers,
     cell_scale_factor: f64,
     shell_integration: ShellIntegrationParser,
     semantic_markers: SemanticMarkers,
     mouse_cursor_stacks: MouseCursorStacks,
+    font_menu: Vec<String>,
+    active_font_family: String,
     iterm_ui_colors: ItermUiColors,
+    xterm_aux_colors: [Option<[u8; 3]>; 5],
     special_colors: TerminalSpecialColors,
     cursor_dynamic: bool,
     color_stack: Vec<ColorStackEntry>,
@@ -115,6 +126,7 @@ struct ItermUiColors {
 struct ColorStackEntry {
     terminal: Vec<Option<alacritty_terminal::vte::ansi::Rgb>>,
     iterm_ui: ItermUiColors,
+    xterm_aux: [Option<[u8; 3]>; 5],
     special: TerminalSpecialColors,
     cursor_dynamic: bool,
 }
@@ -126,6 +138,15 @@ pub(crate) struct DefaultColors {
     cursor: [u8; 3],
     selection: [u8; 3],
     ansi: [[u8; 3]; 16],
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct TerminalColorPreset {
+    pub foreground: [u8; 3],
+    pub background: [u8; 3],
+    pub cursor: [u8; 3],
+    pub selection: [u8; 3],
+    pub ansi: [[u8; 3]; 16],
 }
 
 impl Default for DefaultColors {
@@ -187,13 +208,18 @@ impl AlacrittyTerminalBackend {
             terminal: Term::new(config, &size, TerminalEventSender(event_sender.clone())),
             event_sender,
             default_colors: DefaultColors::default(),
+            color_presets: HashMap::new(),
             allow_osc52_copy: false,
+            kitty_file_transfers: KittyFileTransfers::default(),
             cell_scale_factor: 1.0,
             events,
             shell_integration: ShellIntegrationParser::default(),
             semantic_markers: SemanticMarkers::default(),
             mouse_cursor_stacks: MouseCursorStacks::default(),
+            font_menu: vec!["monospace".into()],
+            active_font_family: "monospace".into(),
             iterm_ui_colors: ItermUiColors::default(),
+            xterm_aux_colors: [None; 5],
             special_colors: TerminalSpecialColors::default(),
             cursor_dynamic: false,
             color_stack: Vec::new(),
@@ -287,6 +313,14 @@ impl AlacrittyTerminalBackend {
                     if let Some(reply) = result.reply {
                         let _ = self.event_sender.send(TerminalEvent::PtyWrite(reply));
                     }
+                    if let Some(download) = result.download {
+                        let _ = self.event_sender.send(TerminalEvent::FileDownload {
+                            name: download.name,
+                            data: download.data,
+                            permissions: None,
+                            modified_ns: None,
+                        });
+                    }
                     if let Some((columns, rows)) = result.advance {
                         let mut handler = GraphicsHandler {
                             terminal: &mut self.terminal,
@@ -349,8 +383,111 @@ impl AlacrittyTerminalBackend {
                         self.search = SearchState::default();
                     }
                 }
+                Token::Osc66(payload) => {
+                    if let Some(chunks) = parse_osc66(&payload) {
+                        for chunk in chunks {
+                            self.write_sized_text(chunk);
+                        }
+                    }
+                }
+                Token::Osc5113(payload) => {
+                    for event in self.kitty_file_transfers.handle(&payload) {
+                        let _ = self.event_sender.send(event);
+                    }
+                }
             }
         }
+    }
+
+    fn write_sized_text(&mut self, chunk: SizedTextChunk) {
+        let columns = self.terminal.columns();
+        let screen_rows = self.terminal.screen_lines();
+        let block_columns = usize::from(chunk.columns);
+        let block_rows = usize::from(chunk.size.rows);
+        if block_columns == 0
+            || block_columns > columns
+            || block_rows == 0
+            || block_rows > screen_rows
+        {
+            return;
+        }
+
+        let mut handler = GraphicsHandler {
+            terminal: &mut self.terminal,
+            graphics: &mut self.graphics,
+            semantic_markers: &mut self.semantic_markers,
+            mouse_cursor_stacks: &mut self.mouse_cursor_stacks,
+            clipboard_capture: &mut self.clipboard_capture,
+            output: &self.event_sender,
+            default_colors: &self.default_colors,
+            allow_osc52_copy: self.allow_osc52_copy,
+        };
+        loop {
+            let point = handler.terminal.grid().cursor.point;
+            let Some((top, _, end)) = handler.graphics.text_block_bounds_at(
+                handler.terminal.mode().contains(TermMode::ALT_SCREEN),
+                point.line.0,
+                point.column.0 as u16,
+            ) else {
+                break;
+            };
+            if point.line.0 <= top {
+                break;
+            }
+            if usize::from(end) >= columns {
+                handler.linefeed();
+                handler.goto_col(0);
+            } else {
+                handler.goto_col(usize::from(end));
+            }
+        }
+        let point = handler.terminal.grid().cursor.point;
+        if point.column.0 + block_columns > columns {
+            if handler.terminal.mode().contains(TermMode::LINE_WRAP) {
+                handler.goto_col(0);
+                handler.linefeed();
+            } else {
+                handler.goto_col(columns - block_columns);
+            }
+        }
+        let point = handler.terminal.grid().cursor.point;
+        let overflow = (point.line.0 as usize + block_rows).saturating_sub(screen_rows);
+        if overflow > 0 {
+            handler.scroll_up(overflow);
+            handler.goto_line(point.line.0 - overflow as i32);
+        }
+        let point = handler.terminal.grid().cursor.point;
+        let alternate = handler.terminal.mode().contains(TermMode::ALT_SCREEN);
+        let start_column = point.column.0 as u16;
+        let template = handler.terminal.grid().cursor.template.clone();
+
+        for row_offset in 0..block_rows {
+            let row = point.line.0 + row_offset as i32;
+            handler.graphics.clear_columns(
+                alternate,
+                row,
+                start_column,
+                start_column.saturating_add(u16::from(chunk.columns)),
+            );
+            for column_offset in 0..block_columns {
+                let cell = &mut handler.terminal.grid_mut()
+                    [Point::new(Line(row), Column(usize::from(start_column) + column_offset))];
+                *cell = template.clone();
+                cell.c = ' ';
+            }
+        }
+        for _ in 0..block_columns {
+            handler.input(' ');
+        }
+
+        handler.graphics.add_text_block(
+            chunk.text,
+            start_column,
+            point.line.0,
+            chunk.columns,
+            chunk.size,
+            alternate,
+        );
     }
 
     fn record_shell_event(&mut self, event: TerminalEvent) {
@@ -369,6 +506,10 @@ impl AlacrittyTerminalBackend {
         }
         if let TerminalEvent::MouseCursorControl(control) = &event {
             self.apply_mouse_cursor_control(control);
+            return;
+        }
+        if let TerminalEvent::FontControl(control) = &event {
+            self.apply_font_control(control);
             return;
         }
         if let TerminalEvent::ColorControl(control) = &event {
@@ -407,6 +548,22 @@ impl AlacrittyTerminalBackend {
                 self.special_colors.enabled[usize::from(index)] = enabled;
                 return;
             }
+            TerminalEvent::XtermAuxColorSet { index, color } => {
+                self.xterm_aux_colors[usize::from(index)] = Some(color);
+                return;
+            }
+            TerminalEvent::XtermAuxColorQuery(index) => {
+                let osc = [13, 14, 15, 16, 18][usize::from(index)];
+                let [red, green, blue] = self.resolved_xterm_aux_color(usize::from(index));
+                self.pending_events.push(TerminalEvent::PtyWrite(format!(
+                    "\x1b]{osc};rgb:{red:02x}{red:02x}/{green:02x}{green:02x}/{blue:02x}{blue:02x}\x1b\\"
+                )));
+                return;
+            }
+            TerminalEvent::XtermAuxColorReset(index) => {
+                self.xterm_aux_colors[usize::from(index)] = None;
+                return;
+            }
             _ => {}
         }
         if let TerminalEvent::ItermDefaultColorQuery(index) = event {
@@ -426,6 +583,12 @@ impl AlacrittyTerminalBackend {
             self.pending_events.push(TerminalEvent::PtyWrite(format!(
                 "\x1b]4;{index};rgb:{red:02x}{red:02x}/{green:02x}{green:02x}/{blue:02x}{blue:02x}\x1b\\"
             )));
+            return;
+        }
+        if let TerminalEvent::ColorPresetRequested(name) = &event {
+            if let Some(preset) = self.color_presets.get(name).copied() {
+                self.apply_color_preset(preset);
+            }
             return;
         }
         if let TerminalEvent::ItermUiColorChanged { role, color } = &event {
@@ -621,6 +784,15 @@ impl AlacrittyTerminalBackend {
         })
     }
 
+    fn resolved_xterm_aux_color(&self, index: usize) -> [u8; 3] {
+        self.xterm_aux_colors[index].unwrap_or(match index {
+            0 | 2 => self.default_colors.foreground,
+            1 | 3 => self.default_colors.background,
+            4 => self.default_colors.cursor,
+            _ => unreachable!("auxiliary color index is validated"),
+        })
+    }
+
     fn set_iterm_ui_color(&mut self, role: ItermUiColorRole, color: [u8; 3]) {
         if role == ItermUiColorRole::VisualBell {
             self.iterm_ui_colors.visual_bell = DynamicUiColor::Explicit(color);
@@ -730,6 +902,7 @@ impl AlacrittyTerminalBackend {
                 .map(|index| self.terminal.colors()[index])
                 .collect(),
             iterm_ui: self.iterm_ui_colors,
+            xterm_aux: self.xterm_aux_colors,
             special: self.special_colors,
             cursor_dynamic: self.cursor_dynamic,
         });
@@ -746,6 +919,7 @@ impl AlacrittyTerminalBackend {
             }
         }
         self.iterm_ui_colors = colors.iterm_ui;
+        self.xterm_aux_colors = colors.xterm_aux;
         self.special_colors = colors.special;
         self.cursor_dynamic = colors.cursor_dynamic;
     }
@@ -798,6 +972,83 @@ impl AlacrittyTerminalBackend {
         ));
     }
 
+    fn apply_font_control(&mut self, control: &str) {
+        if control == "?" {
+            self.pending_events.push(TerminalEvent::PtyWrite(format!(
+                "\x1b]50;{}\x1b\\",
+                self.active_font_family
+            )));
+            return;
+        }
+        if control == "#?" {
+            let index = self
+                .font_menu
+                .iter()
+                .position(|font| font == &self.active_font_family)
+                .unwrap_or(0);
+            self.pending_events.push(TerminalEvent::PtyWrite(format!(
+                "\x1b]50;#{index} {}\x1b\\",
+                self.active_font_family
+            )));
+            return;
+        }
+
+        let selected = if let Some(selector) = control.strip_prefix('#') {
+            let (selector, replacement) = selector
+                .split_once(' ')
+                .map_or((selector, None), |(selector, font)| {
+                    (selector, valid_font_family(font).then_some(font))
+                });
+            let current = self
+                .font_menu
+                .iter()
+                .position(|font| font == &self.active_font_family)
+                .unwrap_or(0);
+            let index = if let Some(relative) = selector.strip_prefix('+') {
+                let amount = if relative.is_empty() {
+                    1
+                } else {
+                    relative.parse::<usize>().ok().unwrap_or(usize::MAX)
+                };
+                current.saturating_add(amount)
+            } else if let Some(relative) = selector.strip_prefix('-') {
+                let amount = if relative.is_empty() {
+                    1
+                } else {
+                    relative.parse::<usize>().ok().unwrap_or(usize::MAX)
+                };
+                current.saturating_sub(amount)
+            } else {
+                selector.parse::<usize>().ok().unwrap_or(usize::MAX)
+            };
+            if let Some(replacement) = replacement {
+                replacement.to_owned()
+            } else if let Some(font) = self.font_menu.get(index) {
+                font.clone()
+            } else {
+                return;
+            }
+        } else if valid_font_family(control) {
+            control.to_owned()
+        } else {
+            return;
+        };
+        self.active_font_family = selected.clone();
+        self.pending_events
+            .push(TerminalEvent::FontFamilyChanged(selected));
+    }
+
+    pub fn set_font_menu(&mut self, primary: &str, fallback: &[String]) {
+        self.font_menu.clear();
+        self.font_menu.push(primary.to_owned());
+        self.font_menu.extend(fallback.iter().cloned());
+        self.active_font_family = primary.to_owned();
+    }
+
+    pub fn set_active_font_family(&mut self, family: &str) {
+        self.active_font_family = family.to_owned();
+    }
+
     /// Set the fallback colors used for rendering and terminal palette queries.
     pub fn set_default_colors(
         &mut self,
@@ -814,6 +1065,30 @@ impl AlacrittyTerminalBackend {
             selection,
             ansi,
         };
+    }
+
+    pub fn set_color_presets(
+        &mut self,
+        presets: impl IntoIterator<Item = (String, TerminalColorPreset)>,
+    ) {
+        self.color_presets = presets.into_iter().collect();
+    }
+
+    fn apply_color_preset(&mut self, preset: TerminalColorPreset) {
+        self.default_colors = DefaultColors {
+            foreground: preset.foreground,
+            background: preset.background,
+            cursor: preset.cursor,
+            selection: preset.selection,
+            ansi: preset.ansi,
+        };
+        for index in 0..=NamedColor::DimForeground as usize {
+            Handler::reset_color(&mut self.terminal, index);
+        }
+        self.iterm_ui_colors = ItermUiColors::default();
+        self.xterm_aux_colors = [None; 5];
+        self.special_colors = TerminalSpecialColors::default();
+        self.cursor_dynamic = false;
     }
 
     pub fn render_colors(&self) -> TerminalColors {
@@ -867,6 +1142,16 @@ impl AlacrittyTerminalBackend {
         if !enabled {
             self.clipboard_capture = None;
         }
+    }
+
+    /// Permit bounded Kitty OSC 5113 sends to the configured host download path.
+    pub fn set_osc_file_download_enabled(&mut self, enabled: bool) {
+        self.kitty_file_transfers.set_enabled(enabled);
+    }
+
+    /// Permit bounded Kitty OSC 5113 receives from a configured host upload root.
+    pub fn set_osc_file_upload_enabled(&mut self, enabled: bool) {
+        self.kitty_file_transfers.set_upload_enabled(enabled);
     }
 
     /// Physical cell size used by pixel-based image protocols.
@@ -923,6 +1208,93 @@ impl AlacrittyTerminalBackend {
     }
 }
 
+struct SizedTextChunk {
+    text: String,
+    columns: u8,
+    size: TextSize,
+}
+
+fn parse_osc66(payload: &[u8]) -> Option<Vec<SizedTextChunk>> {
+    const MAX_TEXT_BYTES: usize = 4_096;
+
+    let payload = payload.strip_prefix(b"66;")?;
+    let separator = payload.iter().position(|byte| *byte == b';')?;
+    let metadata = std::str::from_utf8(&payload[..separator]).ok()?;
+    let text = std::str::from_utf8(&payload[separator + 1..]).ok()?;
+    if text.is_empty()
+        || text.len() > MAX_TEXT_BYTES
+        || text.chars().any(|character| character.is_control())
+    {
+        return None;
+    }
+
+    let mut scale = 1_u8;
+    let mut width = 0_u8;
+    let mut numerator = 0_u8;
+    let mut denominator = 0_u8;
+    let mut vertical_alignment = TextAlignment::Start;
+    let mut horizontal_alignment = TextAlignment::Start;
+    if !metadata.is_empty() {
+        for item in metadata.split(':') {
+            let (key, value) = item.split_once('=')?;
+            match key {
+                "s" => scale = value.parse().ok().filter(|value| (1..=7).contains(value))?,
+                "w" => width = value.parse().ok().filter(|value| *value <= 7)?,
+                "n" => numerator = value.parse().ok().filter(|value| *value <= 15)?,
+                "d" => denominator = value.parse().ok().filter(|value| *value <= 15)?,
+                "v" => vertical_alignment = parse_text_alignment(value)?,
+                "h" => horizontal_alignment = parse_text_alignment(value)?,
+                _ => return None,
+            }
+        }
+    }
+    if denominator == 0 && numerator != 0 || denominator != 0 && denominator <= numerator {
+        return None;
+    }
+    let size = TextSize {
+        scale,
+        numerator,
+        denominator,
+        vertical_alignment,
+        horizontal_alignment,
+        rows: scale,
+    };
+    if width != 0 {
+        return Some(vec![SizedTextChunk {
+            text: text.to_owned(),
+            columns: scale.checked_mul(width)?,
+            size,
+        }]);
+    }
+
+    let mut chunks: Vec<SizedTextChunk> = Vec::new();
+    for grapheme in text.graphemes(true) {
+        let grapheme_width = UnicodeWidthStr::width(grapheme);
+        if grapheme_width == 0 {
+            if let Some(previous) = chunks.last_mut() {
+                previous.text.push_str(grapheme);
+            }
+            continue;
+        }
+        let columns = usize::from(scale).checked_mul(grapheme_width)?;
+        chunks.push(SizedTextChunk {
+            text: grapheme.to_owned(),
+            columns: u8::try_from(columns).ok()?,
+            size,
+        });
+    }
+    (!chunks.is_empty()).then_some(chunks)
+}
+
+fn parse_text_alignment(value: &str) -> Option<TextAlignment> {
+    match value {
+        "0" => Some(TextAlignment::Start),
+        "1" => Some(TextAlignment::End),
+        "2" => Some(TextAlignment::Center),
+        _ => None,
+    }
+}
+
 fn contrasting_color([red, green, blue]: [u8; 3]) -> [u8; 3] {
     let luminance = 299 * u32::from(red) + 587 * u32::from(green) + 114 * u32::from(blue);
     if luminance >= 128_000 {
@@ -930,6 +1302,13 @@ fn contrasting_color([red, green, blue]: [u8; 3]) -> [u8; 3] {
     } else {
         [255, 255, 255]
     }
+}
+
+fn valid_font_family(family: &str) -> bool {
+    !family.is_empty()
+        && family.len() <= 256
+        && !family.chars().any(char::is_control)
+        && family.trim() == family
 }
 
 pub(crate) fn resolved_color<E: EventListener>(
@@ -1023,9 +1402,17 @@ impl TerminalBackend for AlacrittyTerminalBackend {
     }
 
     fn resize(&mut self, columns: u16, rows: u16) {
-        if self.dimensions() != (columns, rows) {
-            self.graphics.clear(false, i32::MIN, i32::MAX);
-            self.graphics.clear(true, i32::MIN, i32::MAX);
+        let previous = self.dimensions();
+        if previous != (columns, rows) {
+            let preserve_text_blocks =
+                rows == previous.1 && columns >= previous.0 && self.terminal.history_size() == 0;
+            if preserve_text_blocks {
+                self.graphics.clear_images(false, i32::MIN, i32::MAX);
+                self.graphics.clear_images(true, i32::MIN, i32::MAX);
+            } else {
+                self.graphics.clear(false, i32::MIN, i32::MAX);
+                self.graphics.clear(true, i32::MIN, i32::MAX);
+            }
             self.graphics.region = None;
             // Resize can reflow grid rows without exposing an old-to-new mapping.
             self.semantic_markers.reset();
@@ -1037,6 +1424,7 @@ impl TerminalBackend for AlacrittyTerminalBackend {
         let grid = self.terminal.grid();
         let (columns, rows) = self.dimensions();
         let display_offset = grid.display_offset() as i32;
+        let alternate = self.terminal.mode().contains(TermMode::ALT_SCREEN);
         let mut lines = Vec::with_capacity(rows as usize);
         let mut rows_of_cells = Vec::with_capacity(rows as usize);
         let selection_range = self
@@ -1052,7 +1440,7 @@ impl TerminalBackend for AlacrittyTerminalBackend {
             // The grid is normally dominated by untouched cells. Find the
             // useful suffix once so we do not allocate a String and a
             // TerminalCell for every trailing blank only to pop them below.
-            let rendered_columns = (0..columns)
+            let grid_rendered_columns = (0..columns)
                 .rev()
                 .find(|column| {
                     let cell = &grid[line][Column(usize::from(*column))];
@@ -1062,9 +1450,20 @@ impl TerminalBackend for AlacrittyTerminalBackend {
                         && !is_default_blank_grid_cell(cell)
                 })
                 .map_or(0, |column| column + 1);
+            let rendered_columns = grid_rendered_columns.max(
+                self.graphics
+                    .text_block_row_end(alternate, line.0)
+                    .min(columns),
+            );
             let mut text = String::with_capacity(rendered_columns as usize);
             let mut cells = Vec::with_capacity(rendered_columns as usize);
             for column in 0..rendered_columns {
+                let sized_text = self.graphics.text_block_at(alternate, line.0, column);
+                if sized_text.is_none()
+                    && self.graphics.text_block_covers(alternate, line.0, column)
+                {
+                    continue;
+                }
                 let cell = &grid[line][Column(column as usize)];
                 if cell
                     .flags
@@ -1073,13 +1472,21 @@ impl TerminalBackend for AlacrittyTerminalBackend {
                     continue;
                 }
                 let placeholder = cell.c == '\u{10eeee}';
-                let mut cell_text = if placeholder {
+                let mut cell_text = if let Some(block) = sized_text {
+                    block.text.clone()
+                } else if placeholder {
                     " ".to_owned()
                 } else {
                     cell.c.to_string()
                 };
-                text.push(if placeholder { ' ' } else { cell.c });
-                if let Some(zerowidth) = cell.zerowidth() {
+                if let Some(block) = sized_text {
+                    text.push_str(&block.text);
+                } else {
+                    text.push(if placeholder { ' ' } else { cell.c });
+                }
+                if sized_text.is_none()
+                    && let Some(zerowidth) = cell.zerowidth()
+                {
                     if placeholder {
                         let diacritics = kitty_placeholder_diacritics(zerowidth);
                         if let (Some(image_color), Some((diacritics, diacritic_count))) =
@@ -1117,11 +1524,14 @@ impl TerminalBackend for AlacrittyTerminalBackend {
                 cells.push(TerminalCell {
                     column,
                     text: cell_text,
-                    width: if cell.flags.contains(Flags::WIDE_CHAR) {
+                    width: if let Some(block) = sized_text {
+                        block.columns
+                    } else if cell.flags.contains(Flags::WIDE_CHAR) {
                         2
                     } else {
                         1
                     },
+                    text_size: sized_text.map(|block| block.size),
                     attributes: cell_attributes(cell.fg, cell.bg, cell.flags),
                     hyperlink: cell.hyperlink().map(|link| link.uri().to_owned()),
                 });
@@ -1334,7 +1744,94 @@ impl TerminalBackend for AlacrittyTerminalBackend {
     }
 
     fn selected_text(&self) -> Option<String> {
-        self.terminal.selection_to_string()
+        let range = self
+            .terminal
+            .selection
+            .as_ref()
+            .and_then(|selection| selection.to_range(&self.terminal))?;
+        let alternate = self.terminal.mode().contains(TermMode::ALT_SCREEN);
+        let columns = self.terminal.columns();
+        let intersects_text_block = (range.start.line.0..=range.end.line.0).any(|row| {
+            let start = if row == range.start.line.0 {
+                range.start.column.0
+            } else {
+                0
+            };
+            let end = if row == range.end.line.0 {
+                range.end.column.0
+            } else {
+                columns.saturating_sub(1)
+            };
+            (start..=end).any(|column| {
+                self.graphics
+                    .text_block_covering(alternate, row, column as u16)
+                    .is_some()
+            })
+        });
+        if !intersects_text_block {
+            return self.terminal.selection_to_string();
+        }
+
+        let grid = self.terminal.grid();
+        let mut text = String::new();
+        let mut emitted_blocks = BTreeSet::new();
+        for row in range.start.line.0..=range.end.line.0 {
+            let start = if row == range.start.line.0 {
+                range.start.column.0
+            } else {
+                0
+            };
+            let end = if row == range.end.line.0 {
+                range.end.column.0
+            } else {
+                columns.saturating_sub(1)
+            };
+            let line_start = text.len();
+            let mut column = start;
+            while column <= end {
+                if let Some(block) =
+                    self.graphics
+                        .text_block_covering(alternate, row, column as u16)
+                {
+                    if emitted_blocks.insert((block.row, block.column)) {
+                        text.push_str(&block.text);
+                    }
+                    column = usize::from(block.column.saturating_add(u16::from(block.columns)));
+                    continue;
+                }
+                let cell = &grid[Line(row)][Column(column)];
+                if !cell
+                    .flags
+                    .intersects(Flags::WIDE_CHAR_SPACER | Flags::LEADING_WIDE_CHAR_SPACER)
+                {
+                    text.push(cell.c);
+                    if let Some(zerowidth) = cell.zerowidth() {
+                        text.extend(zerowidth);
+                    }
+                }
+                column += 1;
+            }
+            while text.len() > line_start && text.ends_with(' ') {
+                text.pop();
+            }
+            if row < range.end.line.0
+                && end == columns.saturating_sub(1)
+                && !grid[Line(row)][Column(columns.saturating_sub(1))]
+                    .flags
+                    .contains(Flags::WRAPLINE)
+            {
+                text.push('\n');
+            }
+        }
+        if self
+            .terminal
+            .selection
+            .as_ref()
+            .is_some_and(|selection| selection.ty == SelectionType::Lines)
+        {
+            text.push('\n');
+        }
+        Some(text)
     }
 
     fn search(&mut self, query: &str, direction: SearchDirection) -> SearchResult {

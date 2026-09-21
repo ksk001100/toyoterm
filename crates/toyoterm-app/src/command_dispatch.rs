@@ -736,6 +736,7 @@ impl ToyotermApplication {
 
     pub(super) fn apply_script_snapshot(&mut self, snapshot: ScriptSnapshot) -> Result<(), String> {
         let config = snapshot.config.clone();
+        let color_presets = terminal_color_presets(&snapshot)?;
         let previous_opacity = self.scripting.snapshot.config.window.opacity;
         self.ui.leader_deadline = None;
         let mut render_style = RenderStyle::from_hex_with_ui(
@@ -779,7 +780,10 @@ impl ToyotermApplication {
         self.ui.cell_metrics.horizontal_padding = config.ui.padding_x.round() as u32;
         self.ui.cell_metrics.vertical_padding = config.ui.padding_y.round() as u32;
         self.ui.cell_metrics.font_size = config.font.size;
-        for runtime in self.terminal_runtime.pane_runtimes.values_mut() {
+        for (pane, runtime) in &mut self.terminal_runtime.pane_runtimes {
+            if let Err(error) = downloads::queue_upload_cancel_pane(*pane) {
+                tracing::warn!(target: "toyoterm::upload", %error, %pane, "queue OSC upload reset failed");
+            }
             runtime
                 .terminal
                 .set_scrollback_lines(config.scrollback_lines);
@@ -790,9 +794,22 @@ impl ToyotermApplication {
                 render_style.selection,
                 render_style.ansi,
             );
+            runtime.terminal.set_color_presets(color_presets.clone());
+            runtime
+                .terminal
+                .set_font_menu(&config.font.family, &config.font.fallback);
             runtime
                 .terminal
                 .set_osc52_copy_enabled(config.behavior.allow_osc52_copy);
+            runtime.terminal.set_osc_file_download_enabled(
+                config.behavior.allow_osc_file_downloads
+                    && config.behavior.osc_download_directory.is_some(),
+            );
+            runtime.terminal.set_osc_file_upload_enabled(false);
+            runtime.terminal.set_osc_file_upload_enabled(
+                config.behavior.allow_osc_file_uploads
+                    && config.behavior.osc_upload_directory.is_some(),
+            );
         }
         self.ui.render_style = render_style.clone();
         self.scripting.snapshot = Arc::new(snapshot);
@@ -1473,6 +1490,7 @@ mod tests {
     fn unassigned_keys_do_not_schedule_ruby_invocations() {
         let snapshot = ScriptSnapshot {
             config: ToyotermConfig::default(),
+            color_presets: HashMap::new(),
             native_actions: HashMap::new(),
             keybindings: HashSet::new(),
             event_names: HashSet::new(),
@@ -1493,6 +1511,7 @@ mod tests {
     fn visual_only_actions_are_skipped_outside_visual_mode() {
         let mut snapshot = ScriptSnapshot {
             config: ToyotermConfig::default(),
+            color_presets: HashMap::new(),
             native_actions: HashMap::new(),
             keybindings: HashSet::new(),
             event_names: HashSet::new(),

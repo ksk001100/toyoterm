@@ -68,6 +68,15 @@ Toyoterm.configure do |config|
     behavior.allow_osc_attention_requests = false
     # Allows bounded http(s)/mailto OSC 1337 OpenURL requests without a click.
     behavior.allow_osc_open_url = false
+    # Permit OSC 1337 downloads into one fixed absolute directory.
+    behavior.allow_osc_file_downloads = false
+    behavior.osc_download_directory = ""
+    behavior.allow_osc_file_uploads = false
+    behavior.osc_upload_directory = ""
+    behavior.allow_osc_background_image = false
+    behavior.osc_background_image_directory = ""
+    # Allows OSC 1337 StealFocus/Disinter to ask the window manager for focus.
+    behavior.allow_osc_focus_requests = false
   end
 
   config.scrollback_lines = 10_000

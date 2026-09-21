@@ -545,17 +545,46 @@ module Toyoterm
 
   class BehaviorConfig
     attr_reader :scroll_lines, :copy_on_select, :allow_osc52_copy, :allow_osc_notifications,
-                :allow_osc_attention_requests, :allow_osc_open_url
+                :allow_osc_attention_requests, :allow_osc_open_url,
+                :allow_osc_file_downloads, :osc_download_directory,
+                :allow_osc_file_uploads, :osc_upload_directory,
+                :allow_osc_background_image, :osc_background_image_directory,
+                :allow_osc_focus_requests
 
     def scroll_lines=(value)
       @scroll_lines = Toyoterm.__number(value, "behavior.scroll_lines", 0.000001)
     end
 
     [:copy_on_select, :allow_osc52_copy, :allow_osc_notifications,
-     :allow_osc_attention_requests, :allow_osc_open_url].each do |name|
+     :allow_osc_attention_requests, :allow_osc_open_url,
+     :allow_osc_focus_requests].each do |name|
       define_method("#{name}=") do |value|
         instance_variable_set("@#{name}", Toyoterm.__boolean(value, "behavior.#{name}"))
       end
+    end
+
+    def allow_osc_file_downloads=(value)
+      @allow_osc_file_downloads = Toyoterm.__boolean(value, "behavior.allow_osc_file_downloads")
+    end
+
+    def osc_download_directory=(value)
+      @osc_download_directory = value == "" ? "" : Toyoterm.__string(value, "behavior.osc_download_directory")
+    end
+
+    def allow_osc_file_uploads=(value)
+      @allow_osc_file_uploads = Toyoterm.__boolean(value, "behavior.allow_osc_file_uploads")
+    end
+
+    def osc_upload_directory=(value)
+      @osc_upload_directory = value == "" ? "" : Toyoterm.__string(value, "behavior.osc_upload_directory")
+    end
+
+    def allow_osc_background_image=(value)
+      @allow_osc_background_image = Toyoterm.__boolean(value, "behavior.allow_osc_background_image")
+    end
+
+    def osc_background_image_directory=(value)
+      @osc_background_image_directory = value == "" ? "" : Toyoterm.__string(value, "behavior.osc_background_image_directory")
     end
 
     def initialize
@@ -565,6 +594,13 @@ module Toyoterm
       @allow_osc_notifications = false
       @allow_osc_attention_requests = false
       @allow_osc_open_url = false
+      @allow_osc_file_downloads = false
+      @osc_download_directory = ""
+      @allow_osc_file_uploads = false
+      @osc_upload_directory = ""
+      @allow_osc_background_image = false
+      @osc_background_image_directory = ""
+      @allow_osc_focus_requests = false
     end
   end
 
@@ -879,7 +915,14 @@ module Toyoterm
           allow_osc52_copy: @behavior.allow_osc52_copy,
           allow_osc_notifications: @behavior.allow_osc_notifications,
           allow_osc_attention_requests: @behavior.allow_osc_attention_requests,
-          allow_osc_open_url: @behavior.allow_osc_open_url
+          allow_osc_open_url: @behavior.allow_osc_open_url,
+          allow_osc_file_downloads: @behavior.allow_osc_file_downloads,
+          osc_download_directory: @behavior.osc_download_directory,
+          allow_osc_file_uploads: @behavior.allow_osc_file_uploads,
+          osc_upload_directory: @behavior.osc_upload_directory,
+          allow_osc_background_image: @behavior.allow_osc_background_image,
+          osc_background_image_directory: @behavior.osc_background_image_directory,
+          allow_osc_focus_requests: @behavior.allow_osc_focus_requests
         },
         default_shell: @default_shell, scrollback_lines: @scrollback_lines,
         theme: @theme
@@ -906,7 +949,13 @@ module Toyoterm
          @ui.pane_divider_width, @ui.active_pane_border_width],
         [@behavior.scroll_lines, @behavior.copy_on_select, @behavior.allow_osc52_copy,
          @behavior.allow_osc_notifications, @behavior.allow_osc_attention_requests,
-         @behavior.allow_osc_open_url],
+         @behavior.allow_osc_open_url, @behavior.allow_osc_file_downloads,
+         Toyoterm.__deep_copy(@behavior.osc_download_directory),
+         @behavior.allow_osc_file_uploads,
+         Toyoterm.__deep_copy(@behavior.osc_upload_directory),
+         @behavior.allow_osc_background_image,
+         Toyoterm.__deep_copy(@behavior.osc_background_image_directory),
+         @behavior.allow_osc_focus_requests],
         [@leader_key, @leader_timeout, @theme,
          @theme_color_checkpoint && @theme_color_checkpoint.map { |value| value.is_a?(Array) ? value.dup : value }]
       ]
@@ -963,6 +1012,13 @@ module Toyoterm
       @behavior.allow_osc_notifications = behavior[3]
       @behavior.allow_osc_attention_requests = behavior[4]
       @behavior.allow_osc_open_url = behavior[5]
+      @behavior.allow_osc_file_downloads = behavior[6]
+      @behavior.osc_download_directory = behavior[7]
+      @behavior.allow_osc_file_uploads = behavior[8]
+      @behavior.osc_upload_directory = behavior[9]
+      @behavior.allow_osc_background_image = behavior[10]
+      @behavior.osc_background_image_directory = behavior[11]
+      @behavior.allow_osc_focus_requests = behavior[12]
       @leader_key = leader[0]
       @leader_timeout = leader[1]
       @theme = leader[2]
@@ -1715,6 +1771,18 @@ module Toyoterm
 
   def self.themes
     @themes.keys.dup
+  end
+
+  def self.__theme_count
+    @themes.length
+  end
+
+  def self.__theme_name(index)
+    @themes.keys[index]
+  end
+
+  def self.__theme_at(index)
+    @themes.values[index]
   end
 
   def self.theme(name)

@@ -17,7 +17,10 @@ pub(super) fn terminal_cell_runs(
         while start < cells.len() {
             let mut end = start + 1;
             let ascii_cell = |cell: &toyoterm_terminal::TerminalCell| {
-                cell.width == 1 && cell.text.len() == 1 && cell.text.is_ascii()
+                cell.text_size.is_none()
+                    && cell.width == 1
+                    && cell.text.len() == 1
+                    && cell.text.is_ascii()
             };
             if ascii_cell(&cells[start]) {
                 while end < cells.len()
@@ -57,11 +60,16 @@ pub(super) fn update_terminal_cell_buffer(
     context: CellRenderContext<'_>,
 ) {
     buffer.set_wrap(Wrap::None);
-    buffer.set_monospace_width(Some(layout.cell_width));
+    let text_size = cells.first().and_then(|cell| cell.text_size);
+    let scale = text_size.map_or(1.0, toyoterm_terminal::TextSize::rendered_scale);
+    buffer.set_monospace_width(Some((layout.cell_width * scale).max(0.01)));
     buffer.set_metrics_and_size(
-        Metrics::new(layout.font_size.max(1.0), layout.line_height.max(1.0)),
-        None,
-        None,
+        Metrics::new(
+            (layout.font_size * scale).max(0.01),
+            (layout.line_height * scale).max(0.01),
+        ),
+        text_size.map(|_| f32::from(cells[0].width) * layout.cell_width),
+        text_size.map(|size| f32::from(size.rows) * layout.line_height),
     );
     buffer.set_rich_text(
         cells.iter().map(|cell| {
@@ -97,6 +105,34 @@ pub(super) fn update_terminal_cell_buffer(
     buffer.shape_until_scroll(font_system, false);
 }
 
+pub(super) fn sized_text_offsets(
+    cell: &toyoterm_terminal::TerminalCell,
+    layout: TextLayout,
+) -> (f32, f32) {
+    let Some(size) = cell.text_size else {
+        return (0.0, 0.0);
+    };
+    let fraction = if size.denominator == 0 {
+        1.0
+    } else {
+        f32::from(size.numerator) / f32::from(size.denominator)
+    };
+    let free_width = f32::from(cell.width) * layout.cell_width * (1.0 - fraction);
+    let free_height = f32::from(size.rows) * layout.line_height * (1.0 - fraction);
+    (
+        alignment_offset(size.horizontal_alignment, free_width),
+        alignment_offset(size.vertical_alignment, free_height),
+    )
+}
+
+fn alignment_offset(alignment: toyoterm_terminal::TextAlignment, free_space: f32) -> f32 {
+    match alignment {
+        toyoterm_terminal::TextAlignment::Start => 0.0,
+        toyoterm_terminal::TextAlignment::End => free_space,
+        toyoterm_terminal::TextAlignment::Center => free_space / 2.0,
+    }
+}
+
 #[derive(Clone, Copy)]
 pub(super) struct CellRenderContext<'a> {
     pub(super) row: u16,
@@ -113,6 +149,23 @@ pub(super) fn cursor_cell(
         .get(usize::from(cursor.row))?
         .iter()
         .find(|cell| cell.column == cursor.column)
+}
+
+pub(super) fn cursor_text_block(
+    snapshot: &TerminalSnapshot,
+    cursor: CursorState,
+) -> Option<(u16, &toyoterm_terminal::TerminalCell)> {
+    snapshot.cells.iter().enumerate().find_map(|(row, cells)| {
+        cells.iter().find_map(|cell| {
+            let size = cell.text_size?;
+            let row = u16::try_from(row).ok()?;
+            (cursor.row >= row
+                && cursor.row < row.saturating_add(u16::from(size.rows))
+                && cursor.column >= cell.column
+                && cursor.column < cell.column.saturating_add(u16::from(cell.width)))
+            .then_some((row, cell))
+        })
+    })
 }
 
 pub(super) fn apply_selection_foreground(
@@ -449,6 +502,11 @@ pub(super) fn terminal_backgrounds(
             break;
         }
         for cell in cells {
+            let cell_bottom = cell.text_size.map_or(bottom, |size| {
+                (origin_y + (row + usize::from(size.rows)) as f32 * layout.line_height)
+                    .ceil()
+                    .max(0.0) as u32
+            });
             let color = if cell.attributes.inverse {
                 resolve_cell_color(cell.attributes.foreground, colors.foreground, &colors.ansi)
             } else {
@@ -481,9 +539,12 @@ pub(super) fn terminal_backgrounds(
             let left = left.max(pane.x);
             let top = top.max(pane.y);
             let right = right.min(pane_right);
-            let bottom = bottom.min(pane_bottom);
-            if right > left && bottom > top {
-                backgrounds.push((PaneRect::new(left, top, right - left, bottom - top), color));
+            let cell_bottom = cell_bottom.min(pane_bottom);
+            if right > left && cell_bottom > top {
+                backgrounds.push((
+                    PaneRect::new(left, top, right - left, cell_bottom - top),
+                    color,
+                ));
             }
         }
     }

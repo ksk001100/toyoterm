@@ -486,6 +486,7 @@ fn dynamically_reverses_selected_cell_colors() {
         column: 0,
         text: "x".into(),
         width: 1,
+        text_size: None,
         attributes: CellAttributes {
             foreground: CellColor::Rgb(10, 20, 30),
             background: CellColor::Rgb(40, 50, 60),
@@ -690,6 +691,7 @@ fn maps_xterm_palette_and_rich_cell_attributes() {
             column: 3,
             text: "x".into(),
             width: 1,
+            text_size: None,
             attributes: CellAttributes::default(),
             hyperlink: None,
         },
@@ -846,6 +848,84 @@ fn locates_only_the_leading_cell_under_the_cursor() {
 }
 
 #[test]
+fn isolates_and_aligns_kitty_sized_text_runs() {
+    let size = toyoterm_terminal::TextSize {
+        scale: 2,
+        numerator: 1,
+        denominator: 2,
+        vertical_alignment: toyoterm_terminal::TextAlignment::End,
+        horizontal_alignment: toyoterm_terminal::TextAlignment::Center,
+        rows: 2,
+    };
+    let sized = toyoterm_terminal::TerminalCell {
+        column: 1,
+        text: "ab".into(),
+        width: 4,
+        text_size: Some(size),
+        attributes: CellAttributes {
+            background: CellColor::Rgb(10, 20, 30),
+            ..CellAttributes::default()
+        },
+        ..toyoterm_terminal::TerminalCell::default()
+    };
+    let snapshot = TerminalSnapshot {
+        columns: 8,
+        rows: 1,
+        lines: vec!["xab".into()],
+        cells: vec![vec![
+            toyoterm_terminal::TerminalCell {
+                column: 0,
+                text: "x".into(),
+                width: 1,
+                ..toyoterm_terminal::TerminalCell::default()
+            },
+            sized.clone(),
+        ]],
+        selection: Vec::new(),
+        search_matches: Vec::new(),
+        command_zones: Vec::new(),
+        images: Vec::new(),
+    };
+    let runs = terminal_cell_runs(&snapshot);
+    assert_eq!(runs.len(), 2);
+    assert_eq!(runs[1].1, [sized]);
+
+    let layout = TextLayout {
+        font_size: 14.0,
+        line_height: 18.0,
+        cell_width: 9.0,
+        horizontal_padding: 0.0,
+        vertical_padding: 0.0,
+    };
+    assert_eq!(sized_text_offsets(&runs[1].1[0], layout), (9.0, 18.0));
+    let colors = test_terminal_colors([220; 3], [0; 3], default_ansi_palette());
+    assert!(
+        terminal_backgrounds(
+            &snapshot,
+            PaneRect::new(0, 0, 100, 100),
+            layout,
+            &colors,
+            false,
+            false,
+            1.0,
+        )
+        .contains(&(PaneRect::new(9, 0, 36, 36), [10, 20, 30]))
+    );
+    assert_eq!(
+        cursor_text_block(
+            &snapshot,
+            CursorState {
+                column: 3,
+                row: 1,
+                visible: true,
+                shape: CursorShape::Block,
+            }
+        ),
+        Some((0, &runs[1].1[0]))
+    );
+}
+
+#[test]
 fn builds_background_rectangles_for_indexed_and_inverse_cells() {
     let ansi = default_ansi_palette();
     let snapshot = TerminalSnapshot {
@@ -858,6 +938,7 @@ fn builds_background_rectangles_for_indexed_and_inverse_cells() {
                 column: 0,
                 text: "a".into(),
                 width: 1,
+                text_size: None,
                 attributes: CellAttributes {
                     background: CellColor::Indexed(196),
                     ..CellAttributes::default()
@@ -868,6 +949,7 @@ fn builds_background_rectangles_for_indexed_and_inverse_cells() {
                 column: 1,
                 text: "b".into(),
                 width: 1,
+                text_size: None,
                 attributes: CellAttributes {
                     foreground: CellColor::Indexed(21),
                     inverse: true,
@@ -942,6 +1024,7 @@ fn maps_matching_cell_backgrounds_to_kitty_opacity() {
                 column: 0,
                 text: "a".into(),
                 width: 1,
+                text_size: None,
                 attributes: CellAttributes {
                     background: CellColor::Rgb(255, 0, 0),
                     ..CellAttributes::default()
@@ -952,6 +1035,7 @@ fn maps_matching_cell_backgrounds_to_kitty_opacity() {
                 column: 1,
                 text: "b".into(),
                 width: 1,
+                text_size: None,
                 attributes: CellAttributes {
                     background: CellColor::Rgb(0, 255, 0),
                     ..CellAttributes::default()

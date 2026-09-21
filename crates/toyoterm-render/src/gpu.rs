@@ -221,6 +221,8 @@ struct CellRunBuffer {
     text: Buffer,
     column: u16,
     row: u16,
+    offset_x: f32,
+    offset_y: f32,
     cells: Vec<toyoterm_terminal::TerminalCell>,
 }
 
@@ -724,7 +726,16 @@ impl GpuRenderer {
                 };
                 buffers.images.push((image.clone(), gpu));
             }
-            buffers.cursor = pane.cursor;
+            let cursor_block = cursor_text_block(pane.snapshot, pane.cursor);
+            buffers.cursor = if let Some((row, cell)) = cursor_block {
+                CursorState {
+                    column: cell.column,
+                    row,
+                    ..pane.cursor
+                }
+            } else {
+                pane.cursor
+            };
             buffers.rect = pane.rect;
             let content_left = (pane.rect.x as f32 + layout.horizontal_padding)
                 .floor()
@@ -846,7 +857,7 @@ impl GpuRenderer {
                     .shape_until_scroll(&mut self.font_system, false);
                 buffers.cached_cells.clone_from(&pane.snapshot.cells);
             }
-            buffers.cursor_x = pane_cursor_x(pane.cursor, layout.cell_width);
+            buffers.cursor_x = pane_cursor_x(buffers.cursor, layout.cell_width);
 
             let cell_runs = if use_cell_runs {
                 terminal_cell_runs(pane.snapshot)
@@ -862,6 +873,8 @@ impl GpuRenderer {
                         text,
                         column: 0,
                         row: 0,
+                        offset_x: 0.0,
+                        offset_y: 0.0,
                         cells: Vec::new(),
                     });
                 }
@@ -877,6 +890,7 @@ impl GpuRenderer {
                 ) {
                     run.column = column;
                     run.row = row;
+                    (run.offset_x, run.offset_y) = sized_text_offsets(&cells[0], layout);
                     update_terminal_cell_buffer(
                         &mut run.text,
                         &mut self.font_system,
@@ -900,15 +914,41 @@ impl GpuRenderer {
             buffers.text_cache_valid = true;
             buffers.used_cell_runs = use_cell_runs;
 
+            let cursor_glyph = if let Some((_, cell)) = cursor_block {
+                let rows = usize::from(cell.text_size.expect("sized cursor block").rows);
+                let columns = usize::from(cell.width);
+                match pane.cursor.shape {
+                    CursorShape::Block => std::iter::repeat_n("█".repeat(columns), rows)
+                        .collect::<Vec<_>>()
+                        .join("\n"),
+                    CursorShape::Beam => std::iter::repeat_n("▏".to_owned(), rows)
+                        .collect::<Vec<_>>()
+                        .join("\n"),
+                    CursorShape::Underline => {
+                        let mut lines = vec![String::new(); rows.saturating_sub(1)];
+                        lines.push("▁".repeat(columns));
+                        lines.join("\n")
+                    }
+                }
+            } else {
+                match pane.cursor.shape {
+                    CursorShape::Block => "█".to_owned(),
+                    CursorShape::Beam => "▏".to_owned(),
+                    CursorShape::Underline => "▁".to_owned(),
+                }
+            };
             buffers
                 .cursor_glyph
-                .set_metrics_and_size(metrics, None, None);
+                .set_monospace_width(Some(layout.cell_width));
+            buffers.cursor_glyph.set_metrics_and_size(
+                metrics,
+                cursor_block.map(|(_, cell)| f32::from(cell.width) * layout.cell_width),
+                cursor_block.map(|(_, cell)| {
+                    f32::from(cell.text_size.expect("sized cursor block").rows) * layout.line_height
+                }),
+            );
             buffers.cursor_glyph.set_text(
-                match pane.cursor.shape {
-                    CursorShape::Block => "█",
-                    CursorShape::Beam => "▏",
-                    CursorShape::Underline => "▁",
-                },
+                &cursor_glyph,
                 &Attrs::new()
                     .family(resolve_font_family(&self.style.font_family))
                     .weight(Weight(self.style.font_weight)),
@@ -919,7 +959,8 @@ impl GpuRenderer {
                 .cursor_glyph
                 .shape_until_scroll(&mut self.font_system, false);
             buffers.has_cursor_text = false;
-            if pane.cursor.shape == CursorShape::Block
+            if cursor_block.is_none()
+                && pane.cursor.shape == CursorShape::Block
                 && let Some([red, green, blue]) = pane.colors.cursor_foreground
                 && let Some(cell) = cursor_cell(pane.snapshot, pane.cursor)
                 && !cell.text.is_empty()
@@ -1543,8 +1584,12 @@ impl GpuRenderer {
                 for run in &pane.cell_runs {
                     text_areas.push(TextArea {
                         buffer: &run.text,
-                        left: placement.text_left + f32::from(run.column) * pane.layout.cell_width,
-                        top: placement.text_top + f32::from(run.row) * pane.layout.line_height,
+                        left: placement.text_left
+                            + f32::from(run.column) * pane.layout.cell_width
+                            + run.offset_x,
+                        top: placement.text_top
+                            + f32::from(run.row) * pane.layout.line_height
+                            + run.offset_y,
                         scale: 1.0,
                         bounds,
                         default_color: glyph_color(pane.colors.foreground, 255),

@@ -45,6 +45,8 @@ pub(crate) enum Token {
     Text(Vec<u8>),
     Graphic(u8, Vec<u8>),
     Osc1337(Vec<u8>),
+    Osc66(Vec<u8>),
+    Osc5113(Vec<u8>),
     CellSizeQuery,
     Cancel,
 }
@@ -168,6 +170,10 @@ impl Stream {
                                         == Some(&b'q');
                             if graphic {
                                 tokens.push(Token::Graphic(kind, bytes));
+                            } else if kind == b']' && bytes.starts_with(b"66;") {
+                                tokens.push(Token::Osc66(bytes));
+                            } else if kind == b']' && bytes.starts_with(b"5113;") {
+                                tokens.push(Token::Osc5113(bytes));
                             } else if kind == b']' && bytes.starts_with(b"1337;") {
                                 tokens.push(Token::Osc1337(bytes));
                             } else {

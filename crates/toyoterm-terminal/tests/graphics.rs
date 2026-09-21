@@ -253,10 +253,19 @@ fn osc1337_multipart_png_preserves_fragmentation_size_and_cursor_order() {
 }
 
 #[test]
-fn osc1337_multipart_rejects_downloads_malformed_data_and_oversized_parts() {
+fn osc1337_multipart_emits_bounded_downloads_and_rejects_bad_parts() {
     let mut t = terminal();
-    t.advance(b"\x1b]1337;MultipartFile=inline=0\x07");
+    t.advance(b"\x1b]1337;MultipartFile=inline=0;name=dGVzdC50eHQ=;size=3\x07");
     t.advance(b"\x1b]1337;FilePart=AAAA\x07\x1b]1337;FileEnd\x07");
+    assert_eq!(
+        t.drain_events(),
+        [TerminalEvent::FileDownload {
+            name: Some("test.txt".into()),
+            data: vec![0, 0, 0],
+            permissions: None,
+            modified_ns: None,
+        }]
+    );
     t.advance(b"\x1b]1337;MultipartFile=inline=1\x07");
     t.advance(b"\x1b]1337;FilePart=not-base64\x07\x1b]1337;FileEnd\x07");
     t.advance(b"\x1b]1337;MultipartFile=inline=1\x07\x1b]1337;FilePart=");
@@ -283,6 +292,41 @@ fn osc1337_multipart_cancel_and_restart_discards_previous_chunks() {
         .as_bytes(),
     );
     assert_eq!(t.snapshot().images.len(), 1);
+}
+
+#[test]
+fn kitty_osc5113_receives_bounded_regular_files_across_pty_splits() {
+    let sequence = b"\x1b]5113;ac=send;id=test\x1b\\\
+        \x1b]5113;ac=file;id=test;fid=f1;n=L3RtcC9maWxlLnR4dA==;sz=3\x1b\\\
+        \x1b]5113;ac=data;id=test;fid=f1;d=YQ==\x1b\\\
+        \x1b]5113;ac=end_data;id=test;fid=f1;d=YmM=\x1b\\
+        \x1b]5113;ac=finish;id=test\x1b\\";
+    for split in 0..=sequence.len() {
+        let mut terminal = terminal();
+        terminal.set_osc_file_download_enabled(true);
+        terminal.advance(&sequence[..split]);
+        terminal.advance(&sequence[split..]);
+        let downloads = terminal
+            .drain_events()
+            .into_iter()
+            .filter(|event| matches!(event, TerminalEvent::FileTransferCommit(_)))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            downloads,
+            [TerminalEvent::FileTransferCommit(vec![
+                toyoterm_terminal::FileTransferEntry {
+                    id: "f1".into(),
+                    parent: None,
+                    name: "/tmp/file.txt".into(),
+                    kind: toyoterm_terminal::FileTransferEntryKind::Regular,
+                    data: b"abc".to_vec(),
+                    permissions: None,
+                    modified_ns: None,
+                }
+            ])],
+            "split={split}"
+        );
+    }
 }
 
 #[test]

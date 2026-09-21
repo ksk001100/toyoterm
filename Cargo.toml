@@ -22,12 +22,15 @@ toyoterm-terminal = { path = "crates/toyoterm-terminal" }
 alacritty_terminal = "0.26.0"
 base64 = "0.23.1"
 flate2 = "1.1.10"
+futures-channel = "0.3.34"
+futures-lite = "2.6.1"
 arboard = { version = "3.6.1", default-features = false, features = ["wayland-data-control"] }
 bytemuck = { version = "1.25.2", features = ["derive"] }
 cc = "1.4.5"
 cursor-icon = "1.2.0"
 glyphon = "0.12.0"
 image = { version = "0.25.10", default-features = false, features = ["png", "jpeg", "gif", "bmp", "webp"] }
+mac-usernotifications = "0.3.1"
 notify-rust = { version = "4.18.0", features = ["preview-macos-un"] }
 portable-pty = "0.9.0"
 pollster = "1.0.1"
@@ -35,9 +38,11 @@ sys-locale = "0.3.2"
 tracing = { version = "0.1.44", default-features = false, features = ["std"] }
 unicode-width = "0.2.2"
 unicode-script = "0.5.8"
+unicode-segmentation = "1.12.0"
 wgpu = "30.0.1"
 winit = "0.30.13"
 windows-sys = "0.61.2"
+windows = { version = "0.61.3", features = ["Data_Xml_Dom", "Foundation", "UI_Notifications"] }
 
 [profile.release]
 # PTY and window guards must run even when an unexpected panic reaches main.

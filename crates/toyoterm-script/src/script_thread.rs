@@ -67,6 +67,7 @@ pub struct RubyEvent {
 #[derive(Clone, Debug, PartialEq)]
 pub struct ScriptSnapshot {
     pub config: ToyotermConfig,
+    pub color_presets: HashMap<String, ColorConfig>,
     pub native_actions: HashMap<String, NativeAction>,
     pub keybindings: HashSet<String>,
     pub event_names: HashSet<String>,

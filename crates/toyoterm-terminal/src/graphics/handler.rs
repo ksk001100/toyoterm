@@ -309,6 +309,42 @@ impl<E: EventListener> Handler for GraphicsHandler<'_, E> {
             self.terminal.input(c);
             return;
         }
+        let alternate = self.alternate();
+        if c.width().unwrap_or(0) == 0 {
+            let cursor = self.terminal.grid().cursor.point;
+            if cursor.column.0 > 0
+                && self.graphics.append_to_text_block(
+                    alternate,
+                    cursor.line.0,
+                    (cursor.column.0 - 1) as u16,
+                    c,
+                )
+            {
+                return;
+            }
+        }
+        // A lower row can contain several adjacent multicell characters. Keep
+        // skipping until the cursor reaches an ordinary cell, wrapping even
+        // when DECAWM is disabled as required by OSC 66.
+        loop {
+            let cursor = self.terminal.grid().cursor.point;
+            let Some((top, _, end)) = self.graphics.text_block_bounds_at(
+                alternate,
+                cursor.line.0,
+                cursor.column.0 as u16,
+            ) else {
+                break;
+            };
+            if cursor.line.0 <= top {
+                break;
+            }
+            if usize::from(end) >= self.terminal.columns() {
+                self.linefeed();
+                self.goto_col(0);
+            } else {
+                self.goto_col(usize::from(end));
+            }
+        }
         let cursor = &self.terminal.grid().cursor;
         let cursor_row = cursor.point.line.0;
         let cursor_column = cursor.point.column.0;
@@ -361,10 +397,24 @@ impl<E: EventListener> Handler for GraphicsHandler<'_, E> {
         self.terminal.scroll_down(count);
     }
     fn insert_blank_lines(&mut self, count: usize) {
+        let cursor = self.terminal.grid().cursor.point;
+        let (_, bottom) = self.region();
+        self.graphics.prepare_insert_text_lines(
+            self.alternate(),
+            cursor.line.0,
+            count.min(i32::MAX as usize) as i32,
+            bottom,
+        );
         self.track_scroll(count, true, true);
         self.terminal.insert_blank_lines(count);
     }
     fn delete_lines(&mut self, count: usize) {
+        let cursor = self.terminal.grid().cursor.point;
+        self.graphics.prepare_delete_text_lines(
+            self.alternate(),
+            cursor.line.0,
+            count.min(i32::MAX as usize) as i32,
+        );
         self.track_scroll(count, false, true);
         self.terminal.delete_lines(count);
     }
@@ -473,11 +523,20 @@ impl<E: EventListener> Handler for GraphicsHandler<'_, E> {
     }
     fn insert_blank(&mut self, arg0: usize) {
         let cursor = self.terminal.grid().cursor.point;
-        self.graphics.clear_columns(
+        let count = arg0.max(1).min(usize::from(u16::MAX)) as u16;
+        let limit = self.terminal.columns().min(usize::from(u16::MAX)) as u16;
+        self.graphics.insert_text_columns(
             self.alternate(),
             cursor.line.0,
             cursor.column.0 as u16,
-            self.terminal.columns().min(usize::from(u16::MAX)) as u16,
+            count,
+            limit,
+        );
+        self.graphics.clear_image_columns(
+            self.alternate(),
+            cursor.line.0,
+            cursor.column.0 as u16,
+            limit,
         );
         self.terminal.insert_blank(arg0);
     }
@@ -550,7 +609,14 @@ impl<E: EventListener> Handler for GraphicsHandler<'_, E> {
     }
     fn delete_chars(&mut self, arg0: usize) {
         let cursor = self.terminal.grid().cursor.point;
-        self.graphics.clear_columns(
+        let count = arg0.max(1).min(usize::from(u16::MAX)) as u16;
+        self.graphics.delete_text_columns(
+            self.alternate(),
+            cursor.line.0,
+            cursor.column.0 as u16,
+            count,
+        );
+        self.graphics.clear_image_columns(
             self.alternate(),
             cursor.line.0,
             cursor.column.0 as u16,

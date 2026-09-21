@@ -120,9 +120,40 @@ pub struct TerminalCell {
     pub column: u16,
     pub text: String,
     pub width: u8,
+    /// Kitty OSC 66 sizing for a cell-spanning text block.
+    pub text_size: Option<TextSize>,
     pub attributes: CellAttributes,
     /// Explicit OSC 8 target, or a safely detected URL.
     pub hyperlink: Option<String>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct TextSize {
+    pub scale: u8,
+    pub numerator: u8,
+    pub denominator: u8,
+    pub vertical_alignment: TextAlignment,
+    pub horizontal_alignment: TextAlignment,
+    pub rows: u8,
+}
+
+impl TextSize {
+    pub fn rendered_scale(self) -> f32 {
+        let fraction = if self.denominator == 0 {
+            1.0
+        } else {
+            f32::from(self.numerator) / f32::from(self.denominator)
+        };
+        f32::from(self.scale) * fraction
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum TextAlignment {
+    #[default]
+    Start,
+    End,
+    Center,
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -195,11 +226,12 @@ mod input;
 pub use graphics::TerminalImage;
 
 pub use alacritty::{
-    AlacrittyTerminalBackend, DEFAULT_SCROLLBACK_LINES, ItermUiColorRole,
+    AlacrittyTerminalBackend, DEFAULT_SCROLLBACK_LINES, FileTransferEntry, FileTransferEntryKind,
+    FileUploadPath, ItermUiColorRole, MAX_OSC_BACKGROUND_IMAGE_PATH_BYTES,
     MAX_OSC_NOTIFICATION_BYTES, MAX_OSC_REPORT_VARIABLE_NAME_BYTES, MAX_OSC52_COPY_BYTES,
     NotificationIcon, NotificationOccasion, NotificationReporting, NotificationSound,
-    NotificationUrgency, SessionStatusUpdate, TabColorComponent, TerminalAttention, TerminalEvent,
-    TerminalProgress,
+    NotificationUrgency, SessionStatusUpdate, TabColorComponent, TerminalAttention,
+    TerminalColorPreset, TerminalEvent, TerminalProgress,
 };
 pub use input::{
     BindingKey, KeyChord, KeyModifiers, KeyPress, KeypadKey, MouseEventKind, MouseWheelDirection,

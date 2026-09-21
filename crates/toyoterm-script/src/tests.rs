@@ -898,9 +898,12 @@ fn exposes_bundled_portable_standard_library_gemboxes() {
 #[test]
 fn loads_the_configuration_dsl() {
     let mut manager = ConfigManager::new().unwrap();
-    let config = manager
-        .reload(
-            r##"
+    let download_directory = if cfg!(windows) {
+        "C:/tmp/toyoterm-downloads"
+    } else {
+        "/tmp/toyoterm-downloads"
+    };
+    let source = r##"
                 Toyoterm.configure do |config|
                   config.font do |font|
                     font.family = "JetBrains Mono"
@@ -924,12 +927,19 @@ fn loads_the_configuration_dsl() {
                   config.behavior.allow_osc_notifications = true
                   config.behavior.allow_osc_attention_requests = true
                   config.behavior.allow_osc_open_url = true
+                  config.behavior.allow_osc_file_downloads = true
+                  config.behavior.osc_download_directory = "__DOWNLOAD_DIRECTORY__"
+                  config.behavior.allow_osc_file_uploads = true
+                  config.behavior.osc_upload_directory = "__DOWNLOAD_DIRECTORY__"
+                  config.behavior.allow_osc_background_image = true
+                  config.behavior.osc_background_image_directory = "__DOWNLOAD_DIRECTORY__"
+                  config.behavior.allow_osc_focus_requests = true
                   config.default_shell = "/bin/zsh"
                   config.scrollback_lines = 50_000
                 end
-                "##,
-        )
-        .unwrap();
+                "##
+    .replace("__DOWNLOAD_DIRECTORY__", download_directory);
+    let config = manager.reload(&source).unwrap();
 
     assert_eq!(config.font.family, "JetBrains Mono");
     assert_eq!(
@@ -954,6 +964,22 @@ fn loads_the_configuration_dsl() {
     assert!(config.behavior.allow_osc_notifications);
     assert!(config.behavior.allow_osc_attention_requests);
     assert!(config.behavior.allow_osc_open_url);
+    assert!(config.behavior.allow_osc_file_downloads);
+    assert_eq!(
+        config.behavior.osc_download_directory.as_deref(),
+        Some(std::path::Path::new(download_directory))
+    );
+    assert!(config.behavior.allow_osc_file_uploads);
+    assert_eq!(
+        config.behavior.osc_upload_directory.as_deref(),
+        Some(std::path::Path::new(download_directory))
+    );
+    assert!(config.behavior.allow_osc_background_image);
+    assert_eq!(
+        config.behavior.osc_background_image_directory.as_deref(),
+        Some(std::path::Path::new(download_directory))
+    );
+    assert!(config.behavior.allow_osc_focus_requests);
     assert_eq!(config.default_shell.as_deref(), Some("/bin/zsh"));
     assert_eq!(config.scrollback_lines, 50_000);
 }
@@ -1002,6 +1028,21 @@ fn required_ruby_source_registers_commands_events_and_keys() {
         "git root\n"
     );
     std::fs::remove_dir_all(directory).unwrap();
+}
+
+#[test]
+fn rejects_relative_osc_background_image_roots() {
+    let mut manager = ConfigManager::new().unwrap();
+    let error = manager
+        .reload(
+            "Toyoterm.configure { |config| config.behavior.osc_background_image_directory = 'relative' }",
+        )
+        .unwrap_err();
+    assert!(
+        error
+            .message()
+            .contains("osc_background_image_directory must be an absolute path")
+    );
 }
 
 #[test]
@@ -1083,6 +1124,10 @@ fn loads_and_selects_a_theme_defined_by_a_ruby_library() {
     assert_eq!(loaded.config.colors.cursor, "#ffffff");
     assert_eq!(loaded.config.colors.ansi[1], "#ff0000");
     assert_eq!(loaded.config.colors.ansi[2], "#a3be8c");
+    let preset = loaded.color_presets.get("moon").unwrap();
+    assert_eq!(preset.background, "#10131a");
+    assert_eq!(preset.cursor, "#88c0d0");
+    assert_eq!(preset.ansi[1], "#bf616a");
     assert_eq!(
         loaded.runtime.eval("Toyoterm.themes.join(',')").unwrap(),
         "moon"
@@ -1113,6 +1158,16 @@ fn rejects_duplicate_theme_names() {
         .unwrap_err();
     assert!(error.message().contains("duplicate theme name: moon"));
     assert_eq!(manager.eval("Toyoterm.themes.empty?").unwrap(), "true");
+}
+
+#[test]
+fn accepts_theme_collections_larger_than_the_previous_limit() {
+    let source = (0..257)
+        .map(|index| format!("Toyoterm.theme('theme-{index}') {{ |_| }}\n"))
+        .collect::<String>();
+    let loaded = load_config(&source, "theme-pack.rb", None).unwrap();
+
+    assert_eq!(loaded.color_presets.len(), 257);
 }
 
 #[test]

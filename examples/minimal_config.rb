@@ -28,6 +28,13 @@ Toyoterm.configure do |config|
   config.behavior.allow_osc_notifications = false
   config.behavior.allow_osc_attention_requests = false
   config.behavior.allow_osc_open_url = false
+  config.behavior.allow_osc_file_downloads = false
+  config.behavior.osc_download_directory = ""
+  config.behavior.allow_osc_file_uploads = false
+  config.behavior.osc_upload_directory = ""
+  config.behavior.allow_osc_background_image = false
+  config.behavior.osc_background_image_directory = ""
+  config.behavior.allow_osc_focus_requests = false
   config.scrollback_lines = 10_000
   config.leader key: "b", mods: "CTRL", timeout: 1000
 

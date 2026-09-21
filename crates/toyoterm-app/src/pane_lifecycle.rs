@@ -114,7 +114,41 @@ impl ToyotermApplication {
             self.ui.render_style.selection,
             self.ui.render_style.ansi,
         );
+        terminal.set_color_presets(terminal_color_presets(&self.scripting.snapshot)?);
+        terminal.set_font_menu(
+            &self.scripting.snapshot.config.font.family,
+            &self.scripting.snapshot.config.font.fallback,
+        );
+        terminal.set_active_font_family(&self.ui.render_style.font_family);
         terminal.set_osc52_copy_enabled(self.scripting.snapshot.config.behavior.allow_osc52_copy);
+        terminal.set_osc_file_download_enabled(
+            self.scripting
+                .snapshot
+                .config
+                .behavior
+                .allow_osc_file_downloads
+                && self
+                    .scripting
+                    .snapshot
+                    .config
+                    .behavior
+                    .osc_download_directory
+                    .is_some(),
+        );
+        terminal.set_osc_file_upload_enabled(
+            self.scripting
+                .snapshot
+                .config
+                .behavior
+                .allow_osc_file_uploads
+                && self
+                    .scripting
+                    .snapshot
+                    .config
+                    .behavior
+                    .osc_upload_directory
+                    .is_some(),
+        );
         terminal.set_cell_size(
             size.pixel_width / size.columns.max(1),
             size.pixel_height / size.rows.max(1),
@@ -412,6 +446,9 @@ impl ToyotermApplication {
         for pane in stale {
             if let Some(mut runtime) = self.terminal_runtime.pane_runtimes.remove(&pane) {
                 runtime.terminate();
+            }
+            if let Err(error) = downloads::queue_upload_cancel_pane(pane) {
+                tracing::warn!(target: "toyoterm::upload", %error, %pane, "queue OSC upload cleanup failed");
             }
         }
 

@@ -214,6 +214,23 @@ fn osc_url_opening_requires_opt_in_allowlisted_scheme_and_rate_limit() {
 }
 
 #[test]
+fn osc_focus_requests_require_opt_in_and_rate_limit() {
+    let now = Instant::now();
+    assert!(should_request_focus(true, None, now));
+    assert!(!should_request_focus(false, None, now));
+    assert!(!should_request_focus(
+        true,
+        Some(now - Duration::from_secs(1)),
+        now
+    ));
+    assert!(should_request_focus(
+        true,
+        Some(now - OSC_FOCUS_REQUEST_INTERVAL),
+        now
+    ));
+}
+
+#[test]
 fn notification_replacement_ids_are_stable_and_pane_scoped() {
     let first = notification_platform_id(PaneId(1), "build-42");
     assert_eq!(first, notification_platform_id(PaneId(1), "build-42"));
