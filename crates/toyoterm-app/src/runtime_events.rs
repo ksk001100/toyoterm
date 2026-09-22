@@ -16,6 +16,7 @@ fn is_coalescible_event(kind: ScriptEventKind) -> bool {
             | ScriptEventKind::CwdChanged
             | ScriptEventKind::PaneFocused
             | ScriptEventKind::WorkspaceChanged
+            | ScriptEventKind::WindowResized
     )
 }
 
@@ -490,6 +491,41 @@ mod tests {
             panic!("expected queued event");
         };
         assert_eq!(latest.title.as_deref(), Some("new"));
+    }
+
+    #[test]
+    fn window_resized_events_for_same_window_are_coalesced() {
+        let mut queue = VecDeque::new();
+        let mut first = RubyEvent::new(ScriptEventKind::WindowResized);
+        first.window = Some(toyoterm_api::WindowId(1));
+        first.width = Some(800);
+        first.height = Some(600);
+        first.columns = Some(80);
+        first.rows = Some(24);
+
+        let mut second = RubyEvent::new(ScriptEventKind::WindowResized);
+        second.window = Some(toyoterm_api::WindowId(1));
+        second.width = Some(1024);
+        second.height = Some(768);
+        second.columns = Some(100);
+        second.rows = Some(30);
+
+        assert_eq!(
+            enqueue_pending_script(&mut queue, 1, ScriptInvocation::Event(first)),
+            PendingScriptEnqueue::Queued
+        );
+        assert_eq!(
+            enqueue_pending_script(&mut queue, 2, ScriptInvocation::Event(second)),
+            PendingScriptEnqueue::Coalesced
+        );
+        assert_eq!(queue.len(), 1);
+        let (_, ScriptInvocation::Event(latest)) = queue.back().unwrap() else {
+            panic!("expected queued event");
+        };
+        assert_eq!(latest.width, Some(1024));
+        assert_eq!(latest.height, Some(768));
+        assert_eq!(latest.columns, Some(100));
+        assert_eq!(latest.rows, Some(30));
     }
 
     #[test]

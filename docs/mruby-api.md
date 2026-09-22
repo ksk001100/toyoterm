@@ -808,8 +808,9 @@ is logged without stopping the terminal. Use
 ## Runtime events
 
 Register handlers with `Toyoterm.on(name) { |event| ... }`. `Toyoterm::Event`
-exposes `name`, `workspace`, `window`, `tab`, `pane`, `title`, `cwd`, and
-`exit_status`; unrelated fields are `nil`.
+exposes `name`, `workspace`, `window`, `tab`, `pane`, `title`, `cwd`,
+`exit_status`, `width`, `height`, `columns`, and `rows`; unrelated fields are
+`nil`.
 
 Unknown event names raise `ArgumentError` during registration. `Toyoterm.on`
 returns a `Toyoterm::Registration` supporting `active?` and `remove`.
@@ -822,6 +823,7 @@ returns the most specific populated native handle.
 | `config_reloaded` | `pane` |
 | `workspace_changed` | `workspace` |
 | `window_created`, `window_closed` | `window` |
+| `window_resized` | `window`, `width`, `height`, `columns`, `rows` |
 | `tab_created`, `tab_closed` | `tab` |
 | `pane_created`, `pane_closed`, `pane_focused` | `pane` |
 | `title_changed` | `pane`, `title` |
@@ -835,6 +837,10 @@ returns the most specific populated native handle.
 ```ruby
 Toyoterm.on :cwd_changed do |event|
   event.pane.badge = event.cwd
+end
+
+Toyoterm.on :window_resized do |event|
+  Toyoterm.log :info, "window resized to #{event.width}x#{event.height} (#{event.columns} cols, #{event.rows} rows)"
 end
 ```
 
@@ -857,11 +863,11 @@ Events without a registered handler are skipped before invoking Ruby. Delivery
 is limited to 1,024 events per application turn to bound self-generated loops.
 While Ruby is slower than event production, at most 1,024 event requests wait
 behind the active callback. Queued `title_changed`, `cwd_changed`,
-`pane_focused`, and `workspace_changed` events for the same native object are
-coalesced to their newest snapshot. If the event portion of the queue is still
-full, newer events are dropped and a rate-limited warning is logged. Key
-bindings, named commands, configuration reloads, and live-console evaluations
-are lossless and are not subject to the event limit.
+`pane_focused`, `workspace_changed`, and `window_resized` events for the same
+native object are coalesced to their newest snapshot. If the event portion of
+the queue is still full, newer events are dropped and a rate-limited warning is
+logged. Key bindings, named commands, configuration reloads, and live-console
+evaluations are lossless and are not subject to the event limit.
 
 ## Window bars
 

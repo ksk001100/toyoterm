@@ -629,9 +629,12 @@ module Toyoterm
   end
 
   class Event
-    attr_reader :name, :workspace, :window, :tab, :pane, :title, :cwd, :exit_status
+    attr_reader :name, :workspace, :window, :tab, :pane, :title, :cwd, :exit_status,
+                :width, :height, :columns, :rows
 
-    def initialize(name, workspace = nil, window = nil, tab = nil, pane = nil, title = nil, cwd = nil, exit_status = nil)
+    def initialize(name, workspace = nil, window = nil, tab = nil, pane = nil,
+                   title = nil, cwd = nil, exit_status = nil,
+                   width = nil, height = nil, columns = nil, rows = nil)
       @name = name
       @workspace = workspace
       @window = window
@@ -640,6 +643,10 @@ module Toyoterm
       @title = title && title.dup.freeze
       @cwd = cwd && cwd.dup.freeze
       @exit_status = exit_status
+      @width = width
+      @height = height
+      @columns = columns
+      @rows = rows
     end
 
     def context
@@ -2027,7 +2034,9 @@ module Toyoterm
     __dispatch_event(name, Event.new(name.to_sym, nil, nil, nil, pane))
   end
 
-  def self.__emit_native_event(name, workspace_id, window_id, tab_id, pane_id, title, cwd, exit_status)
+  def self.__emit_native_event(name, workspace_id, window_id, tab_id, pane_id,
+                               title, cwd, exit_status,
+                               width = nil, height = nil, columns = nil, rows = nil)
     event = Event.new(
       name.to_sym,
       workspace_id.nil? ? nil : Workspace.new(workspace_id),
@@ -2036,7 +2045,11 @@ module Toyoterm
       pane_id.nil? ? nil : Pane.new(pane_id),
       title,
       cwd,
-      exit_status
+      exit_status,
+      width,
+      height,
+      columns,
+      rows
     )
     __dispatch_event(name, event)
   end

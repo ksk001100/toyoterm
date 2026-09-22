@@ -538,12 +538,16 @@ int toyoterm_mruby_emit_event(
     uint64_t window_id, uint64_t tab_id, uint64_t pane_id, const char *title,
     size_t title_length, int title_available, const char *cwd, size_t cwd_length,
     int cwd_available, int exit_status, int exit_status_available,
+    uint32_t width, int width_available,
+    uint32_t height, int height_available,
+    uint32_t columns, int columns_available,
+    uint32_t rows, int rows_available,
     char **error_output) {
   mrb_state *mrb = (mrb_state *)state;
   int arena_index = mrb_gc_arena_save(mrb);
   *error_output = NULL;
   mrb->exc = NULL;
-  mrb_value arguments[8] = {
+  mrb_value arguments[12] = {
       mrb_str_new(mrb, name, (mrb_int)name_length),
       optional_integer(mrb, workspace_id),
       optional_integer(mrb, window_id),
@@ -555,9 +559,13 @@ int toyoterm_mruby_emit_event(
                       : mrb_nil_value(),
       exit_status_available ? mrb_int_value(mrb, (mrb_int)exit_status)
                             : mrb_nil_value(),
+      width_available ? mrb_int_value(mrb, (mrb_int)width) : mrb_nil_value(),
+      height_available ? mrb_int_value(mrb, (mrb_int)height) : mrb_nil_value(),
+      columns_available ? mrb_int_value(mrb, (mrb_int)columns) : mrb_nil_value(),
+      rows_available ? mrb_int_value(mrb, (mrb_int)rows) : mrb_nil_value(),
   };
   mrb_funcall_argv(mrb, toyoterm_module(mrb),
-                   mrb_intern_lit(mrb, "__emit_native_event"), 8, arguments);
+                   mrb_intern_lit(mrb, "__emit_native_event"), 12, arguments);
   return finish_arena_call(mrb, arena_index, error_output);
 }
 

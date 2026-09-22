@@ -866,6 +866,37 @@ impl ToyotermApplication {
         self.deliver_runtime_events()
     }
 
+    pub(super) fn emit_window_resized(
+        &mut self,
+        size: PhysicalSize<u32>,
+        scale_factor: f64,
+    ) -> Result<(), String> {
+        if !self
+            .scripting
+            .snapshot
+            .event_names
+            .contains(ScriptEventKind::WindowResized.as_str())
+        {
+            return Ok(());
+        }
+        let Some(window) = self.mux.current_window() else {
+            return Ok(());
+        };
+        let logical_size = size.to_logical::<f64>(scale_factor);
+        let terminal_size = self
+            .ui
+            .cell_metrics
+            .terminal_size_at_scale(size, scale_factor);
+        let mut event = RubyEvent::new(ScriptEventKind::WindowResized);
+        event.window = Some(window);
+        event.width = Some(logical_size.width.round().max(1.0) as u32);
+        event.height = Some(logical_size.height.round().max(1.0) as u32);
+        event.columns = Some(terminal_size.columns);
+        event.rows = Some(terminal_size.rows);
+        self.scripting.runtime_events.push_back(event);
+        self.deliver_runtime_events()
+    }
+
     pub(super) fn collect_mux_events(&mut self) {
         self.scripting.runtime_events.extend(
             self.mux

@@ -304,6 +304,14 @@ impl MrubyRuntime {
                 cwd_available,
                 event.exit_status.unwrap_or_default(),
                 i32::from(event.exit_status.is_some()),
+                event.width.unwrap_or_default(),
+                i32::from(event.width.is_some()),
+                event.height.unwrap_or_default(),
+                i32::from(event.height.is_some()),
+                u32::from(event.columns.unwrap_or_default()),
+                i32::from(event.columns.is_some()),
+                u32::from(event.rows.unwrap_or_default()),
+                i32::from(event.rows.is_some()),
                 &mut error,
             )
         };

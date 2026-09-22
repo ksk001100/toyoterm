@@ -127,10 +127,11 @@ pub enum ScriptEventKind {
     CommandStarted,
     CommandFinished,
     Bell,
+    WindowResized,
 }
 
 impl ScriptEventKind {
-    pub const ALL: [Self; 17] = [
+    pub const ALL: [Self; 18] = [
         Self::AppStarted,
         Self::ConfigReloaded,
         Self::WorkspaceChanged,
@@ -148,6 +149,7 @@ impl ScriptEventKind {
         Self::CommandStarted,
         Self::CommandFinished,
         Self::Bell,
+        Self::WindowResized,
     ];
 
     pub const fn as_str(self) -> &'static str {
@@ -169,6 +171,7 @@ impl ScriptEventKind {
             Self::CommandStarted => "command_started",
             Self::CommandFinished => "command_finished",
             Self::Bell => "bell",
+            Self::WindowResized => "window_resized",
         }
     }
 }

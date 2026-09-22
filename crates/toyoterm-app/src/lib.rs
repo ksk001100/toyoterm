@@ -1012,6 +1012,9 @@ impl ApplicationHandler<AppEvent> for ToyotermApplication {
                 }
                 self.sync_active_renderer(window.scale_factor());
                 window.request_redraw();
+                if let Err(error) = self.emit_window_resized(size, window.scale_factor()) {
+                    self.fail(event_loop, error);
+                }
             }
             WindowEvent::ScaleFactorChanged { scale_factor, .. } => {
                 let size = window.inner_size();
@@ -1024,6 +1027,9 @@ impl ApplicationHandler<AppEvent> for ToyotermApplication {
                 }
                 self.sync_active_renderer(scale_factor);
                 window.request_redraw();
+                if let Err(error) = self.emit_window_resized(size, scale_factor) {
+                    self.fail(event_loop, error);
+                }
             }
             WindowEvent::ModifiersChanged(modifiers) => self.ui.modifiers = modifiers.state(),
             WindowEvent::Focused(focused) => {

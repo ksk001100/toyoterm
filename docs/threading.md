@@ -60,11 +60,11 @@ not presented as an operating-system process-kill guarantee.
 
 The main-thread request queue bounds only Ruby runtime events: at most 1,024
 event requests may wait behind the active callback. State notifications for the
-same object (`title_changed`, `cwd_changed`, `pane_focused`, and
-`workspace_changed`) coalesce to the newest snapshot. Other events are dropped
-with rate-limited warnings once that event budget is exhausted. Lossless inputs
-such as key bindings, named commands, reloads, and IPC evaluations remain
-ordered and are never dropped by this overload policy. Trace logging under
+same object (`title_changed`, `cwd_changed`, `pane_focused`,
+`workspace_changed`, and `window_resized`) coalesce to the newest snapshot.
+Other events are dropped with rate-limited warnings once that event budget is
+exhausted. Lossless inputs such as key bindings, named commands, reloads, and
+IPC evaluations remain ordered and are never dropped by this overload policy. Trace logging under
 `toyoterm::script` reports the pending request count, native runtime-event
 count, mruby GC arena index, and mruby live-object count.
 

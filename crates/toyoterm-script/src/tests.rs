@@ -2792,6 +2792,10 @@ fn emits_typed_native_event_payloads() {
         title: Some("server \"one\"".into()),
         cwd: Some("/srv/日本語".into()),
         exit_status: Some(17),
+        width: None,
+        height: None,
+        columns: None,
+        rows: None,
     };
 
     assert!(manager.emit_native_event(&event).unwrap());
@@ -2802,6 +2806,37 @@ fn emits_typed_native_event_payloads() {
     assert_eq!(manager.eval("$native_event[5]").unwrap(), "server \"one\"");
     assert_eq!(manager.eval("$native_event[6]").unwrap(), "/srv/日本語");
     assert_eq!(manager.eval("$native_event[7]").unwrap(), "17");
+}
+
+#[test]
+fn emits_window_resized_event_payload() {
+    let mut manager = ConfigManager::new().unwrap();
+    manager
+        .reload(
+            r#"
+                Toyoterm.on :window_resized do |event|
+                  $window_resize_event = [
+                    event.name, event.window.id,
+                    event.width, event.height,
+                    event.columns, event.rows,
+                    event.subject.id
+                  ]
+                end
+                "#,
+        )
+        .unwrap();
+    let mut event = RubyEvent::new(ScriptEventKind::WindowResized);
+    event.window = Some(WindowId(42));
+    event.width = Some(1280);
+    event.height = Some(720);
+    event.columns = Some(160);
+    event.rows = Some(45);
+
+    assert!(manager.emit_native_event(&event).unwrap());
+    assert_eq!(
+        manager.eval("$window_resize_event.inspect").unwrap(),
+        "[:window_resized, 42, 1280, 720, 160, 45, 42]"
+    );
 }
 
 #[test]

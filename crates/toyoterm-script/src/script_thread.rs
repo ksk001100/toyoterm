@@ -60,6 +60,10 @@ pub struct RubyEvent {
     pub title: Option<String>,
     pub cwd: Option<String>,
     pub exit_status: Option<i32>,
+    pub width: Option<u32>,
+    pub height: Option<u32>,
+    pub columns: Option<u16>,
+    pub rows: Option<u16>,
 }
 
 /// Immutable script registry mirrored on the main thread.  It contains no VM
@@ -255,6 +259,10 @@ impl RubyEvent {
             title: None,
             cwd: None,
             exit_status: None,
+            width: None,
+            height: None,
+            columns: None,
+            rows: None,
         }
     }
 
