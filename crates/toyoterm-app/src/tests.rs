@@ -308,6 +308,7 @@ fn reports_bounded_iterm_session_variables() {
             user_vars,
             ..PaneProtocolState::default()
         },
+        input_pacing: PaneInputPacing::default(),
     };
 
     assert_eq!(
@@ -473,6 +474,65 @@ impl PtySession for KillTrackingSession {
     }
 }
 
+struct RecordingPtySession(std::sync::Arc<std::sync::Mutex<Vec<u8>>>);
+
+impl PtySession for RecordingPtySession {
+    fn process_id(&self) -> Option<u32> {
+        Some(42)
+    }
+
+    fn take_reader(&mut self) -> Result<Box<dyn Read + Send>, crate::PtyError> {
+        Ok(Box::new(std::io::Cursor::new(Vec::<u8>::new())))
+    }
+
+    fn write(&mut self, data: &[u8]) -> Result<(), crate::PtyError> {
+        self.0
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .extend_from_slice(data);
+        Ok(())
+    }
+
+    fn resize(&mut self, _size: PtySize) -> Result<(), crate::PtyError> {
+        Ok(())
+    }
+
+    fn try_wait(&mut self) -> Result<Option<crate::PtyExitStatus>, crate::PtyError> {
+        Ok(None)
+    }
+
+    fn wait(&mut self) -> Result<crate::PtyExitStatus, crate::PtyError> {
+        Ok(crate::PtyExitStatus {
+            code: 0,
+            signal: None,
+        })
+    }
+
+    fn kill(&mut self) -> Result<(), crate::PtyError> {
+        Ok(())
+    }
+}
+
+fn recording_pane_runtime(recorded: std::sync::Arc<std::sync::Mutex<Vec<u8>>>) -> PaneRuntime {
+    PaneRuntime {
+        terminal: AlacrittyTerminalBackend::new(80, 24),
+        process: ProcessRuntime {
+            pty_session: Some(Box::new(RecordingPtySession(recorded))),
+            process_id: Some(42),
+            exited: false,
+        },
+        metadata: PaneMetadata {
+            title: "test".into(),
+            icon_title: None,
+            osc_badge: None,
+            cwd: None,
+            remote_host: None,
+        },
+        protocol: PaneProtocolState::default(),
+        input_pacing: PaneInputPacing::default(),
+    }
+}
+
 #[test]
 fn pane_runtime_kills_its_child_when_dropped_during_shutdown() {
     let kills = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
@@ -492,10 +552,111 @@ fn pane_runtime_kills_its_child_when_dropped_during_shutdown() {
                 remote_host: None,
             },
             protocol: PaneProtocolState::default(),
+            input_pacing: PaneInputPacing::default(),
         };
     }
 
     assert_eq!(kills.load(std::sync::atomic::Ordering::SeqCst), 1);
+}
+
+#[test]
+fn write_input_paces_after_carriage_return_on_primary_screen() {
+    let recorded = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let mut runtime = recording_pane_runtime(recorded.clone());
+    let pane = PaneId(1);
+
+    // Initial input without return writes immediately.
+    runtime.write_input(pane, b"echo").unwrap();
+    assert_eq!(recorded.lock().unwrap().as_slice(), b"echo");
+    assert!(!runtime.input_pacing.awaiting_transition);
+    assert!(runtime.input_pacing.pending.is_empty());
+
+    // Input containing '\r' writes up to '\r' and paces the trailing bytes.
+    runtime.write_input(pane, b" nvim\r:q\r").unwrap();
+    assert_eq!(recorded.lock().unwrap().as_slice(), b"echo nvim\r");
+    assert!(runtime.input_pacing.awaiting_transition);
+    assert_eq!(runtime.input_pacing.pending, b":q\r");
+    assert!(runtime.input_pacing.deadline.is_some());
+
+    // Additional input while awaiting transition is queued.
+    runtime.write_input(pane, b"more").unwrap();
+    assert_eq!(recorded.lock().unwrap().as_slice(), b"echo nvim\r");
+    assert_eq!(runtime.input_pacing.pending, b":q\rmore");
+
+    // Flushing sends pending bytes and clears the transition state.
+    runtime.flush_input_pacing(pane);
+    assert_eq!(recorded.lock().unwrap().as_slice(), b"echo nvim\r:q\rmore");
+    assert!(!runtime.input_pacing.awaiting_transition);
+    assert!(runtime.input_pacing.pending.is_empty());
+    assert!(runtime.input_pacing.deadline.is_none());
+}
+
+#[test]
+fn write_input_bypasses_pacing_on_alternate_screen() {
+    let recorded = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let mut runtime = recording_pane_runtime(recorded.clone());
+    let pane = PaneId(1);
+
+    // Switch terminal to alternate screen (e.g., Neovim already running).
+    runtime.terminal.advance(b"\x1b[?1049h");
+    assert!(runtime.terminal.mode().alternate_screen);
+
+    // Input with '\r' on alternate screen is written immediately without pacing.
+    runtime.write_input(pane, b":q\r").unwrap();
+    assert_eq!(recorded.lock().unwrap().as_slice(), b":q\r");
+    assert!(!runtime.input_pacing.awaiting_transition);
+    assert!(runtime.input_pacing.pending.is_empty());
+}
+
+#[test]
+fn write_input_holds_pending_when_alternate_screen_is_entered_during_transition() {
+    let recorded = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let mut runtime = recording_pane_runtime(recorded.clone());
+    let pane = PaneId(1);
+
+    // Launch a command on primary screen.
+    runtime.write_input(pane, b"nvim\r").unwrap();
+    assert_eq!(recorded.lock().unwrap().as_slice(), b"nvim\r");
+    assert!(runtime.input_pacing.awaiting_transition);
+
+    // Neovim enters alternate screen early during its startup.
+    runtime.terminal.advance(b"\x1b[?1049h");
+    assert!(runtime.terminal.mode().alternate_screen);
+
+    // Fast user input (:q\r) while transition is still active MUST be held,
+    // not bypassed or prematurely flushed while Neovim plugins/UI are loading.
+    runtime.write_input(pane, b":q\r").unwrap();
+    assert_eq!(recorded.lock().unwrap().as_slice(), b"nvim\r");
+    assert!(runtime.input_pacing.awaiting_transition);
+    assert_eq!(runtime.input_pacing.pending, b":q\r");
+
+    // Once pacing window flushes (e.g., timer expires), keys are sent.
+    runtime.flush_input_pacing(pane);
+    assert_eq!(recorded.lock().unwrap().as_slice(), b"nvim\r:q\r");
+    assert!(!runtime.input_pacing.awaiting_transition);
+    assert!(runtime.input_pacing.pending.is_empty());
+}
+
+#[test]
+fn write_input_ctrl_c_cancels_pending_pacing_immediately() {
+    let recorded = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let mut runtime = recording_pane_runtime(recorded.clone());
+    let pane = PaneId(1);
+
+    // Queue input behind a carriage return.
+    runtime
+        .write_input(pane, b"slow_command\rqueued_keys")
+        .unwrap();
+    assert_eq!(recorded.lock().unwrap().as_slice(), b"slow_command\r");
+    assert!(runtime.input_pacing.awaiting_transition);
+    assert_eq!(runtime.input_pacing.pending, b"queued_keys");
+
+    // Sending Ctrl+C (\x03) drops pending input and writes interrupt immediately.
+    runtime.write_input(pane, b"\x03").unwrap();
+    assert_eq!(recorded.lock().unwrap().as_slice(), b"slow_command\r\x03");
+    assert!(!runtime.input_pacing.awaiting_transition);
+    assert!(runtime.input_pacing.pending.is_empty());
+    assert!(runtime.input_pacing.deadline.is_none());
 }
 
 #[test]

@@ -176,6 +176,7 @@ impl ToyotermApplication {
                 remote_host: None,
             },
             protocol: PaneProtocolState::default(),
+            input_pacing: PaneInputPacing::default(),
         })
     }
 
@@ -271,8 +272,7 @@ impl ToyotermApplication {
             .pane_runtimes
             .get_mut(&pane)
             .ok_or_else(|| format!("pane {pane} has no runtime"))?;
-        reset_scroll_for_input(&mut runtime.terminal, bytes);
-        self.write_pane_pty(pane, bytes)
+        runtime.write_input(pane, bytes)
     }
 
     pub(super) fn write_pane_pty(&mut self, pane: PaneId, bytes: &[u8]) -> Result<(), String> {
@@ -281,20 +281,7 @@ impl ToyotermApplication {
             .pane_runtimes
             .get_mut(&pane)
             .ok_or_else(|| format!("pane {pane} has no runtime"))?;
-        if let Some(session) = runtime.process.pty_session.as_mut() {
-            session.write(bytes).map_err(|error| {
-                tracing::error!(
-                    target: "toyoterm::pty",
-                    operation = error.operation(),
-                    %pane,
-                    bytes = bytes.len(),
-                    %error,
-                    "write pane PTY failed"
-                );
-                error.to_string()
-            })?;
-        }
-        Ok(())
+        runtime.process.write_pty(pane, bytes)
     }
 
     pub(super) fn reconcile_pane_runtimes(&mut self) -> Result<(), String> {

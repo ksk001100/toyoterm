@@ -84,6 +84,7 @@ const OSC_OPEN_URL_INTERVAL: Duration = Duration::from_secs(2);
 const OSC_FOCUS_REQUEST_INTERVAL: Duration = Duration::from_secs(2);
 const OSC_VISUAL_BELL_DURATION: Duration = Duration::from_millis(150);
 const OSC_CURSOR_FIREWORKS_DURATION: Duration = Duration::from_millis(350);
+const TRANSITION_PACING_TIMEOUT: Duration = Duration::from_millis(350);
 const MAX_OSC_USER_VARS: usize = 64;
 const MAX_OSC_REPORT_VARIABLE_VALUE_BYTES: usize = 4 * 1024;
 const MAX_PENDING_PTY_OUTPUT_BYTES: usize = 1024 * 1024;
@@ -486,6 +487,14 @@ struct PaneRuntime {
     process: ProcessRuntime,
     metadata: PaneMetadata,
     protocol: PaneProtocolState,
+    input_pacing: PaneInputPacing,
+}
+
+#[derive(Debug, Default)]
+struct PaneInputPacing {
+    pending: Vec<u8>,
+    awaiting_transition: bool,
+    deadline: Option<Instant>,
 }
 
 struct ProcessRuntime {
@@ -690,6 +699,50 @@ impl PaneRuntime {
     fn terminate(&mut self) {
         self.process.terminate();
     }
+
+    pub(crate) fn flush_input_pacing(&mut self, pane: PaneId) {
+        self.input_pacing.awaiting_transition = false;
+        self.input_pacing.deadline = None;
+        if self.input_pacing.pending.is_empty() {
+            return;
+        }
+        let pending = std::mem::take(&mut self.input_pacing.pending);
+        let _ = self.process.write_pty(pane, &pending);
+    }
+
+    pub(crate) fn write_input(&mut self, pane: PaneId, bytes: &[u8]) -> Result<(), String> {
+        pane_lifecycle::reset_scroll_for_input(&mut self.terminal, bytes);
+
+        if bytes.contains(&b'\x03') {
+            self.input_pacing.pending.clear();
+            self.input_pacing.awaiting_transition = false;
+            self.input_pacing.deadline = None;
+            return self.process.write_pty(pane, bytes);
+        }
+
+        if self.input_pacing.awaiting_transition {
+            self.input_pacing.pending.extend_from_slice(bytes);
+            return Ok(());
+        }
+
+        if self.terminal.mode().alternate_screen {
+            return self.process.write_pty(pane, bytes);
+        }
+
+        if let Some(enter_idx) = bytes.iter().position(|b| *b == b'\r') {
+            self.process.write_pty(pane, &bytes[..=enter_idx])?;
+            self.input_pacing.awaiting_transition = true;
+            self.input_pacing.deadline = Some(Instant::now() + TRANSITION_PACING_TIMEOUT);
+            if enter_idx + 1 < bytes.len() {
+                self.input_pacing
+                    .pending
+                    .extend_from_slice(&bytes[enter_idx + 1..]);
+            }
+            Ok(())
+        } else {
+            self.process.write_pty(pane, bytes)
+        }
+    }
 }
 
 impl ProcessRuntime {
@@ -698,6 +751,23 @@ impl ProcessRuntime {
             let _ = session.kill();
         }
         self.exited = true;
+    }
+
+    fn write_pty(&mut self, pane: PaneId, bytes: &[u8]) -> Result<(), String> {
+        if let Some(session) = self.pty_session.as_mut() {
+            session.write(bytes).map_err(|error| {
+                tracing::error!(
+                    target: "toyoterm::pty",
+                    operation = error.operation(),
+                    %pane,
+                    bytes = bytes.len(),
+                    %error,
+                    "write pane PTY failed"
+                );
+                error.to_string()
+            })?;
+        }
+        Ok(())
     }
 }
 
@@ -1264,7 +1334,14 @@ impl ApplicationHandler<AppEvent> for ToyotermApplication {
             .filter_map(|runtime| runtime.terminal.synchronized_update_deadline())
             .min();
         let mut transient_effect_expired = false;
-        for runtime in self.terminal_runtime.pane_runtimes.values_mut() {
+        for (pane, runtime) in &mut self.terminal_runtime.pane_runtimes {
+            if runtime
+                .input_pacing
+                .deadline
+                .is_some_and(|deadline| deadline <= now)
+            {
+                runtime.flush_input_pacing(*pane);
+            }
             if runtime
                 .protocol
                 .visual_bell_deadline
@@ -1297,11 +1374,16 @@ impl ApplicationHandler<AppEvent> for ToyotermApplication {
             })
             .flatten()
             .min();
-        let next_terminal_at = match (next_sync_at, next_effect_at) {
-            (Some(sync), Some(effect)) => Some(sync.min(effect)),
-            (Some(deadline), None) | (None, Some(deadline)) => Some(deadline),
-            (None, None) => None,
-        };
+        let next_pacing_at = self
+            .terminal_runtime
+            .pane_runtimes
+            .values()
+            .filter_map(|runtime| runtime.input_pacing.deadline)
+            .min();
+        let next_terminal_at = [next_sync_at, next_effect_at, next_pacing_at]
+            .into_iter()
+            .flatten()
+            .min();
 
         if self.scripting.snapshot.config.status_bars.is_empty() {
             self.ui.next_bar_at.clear();
@@ -1713,6 +1795,16 @@ impl ApplicationHandler<AppEvent> for ToyotermApplication {
                                     visual_bell_deadline(*visual_bell, Instant::now());
                             }
                         }
+                    }
+                    if terminal_events.iter().any(|event| {
+                        matches!(
+                            event,
+                            TerminalEvent::PromptStarted | TerminalEvent::CommandFinished(_)
+                        )
+                    }) && (!runtime.input_pacing.pending.is_empty()
+                        || runtime.input_pacing.awaiting_transition)
+                    {
+                        runtime.flush_input_pacing(pane);
                     }
                 }
                 // The terminal parser has consumed the batch. Retain its

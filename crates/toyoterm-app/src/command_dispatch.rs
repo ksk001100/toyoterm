@@ -981,6 +981,7 @@ fn test_terminal_runtime(panes: impl IntoIterator<Item = PaneId>) -> TerminalRun
                             remote_host: None,
                         },
                         protocol: PaneProtocolState::default(),
+                        input_pacing: PaneInputPacing::default(),
                     },
                 )
             })
