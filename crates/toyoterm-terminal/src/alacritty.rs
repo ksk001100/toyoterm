@@ -21,9 +21,9 @@ use unicode_segmentation::UnicodeSegmentation;
 use unicode_width::UnicodeWidthStr;
 
 use super::{
-    CellAttributes, CellColor, CommandZoneSpan, CursorShape, CursorState, SearchDirection,
-    SearchMatchSpan, SearchResult, SelectionKind, SelectionSpan, TerminalBackend, TerminalCell,
-    TerminalColors, TerminalMode, TerminalSnapshot, TerminalSpecialColors,
+    CellAttributes, CellColor, CommandZoneSpan, CursorShape, CursorState, KeyboardProtocolMode,
+    SearchDirection, SearchMatchSpan, SearchResult, SelectionKind, SelectionSpan, TerminalBackend,
+    TerminalCell, TerminalColors, TerminalMode, TerminalSnapshot, TerminalSpecialColors,
     TerminalTransparentColor, TextAlignment, TextSize,
 };
 
@@ -1346,6 +1346,7 @@ pub(crate) fn resolved_color<E: EventListener>(
 fn terminal_config(scrollback_lines: usize) -> Config {
     Config {
         scrolling_history: scrollback_lines,
+        kitty_keyboard: true,
         // Keep alacritty's bidirectional OSC 52 path disabled. Toyoterm's
         // custom handler permits only bounded, explicitly opted-in writes and
         // never exposes clipboard contents to terminal output.
@@ -1670,6 +1671,13 @@ impl TerminalBackend for AlacrittyTerminalBackend {
     fn mode(&self) -> TerminalMode {
         let mode = *self.terminal.mode();
         TerminalMode {
+            keyboard: KeyboardProtocolMode {
+                disambiguate_escape_codes: mode.contains(TermMode::DISAMBIGUATE_ESC_CODES),
+                report_event_types: mode.contains(TermMode::REPORT_EVENT_TYPES),
+                report_alternate_keys: mode.contains(TermMode::REPORT_ALTERNATE_KEYS),
+                report_all_keys_as_escape_codes: mode.contains(TermMode::REPORT_ALL_KEYS_AS_ESC),
+                report_associated_text: mode.contains(TermMode::REPORT_ASSOCIATED_TEXT),
+            },
             application_cursor: mode.contains(TermMode::APP_CURSOR),
             application_keypad: mode.contains(TermMode::APP_KEYPAD),
             bracketed_paste: mode.contains(TermMode::BRACKETED_PASTE),

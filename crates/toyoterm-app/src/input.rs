@@ -1,24 +1,101 @@
 use super::*;
+use toyoterm_terminal::KeyEventKind;
+use winit::platform::modifier_supplement::KeyEventExtModifierSupplement;
 
 pub(super) fn key_press(
     event: &KeyEvent,
     modifiers: ModifiersState,
     mode: crate::TerminalMode,
 ) -> Option<KeyPress> {
-    let key = if mode.application_keypad
+    let key = if (mode.application_keypad
+        || mode.keyboard.report_all_keys_as_escape_codes
+        || mode.keyboard.disambiguate_escape_codes
+        || mode.keyboard.report_event_types)
         && let Some(key) = keypad_key(event.physical_key)
     {
         TerminalKey::Keypad(key)
     } else {
         match &event.logical_key {
-            Key::Named(named) => named_key(named)?,
+            Key::Named(named) => named_key(named).or_else(|| modifier_key(event.physical_key))?,
             Key::Character(text) => {
                 TerminalKey::Text(event.text.as_deref().unwrap_or(text.as_str()).to_owned())
             }
             _ => return None,
         }
     };
-    Some(KeyPress::new(key, key_modifiers(modifiers)))
+    let mut press = KeyPress::new(key, key_modifiers(modifiers));
+    press.kind = match event.state {
+        ElementState::Released => KeyEventKind::Release,
+        ElementState::Pressed if event.repeat => KeyEventKind::Repeat,
+        ElementState::Pressed => KeyEventKind::Press,
+    };
+    press.associated_text = event.text.as_ref().map(ToString::to_string);
+    if let TerminalKey::Text(_) = press.key {
+        press.unmodified_key = match event.key_without_modifiers() {
+            Key::Character(value) => {
+                let mut chars = value.chars();
+                let first = chars.next();
+                first.filter(|_| chars.next().is_none())
+            }
+            _ => None,
+        };
+        if press.modifiers.shift {
+            press.shifted_key = event.logical_key.to_text().and_then(|text| {
+                let mut chars = text.chars();
+                let first = chars.next()?;
+                chars.next().is_none().then_some(first)
+            });
+        }
+        press.base_layout_key = base_layout_key(event.physical_key);
+    }
+    Some(press)
+}
+
+fn base_layout_key(key: PhysicalKey) -> Option<char> {
+    Some(match key {
+        PhysicalKey::Code(KeyCode::KeyA) => 'a',
+        PhysicalKey::Code(KeyCode::KeyB) => 'b',
+        PhysicalKey::Code(KeyCode::KeyC) => 'c',
+        PhysicalKey::Code(KeyCode::KeyD) => 'd',
+        PhysicalKey::Code(KeyCode::KeyE) => 'e',
+        PhysicalKey::Code(KeyCode::KeyF) => 'f',
+        PhysicalKey::Code(KeyCode::KeyG) => 'g',
+        PhysicalKey::Code(KeyCode::KeyH) => 'h',
+        PhysicalKey::Code(KeyCode::KeyI) => 'i',
+        PhysicalKey::Code(KeyCode::KeyJ) => 'j',
+        PhysicalKey::Code(KeyCode::KeyK) => 'k',
+        PhysicalKey::Code(KeyCode::KeyL) => 'l',
+        PhysicalKey::Code(KeyCode::KeyM) => 'm',
+        PhysicalKey::Code(KeyCode::KeyN) => 'n',
+        PhysicalKey::Code(KeyCode::KeyO) => 'o',
+        PhysicalKey::Code(KeyCode::KeyP) => 'p',
+        PhysicalKey::Code(KeyCode::KeyQ) => 'q',
+        PhysicalKey::Code(KeyCode::KeyR) => 'r',
+        PhysicalKey::Code(KeyCode::KeyS) => 's',
+        PhysicalKey::Code(KeyCode::KeyT) => 't',
+        PhysicalKey::Code(KeyCode::KeyU) => 'u',
+        PhysicalKey::Code(KeyCode::KeyV) => 'v',
+        PhysicalKey::Code(KeyCode::KeyW) => 'w',
+        PhysicalKey::Code(KeyCode::KeyX) => 'x',
+        PhysicalKey::Code(KeyCode::KeyY) => 'y',
+        PhysicalKey::Code(KeyCode::KeyZ) => 'z',
+        _ => return None,
+    })
+}
+
+fn modifier_key(key: PhysicalKey) -> Option<TerminalKey> {
+    use toyoterm_terminal::ModifierKey::*;
+    Some(TerminalKey::Modifier(match key {
+        PhysicalKey::Code(KeyCode::ShiftLeft) => ShiftLeft,
+        PhysicalKey::Code(KeyCode::ShiftRight) => ShiftRight,
+        PhysicalKey::Code(KeyCode::ControlLeft) => ControlLeft,
+        PhysicalKey::Code(KeyCode::ControlRight) => ControlRight,
+        PhysicalKey::Code(KeyCode::AltLeft) => AltLeft,
+        PhysicalKey::Code(KeyCode::AltRight) => AltRight,
+        PhysicalKey::Code(KeyCode::SuperLeft) => SuperLeft,
+        PhysicalKey::Code(KeyCode::SuperRight) => SuperRight,
+        _ => return None,
+    }))
 }
 
 pub(super) fn keypad_key(physical_key: PhysicalKey) -> Option<KeypadKey> {

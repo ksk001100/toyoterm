@@ -938,6 +938,7 @@ fn test_ui_state() -> UiState {
         ime_preedit: Some("preedit".into()),
         modifiers: ModifiersState::empty(),
         alt_graph_active: false,
+        consumed_keys: HashSet::new(),
         leader_deadline: None,
         mouse_position: PhysicalPosition::new(0.0, 0.0),
         pressed_mouse_button: None,

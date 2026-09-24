@@ -66,6 +66,27 @@ pub enum TerminalKey {
     Delete,
     Function(u8),
     Keypad(KeypadKey),
+    Modifier(ModifierKey),
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ModifierKey {
+    ShiftLeft,
+    ShiftRight,
+    ControlLeft,
+    ControlRight,
+    AltLeft,
+    AltRight,
+    SuperLeft,
+    SuperRight,
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum KeyEventKind {
+    #[default]
+    Press,
+    Repeat,
+    Release,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -85,6 +106,12 @@ pub enum KeypadKey {
 pub struct KeyPress {
     pub key: TerminalKey,
     pub modifiers: KeyModifiers,
+    pub kind: KeyEventKind,
+    /// Text supplied by the window system for this key event, excluding IME commits.
+    pub associated_text: Option<String>,
+    pub shifted_key: Option<char>,
+    pub base_layout_key: Option<char>,
+    pub unmodified_key: Option<char>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -110,11 +137,29 @@ pub enum MouseWheelDirection {
 
 impl KeyPress {
     pub fn new(key: TerminalKey, modifiers: KeyModifiers) -> Self {
-        Self { key, modifiers }
+        Self {
+            key,
+            modifiers,
+            kind: KeyEventKind::Press,
+            associated_text: None,
+            shifted_key: None,
+            base_layout_key: None,
+            unmodified_key: None,
+        }
     }
 }
 
 pub fn encode_key(press: &KeyPress, mode: TerminalMode) -> Option<Vec<u8>> {
+    if press.kind == KeyEventKind::Release && !mode.keyboard.report_event_types {
+        return None;
+    }
+    if mode.keyboard != crate::KeyboardProtocolMode::default() {
+        return encode_kitty_key(press, mode);
+    }
+    encode_legacy_key(press, mode)
+}
+
+fn encode_legacy_key(press: &KeyPress, mode: TerminalMode) -> Option<Vec<u8>> {
     let bytes = match &press.key {
         TerminalKey::Text(text) => encode_text(text, press.modifiers.control)?,
         TerminalKey::Enter => vec![b'\r'],
@@ -134,6 +179,7 @@ pub fn encode_key(press: &KeyPress, mode: TerminalMode) -> Option<Vec<u8>> {
         TerminalKey::Delete => b"\x1b[3~".to_vec(),
         TerminalKey::Function(number) => function_sequence(*number)?.to_vec(),
         TerminalKey::Keypad(key) => keypad_sequence(*key, mode.application_keypad)?.to_vec(),
+        TerminalKey::Modifier(_) => return None,
     };
 
     if press.modifiers.alt {
@@ -144,6 +190,174 @@ pub fn encode_key(press: &KeyPress, mode: TerminalMode) -> Option<Vec<u8>> {
     } else {
         Some(bytes)
     }
+}
+
+// Kitty's CSI 1;modifier letter and CSI number;modifier ~ forms remain
+// functional-key encodings; text, modifiers and keypad keys use CSI u.
+fn encode_kitty_key(press: &KeyPress, mode: TerminalMode) -> Option<Vec<u8>> {
+    let flags = mode.keyboard;
+    let all = flags.report_all_keys_as_escape_codes;
+    let event = press.kind;
+    let modified = press.modifiers.control || press.modifiers.alt || press.modifiers.super_key;
+    let escape_code = match &press.key {
+        TerminalKey::Text(_) => all || (flags.disambiguate_escape_codes && modified),
+        TerminalKey::Modifier(_) => all,
+        TerminalKey::Escape => all || flags.disambiguate_escape_codes || flags.report_event_types,
+        TerminalKey::Enter | TerminalKey::Tab | TerminalKey::Backspace => {
+            all || ((flags.disambiguate_escape_codes || flags.report_event_types)
+                && (press.modifiers.control || press.modifiers.alt || press.modifiers.super_key))
+        }
+        TerminalKey::Keypad(_) => {
+            all || flags.disambiguate_escape_codes || flags.report_event_types
+        }
+        _ => all || flags.disambiguate_escape_codes || flags.report_event_types,
+    };
+    if !escape_code {
+        return if event == KeyEventKind::Release {
+            None
+        } else {
+            encode_legacy_key(press, mode)
+        };
+    }
+    let (number, suffix) = kitty_key_code(press)?;
+    let modifier = 1
+        + u16::from(press.modifiers.shift)
+        + (u16::from(press.modifiers.alt) << 1)
+        + (u16::from(press.modifiers.control) << 2)
+        + (u16::from(press.modifiers.super_key) << 3);
+    let has_event = flags.report_event_types && event != KeyEventKind::Press;
+    let mut sequence = if !matches!(suffix, 'u' | '~') && modifier == 1 && !has_event {
+        "\x1b[".to_owned()
+    } else {
+        format!("\x1b[{number}")
+    };
+    if suffix == 'u' && flags.report_alternate_keys {
+        let mut has_shifted = false;
+        if press.modifiers.shift
+            && let Some(shifted) = press.shifted_key
+        {
+            sequence.push(':');
+            sequence.push_str(&(shifted as u32).to_string());
+            has_shifted = true;
+        }
+        if let Some(base) = press.base_layout_key {
+            if !has_shifted {
+                sequence.push(':');
+            }
+            sequence.push(':');
+            sequence.push_str(&(base as u32).to_string());
+        }
+    }
+    if modifier != 1 || has_event {
+        sequence.push(';');
+        sequence.push_str(&modifier.to_string());
+    }
+    if has_event {
+        sequence.push(':');
+        sequence.push(if event == KeyEventKind::Repeat {
+            '2'
+        } else {
+            '3'
+        });
+    }
+    if suffix == 'u'
+        && all
+        && flags.report_associated_text
+        && event != KeyEventKind::Release
+        && let Some(text) = press
+            .associated_text
+            .as_deref()
+            .filter(|text| !text.is_empty())
+    {
+        let codepoints: Vec<_> = text
+            .chars()
+            .filter(|ch| !ch.is_control())
+            .map(|ch| (ch as u32).to_string())
+            .collect();
+        if !codepoints.is_empty() {
+            sequence.push(';');
+            if modifier == 1 && !has_event {
+                sequence.push(';');
+            }
+            sequence.push_str(&codepoints.join(":"));
+        }
+    }
+    sequence.push(suffix);
+    Some(sequence.into_bytes())
+}
+
+fn kitty_key_code(press: &KeyPress) -> Option<(u32, char)> {
+    Some(match &press.key {
+        TerminalKey::Text(text) => {
+            let mut chars = text.chars();
+            let first = chars.next()?;
+            (
+                press.unmodified_key.map(u32::from).unwrap_or_else(|| {
+                    if chars.next().is_some() {
+                        0
+                    } else {
+                        first as u32
+                    }
+                }),
+                'u',
+            )
+        }
+        TerminalKey::Escape => (27, 'u'),
+        TerminalKey::Enter => (13, 'u'),
+        TerminalKey::Tab => (9, 'u'),
+        TerminalKey::Backspace => (127, 'u'),
+        TerminalKey::Insert => (2, '~'),
+        TerminalKey::Delete => (3, '~'),
+        TerminalKey::PageUp => (5, '~'),
+        TerminalKey::PageDown => (6, '~'),
+        TerminalKey::ArrowUp => (1, 'A'),
+        TerminalKey::ArrowDown => (1, 'B'),
+        TerminalKey::ArrowRight => (1, 'C'),
+        TerminalKey::ArrowLeft => (1, 'D'),
+        TerminalKey::Home => (1, 'H'),
+        TerminalKey::End => (1, 'F'),
+        TerminalKey::Function(1) => (1, 'P'),
+        TerminalKey::Function(2) => (1, 'Q'),
+        TerminalKey::Function(3) => (13, '~'),
+        TerminalKey::Function(4) => (1, 'S'),
+        TerminalKey::Function(5) => (15, '~'),
+        TerminalKey::Function(6) => (17, '~'),
+        TerminalKey::Function(7) => (18, '~'),
+        TerminalKey::Function(8) => (19, '~'),
+        TerminalKey::Function(9) => (20, '~'),
+        TerminalKey::Function(10) => (21, '~'),
+        TerminalKey::Function(11) => (23, '~'),
+        TerminalKey::Function(12) => (24, '~'),
+        TerminalKey::Function(_) => return None,
+        TerminalKey::Keypad(key) => (
+            match key {
+                KeypadKey::Digit(n @ 0..=9) => 57399 + u32::from(*n),
+                KeypadKey::Digit(_) => return None,
+                KeypadKey::Decimal => 57409,
+                KeypadKey::Divide => 57410,
+                KeypadKey::Multiply => 57411,
+                KeypadKey::Subtract => 57412,
+                KeypadKey::Add => 57413,
+                KeypadKey::Enter => 57414,
+                KeypadKey::Equal => 57415,
+                KeypadKey::Comma => 57416,
+            },
+            'u',
+        ),
+        TerminalKey::Modifier(key) => (
+            match key {
+                ModifierKey::ShiftLeft => 57441,
+                ModifierKey::ControlLeft => 57442,
+                ModifierKey::AltLeft => 57443,
+                ModifierKey::SuperLeft => 57444,
+                ModifierKey::ShiftRight => 57447,
+                ModifierKey::ControlRight => 57448,
+                ModifierKey::AltRight => 57449,
+                ModifierKey::SuperRight => 57450,
+            },
+            'u',
+        ),
+    })
 }
 
 pub fn encode_mouse_wheel(
@@ -249,6 +463,22 @@ pub fn encode_paste(text: &str, mode: TerminalMode) -> Vec<u8> {
     } else {
         normalized.replace('\n', "\r").into_bytes()
     }
+}
+
+/// Encode text committed by an IME, for which no key identity is available.
+pub fn encode_ime_commit(text: &str, mode: TerminalMode) -> Vec<u8> {
+    if mode.keyboard.report_all_keys_as_escape_codes && mode.keyboard.report_associated_text {
+        let codepoints: Vec<_> = text
+            .chars()
+            .filter(|ch| !ch.is_control())
+            .map(|ch| (ch as u32).to_string())
+            .collect();
+        if !codepoints.is_empty() {
+            return format!("\x1b[0;;{}u", codepoints.join(":")).into_bytes();
+        }
+        return Vec::new();
+    }
+    text.as_bytes().to_vec()
 }
 
 fn encode_text(text: &str, control: bool) -> Option<Vec<u8>> {

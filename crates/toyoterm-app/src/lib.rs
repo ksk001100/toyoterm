@@ -74,8 +74,8 @@ pub use toyoterm_terminal::{
     MouseEventKind, MouseWheelDirection, NotificationOccasion, NotificationSound,
     NotificationUrgency, SearchDirection, SearchResult, SelectionKind, SessionStatusUpdate,
     TabColorComponent, TerminalAttention, TerminalBackend, TerminalColorPreset, TerminalEvent,
-    TerminalKey, TerminalMode, TerminalMouseButton, TerminalProgress, encode_key,
-    encode_mouse_event, encode_mouse_wheel, encode_paste,
+    TerminalKey, TerminalMode, TerminalMouseButton, TerminalProgress, encode_ime_commit,
+    encode_key, encode_mouse_event, encode_mouse_wheel, encode_paste,
 };
 
 const MULTI_CLICK_INTERVAL: Duration = Duration::from_millis(500);
@@ -849,6 +849,7 @@ struct UiState {
     ime_preedit: Option<String>,
     modifiers: ModifiersState,
     alt_graph_active: bool,
+    consumed_keys: HashSet<winit::keyboard::PhysicalKey>,
     leader_deadline: Option<Instant>,
     mouse_position: PhysicalPosition<f64>,
     pressed_mouse_button: Option<TerminalMouseButton>,
@@ -1108,6 +1109,7 @@ impl ApplicationHandler<AppEvent> for ToyotermApplication {
                 // AltGraph) stuck when focus returns.
                 if !focused {
                     clear_modifier_state(&mut self.ui.modifiers, &mut self.ui.alt_graph_active);
+                    self.ui.consumed_keys.clear();
                     self.ui.leader_deadline = None;
                     self.exit_visual_mode();
                     self.ui.pressed_mouse_button = None;
@@ -1158,13 +1160,34 @@ impl ApplicationHandler<AppEvent> for ToyotermApplication {
                     self.ui.alt_graph_active = event.state == ElementState::Pressed;
                     return;
                 }
+                let modifiers = effective_modifiers(self.ui.modifiers, self.ui.alt_graph_active);
+                if event.state == ElementState::Released {
+                    if self.ui.consumed_keys.remove(&event.physical_key) {
+                        return;
+                    }
+                    let mode = self
+                        .active_terminal()
+                        .map(TerminalBackend::mode)
+                        .unwrap_or_default();
+                    if mode.keyboard.report_event_types
+                        && self.ui.selector.is_none()
+                        && !self.ui.search_open
+                        && self.ui.visual_selection.is_none()
+                        && let Some(press) = key_press(&event, modifiers, mode)
+                        && let Some(bytes) = encode_key(&press, mode)
+                        && let Err(error) = self.write_input(&bytes)
+                    {
+                        self.fail(event_loop, error);
+                    }
+                    return;
+                }
                 if !should_handle_key_event(event.state, event.repeat) {
                     return;
                 }
-                let modifiers = effective_modifiers(self.ui.modifiers, self.ui.alt_graph_active);
                 if self.ui.config_error_notice.is_some()
                     && matches!(event.logical_key, Key::Named(NamedKey::Escape))
                 {
+                    self.ui.consumed_keys.insert(event.physical_key);
                     self.ui.config_error_notice = None;
                     if let Err(error) =
                         self.resize_panes(window.inner_size(), window.scale_factor())
@@ -1177,6 +1200,7 @@ impl ApplicationHandler<AppEvent> for ToyotermApplication {
                     return;
                 }
                 if self.ui.selector.is_some() {
+                    self.ui.consumed_keys.insert(event.physical_key);
                     if let Err(error) = self.handle_selector_key(&event, modifiers) {
                         tracing::warn!(target: "toyoterm::script", %error, "selector callback submission failed");
                     }
@@ -1185,12 +1209,14 @@ impl ApplicationHandler<AppEvent> for ToyotermApplication {
                     return;
                 }
                 if self.ui.search_open {
+                    self.ui.consumed_keys.insert(event.physical_key);
                     self.handle_search_key(&event, modifiers);
                     self.sync_active_renderer(window.scale_factor());
                     window.request_redraw();
                     return;
                 }
                 if self.ui.visual_selection.is_some() {
+                    self.ui.consumed_keys.insert(event.physical_key);
                     match self.handle_keybinding(&event, modifiers) {
                         Ok(true) => {}
                         Ok(false) if matches!(event.logical_key, Key::Named(NamedKey::Escape)) => {
@@ -1206,7 +1232,10 @@ impl ApplicationHandler<AppEvent> for ToyotermApplication {
                     return;
                 }
                 match self.handle_leader_key(&event, modifiers) {
-                    Ok(true) => return,
+                    Ok(true) => {
+                        self.ui.consumed_keys.insert(event.physical_key);
+                        return;
+                    }
                     Ok(false) => {}
                     Err(error) => {
                         tracing::warn!(target: "toyoterm::app", %error, "leader key handling failed");
@@ -1215,7 +1244,10 @@ impl ApplicationHandler<AppEvent> for ToyotermApplication {
                 }
                 // Physical bindings are checked before logical bindings by the resolver.
                 match self.handle_keybinding(&event, modifiers) {
-                    Ok(true) => return,
+                    Ok(true) => {
+                        self.ui.consumed_keys.insert(event.physical_key);
+                        return;
+                    }
                     Ok(false) => {}
                     Err(error) => {
                         tracing::warn!(target: "toyoterm::script", %error, "key binding failed");
@@ -1227,6 +1259,9 @@ impl ApplicationHandler<AppEvent> for ToyotermApplication {
                     .map(TerminalBackend::mode)
                     .unwrap_or_default();
                 if let Some(press) = key_press(&event, modifiers, mode)
+                    && !(mode.keyboard != toyoterm_terminal::KeyboardProtocolMode::default()
+                        && self.ui.ime_preedit.is_some()
+                        && matches!(press.key, TerminalKey::Text(_)))
                     && let Some(bytes) = encode_key(&press, mode)
                     && let Err(error) = self.write_input(&bytes)
                 {
@@ -1258,7 +1293,11 @@ impl ApplicationHandler<AppEvent> for ToyotermApplication {
                     window.request_redraw();
                     return;
                 }
-                if let Err(error) = self.write_input(text.as_bytes()) {
+                let mode = self
+                    .active_terminal()
+                    .map(TerminalBackend::mode)
+                    .unwrap_or_default();
+                if let Err(error) = self.write_input(&encode_ime_commit(&text, mode)) {
                     self.fail(event_loop, error);
                 }
                 self.sync_active_renderer(window.scale_factor());
@@ -2296,6 +2335,7 @@ impl ToyotermApplication {
                 ime_preedit: None,
                 modifiers: ModifiersState::empty(),
                 alt_graph_active: false,
+                consumed_keys: HashSet::new(),
                 leader_deadline: None,
                 mouse_position: PhysicalPosition::new(0.0, 0.0),
                 pressed_mouse_button: None,

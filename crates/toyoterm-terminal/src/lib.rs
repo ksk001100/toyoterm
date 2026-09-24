@@ -13,8 +13,9 @@ pub struct CursorState {
     pub shape: CursorShape,
 }
 
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+#[derive(Clone, Copy, Default, Eq, PartialEq)]
 pub struct TerminalMode {
+    pub keyboard: KeyboardProtocolMode,
     pub application_cursor: bool,
     pub application_keypad: bool,
     pub bracketed_paste: bool,
@@ -25,6 +26,36 @@ pub struct TerminalMode {
     pub focus_reporting: bool,
     pub alternate_screen: bool,
     pub alternate_scroll: bool,
+}
+
+impl std::fmt::Debug for TerminalMode {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let mut debug = f.debug_struct("TerminalMode");
+        if self.keyboard != KeyboardProtocolMode::default() {
+            debug.field("keyboard", &self.keyboard);
+        }
+        debug
+            .field("application_cursor", &self.application_cursor)
+            .field("application_keypad", &self.application_keypad)
+            .field("bracketed_paste", &self.bracketed_paste)
+            .field("mouse_reporting", &self.mouse_reporting)
+            .field("mouse_drag", &self.mouse_drag)
+            .field("mouse_motion", &self.mouse_motion)
+            .field("sgr_mouse", &self.sgr_mouse)
+            .field("focus_reporting", &self.focus_reporting)
+            .field("alternate_screen", &self.alternate_screen)
+            .field("alternate_scroll", &self.alternate_scroll)
+            .finish()
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct KeyboardProtocolMode {
+    pub disambiguate_escape_codes: bool,
+    pub report_event_types: bool,
+    pub report_alternate_keys: bool,
+    pub report_all_keys_as_escape_codes: bool,
+    pub report_associated_text: bool,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -234,7 +265,7 @@ pub use alacritty::{
     TerminalColorPreset, TerminalEvent, TerminalProgress,
 };
 pub use input::{
-    BindingKey, KeyChord, KeyModifiers, KeyPress, KeypadKey, MouseEventKind, MouseWheelDirection,
-    TerminalKey, TerminalMouseButton, encode_key, encode_mouse_event, encode_mouse_wheel,
-    encode_paste,
+    BindingKey, KeyChord, KeyEventKind, KeyModifiers, KeyPress, KeypadKey, ModifierKey,
+    MouseEventKind, MouseWheelDirection, TerminalKey, TerminalMouseButton, encode_ime_commit,
+    encode_key, encode_mouse_event, encode_mouse_wheel, encode_paste,
 };

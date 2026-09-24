@@ -17,6 +17,21 @@ There are no built-in GUI key bindings. Copy the bindings from
 
 See [URL opening security](url-security.md) for the allowed schemes and limits.
 
+Terminal applications can enable the five Kitty keyboard progressive enhancement
+flags (disambiguation, event types, alternate keys, all keys as escape codes,
+and associated text). With all flags off, keyboard input retains the existing
+legacy byte sequences. Press, repeat, and release are reported when requested;
+release never triggers toyoterm keybindings. Shift, Alt, Control, and Super are
+reported when available. Caps Lock, Num Lock, Hyper, and Meta are not inferred.
+Alternate shifted keys and PC-101 base letters are reported only when winit
+provides enough key information. IME commits remain text input; platform IME
+and dead-key behavior may vary and should be checked on each desktop backend.
+When flags 8 and 16 are both active, an IME commit is reported as a key-zero
+CSI-u event with its Unicode code points. Without flag 16, IME commits stay
+UTF-8 text so composed input remains usable.
+Keyboard mode changes and push/pop are kept on separate main and alternate
+screen stacks, so leaving an alternate screen restores the previous mode.
+
 Terminal output can display Sixel, Kitty, and iTerm2 OSC 1337 images. Run
 `python examples/terminal_images.py` inside toyoterm for a color chart, and see
 [terminal images](image-protocols.md) for the supported subset and limits.

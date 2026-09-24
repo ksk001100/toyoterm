@@ -757,7 +757,44 @@ impl<E: EventListener> Handler for GraphicsHandler<'_, E> {
         self.terminal.pop_keyboard_modes(arg0);
     }
     fn set_keyboard_mode(&mut self, arg0: KeyboardModes, arg1: KeyboardModesApplyBehavior) {
-        self.terminal.set_keyboard_mode(arg0, arg1);
+        // Alacritty's direct set updates TermMode but not its per-screen
+        // keyboard stack. Replace the stack top using its public push/pop API
+        // so a later alternate-screen swap restores this screen's flags.
+        let current = *self.terminal.mode();
+        let mut active = KeyboardModes::NO_MODE;
+        for (term, keyboard) in [
+            (
+                TermMode::DISAMBIGUATE_ESC_CODES,
+                KeyboardModes::DISAMBIGUATE_ESC_CODES,
+            ),
+            (
+                TermMode::REPORT_EVENT_TYPES,
+                KeyboardModes::REPORT_EVENT_TYPES,
+            ),
+            (
+                TermMode::REPORT_ALTERNATE_KEYS,
+                KeyboardModes::REPORT_ALTERNATE_KEYS,
+            ),
+            (
+                TermMode::REPORT_ALL_KEYS_AS_ESC,
+                KeyboardModes::REPORT_ALL_KEYS_AS_ESC,
+            ),
+            (
+                TermMode::REPORT_ASSOCIATED_TEXT,
+                KeyboardModes::REPORT_ASSOCIATED_TEXT,
+            ),
+        ] {
+            if current.contains(term) {
+                active |= keyboard;
+            }
+        }
+        let next = match arg1 {
+            KeyboardModesApplyBehavior::Replace => arg0,
+            KeyboardModesApplyBehavior::Union => active | arg0,
+            KeyboardModesApplyBehavior::Difference => active & !arg0,
+        };
+        self.terminal.pop_keyboard_modes(1);
+        self.terminal.push_keyboard_mode(next);
     }
     fn set_modify_other_keys(&mut self, arg0: ModifyOtherKeys) {
         self.terminal.set_modify_other_keys(arg0);
