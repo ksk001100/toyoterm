@@ -42,7 +42,7 @@ unicode-segmentation = "1.12.0"
 wgpu = "30.0.1"
 winit = "0.30.13"
 windows-sys = "0.61.2"
-windows = { version = "0.61.3", features = ["Data_Xml_Dom", "Foundation", "UI_Notifications"] }
+windows = { version = "0.62.2", features = ["Data_Xml_Dom", "Foundation", "UI_Notifications"] }
 
 [profile.release]
 # PTY and window guards must run even when an unexpected panic reaches main.
