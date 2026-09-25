@@ -682,7 +682,7 @@ windows remain deferred.
 | `search(query, direction: :next)` | Queues a literal scrollback search and returns `self`. |
 | `badge` / `badge=` | Reads or queues trusted pane-corner display text. Assign `nil` to clear it. A Ruby-set badge takes display precedence over an OSC 1337 `SetBadgeFormat` badge. |
 
-`Workspace#new_window`, `Window#new_tab`, and `Pane#split` accept an optional
+`Workspace#new_window`, `MuxWindow#new_tab`, and `Pane#split` accept an optional
 launch specification:
 
 ```ruby

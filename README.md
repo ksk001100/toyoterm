@@ -29,7 +29,7 @@ Linux is the primary development platform. CI runs builds, tests, packaging,
 and GUI startup smoke tests on Linux, macOS, and Windows. Interactive validation
 on physical machines is still required; see [platform validation](docs/platform-validation.md).
 Multiple OS windows and session persistence remain outside
-the initial release scope. Ruby `Window` handles represent mux windows inside
+the initial release scope. Ruby `MuxWindow` handles represent mux windows inside
 the application's single OS window.
 
 ## Build and run

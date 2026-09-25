@@ -78,7 +78,7 @@ well-tested, VM-native exception/unwind path.
 
 A wall-clock timeout on another Rust thread cannot safely kill or unwind an
 mruby C call. Dropping the worker or detaching it would leak the VM and leave
-script ordering undefined. For that reason v0.1 deliberately provides
+script ordering undefined. The current implementation therefore provides
 isolation, duration logging, and slow-callback warnings, but no unsafe forced
 cancellation. A future budget should be implemented with the mruby debug hook,
 benchmarked, and converted into a normal Ruby exception at a safe VM boundary.
