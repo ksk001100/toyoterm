@@ -1943,10 +1943,11 @@ fn terminal_matches<T: EventListener>(terminal: &Term<T>, query: &str) -> Vec<Gr
     let start = -(grid.history_size() as i32);
     let end = grid.screen_lines() as i32;
     let mut matches = Vec::new();
+    let mut text = String::with_capacity(grid.columns());
+    let mut byte_cells = Vec::with_capacity(grid.columns());
     for line_number in start..end {
         let line = Line(line_number);
-        let mut text = String::new();
-        let mut byte_cells = Vec::new();
+        text.clear();
         for column in 0..grid.columns() {
             let cell = &grid[line][Column(column)];
             if cell
@@ -1955,14 +1956,35 @@ fn terminal_matches<T: EventListener>(terminal: &Term<T>, query: &str) -> Vec<Gr
             {
                 continue;
             }
-            let start = text.len();
             text.push(cell.c);
             if let Some(zerowidth) = cell.zerowidth() {
                 text.extend(zerowidth);
             }
+        }
+        if !text.contains(query) {
+            continue;
+        }
+
+        // Most scrollback rows have no match. Build the byte-to-cell map only
+        // for rows whose text actually contains the query.
+        byte_cells.clear();
+        let mut byte_offset = 0;
+        for column in 0..grid.columns() {
+            let cell = &grid[line][Column(column)];
+            if cell
+                .flags
+                .intersects(Flags::WIDE_CHAR_SPACER | Flags::LEADING_WIDE_CHAR_SPACER)
+            {
+                continue;
+            }
+            let start = byte_offset;
+            byte_offset += cell.c.len_utf8();
+            if let Some(zerowidth) = cell.zerowidth() {
+                byte_offset += zerowidth.iter().map(|c| c.len_utf8()).sum::<usize>();
+            }
             byte_cells.push((
                 start,
-                text.len(),
+                byte_offset,
                 column as u16,
                 cell.flags.contains(Flags::WIDE_CHAR),
             ));

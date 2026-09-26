@@ -1037,6 +1037,21 @@ fn literal_search_navigates_scrollback_and_marks_visible_matches() {
 }
 
 #[test]
+fn literal_search_maps_multibyte_and_wide_cells() {
+    let mut backend = AlacrittyTerminalBackend::new(20, 2);
+    backend.advance("界e\u{301} needle".as_bytes());
+
+    for (query, start_column, end_column) in [("界", 0, 1), ("e\u{301}", 2, 2), ("needle", 4, 9)] {
+        assert_eq!(backend.search(query, SearchDirection::Next).total, 1);
+        let found = backend.snapshot().search_matches[0];
+        assert_eq!(
+            (found.start_column, found.end_column),
+            (start_column, end_column)
+        );
+    }
+}
+
+#[test]
 fn visible_text_tracks_the_current_viewport_without_cell_metadata() {
     let mut backend = AlacrittyTerminalBackend::new(12, 2);
     backend.advance("one\r\n日本語\r\nthree".as_bytes());
