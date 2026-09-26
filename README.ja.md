@@ -47,6 +47,7 @@ cargo run --locked
 
 リリース成果物は、Linuxでは`install.sh`付きアーカイブ、macOSではDMGまたはappバンドルの
 アーカイブ、Windowsではユーザー単位のMSIインストーラーとportable zipです。
+Windowsのスタートメニューから起動すると、作業ディレクトリはユーザーのホームになります。
 [インストール・更新・削除・チェックサム](docs/packaging.md)を参照してください。
 配布パッケージには、リンク先のガイドと実行可能なサンプルも含まれます。
 macOSアプリは未署名のため、初回起動時に[インストール手順](docs/packaging.md#macos)に従って

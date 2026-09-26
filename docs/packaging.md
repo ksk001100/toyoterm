@@ -62,7 +62,8 @@ installation. It installs to `%LOCALAPPDATA%\Programs\toyoterm`, adds that
 directory to the user `PATH`, and creates a Start Menu shortcut. A newer MSI
 upgrades the previous MSI installation. Remove toyoterm through Windows
 **Installed apps**. Close toyoterm before upgrading or uninstalling. User
-configuration is preserved.
+configuration is preserved. The Start Menu shortcut opens in the user's home
+directory.
 
 The portable `toyoterm-VERSION-TARGET.zip` can be extracted and run in place.
 It also retains the PowerShell installer for users who need a custom install

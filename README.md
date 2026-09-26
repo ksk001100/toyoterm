@@ -51,6 +51,7 @@ Build optimized binaries with `cargo build --release --locked`. Run
 
 For release artifacts, Linux provides an archive with `install.sh`, macOS a DMG
 or app-bundle archive, and Windows a per-user MSI installer plus a portable zip.
+The Windows Start Menu shortcut opens toyoterm in the user's home directory.
 See [installation, upgrade, uninstall, and checksums](docs/packaging.md).
 Release packages include the linked guides and runnable examples.
 The macOS app is unsigned; first launch may require the manual approval steps

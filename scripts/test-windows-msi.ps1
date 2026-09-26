@@ -40,6 +40,11 @@ $shortcut = Join-Path $shortcutDirectory "toyoterm.lnk"
 if (-not (Test-Path -LiteralPath $shortcut -PathType Leaf)) {
     throw "MSI did not create the Start Menu shortcut"
 }
+$shell = New-Object -ComObject WScript.Shell
+$shortcutWorkingDirectory = $shell.CreateShortcut($shortcut).WorkingDirectory
+if ($shortcutWorkingDirectory.TrimEnd('\') -ine $env:USERPROFILE.TrimEnd('\')) {
+    throw "MSI shortcut starts in $shortcutWorkingDirectory instead of $env:USERPROFILE"
+}
 $userPath = [Environment]::GetEnvironmentVariable("Path", "User")
 if (-not (($userPath -split ';' | ForEach-Object { $_.TrimEnd('\') }) -contains $destination.TrimEnd('\'))) {
     throw "MSI did not add the install directory to the user PATH"
