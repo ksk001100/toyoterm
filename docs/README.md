@@ -14,6 +14,7 @@
 | [Terminal images](image-protocols.md) | Sixel, Kitty, OSC 1337, limits, and a runnable chart |
 | [URL opening](url-security.md) | Modifier-click behavior and allowed schemes |
 | [Local IPC](ipc.md) | Instance selection, transport, protocol, and authentication |
+| [v0.1.0 release notes](releases/v0.1.0.md) | First-release highlights, setup, and current limits |
 
 Runnable configurations live in [examples](../examples). The
 [default configuration](../examples/default_config.rb) provides optional bindings;

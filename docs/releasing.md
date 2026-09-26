@@ -9,7 +9,9 @@ metadata are derived from it.
 
 1. Choose the version, update `Cargo.toml`, and run `cargo check` to refresh
    `Cargo.lock`.
-2. Update both READMEs and user-visible examples when behavior changed.
+2. Update both READMEs and user-visible examples when behavior changed. Review
+   `docs/releases/vVERSION.md` for the release description; the workflow uses
+   that file when present and generates notes for other versions.
 3. Complete the manual checks in [platform validation](platform-validation.md) for the release
    candidate and link their results from the release issue.
 4. Run the full locked validation baseline in the

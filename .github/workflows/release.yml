@@ -137,8 +137,14 @@ jobs:
           if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
             gh release upload "$RELEASE_TAG" dist/* --clobber
           else
+            release_notes="docs/releases/${RELEASE_TAG}.md"
+            if [ -f "$release_notes" ]; then
+              set -- --notes-file "$release_notes"
+            else
+              set -- --generate-notes
+            fi
             gh release create "$RELEASE_TAG" dist/* \
               --verify-tag \
-              --generate-notes \
+              "$@" \
               --title "toyoterm ${RELEASE_TAG#v}"
           fi

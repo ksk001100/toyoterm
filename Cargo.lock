@@ -2893,11 +2893,11 @@ checksum = "7d56353a2a665ad0f41a421187180aab746c8c325620617ad883a99a1cbe66d2"
 
 [[package]]
 name = "toyoterm-api"
-version = "0.0.1"
+version = "0.1.0"
 
 [[package]]
 name = "toyoterm-app"
-version = "0.0.1"
+version = "0.1.0"
 dependencies = [
  "arboard",
  "base64 0.23.1",
@@ -2924,7 +2924,7 @@ dependencies = [
 
 [[package]]
 name = "toyoterm-cli"
-version = "0.0.1"
+version = "0.1.0"
 dependencies = [
  "embed-resource",
  "toyoterm-api",
@@ -2937,14 +2937,14 @@ dependencies = [
 
 [[package]]
 name = "toyoterm-config"
-version = "0.0.1"
+version = "0.1.0"
 dependencies = [
  "image",
 ]
 
 [[package]]
 name = "toyoterm-ipc"
-version = "0.0.1"
+version = "0.1.0"
 dependencies = [
  "toyoterm-api",
  "tracing",
@@ -2952,7 +2952,7 @@ dependencies = [
 
 [[package]]
 name = "toyoterm-mux"
-version = "0.0.1"
+version = "0.1.0"
 dependencies = [
  "toyoterm-api",
  "tracing",
@@ -2960,7 +2960,7 @@ dependencies = [
 
 [[package]]
 name = "toyoterm-pty"
-version = "0.0.1"
+version = "0.1.0"
 dependencies = [
  "conpty-oxide",
  "portable-pty",
@@ -2971,7 +2971,7 @@ dependencies = [
 
 [[package]]
 name = "toyoterm-render"
-version = "0.0.1"
+version = "0.1.0"
 dependencies = [
  "bytemuck",
  "glyphon",
@@ -2988,7 +2988,7 @@ dependencies = [
 
 [[package]]
 name = "toyoterm-script"
-version = "0.0.1"
+version = "0.1.0"
 dependencies = [
  "cc",
  "toyoterm-api",
@@ -3000,7 +3000,7 @@ dependencies = [
 
 [[package]]
 name = "toyoterm-terminal"
-version = "0.0.1"
+version = "0.1.0"
 dependencies = [
  "alacritty_terminal",
  "base64 0.23.1",

@@ -111,10 +111,19 @@ case "$target" in
 esac
 require_entry "$common_prefix/README.md"
 require_entry "$common_prefix/README.ja.md"
+require_entry "$common_prefix/AGENTS.md"
 require_entry "$common_prefix/LICENSE"
 require_entry "$common_prefix/THIRD_PARTY_NOTICES.md"
+require_entry "$common_prefix/packaging/app-icon.png"
+require_entry "$common_prefix/docs/README.md"
+require_entry "$common_prefix/docs/usage.md"
+require_entry "$common_prefix/docs/packaging.md"
+require_entry "$common_prefix/docs/mruby-api.md"
 require_entry "$common_prefix/examples/minimal_config.rb"
+require_entry "$common_prefix/examples/default_config.rb"
+require_entry "$common_prefix/examples/terminal_images.py"
 require_entry "$common_prefix/licenses/mruby-MIT.txt"
+require_entry "$common_prefix/vendor/mruby/LICENSE"
 require_entry "$executable"
 
 verification_root=$(mktemp -d)

@@ -82,11 +82,11 @@ are listed in the [API reference](mruby-api.md#loading-configuration).
 
 ## Included documentation
 
-Packages include both READMEs, `examples/minimal_config.rb`, the project license,
-third-party notices, and applicable mruby/ConPTY licenses. They do not currently
-include the repository's `docs/` tree or `examples/default_config.rb`; consult
-the source checkout for those guides and examples. On macOS the common files
-are inside `toyoterm.app/Contents/Resources`.
+Packages include both READMEs, the `docs/` and `examples/` trees, the README icon,
+`AGENTS.md`, the project license, third-party notices, and applicable mruby/ConPTY
+licenses. README links to local guides, examples, and the mruby license work from
+an extracted package. On macOS the common files are inside
+`toyoterm.app/Contents/Resources`.
 
 ## Integrity and release automation
 

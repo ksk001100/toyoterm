@@ -52,6 +52,7 @@ Build optimized binaries with `cargo build --release --locked`. Run
 For release artifacts, Linux provides an archive with `install.sh`, macOS a DMG
 or app-bundle archive, and Windows a portable zip with an optional per-user
 installer. See [installation, upgrade, uninstall, and checksums](docs/packaging.md).
+Release packages include the linked guides and runnable examples.
 
 ## Configuration
 

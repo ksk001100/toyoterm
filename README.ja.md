@@ -48,6 +48,7 @@ cargo run --locked
 リリース成果物は、Linuxでは`install.sh`付きアーカイブ、macOSではDMGまたはappバンドルの
 アーカイブ、Windowsでは任意のユーザー単位インストーラ付きportable zipです。
 [インストール・更新・削除・チェックサム](docs/packaging.md)を参照してください。
+配布パッケージには、リンク先のガイドと実行可能なサンプルも含まれます。
 
 ## 設定
 

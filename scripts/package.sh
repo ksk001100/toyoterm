@@ -23,12 +23,15 @@ fi
 
 copy_common_files() {
   destination=$1
-  mkdir -p "$destination/licenses" "$destination/examples"
+  mkdir -p "$destination/licenses" "$destination/packaging" "$destination/vendor/mruby"
   cp LICENSE "$destination/LICENSE"
   cp THIRD_PARTY_NOTICES.md "$destination/THIRD_PARTY_NOTICES.md"
   cp vendor/mruby/LICENSE "$destination/licenses/mruby-MIT.txt"
+  cp vendor/mruby/LICENSE "$destination/vendor/mruby/LICENSE"
   cp README.md README.ja.md "$destination/"
-  cp examples/minimal_config.rb "$destination/examples/minimal_config.rb"
+  cp AGENTS.md "$destination/AGENTS.md"
+  cp packaging/app-icon.png "$destination/packaging/app-icon.png"
+  cp -R docs examples "$destination/"
 }
 
 write_checksum() {
