@@ -155,7 +155,7 @@ pub struct TerminalCell {
     pub text_size: Option<TextSize>,
     pub attributes: CellAttributes,
     /// Explicit OSC 8 target, or a safely detected URL.
-    pub hyperlink: Option<String>,
+    pub hyperlink: Option<std::sync::Arc<str>>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

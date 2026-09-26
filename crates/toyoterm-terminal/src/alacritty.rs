@@ -4,6 +4,7 @@ use super::graphics::{
     stream::{Stream, Token},
 };
 use std::collections::{BTreeSet, HashMap};
+use std::sync::Arc;
 use std::sync::mpsc::{self, Receiver, Sender};
 
 use alacritty_terminal::Term;
@@ -1534,10 +1535,11 @@ impl TerminalBackend for AlacrittyTerminalBackend {
                     },
                     text_size: sized_text.map(|block| block.size),
                     attributes: cell_attributes(cell.fg, cell.bg, cell.flags),
-                    hyperlink: cell.hyperlink().map(|link| link.uri().to_owned()),
+                    hyperlink: cell.hyperlink().map(|link| Arc::from(link.uri())),
                 });
             }
-            lines.push(text.trim_end().to_owned());
+            text.truncate(text.trim_end().len());
+            lines.push(text);
             rows_of_cells.push(cells);
             if let Some(range) = selection_range {
                 let mut selected_columns = (0..columns).filter(|column| {
@@ -2006,6 +2008,8 @@ fn detect_plain_urls(lines: &[String], cells: &mut [Vec<TerminalCell>]) {
     const PREFIXES: [&str; 3] = ["https://", "http://", "mailto:"];
     for (line, cells) in lines.iter().zip(cells) {
         let mut from = 0;
+        let mut cell_index = 0;
+        let mut cell_byte = 0;
         while from < line.len() {
             let Some((start, _)) = PREFIXES
                 .iter()
@@ -2021,14 +2025,19 @@ fn detect_plain_urls(lines: &[String], cells: &mut [Vec<TerminalCell>]) {
                 .trim_end_matches(['.', ',', ';', '!', '?', ')', ']', '}', '\'', '"']);
             let end = start + url.len();
             if end > start {
-                let mut byte = 0;
-                for cell in cells.iter_mut() {
-                    let cell_start = byte;
-                    let cell_end = byte + cell.text.len();
-                    if cell_start < end && cell_end > start && cell.hyperlink.is_none() {
-                        cell.hyperlink = Some(url.to_owned());
+                let url: Arc<str> = Arc::from(url);
+                while cell_index < cells.len() && cell_byte + cells[cell_index].text.len() <= start
+                {
+                    cell_byte += cells[cell_index].text.len();
+                    cell_index += 1;
+                }
+                while cell_index < cells.len() && cell_byte < end {
+                    let cell = &mut cells[cell_index];
+                    if cell.hyperlink.is_none() {
+                        cell.hyperlink = Some(Arc::clone(&url));
                     }
-                    byte = cell_end;
+                    cell_byte += cell.text.len();
+                    cell_index += 1;
                 }
             }
             from = raw_end.max(start + 1);

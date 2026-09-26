@@ -281,7 +281,8 @@ pub(super) fn hyperlink_at(
             (cell.column..end).contains(&column)
         })?
         .hyperlink
-        .clone()
+        .as_ref()
+        .map(|url| url.to_string())
 }
 
 pub(super) fn validate_allowed_url(url: &str) -> Result<(), String> {

@@ -419,6 +419,51 @@ fn exposes_osc8_links_and_detects_plain_urls() {
 }
 
 #[test]
+fn detects_multiple_plain_urls_after_unicode_and_shares_each_url() {
+    let mut backend = AlacrittyTerminalBackend::new(100, 2);
+    backend.advance("é https://a.test/x, mailto:b@example.test!".as_bytes());
+
+    let snapshot = backend.snapshot();
+    let cells = &snapshot.cells[0];
+    let first = cells
+        .iter()
+        .find(|cell| cell.text == "h")
+        .unwrap()
+        .hyperlink
+        .as_ref()
+        .unwrap();
+    let second = cells
+        .iter()
+        .find(|cell| cell.text == "m")
+        .unwrap()
+        .hyperlink
+        .as_ref()
+        .unwrap();
+    assert_eq!(first.as_ref(), "https://a.test/x");
+    assert_eq!(second.as_ref(), "mailto:b@example.test");
+    assert!(std::sync::Arc::ptr_eq(
+        first,
+        cells
+            .iter()
+            .find(|cell| cell.text == "x")
+            .unwrap()
+            .hyperlink
+            .as_ref()
+            .unwrap()
+    ));
+    assert!(
+        cells
+            .iter()
+            .any(|cell| cell.text == "é" && cell.hyperlink.is_none())
+    );
+    assert!(
+        cells
+            .iter()
+            .any(|cell| cell.text == "," && cell.hyperlink.is_none())
+    );
+}
+
+#[test]
 fn answers_osc_palette_and_dynamic_color_queries() {
     let mut backend = AlacrittyTerminalBackend::new(20, 2);
     let mut ansi = [[0, 0, 0]; 16];
@@ -2500,4 +2545,22 @@ fn cycles_selection_across_completed_osc133_command_outputs() {
     assert_eq!(backend.selected_text().as_deref(), Some("second"));
     assert!(backend.select_command_output(SearchDirection::Previous));
     assert_eq!(backend.selected_text().as_deref(), Some("first"));
+}
+
+#[test]
+#[ignore = "manual performance benchmark"]
+fn benchmark_url_snapshots() {
+    use std::hint::black_box;
+    use std::time::Instant;
+
+    let mut backend = AlacrittyTerminalBackend::new(160, 40);
+    let line = "https://example.com/a ".repeat(7);
+    for row in 0..40 {
+        backend.advance(format!("\x1b[{};1H{line}", row + 1).as_bytes());
+    }
+    let start = Instant::now();
+    for _ in 0..300 {
+        black_box(backend.snapshot());
+    }
+    eprintln!("300 URL snapshots: {:?}", start.elapsed());
 }
