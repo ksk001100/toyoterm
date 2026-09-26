@@ -126,7 +126,8 @@ allowed web/mail links. Exiting the final pane closes the application.
 ## Development
 
 See the [development guide](docs/development.md) for locked validation commands
-and native smoke tests, and the [release checklist](docs/releasing.md) for packaging.
+and native smoke tests, including opt-in terminal performance measurements, and
+the [release checklist](docs/releasing.md) for packaging.
 The [crate architecture](docs/architecture.md) and [threading contract](docs/threading.md)
 describe native ownership and the dedicated script thread. Static bindings
 bypass Ruby; Ruby callbacks return commands for the main thread to apply.

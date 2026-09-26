@@ -28,6 +28,22 @@ For example, terminal changes can be checked with:
 cargo test -p toyoterm-terminal --locked
 ```
 
+## Terminal performance measurements
+
+The terminal crate has opt-in measurements for VT input (plain and styled
+Unicode), full-screen snapshots (plain text and detected URLs), and cold
+searches over 1,000 lines of terminal output. Run them with an optimized build:
+
+```sh
+cargo test -p toyoterm-terminal --test performance --release --locked -- --ignored --nocapture --test-threads=1
+```
+
+Each result is the median of five samples after warm-up, reported as time per
+operation; input cases also report MiB/s. The fixtures and iteration counts are
+fixed so changes can be compared on the same machine. These measurements have
+no timing pass/fail threshold and are ignored by ordinary tests. Compare runs
+under similar system load; they do not include PTY I/O, GPU rendering, or Ruby.
+
 Native smoke tests:
 
 ```sh

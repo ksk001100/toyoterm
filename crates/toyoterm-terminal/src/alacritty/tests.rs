@@ -2546,21 +2546,3 @@ fn cycles_selection_across_completed_osc133_command_outputs() {
     assert!(backend.select_command_output(SearchDirection::Previous));
     assert_eq!(backend.selected_text().as_deref(), Some("first"));
 }
-
-#[test]
-#[ignore = "manual performance benchmark"]
-fn benchmark_url_snapshots() {
-    use std::hint::black_box;
-    use std::time::Instant;
-
-    let mut backend = AlacrittyTerminalBackend::new(160, 40);
-    let line = "https://example.com/a ".repeat(7);
-    for row in 0..40 {
-        backend.advance(format!("\x1b[{};1H{line}", row + 1).as_bytes());
-    }
-    let start = Instant::now();
-    for _ in 0..300 {
-        black_box(backend.snapshot());
-    }
-    eprintln!("300 URL snapshots: {:?}", start.elapsed());
-}
