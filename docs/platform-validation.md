@@ -78,9 +78,13 @@ startup for both display protocols on every push.
   `alpha_mode = PreMultiplied` in the startup log. Windows uses a DirectComposition
   visual paired with `WS_EX_NOREDIRECTIONBITMAP`; both are required for per-pixel
   transparency. This physical HDR/SDR check is not covered by headless tests.
-- Exercise portable zip startup, the default per-user installer, upgrade, and
+- Exercise portable zip startup and its PowerShell installer, upgrade, and
   uninstaller. Confirm the user PATH entry and Start Menu shortcut are both
   added and removed.
+- Double-click the MSI, launch from Start Menu, upgrade using a newer MSI, and
+  uninstall through Installed apps. Confirm PATH and shortcut removal, and
+  verify that user configuration remains. Uninstall any PowerShell installation
+  before testing the MSI at the same destination.
 
 Windows PTY code is confined to `crates/toyoterm-pty/src/windows.rs`; the Unix backend remains
 behind `cfg(unix)` in `crates/toyoterm-pty/src/lib.rs`. The rest of the application uses `Pty`,

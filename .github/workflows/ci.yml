@@ -22,6 +22,10 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
+      - uses: actions/setup-dotnet@v4
+        if: runner.os == 'Windows'
+        with:
+          dotnet-version: '8.0.x'
       - uses: Swatinem/rust-cache@v2
       - name: Format
         run: cargo fmt --check
@@ -40,6 +44,12 @@ jobs:
         run: cargo run --locked -- gui-smoke-test
       - name: Package
         run: sh scripts/package.sh
+      - name: Test Windows MSI install and uninstall
+        if: runner.os == 'Windows'
+        shell: powershell
+        run: |
+          $installer = Get-ChildItem dist -Filter "*.msi" | Select-Object -First 1
+          & scripts/test-windows-msi.ps1 -InstallerPath $installer.FullName
       - uses: actions/upload-artifact@v7
         with:
           name: toyoterm-${{ runner.os }}-${{ runner.arch }}

@@ -1,0 +1,70 @@
+<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs"
+     xmlns:ui="http://wixtoolset.org/schemas/v4/wxs/ui">
+  <Package Id="ksk001100.toyoterm" Name="toyoterm" Manufacturer="ksk001100"
+           Version="$(var.ProductVersion)" Scope="perUser">
+    <MajorUpgrade DowngradeErrorMessage="A newer version of toyoterm is already installed." />
+    <MediaTemplate EmbedCab="yes" />
+    <ui:WixUI Id="WixUI_Minimal" />
+    <WixVariable Id="WixUILicenseRtf" Value="LICENSE.rtf" />
+
+    <StandardDirectory Id="LocalAppDataFolder">
+      <Directory Id="ProgramsFolder" Name="Programs">
+        <Directory Id="INSTALLFOLDER" Name="toyoterm" />
+      </Directory>
+    </StandardDirectory>
+    <StandardDirectory Id="ProgramMenuFolder">
+      <Directory Id="APPLICATIONPROGRAMSFOLDER" Name="toyoterm" />
+    </StandardDirectory>
+
+    <Component Id="CliExecutable" Directory="INSTALLFOLDER" Guid="f248cfc7-eb51-46f3-a5c3-f09d30005b26">
+      <File Id="CliFile" Source="$(var.PayloadDirectory)\toyoterm.exe" />
+      <RegistryValue Root="HKCU" Key="Software\ksk001100\toyoterm\Installer"
+                     Name="CliExecutable" Type="integer" Value="1" KeyPath="yes" />
+    </Component>
+    <Component Id="GuiExecutable" Directory="INSTALLFOLDER" Guid="a3e6937b-b770-405a-be51-eb48b48b9292">
+      <File Id="GuiFile" Source="$(var.PayloadDirectory)\toyoterm-gui.exe">
+        <Shortcut Id="StartMenuShortcut" Directory="APPLICATIONPROGRAMSFOLDER"
+                  Name="toyoterm" Description="Programmable terminal emulator"
+                  WorkingDirectory="INSTALLFOLDER" />
+      </File>
+      <RemoveFolder Id="RemoveApplicationProgramsFolder" Directory="APPLICATIONPROGRAMSFOLDER" On="uninstall" />
+      <RegistryValue Root="HKCU" Key="Software\ksk001100\toyoterm\Installer"
+                     Name="GuiExecutable" Type="integer" Value="1" KeyPath="yes" />
+    </Component>
+    <Component Id="ConptyLibrary" Directory="INSTALLFOLDER" Guid="014a320e-bd2e-4c02-9ab6-d6e402db4f68">
+      <File Source="$(var.PayloadDirectory)\conpty.dll" />
+      <RegistryValue Root="HKCU" Key="Software\ksk001100\toyoterm\Installer"
+                     Name="ConptyLibrary" Type="integer" Value="1" KeyPath="yes" />
+    </Component>
+    <Component Id="OpenConsoleExecutable" Directory="INSTALLFOLDER" Guid="d0a77317-cb70-41af-9c93-30043efb1c60">
+      <File Source="$(var.PayloadDirectory)\OpenConsole.exe" />
+      <RegistryValue Root="HKCU" Key="Software\ksk001100\toyoterm\Installer"
+                     Name="OpenConsoleExecutable" Type="integer" Value="1" KeyPath="yes" />
+    </Component>
+    <Component Id="LicenseFiles" Directory="INSTALLFOLDER" Guid="b1a0cbc9-3180-468f-9a6b-ec33a81dfa2b">
+      <File Source="$(var.PayloadDirectory)\LICENSE" />
+      <File Source="$(var.PayloadDirectory)\THIRD_PARTY_NOTICES.md" />
+      <File Source="$(var.PayloadDirectory)\licenses\mruby-MIT.txt" />
+      <File Source="$(var.PayloadDirectory)\licenses\conpty-MIT.txt" />
+      <RegistryValue Root="HKCU" Key="Software\ksk001100\toyoterm\Installer"
+                     Name="LicenseFiles" Type="integer" Value="1" KeyPath="yes" />
+    </Component>
+    <Component Id="UserPath" Directory="INSTALLFOLDER" Guid="*">
+      <Environment Id="AddToUserPath" Name="PATH" Action="set" Part="last"
+                   System="no" Value="[INSTALLFOLDER]" />
+      <RemoveFolder Id="RemoveInstallFolder" Directory="INSTALLFOLDER" On="uninstall" />
+      <RemoveFolder Id="RemoveProgramsFolder" Directory="ProgramsFolder" On="uninstall" />
+      <RegistryValue Root="HKCU" Key="Software\ksk001100\toyoterm\Installer"
+                     Name="UserPath" Type="integer" Value="1" KeyPath="yes" />
+    </Component>
+
+    <Feature Id="Complete" Title="toyoterm" Level="1">
+      <ComponentRef Id="CliExecutable" />
+      <ComponentRef Id="GuiExecutable" />
+      <ComponentRef Id="ConptyLibrary" />
+      <ComponentRef Id="OpenConsoleExecutable" />
+      <ComponentRef Id="LicenseFiles" />
+      <ComponentRef Id="UserPath" />
+    </Feature>
+  </Package>
+</Wix>

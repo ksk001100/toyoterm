@@ -16,8 +16,8 @@ metadata are derived from it.
    candidate and link their results from the release issue.
 4. Run the full locked validation baseline in the
    [development guide](development.md#validation), including the architecture check.
-5. Run `sh scripts/package.sh` locally. It must verify the archive and create its
-   SHA-256 sidecar.
+5. Run `sh scripts/package.sh` locally. It must verify the archive and create
+   SHA-256 sidecars for all artifacts. Windows MSI packaging requires the .NET SDK.
 6. Tag the reviewed commit as `vVERSION` and push the tag. The Release workflow
    rejects a tag that does not exactly match the Cargo version.
 7. Confirm all five native package jobs succeed. The workflow publishes Linux
@@ -34,14 +34,15 @@ metadata are derived from it.
   per-user installer/uninstaller, desktop entry, icon, and docs.
 - macOS: `toyoterm-VERSION-TARGET.dmg` and `.tar.gz`, each containing the same
   unsigned `.app` bundle with application metadata and icon.
-- Windows: `toyoterm-VERSION-TARGET.zip`, containing portable `toyoterm.exe`
-  for CLI use, `toyoterm-gui.exe` for GUI launch, optional per-user
-  install/uninstall scripts, and docs.
+- Windows: `toyoterm-VERSION-TARGET.msi` for per-user installation, plus
+  `toyoterm-VERSION-TARGET.zip` containing portable `toyoterm.exe` for CLI use,
+  `toyoterm-gui.exe` for GUI launch, optional PowerShell install/uninstall scripts,
+  and docs.
 - Integrity: a `.sha256` sidecar for every artifact and one combined
   `SHA256SUMS` file on the GitHub Release.
 
 The macOS bundle is unsigned and not notarized; users may need to approve it in
-Privacy & Security. The Windows executable is not Authenticode-signed. Those
+Privacy & Security. The Windows MSI and executables are not Authenticode-signed. Those
 steps require project-owned signing identities and are not replaced by SHA-256
 checksums. The Windows zip remains portable and modifies user state only when
 the included installer is explicitly run. See [packaging](packaging.md) for layouts,

@@ -57,22 +57,30 @@ checklist](platform-validation.md).
 
 ## Windows
 
-Extract `toyoterm-VERSION-TARGET.zip`. It can be run in place without modifying
-the registry. For a per-user installation, run PowerShell from the extracted
-directory:
+Download `toyoterm-VERSION-TARGET.msi` and double-click it for a per-user
+installation. It installs to `%LOCALAPPDATA%\Programs\toyoterm`, adds that
+directory to the user `PATH`, and creates a Start Menu shortcut. A newer MSI
+upgrades the previous MSI installation. Remove toyoterm through Windows
+**Installed apps**. Close toyoterm before upgrading or uninstalling. User
+configuration is preserved.
+
+The portable `toyoterm-VERSION-TARGET.zip` can be extracted and run in place.
+It also retains the PowerShell installer for users who need a custom install
+directory or want to opt out of PATH and Start Menu changes. From the extracted
+directory, run:
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File .\Install-Toyoterm.ps1
 ```
 
-The default destination is `%LOCALAPPDATA%\Programs\toyoterm`. The installer
-adds that directory to the user `PATH` and creates a Start Menu shortcut. Use
+The PowerShell installer uses the same default destination. Use
 `-NoPath`, `-NoStartMenu`, or `-InstallDirectory PATH` to change this behavior.
 Run the installed `Uninstall-Toyoterm.ps1` to remove the executable, user PATH
-entry, shortcut, and installer files. The zip remains usable as a portable
-fallback.
+entry, shortcut, and installer files. Uninstall a PowerShell installation
+before switching to the MSI, since the two installers do not share ownership
+of installed files.
 
-The archive and installed directory contain `toyoterm.exe` for CLI use and
+The MSI, archive, and installed directory contain `toyoterm.exe` for CLI use and
 `toyoterm-gui.exe` as the no-console Start Menu launcher. Both start the same
 terminal application; keeping the CLI executable in the console subsystem makes
 interactive commands such as `toyoterm ruby console` own their input normally.
@@ -83,7 +91,7 @@ terminal control strings such as Kitty graphics APC on Windows; the operating
 system ConPTY may filter them. Do not copy or update only one file from the
 pair.
 
-The executable is not currently Authenticode-signed. Signing requires a
+The MSI and executables are not currently Authenticode-signed. Signing requires a
 project-owned code-signing certificate. Interactive validation is tracked
 separately in the [platform checklist](platform-validation.md).
 
@@ -101,10 +109,12 @@ an extracted package. On macOS the common files are inside
 ## Integrity and release automation
 
 `sh scripts/package.sh` performs a locked release build, checks license notices,
-assembles the native artifact, and invokes `scripts/verify-package.sh`. The
-verification rejects unsafe archive paths, checks the required documentation
-and license payload, runs the packaged binary's `version` command, and exercises
-Linux installation and removal. Each artifact receives a `.sha256` sidecar.
+assembles the native artifacts, and invokes `scripts/verify-package.sh`. Windows
+packaging also needs the .NET SDK to restore the pinned WiX Toolset and build
+the MSI. Package verification rejects unsafe archive paths, checks the required
+documentation and license payload, runs the packaged binary's `version`
+command, and exercises Linux installation and removal. Each artifact receives
+a `.sha256` sidecar.
 
 Pushing a `vVERSION` tag starts `.github/workflows/release.yml`. It refuses a tag
 that differs from the Cargo version, then formats, lints, tests, packages, and

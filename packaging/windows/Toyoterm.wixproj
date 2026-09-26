@@ -1,0 +1,13 @@
+<Project Sdk="WixToolset.Sdk/6.0.2">
+  <PropertyGroup>
+    <InstallerPlatform>x64</InstallerPlatform>
+    <OutputType>Package</OutputType>
+    <!-- The package has fixed per-user scope and installs into per-user directories. -->
+    <SuppressIces>ICE90;ICE91</SuppressIces>
+    <OutputPath>../../target/wix/output/</OutputPath>
+    <DefineConstants>$(DefineConstants);ProductVersion=$(ProductVersion);PayloadDirectory=$(PayloadDirectory)</DefineConstants>
+  </PropertyGroup>
+  <ItemGroup>
+    <PackageReference Include="WixToolset.UI.wixext" Version="6.0.2" />
+  </ItemGroup>
+</Project>

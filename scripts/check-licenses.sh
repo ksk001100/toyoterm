@@ -17,6 +17,7 @@ vendor/conpty/LICENSE
 vendor/conpty/README.md
 vendor/conpty/win-x64/conpty.dll
 vendor/conpty/win-x64/OpenConsole.exe
+packaging/windows/LICENSE.rtf
 "
 
 for required_file in $required_files; do
@@ -32,6 +33,8 @@ permission='The above copyright notice and this permission notice shall be inclu
 
 grep -Fq "$project_copyright" LICENSE
 grep -Fq "$permission" LICENSE
+grep -Fq "$project_copyright" packaging/windows/LICENSE.rtf
+grep -Fq "$permission" packaging/windows/LICENSE.rtf
 grep -Fq "$copyright" vendor/mruby/LICENSE
 grep -Fq "$copyright" THIRD_PARTY_NOTICES.md
 grep -Fq "$permission" vendor/mruby/LICENSE

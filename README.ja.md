@@ -46,7 +46,7 @@ cargo run --locked
 `target/release/toyoterm-gui.exe`、CLIコマンドに`target/release/toyoterm.exe`を使用します。
 
 リリース成果物は、Linuxでは`install.sh`付きアーカイブ、macOSではDMGまたはappバンドルの
-アーカイブ、Windowsでは任意のユーザー単位インストーラ付きportable zipです。
+アーカイブ、Windowsではユーザー単位のMSIインストーラーとportable zipです。
 [インストール・更新・削除・チェックサム](docs/packaging.md)を参照してください。
 配布パッケージには、リンク先のガイドと実行可能なサンプルも含まれます。
 macOSアプリは未署名のため、初回起動時に[インストール手順](docs/packaging.md#macos)に従って

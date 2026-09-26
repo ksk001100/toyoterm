@@ -110,7 +110,16 @@ case "$target" in
     else
       tar -C "$staging_root" -a -cf "$archive_path" "$archive_name"
     fi
-    created_artifacts=$archive_path
+    if ! command -v dotnet >/dev/null 2>&1; then
+      echo "dotnet SDK is required to build the Windows MSI" >&2
+      exit 1
+    fi
+    dotnet build packaging/windows/Toyoterm.wixproj --configuration Release \
+      -p:ProductVersion="$version" \
+      -p:PayloadDirectory="$(cygpath -w "$staging_directory")"
+    msi_path="dist/$archive_name.msi"
+    cp target/wix/output/Toyoterm.msi "$msi_path"
+    created_artifacts="$archive_path $msi_path"
     ;;
   *-linux-*)
     copy_common_files "$staging_directory"
