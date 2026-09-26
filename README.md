@@ -26,8 +26,9 @@ This is a personal project built for my own use and an experimental toy.
 ## Current status
 
 Linux is the primary development platform. CI runs builds, tests, packaging,
-and GUI startup smoke tests on Linux, macOS, and Windows. Interactive validation
-on physical machines is still required; see [platform validation](docs/platform-validation.md).
+and GUI startup smoke tests on Linux, macOS, and Windows. Core behavior has also
+been exercised on physical machines running each OS. The release candidate still
+needs the documented checks; see [platform validation](docs/platform-validation.md).
 Multiple OS windows and session persistence remain outside
 the initial release scope. Ruby `MuxWindow` handles represent mux windows inside
 the application's single OS window.

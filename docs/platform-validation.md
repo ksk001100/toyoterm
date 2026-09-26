@@ -7,6 +7,8 @@ both X11 (Xvfb) and Wayland (headless Weston); macOS and Windows also run the
 native GUI smoke test. These are startup checks, not interactive validation.
 The GUI smoke command exits only
 after creating the window, renderer, IME context, and initial shell session.
+Core behavior has also been exercised on physical Linux, macOS, and Windows
+machines. The checklist below is for release-candidate-specific validation.
 
 Before publishing a release candidate, run the following interactive checks on
 physical machines. Record the OS version, display scale, keyboard layout, and
