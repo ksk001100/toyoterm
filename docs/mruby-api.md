@@ -638,9 +638,10 @@ end
 
 ### `Toyoterm::MuxWindow`
 
-`MuxWindow` is a mux object. The GUI displays the active mux window in a single OS
-window; `Workspace#new_window` does not create another OS window. Multiple OS
-windows remain deferred.
+`MuxWindow` is a mux object. Each GUI process displays the active mux window in
+one OS window; `Workspace#new_window` does not create another OS window in that
+process. Running `toyoterm` again starts a separate GUI process and OS window.
+Multiple OS windows within one GUI process remain deferred.
 
 | Member | Result |
 | --- | --- |

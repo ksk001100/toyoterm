@@ -11,7 +11,7 @@ toyoterm is an experimental, programmable terminal emulator powered by Rust and 
 This is a personal project built for my own use and an experimental toy.
 
 > [!IMPORTANT]
-> toyoterm is under active development. GUI workspaces, tabs, and split panes have independent PTY and terminal sessions. Multiple OS windows are intentionally deferred until after the initial release.
+> toyoterm is under active development. GUI workspaces, tabs, and split panes have independent PTY and terminal sessions. Each GUI process has one OS window; running `toyoterm` again starts another process and window. Multiple OS windows within one process are intentionally deferred until after the initial release.
 
 ## Features
 
@@ -29,9 +29,9 @@ Linux is the primary development platform. CI runs builds, tests, packaging,
 and GUI startup smoke tests on Linux, macOS, and Windows. Core behavior has also
 been exercised on physical machines running each OS. The release candidate still
 needs the documented checks; see [platform validation](docs/platform-validation.md).
-Multiple OS windows and session persistence remain outside
+Multiple OS windows within one GUI process and session persistence remain outside
 the initial release scope. Ruby `MuxWindow` handles represent mux windows inside
-the application's single OS window.
+that GUI process's single OS window.
 
 ## Build and run
 
