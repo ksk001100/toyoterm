@@ -39,11 +39,21 @@ containing the same application bundle is provided for scripted or portable
 use. Quit toyoterm before replacing an existing bundle. Uninstall by removing
 `toyoterm.app`.
 
-The application bundle currently has no Apple Developer signature or
-notarization ticket. macOS may require explicit approval in Privacy & Security.
-Signing and notarization require project-owned Apple credentials and are the
-external prerequisites for signed and notarized releases. Interactive validation
-is tracked separately in the [platform checklist](platform-validation.md).
+The application bundle is unsigned and not notarized. A DMG downloaded from the
+internet can be opened and the app copied to Applications, but macOS may block
+the first launch because it cannot verify the developer or check the app for
+malicious software. If you trust the downloaded artifact and have verified its
+checksum, try opening `toyoterm.app` once, then open **System Settings → Privacy
+& Security**, scroll down, select **Open Anyway** for toyoterm, and confirm
+**Open**. macOS then remembers the exception for that copy of the app. Managed
+Macs may not offer this option. See [Apple's instructions for opening an app
+from an unidentified developer](https://support.apple.com/en-us/102445).
+
+This manual approval is part of the unsigned distribution; no paid Apple
+Developer account is needed to download or use toyoterm. The SHA-256 checksum
+checks the download's integrity but does not provide a developer signature.
+Interactive validation is tracked separately in the [platform
+checklist](platform-validation.md).
 
 ## Windows
 

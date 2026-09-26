@@ -53,6 +53,8 @@ For release artifacts, Linux provides an archive with `install.sh`, macOS a DMG
 or app-bundle archive, and Windows a portable zip with an optional per-user
 installer. See [installation, upgrade, uninstall, and checksums](docs/packaging.md).
 Release packages include the linked guides and runnable examples.
+The macOS app is unsigned; first launch may require the manual approval steps
+in the [installation guide](docs/packaging.md#macos).
 
 ## Configuration
 
