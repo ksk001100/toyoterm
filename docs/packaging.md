@@ -49,6 +49,17 @@ checksum, try opening `toyoterm.app` once, then open **System Settings → Priva
 Macs may not offer this option. See [Apple's instructions for opening an app
 from an unidentified developer](https://support.apple.com/en-us/102445).
 
+If macOS instead says that `toyoterm.app` is damaged and cannot be opened after
+installing it from the DMG, and you trust the artifact after verifying its
+checksum, remove the quarantine attribute from the installed app in Terminal:
+
+```sh
+xattr -dr com.apple.quarantine /Applications/toyoterm.app
+```
+
+Then launch `toyoterm.app` again. This removes macOS's downloaded-app
+quarantine check for that copy of the app.
+
 This manual approval is part of the unsigned distribution; no paid Apple
 Developer account is needed to download or use toyoterm. The SHA-256 checksum
 checks the download's integrity but does not provide a developer signature.

@@ -55,7 +55,13 @@ The Windows Start Menu shortcut opens toyoterm in the user's home directory.
 See [installation, upgrade, uninstall, and checksums](docs/packaging.md).
 Release packages include the linked guides and runnable examples.
 The macOS app is unsigned; first launch may require the manual approval steps
-in the [installation guide](docs/packaging.md#macos).
+in the [installation guide](docs/packaging.md#macos). If macOS reports that the
+app is damaged after installing from the DMG, verify the download's checksum
+and, if you trust it, run this in Terminal before launching it again:
+
+```sh
+xattr -dr com.apple.quarantine /Applications/toyoterm.app
+```
 
 ## Configuration
 
