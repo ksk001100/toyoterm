@@ -417,6 +417,9 @@ impl GpuRenderer {
         let (device, queue) = adapter
             .request_device(&DeviceDescriptor {
                 label: Some("toyoterm device"),
+                // DX12's default allocation policy reserves far more memory at startup.
+                #[cfg(target_os = "windows")]
+                memory_hints: wgpu::MemoryHints::MemoryUsage,
                 ..Default::default()
             })
             .await
@@ -2189,7 +2192,14 @@ pub(super) fn renderer_instance_descriptor() -> wgpu::InstanceDescriptor {
             wgpu::Dx12SwapchainKind::DxgiFromVisual;
         descriptor
     }
-    #[cfg(not(target_os = "windows"))]
+    #[cfg(target_os = "macos")]
+    {
+        let mut descriptor = descriptor;
+        // Avoid initializing unused Vulkan and GLES instances alongside Metal.
+        descriptor.backends = wgpu::Backends::METAL;
+        descriptor
+    }
+    #[cfg(not(any(target_os = "windows", target_os = "macos")))]
     descriptor
 }
 
