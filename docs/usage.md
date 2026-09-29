@@ -208,6 +208,8 @@ If multiple GUIs are running, clients select the most recently started instance.
 Set the same `TOYOTERM_INSTANCE` when starting a GUI and invoking its clients to
 select a named instance. See [local IPC](ipc.md) for runtime paths,
 authentication, and the same-user control boundary.
+Inside a toyoterm pane, the CLI selects the GUI that owns the pane; the GUI
+passes its instance ID and runtime directory to the pane process.
 
 The following commands run locally without connecting to an existing GUI:
 

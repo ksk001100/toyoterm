@@ -92,6 +92,8 @@ end
 Linux・macOS・Windowsのパスとエラー時の復旧は[設定の読込](docs/mruby-api.md#loading-configuration)
 を参照してください。`toyoterm reload`で再読込し、`toyoterm ruby console`で複数行の定義や
 入力間で保持される変数を使ったRubyのライブ変更ができます。
+toyotermのペイン内で実行したCLIコマンドは、シェルが一時ディレクトリ関連の環境変数を
+変更した場合や複数のGUIが起動している場合も、そのペインのGUIに接続します。
 
 設定とrequireしたRubyライブラリは信頼済みコードとして動作し、ファイル・プロセス・環境変数・クリップボードへ
 アクセスできます。サンドボックスではありません。組み込みランタイムはmrubyのため、
