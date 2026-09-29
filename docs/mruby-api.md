@@ -389,6 +389,39 @@ end
 | `pane_divider_width` | `2` | Non-negative finite number. |
 | `active_pane_border_width` | `2` | Non-negative finite number. |
 
+### `config.osc`
+
+OSC permissions are grouped under `config.osc`. It accepts a block or returns
+the same object for direct assignment:
+
+```ruby
+config.osc do |osc|
+  osc.notifications = true
+  osc.downloads = "/absolute/path/to/downloads"
+  osc.uploads = "/absolute/path/to/shared-files"
+end
+```
+
+| Setting | Default | Accepted values and effect |
+| --- | --- | --- |
+| `clipboard` | `false` | Boolean; enables OSC 52 and iTerm2 clipboard writes. |
+| `notifications` | `false` | Boolean; enables OSC 9, 99, and 777 desktop notifications. |
+| `attention` | `false` | Boolean; enables iTerm2 attention requests. |
+| `open_url` | `false` | Boolean; enables iTerm2 URL launches. |
+| `focus` | `false` | Boolean; enables iTerm2 focus requests. |
+| `downloads` | `nil` | Existing absolute directory as a String enables iTerm2 and Kitty downloads; `nil` disables them. |
+| `uploads` | `nil` | Existing absolute, non-symlink directory as a String enables Kitty uploads; `nil` disables them. |
+| `background_image` | `nil` | Existing absolute, non-symlink directory as a String enables iTerm2 wallpaper changes; `nil` disables them. |
+
+Boolean settings reject other types with `TypeError`. Directory settings reject
+non-String, non-`nil` values with `TypeError`, an empty String with
+`ArgumentError`, and relative paths during config validation. A failed
+configuration evaluation or validation rolls back the whole change. Successful
+reloads apply the same runtime behavior and limits described below. The
+`config.behavior` settings remain available; both APIs read and write the same
+underlying values, and the last assignment to a value takes effect. The
+directory getters return `nil` when their permission is disabled.
+
 ### `config.behavior`
 
 | Setting | Default | Validation |

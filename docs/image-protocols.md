@@ -85,14 +85,13 @@ diacritics are not exposed to the text renderer.
   Decoded RGBA is limited to 32 MiB and 4096 pixels per side. Image decoding also
   has a 32 MiB allocation budget. Oversized/malformed strings are discarded and
   normal text parsing resumes at the terminator.
-- Downloads are disabled unless both `behavior.allow_osc_file_downloads` and an
-  absolute `behavior.osc_download_directory` are configured. They are queued on
+- Downloads are disabled unless `config.osc.downloads` names an absolute
+  directory. They are queued on
   one bounded worker, never overwrite an existing file, strip path components,
   sanitize portable filename hazards, and remove a partial file after a write
   failure.
-- Kitty OSC 5113 uploads are disabled unless both
-  `behavior.allow_osc_file_uploads` and an absolute
-  `behavior.osc_upload_directory` are configured. Client paths are rebased
+- Kitty OSC 5113 uploads are disabled unless `config.osc.uploads` names an
+  absolute directory. Client paths are rebased
   below that fixed root; traversal, special files, and absolute or escaping
   symbolic links are rejected. Directory walks do not follow links and are
   limited to 64 entries / 32 MiB per session. Reads and optional zlib encoding

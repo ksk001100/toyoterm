@@ -1046,6 +1046,86 @@ fn rejects_relative_osc_background_image_roots() {
 }
 
 #[test]
+fn osc_config_maps_permissions_and_directories_to_native_behavior() {
+    let directory = if cfg!(windows) {
+        "C:/tmp/toyoterm-osc"
+    } else {
+        "/tmp/toyoterm-osc"
+    };
+    let source = r#"
+        Toyoterm.configure do |config|
+          config.osc do |osc|
+            osc.clipboard = true
+            osc.notifications = true
+            osc.attention = true
+            osc.open_url = true
+            osc.focus = true
+            osc.downloads = "__DIRECTORY__"
+            osc.uploads = "__DIRECTORY__"
+            osc.background_image = "__DIRECTORY__"
+          end
+        end
+    "#
+    .replace("__DIRECTORY__", directory);
+    let mut manager = ConfigManager::new().unwrap();
+    let config = manager.reload(&source).unwrap();
+    assert!(config.behavior.allow_osc52_copy);
+    assert!(config.behavior.allow_osc_notifications);
+    assert!(config.behavior.allow_osc_attention_requests);
+    assert!(config.behavior.allow_osc_open_url);
+    assert!(config.behavior.allow_osc_focus_requests);
+    assert!(config.behavior.allow_osc_file_downloads);
+    assert_eq!(
+        config.behavior.osc_download_directory.as_deref(),
+        Some(std::path::Path::new(directory))
+    );
+    assert!(config.behavior.allow_osc_file_uploads);
+    assert_eq!(
+        config.behavior.osc_upload_directory.as_deref(),
+        Some(std::path::Path::new(directory))
+    );
+    assert!(config.behavior.allow_osc_background_image);
+    assert_eq!(
+        config.behavior.osc_background_image_directory.as_deref(),
+        Some(std::path::Path::new(directory))
+    );
+
+    let config = manager.reload("Toyoterm.configure { |config| config.osc { |osc| osc.downloads = nil; osc.uploads = nil; osc.background_image = nil } }").unwrap();
+    assert!(!config.behavior.allow_osc_file_downloads);
+    assert!(config.behavior.osc_download_directory.is_none());
+    assert!(!config.behavior.allow_osc_file_uploads);
+    assert!(config.behavior.osc_upload_directory.is_none());
+    assert!(!config.behavior.allow_osc_background_image);
+    assert!(config.behavior.osc_background_image_directory.is_none());
+}
+
+#[test]
+fn osc_config_rejects_invalid_values_without_committing_them() {
+    let mut manager = ConfigManager::new().unwrap();
+    let error = manager
+        .reload("Toyoterm.configure { |config| config.osc.downloads = 'relative' }")
+        .unwrap_err();
+    assert!(
+        error
+            .message()
+            .contains("osc_download_directory must be an absolute path")
+    );
+    let error = manager
+        .reload("Toyoterm.configure { |config| config.osc.notifications = 1 }")
+        .unwrap_err();
+    assert!(
+        error
+            .message()
+            .contains("osc.notifications must be true or false")
+    );
+    let config = manager
+        .reload("Toyoterm.configure { |config| config.osc.downloads = nil }")
+        .unwrap();
+    assert!(!config.behavior.allow_osc_file_downloads);
+    assert!(config.behavior.osc_download_directory.is_none());
+}
+
+#[test]
 fn require_loads_plain_ruby_from_the_config_lib_directory() {
     let directory = temporary_test_directory("require-library");
     let library_directory = directory.join("lib");
