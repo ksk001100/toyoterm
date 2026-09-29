@@ -51,7 +51,7 @@ OSC 52 and iTerm2 OSC 1337 clipboard writes are disabled by default. Terminal ou
 from an untrusted local process or remote host, so enabling them lets that
 output replace the system clipboard without a user gesture. Trusted
 configuration can opt in with
-`config.behavior.allow_osc52_copy = true`. Decoded writes are limited to 64 KiB;
+`config.osc.clipboard = true`. Decoded writes are limited to 64 KiB;
 invalid base64, invalid UTF-8, unsupported clipboard selectors, and oversized
 payloads are ignored. The iTerm2 one-shot `Copy=:` form and unnamed
 `CopyToClipboard=` / `EndCopy` text capture use the same permission and limit;
@@ -65,8 +65,8 @@ available independently.
 ### File-transfer security
 
 iTerm2 OSC 1337 `inline=0` and Kitty OSC 5113 downloads are disabled by default. To enable them,
-set `config.behavior.allow_osc_file_downloads = true` and set
-`config.behavior.osc_download_directory` to an existing absolute directory.
+set `config.osc.downloads` to an existing absolute directory. Set it to `nil`
+to disable downloads again.
 Decoded transfers are limited to 32 MiB. Remote path components and unsafe
 filename characters are removed, existing files are never overwritten, and a
 bounded background worker performs writes without blocking terminal parsing.
@@ -79,8 +79,7 @@ IDs are required to refer to an earlier directory, link targets are limited to
 the transferred tree, and external or escaping symbolic-link targets are rejected.
 
 Kitty OSC 5113 uploads (terminal-to-client receive sessions) use a separate
-permission and root. Set `config.behavior.allow_osc_file_uploads = true` and
-`config.behavior.osc_upload_directory` to an existing absolute directory.
+permission and root. Set `config.osc.uploads` to an existing absolute directory.
 Requested `/...` and `~/...` protocol paths are always rebased below that root.
 Traversal and platform prefixes are rejected, directory walks do not follow
 symbolic links, and absolute or escaping symbolic-link targets are refused.
@@ -90,8 +89,7 @@ Each session is limited to 64 entries and 32 MiB; data is returned in bounded
 ### OSC background-image security
 
 iTerm2 OSC 1337 `SetBackgroundImageFile=` is disabled by default. Enable it with
-`config.behavior.allow_osc_background_image = true` and set
-`config.behavior.osc_background_image_directory` to an existing absolute,
+`config.osc.background_image` set to an existing absolute,
 non-symbolic-link directory. Decoded relative, `/...`, and `~/...` paths are
 rebased below that root. Traversal, platform prefixes, directories, missing
 files, and links resolving outside the root are rejected. PNG/JPEG loading and
@@ -103,7 +101,7 @@ reloading configuration restores the configured wallpaper.
 
 OSC 9, OSC 99, and OSC 777 desktop notifications are disabled by default because remote
 output could otherwise create notification spam. Enable them with
-`config.behavior.allow_osc_notifications = true`. Legacy messages are plain UTF-8;
+`config.osc.notifications = true`. Legacy messages are plain UTF-8;
 OSC 99 additionally accepts its bounded padded/unpadded base64 and ID-based chunk forms.
 Its `always`, `unfocused`, and `invisible` delivery occasions, urgency, expiry,
 and every standard sound (`system`, `silent`, `error`, `warn`/`warning`, `info`, and
@@ -141,14 +139,14 @@ is logged and does not block PTY parsing.
 
 iTerm2 OSC 1337 attention requests are disabled by default because remote output
 could otherwise flash or bounce the application repeatedly. Trusted configuration
-can opt in with `config.behavior.allow_osc_attention_requests = true`. Values `yes`,
+can opt in with `config.osc.attention = true`. Values `yes`,
 `once`, and `no` request indefinite attention, one-shot attention, or cancellation
 through the platform window API. `fireworks` renders a bounded 350 ms burst around
 the requesting pane's cursor without invoking a platform attention API.
 
 OSC 1337 `StealFocus` and `Disinter` are controlled separately because they can
 move the application to the foreground without a click. Enable them only for
-trusted output with `config.behavior.allow_osc_focus_requests = true`. Requests
+trusted output with `config.osc.focus = true`. Requests
 are limited to one per pane every two seconds; the window manager may still deny
 the focus change.
 
@@ -156,7 +154,7 @@ the focus change.
 
 OSC 1337 `OpenURL=:` requests are disabled by default because they launch the
 platform URL handler without a click. Trusted configuration can opt in with
-`config.behavior.allow_osc_open_url = true`. The base64-decoded URL is limited
+`config.osc.open_url = true`. The base64-decoded URL is limited
 to 2,048 bytes, must not contain control characters, and must use `https`,
 `http`, or `mailto`. Requests are limited to one per pane every two seconds.
 

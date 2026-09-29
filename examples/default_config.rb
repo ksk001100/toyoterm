@@ -60,23 +60,23 @@ Toyoterm.configure do |config|
   config.behavior do |behavior|
     behavior.scroll_lines = 3
     behavior.copy_on_select = false
+  end
+
+  config.osc do |osc|
     # Allows terminal output to replace the system clipboard; leave false for untrusted shells.
-    behavior.allow_osc52_copy = false
+    osc.clipboard = false
     # Allows OSC 9/99/777 desktop notifications, limited to one per pane every two seconds.
-    behavior.allow_osc_notifications = false
+    osc.notifications = false
     # Allows OSC 1337 RequestAttention=yes/once/no to request OS-level attention.
-    behavior.allow_osc_attention_requests = false
+    osc.attention = false
     # Allows bounded http(s)/mailto OSC 1337 OpenURL requests without a click.
-    behavior.allow_osc_open_url = false
-    # Permit OSC 1337 downloads into one fixed absolute directory.
-    behavior.allow_osc_file_downloads = false
-    behavior.osc_download_directory = ""
-    behavior.allow_osc_file_uploads = false
-    behavior.osc_upload_directory = ""
-    behavior.allow_osc_background_image = false
-    behavior.osc_background_image_directory = ""
+    osc.open_url = false
+    # Set these to existing absolute directories to enable them.
+    osc.downloads = nil
+    osc.uploads = nil
+    osc.background_image = nil
     # Allows OSC 1337 StealFocus/Disinter to ask the window manager for focus.
-    behavior.allow_osc_focus_requests = false
+    osc.focus = false
   end
 
   config.scrollback_lines = 10_000

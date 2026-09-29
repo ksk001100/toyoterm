@@ -22,6 +22,7 @@ toyotermはRustと組み込みmrubyによる、プログラム可能な実験的
 - Linux・macOS・Windowsでの7/8ビットSixel・Kitty画像プロトコル（TUIフレームワークが使うUnicode placeholderを含む）・iTerm2 OSC 1337による画像表示と、明示許可・サイズ制限付きiTerm2／Kittyファイルダウンロードおよび固定ルート内に限定したKittyアップロード。子セッションでは外側の端末から継承した古い機能判定用環境変数を除去し、TUI画像ライブラリがtoyotermを正しく判定できるようにします（[対応範囲と実行例](docs/image-protocols.md)）
 - mruby 4.0による設定、ネイティブ・Rubyキーバインド、イベント、コマンド、ローカルRubyライブラリ、テーマ、検索可能な選択オーバーレイ
 - アトミックな設定リロード、ライブRubyコンソール、ローカルIPC、ウィンドウバーと壁紙（明示許可・固定ルート内に限定したOSC壁紙変更を含む）
+- OSCの許可設定を `config.osc` に集約。ダウンロード・アップロード・OSC壁紙変更は絶対パスのディレクトリを指定するだけで有効化できます（[設定API](docs/mruby-api.md#configosc)）
 
 ## 現在の状態
 

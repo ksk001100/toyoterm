@@ -22,6 +22,7 @@ This is a personal project built for my own use and an experimental toy.
 - Inline images on Linux, macOS, and Windows using 7/8-bit Sixel, Kitty graphics (including Unicode placeholders used by TUI frameworks), and iTerm2 OSC 1337, plus opt-in bounded iTerm2/Kitty file downloads and fixed-root Kitty uploads; child sessions discard stale outer-terminal capability hints so TUI image libraries can detect toyoterm correctly ([supported subset and example](docs/image-protocols.md))
 - Embedded mruby 4.0 configuration, native and Ruby key bindings, events, commands, local Ruby libraries, themes, and searchable selection overlays
 - Atomic configuration reload, a live Ruby console, local IPC, and configurable window bars and wallpaper, including opt-in fixed-root OSC wallpaper changes
+- Grouped `config.osc` permissions; assigning an absolute directory enables downloads, uploads, or OSC wallpaper changes without a separate permission flag ([configuration reference](docs/mruby-api.md#configosc))
 
 ## Current status
 

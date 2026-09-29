@@ -604,6 +604,40 @@ module Toyoterm
     end
   end
 
+  class OscConfig
+    def initialize(behavior)
+      @behavior = behavior
+    end
+
+    {
+      clipboard: :allow_osc52_copy,
+      notifications: :allow_osc_notifications,
+      attention: :allow_osc_attention_requests,
+      open_url: :allow_osc_open_url,
+      focus: :allow_osc_focus_requests
+    }.each do |name, setting|
+      define_method(name) { @behavior.send(setting) }
+      define_method("#{name}=") do |value|
+        @behavior.send("#{setting}=", Toyoterm.__boolean(value, "osc.#{name}"))
+      end
+    end
+
+    {
+      downloads: [:allow_osc_file_downloads, :osc_download_directory],
+      uploads: [:allow_osc_file_uploads, :osc_upload_directory],
+      background_image: [:allow_osc_background_image, :osc_background_image_directory]
+    }.each do |name, (permission, directory)|
+      define_method(name) do
+        @behavior.send(permission) ? @behavior.send(directory) : nil
+      end
+      define_method("#{name}=") do |value|
+        path = value.nil? ? "" : Toyoterm.__string(value, "osc.#{name}")
+        @behavior.send("#{directory}=", path)
+        @behavior.send("#{permission}=", !value.nil?)
+      end
+    end
+  end
+
   class CallbackContext
     attr_reader :workspace, :window, :tab, :pane
 
@@ -841,6 +875,7 @@ module Toyoterm
       @window = WindowConfig.new
       @ui = UiConfig.new
       @behavior = BehaviorConfig.new
+      @osc = OscConfig.new(@behavior)
       @default_shell = nil
       @scrollback_lines = 10_000
       @bindings = {}
@@ -893,6 +928,11 @@ module Toyoterm
     def behavior(&block)
       block.call(@behavior) if block
       @behavior
+    end
+
+    def osc(&block)
+      block.call(@osc) if block
+      @osc
     end
 
     def to_h
