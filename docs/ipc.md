@@ -6,6 +6,11 @@ toyoterm exposes one versioned local endpoint per GUI process. Unix builds use a
 
 Each GUI writes an instance state file containing its ID, PID, transport, endpoint, protocol version, and authentication token. The default ID is the GUI PID, and an `active` file points to the most recently started GUI. Set `TOYOTERM_INSTANCE` for a stable explicit ID; clients use that ID instead of `active`.
 
+Pane processes receive `TOYOTERM_INSTANCE` and `TOYOTERM_RUNTIME_DIR` from their
+GUI. CLI commands launched in a pane therefore select that GUI and its actual
+runtime directory, even if the shell changes `TMPDIR` or `XDG_RUNTIME_DIR`.
+Explicit pane launch environments cannot replace these two connection values.
+
 Runtime state lives under `$TOYOTERM_RUNTIME_DIR` when set. Otherwise Unix uses
 `$XDG_RUNTIME_DIR/toyoterm` or `toyoterm-<uid>` under the process temporary
 directory (usually `/tmp` on Linux). Windows uses

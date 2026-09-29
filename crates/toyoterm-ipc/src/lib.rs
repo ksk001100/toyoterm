@@ -111,6 +111,16 @@ impl IpcServer {
     pub fn address(&self) -> &str {
         &self.endpoint
     }
+
+    pub fn runtime_dir(&self) -> &Path {
+        self.active_path
+            .parent()
+            .expect("active file has a runtime directory")
+    }
+
+    pub fn instance_id(&self) -> &str {
+        &self.instance_id
+    }
 }
 
 impl Drop for IpcServer {

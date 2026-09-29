@@ -388,7 +388,7 @@ fn custom_pane_launch_applies_argv_cwd_and_environment() {
         cwd: Some(cwd.display().to_string()),
         environment: vec![("TOYOTERM_LAUNCH_TEST".into(), Some("works".into()))],
     };
-    let command = pane_lifecycle::pty_command_for_launch(None, Some(&launch));
+    let command = pane_lifecycle::pty_command_for_launch(None, Some(&launch), None);
     let mut session = NativePty
         .spawn(command, PtySize::new(80, 24))
         .expect("spawn custom pane command");
@@ -400,6 +400,42 @@ fn custom_pane_launch_applies_argv_cwd_and_environment() {
     assert_eq!(status.code, 0);
     assert!(
         output.contains(&format!("{}|works", expected_cwd.display())),
+        "unexpected output: {output:?}"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn pane_shell_receives_its_gui_ipc_instance() {
+    let runtime_dir = std::env::temp_dir().join("toyoterm-ipc-parent");
+    let launch = PaneLaunchSpec {
+        program: Some("/bin/sh".into()),
+        args: vec![
+            "-c".into(),
+            "printf '%s|%s' \"$TOYOTERM_RUNTIME_DIR\" \"$TOYOTERM_INSTANCE\"".into(),
+        ],
+        cwd: None,
+        environment: vec![
+            ("TOYOTERM_RUNTIME_DIR".into(), Some("/wrong/runtime".into())),
+            ("TOYOTERM_INSTANCE".into(), Some("wrong".into())),
+        ],
+    };
+    let command = pane_lifecycle::pty_command_for_launch(
+        None,
+        Some(&launch),
+        Some((&runtime_dir, "own-gui")),
+    );
+    let mut session = NativePty
+        .spawn(command, PtySize::new(80, 24))
+        .expect("spawn pane command");
+    let mut reader = session.take_reader().expect("take PTY reader");
+    let mut output = String::new();
+    reader.read_to_string(&mut output).expect("read PTY output");
+    let status = session.wait().expect("wait for pane command");
+
+    assert_eq!(status.code, 0);
+    assert!(
+        output.contains(&format!("{}|own-gui", runtime_dir.display())),
         "unexpected output: {output:?}"
     );
 }
@@ -426,7 +462,7 @@ fn pane_launch_removes_stale_outer_terminal_identity() {
             ("TMUX".into(), Some("stale".into())),
         ],
     };
-    let command = pane_lifecycle::pty_command_for_launch(None, Some(&launch));
+    let command = pane_lifecycle::pty_command_for_launch(None, Some(&launch), None);
     let mut session = NativePty
         .spawn(command, PtySize::new(80, 24))
         .expect("spawn custom pane command");

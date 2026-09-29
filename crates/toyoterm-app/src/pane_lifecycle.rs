@@ -19,6 +19,7 @@ const OUTER_TERMINAL_ENVIRONMENT: &[&str] = &[
 pub(super) fn pty_command_for_launch(
     default_shell: Option<&str>,
     launch: Option<&PaneLaunchSpec>,
+    ipc_instance: Option<(&Path, &str)>,
 ) -> PtyCommand {
     let mut command = match launch
         .and_then(|launch| launch.program.as_deref())
@@ -46,6 +47,10 @@ pub(super) fn pty_command_for_launch(
     command.env("TERM", "xterm-256color");
     command.env("TERM_PROGRAM", "toyoterm");
     command.env("TERM_PROGRAM_VERSION", env!("CARGO_PKG_VERSION"));
+    if let Some((runtime_dir, instance_id)) = ipc_instance {
+        command.env("TOYOTERM_RUNTIME_DIR", runtime_dir.as_os_str());
+        command.env("TOYOTERM_INSTANCE", instance_id);
+    }
     // A terminal started from another terminal inherits its parent's private
     // capability hints. Applications such as ratatui-image trust these hints
     // and can blacklist protocols that toyoterm supports, so do not expose
@@ -77,6 +82,9 @@ impl ToyotermApplication {
         let command = pty_command_for_launch(
             self.scripting.snapshot.config.default_shell.as_deref(),
             launch,
+            self._ipc_server
+                .as_ref()
+                .map(|server| (server.runtime_dir(), server.instance_id())),
         );
         let mut session = NativePty.spawn(command, size).map_err(|error| {
             tracing::error!(
