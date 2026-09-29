@@ -26,6 +26,15 @@ fn test_terminal_colors(
 }
 
 #[test]
+#[cfg(target_os = "macos")]
+fn macos_renderer_initializes_only_metal() {
+    assert_eq!(
+        renderer_instance_descriptor().backends,
+        wgpu::Backends::METAL
+    );
+}
+
+#[test]
 #[cfg(target_os = "windows")]
 fn windows_presentation_uses_direct_composition_and_premultiplied_alpha() {
     let descriptor = renderer_instance_descriptor();
