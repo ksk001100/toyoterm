@@ -507,7 +507,7 @@ fn start_windows_notification_listener(
         return None;
     }
     if response_listeners
-        .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |count| {
+        .try_update(Ordering::Relaxed, Ordering::Relaxed, |count| {
             (count < MAX_NOTIFICATION_RESPONSE_LISTENERS).then_some(count + 1)
         })
         .is_err()
@@ -1061,7 +1061,7 @@ fn start_macos_notification_listener(
         return None;
     }
     if response_listeners
-        .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |count| {
+        .try_update(Ordering::Relaxed, Ordering::Relaxed, |count| {
             (count < MAX_NOTIFICATION_RESPONSE_LISTENERS).then_some(count + 1)
         })
         .is_err()
@@ -1143,7 +1143,7 @@ fn start_linux_notification_listener(
         return;
     }
     if response_listeners
-        .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |count| {
+        .try_update(Ordering::Relaxed, Ordering::Relaxed, |count| {
             (count < MAX_NOTIFICATION_RESPONSE_LISTENERS).then_some(count + 1)
         })
         .is_err()

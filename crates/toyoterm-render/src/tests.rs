@@ -857,6 +857,52 @@ fn locates_only_the_leading_cell_under_the_cursor() {
 }
 
 #[test]
+fn cursor_glyphs_cover_wide_characters_and_preserve_beam_shape() {
+    let mut terminal = AlacrittyTerminalBackend::new(8, 2);
+    terminal.advance("界a\u{301}\x1b[1;1H".as_bytes());
+    let snapshot = terminal.snapshot();
+    let wide = cursor_cell(&snapshot, terminal.cursor()).unwrap();
+    assert_eq!(wide.width, 2);
+    assert_eq!(
+        cursor_glyph(CursorShape::Block, usize::from(wide.width), 1),
+        "██"
+    );
+    assert_eq!(
+        cursor_glyph(CursorShape::Underline, usize::from(wide.width), 1),
+        "▁▁"
+    );
+    assert_eq!(
+        cursor_glyph(CursorShape::Beam, usize::from(wide.width), 1),
+        "▏"
+    );
+
+    terminal.advance(b"\x1b[1;3H");
+    let snapshot = terminal.snapshot();
+    let narrow = cursor_cell(&snapshot, terminal.cursor()).unwrap();
+    assert_eq!(narrow.text, "a\u{301}");
+    assert_eq!(narrow.width, 1);
+    assert_eq!(
+        cursor_glyph(CursorShape::Block, usize::from(narrow.width), 1),
+        "█"
+    );
+    assert_eq!(
+        cursor_glyph(CursorShape::Underline, usize::from(narrow.width), 1),
+        "▁"
+    );
+    assert_eq!(
+        cursor_glyph(CursorShape::Beam, usize::from(narrow.width), 1),
+        "▏"
+    );
+}
+
+#[test]
+fn sized_text_cursor_glyphs_preserve_multiple_rows() {
+    assert_eq!(cursor_glyph(CursorShape::Block, 4, 2), "████\n████");
+    assert_eq!(cursor_glyph(CursorShape::Underline, 4, 2), "\n▁▁▁▁");
+    assert_eq!(cursor_glyph(CursorShape::Beam, 4, 2), "▏\n▏");
+}
+
+#[test]
 fn isolates_and_aligns_kitty_sized_text_runs() {
     let size = toyoterm_terminal::TextSize {
         scale: 2,
