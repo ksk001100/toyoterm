@@ -52,13 +52,19 @@ fn ruby_console_keeps_control_of_conpty_and_returns_it_to_the_shell() {
         }
     });
 
+    // ConPTY/PowerShell startup can discard input sent before the first prompt,
+    // especially on a busy CI runner. Wait until the shell is ready to read it.
+    let mut output = String::new();
+    receive_until(&output_receiver, &mut output, |text| {
+        text.contains("PS ") && text.contains('>')
+    });
+
     let executable = env!("CARGO_BIN_EXE_toyoterm").replace('\'', "''");
     let input = format!("& '{executable}' ruby console\r\n");
     session
         .write(input.as_bytes())
         .expect("start Ruby console in ConPTY");
 
-    let mut output = String::new();
     receive_until(&output_receiver, &mut output, |text| {
         text.contains("toyoterm> ")
     });
