@@ -32,7 +32,13 @@ foreach ($file in @("toyoterm.exe", "toyoterm-gui.exe", "conpty.dll", "OpenConso
     }
 }
 $reportedVersion = & (Join-Path $destination "toyoterm.exe") version
-if ($reportedVersion -notmatch '^toyoterm [0-9]+\.[0-9]+\.[0-9]+$') {
+$versionExitCode = $LASTEXITCODE
+$packageId = & cargo pkgid --locked -p toyoterm-cli
+if ($LASTEXITCODE -ne 0) {
+    throw "could not determine the Cargo version"
+}
+$expectedVersion = "toyoterm " + ($packageId -replace '^.*[#@]', '')
+if ($versionExitCode -ne 0 -or $reportedVersion -ne $expectedVersion) {
     throw "MSI installed executable reported $reportedVersion"
 }
 $shortcutDirectory = if ($StartMenuDirectory) { $StartMenuDirectory } else { Join-Path ([Environment]::GetFolderPath("Programs")) "toyoterm" }
