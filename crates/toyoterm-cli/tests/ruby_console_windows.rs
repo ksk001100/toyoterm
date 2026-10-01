@@ -22,7 +22,17 @@ fn windows_binaries_use_their_intended_subsystems() {
 #[test]
 fn ruby_console_keeps_control_of_conpty_and_returns_it_to_the_shell() {
     let mut command = PtyCommand::new("powershell.exe");
-    command.args(["-NoLogo", "-NoProfile"]);
+    // This test reads raw ConPTY output without emulating a terminal. Disable
+    // PSReadLine's terminal negotiation and history so shell startup does not
+    // depend on the runner's module version or user profile.
+    command.args([
+        "-NoLogo",
+        "-NoProfile",
+        "-NoExit",
+        "-Command",
+        "Remove-Module PSReadLine -ErrorAction SilentlyContinue; \
+         function prompt { Write-Host 'TOYOTERM_SHELL_READY'; 'PS> ' }",
+    ]);
     let mut session = NativePty
         .spawn(command, PtySize::new(100, 30))
         .expect("spawn PowerShell in ConPTY");
@@ -52,11 +62,10 @@ fn ruby_console_keeps_control_of_conpty_and_returns_it_to_the_shell() {
         }
     });
 
-    // ConPTY/PowerShell startup can discard input sent before the first prompt,
-    // especially on a busy CI runner. Wait until the shell is ready to read it.
+    // Wait for the explicit prompt marker before sending interactive input.
     let mut output = String::new();
-    receive_until(&output_receiver, &mut output, |text| {
-        text.contains("PS ") && text.contains('>')
+    receive_until(&output_receiver, &mut output, "shell startup", |text| {
+        text.contains("TOYOTERM_SHELL_READY")
     });
 
     let executable = env!("CARGO_BIN_EXE_toyoterm").replace('\'', "''");
@@ -65,25 +74,37 @@ fn ruby_console_keeps_control_of_conpty_and_returns_it_to_the_shell() {
         .write(input.as_bytes())
         .expect("start Ruby console in ConPTY");
 
-    receive_until(&output_receiver, &mut output, |text| {
-        text.contains("toyoterm> ")
-    });
+    receive_until(
+        &output_receiver,
+        &mut output,
+        "Ruby console startup",
+        |text| text.contains("toyoterm> "),
+    );
     session
         .write(b"\r\n")
         .expect("submit an empty console line");
-    receive_until(&output_receiver, &mut output, |text| {
-        text.matches("toyoterm> ").count() >= 2
-    });
+    receive_until(
+        &output_receiver,
+        &mut output,
+        "Ruby console empty-line prompt",
+        |text| text.matches("toyoterm> ").count() >= 2,
+    );
     session.write(b"exit\r\n").expect("leave Ruby console");
-    receive_until(&output_receiver, &mut output, |text| {
-        text.matches("PS ").count() >= 2
-    });
+    receive_until(
+        &output_receiver,
+        &mut output,
+        "shell prompt recovery",
+        |text| text.matches("TOYOTERM_SHELL_READY").count() >= 2,
+    );
     session
-        .write(b"echo TOYOTERM_SHELL_RECOVERED\r\nexit\r\n")
+        .write(b"Write-Output ('TOYOTERM_SHELL_' + 'RECOVERED')\r\nexit\r\n")
         .expect("exercise the recovered shell");
-    receive_until(&output_receiver, &mut output, |text| {
-        text.contains("TOYOTERM_SHELL_RECOVERED")
-    });
+    receive_until(
+        &output_receiver,
+        &mut output,
+        "shell command execution",
+        |text| text.contains("TOYOTERM_SHELL_RECOVERED"),
+    );
     let status = session.wait().expect("wait for PowerShell");
     reader_thread.join().expect("join ConPTY reader");
 
@@ -101,6 +122,7 @@ fn ruby_console_keeps_control_of_conpty_and_returns_it_to_the_shell() {
 fn receive_until(
     receiver: &std::sync::mpsc::Receiver<std::io::Result<Option<Vec<u8>>>>,
     output: &mut String,
+    expected: &str,
     condition: impl Fn(&str) -> bool,
 ) {
     let deadline = Instant::now() + Duration::from_secs(15);
@@ -109,9 +131,11 @@ fn receive_until(
         match receiver.recv_timeout(remaining) {
             Ok(Ok(Some(chunk))) => output.push_str(&String::from_utf8_lossy(&chunk)),
             Ok(Ok(None)) if condition(output) => return,
-            Ok(Ok(None)) => panic!("ConPTY reached EOF before the expected output:\n{output}"),
-            Ok(Err(error)) => panic!("read ConPTY output: {error}\n{output}"),
-            Err(error) => panic!("timed out waiting for ConPTY output: {error}\n{output}"),
+            Ok(Ok(None)) => panic!("ConPTY reached EOF waiting for {expected}:\n{output:?}"),
+            Ok(Err(error)) => {
+                panic!("read ConPTY output waiting for {expected}: {error}\n{output:?}")
+            }
+            Err(error) => panic!("timed out waiting for {expected}: {error}\n{output:?}"),
         }
     }
 }
