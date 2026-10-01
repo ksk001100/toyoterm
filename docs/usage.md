@@ -17,6 +17,9 @@ There are no built-in GUI key bindings. Copy the bindings from
 
 See [URL opening security](url-security.md) for the allowed schemes and limits.
 
+Block and underline cursors cover the full two-cell width of wide characters,
+including in Vim/Neovim. Beam cursors retain their thin vertical shape.
+
 Terminal applications can enable the five Kitty keyboard progressive enhancement
 flags (disambiguation, event types, alternate keys, all keys as escape codes,
 and associated text). With all flags off, keyboard input retains the existing

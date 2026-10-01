@@ -168,6 +168,22 @@ pub(super) fn cursor_text_block(
     })
 }
 
+pub(super) fn cursor_glyph(shape: CursorShape, columns: usize, rows: usize) -> String {
+    match shape {
+        CursorShape::Block => std::iter::repeat_n("█".repeat(columns), rows)
+            .collect::<Vec<_>>()
+            .join("\n"),
+        CursorShape::Beam => std::iter::repeat_n("▏".to_owned(), rows)
+            .collect::<Vec<_>>()
+            .join("\n"),
+        CursorShape::Underline => {
+            let mut lines = vec![String::new(); rows.saturating_sub(1)];
+            lines.push("▁".repeat(columns));
+            lines.join("\n")
+        }
+    }
+}
+
 pub(super) fn apply_selection_foreground(
     attributes: &mut CellAttributes,
     selection: &[toyoterm_terminal::SelectionSpan],

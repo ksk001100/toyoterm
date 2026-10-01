@@ -917,29 +917,14 @@ impl GpuRenderer {
             buffers.text_cache_valid = true;
             buffers.used_cell_runs = use_cell_runs;
 
-            let cursor_glyph = if let Some((_, cell)) = cursor_block {
-                let rows = usize::from(cell.text_size.expect("sized cursor block").rows);
-                let columns = usize::from(cell.width);
-                match pane.cursor.shape {
-                    CursorShape::Block => std::iter::repeat_n("█".repeat(columns), rows)
-                        .collect::<Vec<_>>()
-                        .join("\n"),
-                    CursorShape::Beam => std::iter::repeat_n("▏".to_owned(), rows)
-                        .collect::<Vec<_>>()
-                        .join("\n"),
-                    CursorShape::Underline => {
-                        let mut lines = vec![String::new(); rows.saturating_sub(1)];
-                        lines.push("▁".repeat(columns));
-                        lines.join("\n")
-                    }
-                }
-            } else {
-                match pane.cursor.shape {
-                    CursorShape::Block => "█".to_owned(),
-                    CursorShape::Beam => "▏".to_owned(),
-                    CursorShape::Underline => "▁".to_owned(),
-                }
-            };
+            let cursor_columns = cursor_block
+                .map(|(_, cell)| cell)
+                .or_else(|| cursor_cell(pane.snapshot, pane.cursor))
+                .map_or(1, |cell| usize::from(cell.width).max(1));
+            let cursor_rows = cursor_block.map_or(1, |(_, cell)| {
+                usize::from(cell.text_size.expect("sized cursor block").rows)
+            });
+            let cursor_glyph = cursor_glyph(pane.cursor.shape, cursor_columns, cursor_rows);
             buffers
                 .cursor_glyph
                 .set_monospace_width(Some(layout.cell_width));
