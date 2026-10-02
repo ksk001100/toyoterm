@@ -192,6 +192,7 @@ struct PaneBuffers {
     cursor_glyph: Buffer,
     cursor_text: Buffer,
     has_cursor_text: bool,
+    cursor_text_offset: (f32, f32),
     badge: Buffer,
     has_badge: bool,
     layout: TextLayout,
@@ -364,6 +365,7 @@ impl PaneBuffers {
             cursor_glyph: buffer(),
             cursor_text: buffer(),
             has_cursor_text: false,
+            cursor_text_offset: (0.0, 0.0),
             badge: buffer(),
             has_badge: false,
             layout,
@@ -947,36 +949,16 @@ impl GpuRenderer {
                 .cursor_glyph
                 .shape_until_scroll(&mut self.font_system, false);
             buffers.has_cursor_text = false;
-            if cursor_block.is_none()
-                && pane.cursor.shape == CursorShape::Block
-                && let Some([red, green, blue]) = pane.colors.cursor_foreground
-                && let Some(cell) = cursor_cell(pane.snapshot, pane.cursor)
-                && !cell.text.is_empty()
-            {
-                let mut attributes = cell.attributes;
-                attributes.foreground = CellColor::Rgb(red, green, blue);
-                attributes.inverse = false;
-                buffers
-                    .cursor_text
-                    .set_monospace_width(Some(layout.cell_width));
-                buffers
-                    .cursor_text
-                    .set_metrics_and_size(metrics, None, None);
-                buffers.cursor_text.set_text(
-                    &cell.text,
-                    &glyph_attrs(
-                        attributes,
-                        false,
-                        &self.style.font_family,
-                        self.style.font_weight,
-                        &pane.colors,
-                    ),
-                    Shaping::Advanced,
-                    None,
+            if let Some(cell) = cursor_text_cell(pane.snapshot, pane.cursor) {
+                update_cursor_text_buffer(
+                    &mut buffers.cursor_text,
+                    &mut self.font_system,
+                    cell,
+                    layout,
+                    &self.style,
+                    &pane.colors,
                 );
-                buffers
-                    .cursor_text
-                    .shape_until_scroll(&mut self.font_system, false);
+                buffers.cursor_text_offset = sized_text_offsets(cell, layout);
                 buffers.has_cursor_text = true;
             }
 
@@ -1598,16 +1580,11 @@ impl GpuRenderer {
                 if pane.has_cursor_text {
                     text_areas.push(TextArea {
                         buffer: &pane.cursor_text,
-                        left: placement.cursor_left,
-                        top: placement.cursor_top,
+                        left: placement.cursor_left + pane.cursor_text_offset.0,
+                        top: placement.cursor_top + pane.cursor_text_offset.1,
                         scale: 1.0,
                         bounds,
-                        default_color: glyph_color(
-                            pane.colors
-                                .cursor_foreground
-                                .unwrap_or(pane.colors.foreground),
-                            255,
-                        ),
+                        default_color: glyph_color(cursor_text_color(&pane.colors), 255),
                         custom_glyphs: &[],
                     });
                 }

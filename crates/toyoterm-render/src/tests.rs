@@ -857,6 +857,140 @@ fn locates_only_the_leading_cell_under_the_cursor() {
 }
 
 #[test]
+fn block_cursor_text_is_available_without_an_explicit_color() {
+    let mut terminal = AlacrittyTerminalBackend::new(8, 2);
+    terminal.advance("a界e\u{301}".as_bytes());
+    let snapshot = terminal.snapshot();
+    for (column, text) in [(0, "a"), (1, "界"), (3, "e\u{301}")] {
+        let cursor = CursorState {
+            column,
+            row: 0,
+            visible: true,
+            shape: CursorShape::Block,
+        };
+        assert_eq!(cursor_text_cell(&snapshot, cursor).unwrap().text, text);
+        for shape in [CursorShape::Beam, CursorShape::Underline] {
+            assert!(cursor_text_cell(&snapshot, CursorState { shape, ..cursor }).is_none());
+        }
+    }
+}
+
+#[test]
+fn cursor_text_automatically_contrasts_and_respects_explicit_colors() {
+    let mut colors = test_terminal_colors([220; 3], [0; 3], default_ansi_palette());
+    for (cursor, expected) in [
+        ([255; 3], [0; 3]),
+        ([0; 3], [255; 3]),
+        ([255, 196, 72], [0; 3]),
+        ([0, 0, 255], [255; 3]),
+        ([128; 3], [0; 3]),
+    ] {
+        colors.cursor = cursor;
+        assert_eq!(cursor_text_color(&colors), expected);
+    }
+    colors.cursor_foreground = Some([12, 34, 56]);
+    assert_eq!(cursor_text_color(&colors), [12, 34, 56]);
+}
+
+#[test]
+fn cursor_text_preserves_glyph_layout_and_overrides_cell_colors() {
+    let mut font_system = configured_font_system(&[]);
+    let layout = TextLayout {
+        font_size: 14.0,
+        line_height: 18.0,
+        cell_width: 9.0,
+        horizontal_padding: 0.0,
+        vertical_padding: 0.0,
+    };
+    let style = RenderStyle::default();
+    let mut colors = test_terminal_colors([220; 3], [0; 3], default_ansi_palette());
+    colors.cursor_foreground = Some([12, 34, 56]);
+    colors.special.bold = Some([255, 0, 0]);
+    colors.special.enabled[0] = true;
+    colors.special.override_ansi = true;
+    let mut text = Buffer::new(&mut font_system, Metrics::new(14.0, 18.0));
+    let mut overlay = Buffer::new(&mut font_system, Metrics::new(14.0, 18.0));
+    for (content, width) in [("a", 1), ("界", 2), ("e\u{301}", 1)] {
+        for size in [
+            None,
+            Some(toyoterm_terminal::TextSize {
+                scale: 2,
+                numerator: 1,
+                denominator: 2,
+                vertical_alignment: toyoterm_terminal::TextAlignment::End,
+                horizontal_alignment: toyoterm_terminal::TextAlignment::Center,
+                rows: 2,
+            }),
+        ] {
+            let cell = toyoterm_terminal::TerminalCell {
+                text: content.into(),
+                width,
+                text_size: size,
+                attributes: CellAttributes {
+                    bold: true,
+                    italic: true,
+                    inverse: true,
+                    dim: true,
+                    ..CellAttributes::default()
+                },
+                ..toyoterm_terminal::TerminalCell::default()
+            };
+            update_terminal_cell_buffer(
+                &mut text,
+                &mut font_system,
+                std::slice::from_ref(&cell),
+                layout,
+                &style,
+                CellRenderContext {
+                    row: 0,
+                    selection: &[],
+                    colors: &colors,
+                },
+            );
+            update_cursor_text_buffer(
+                &mut overlay,
+                &mut font_system,
+                &cell,
+                layout,
+                &style,
+                &colors,
+            );
+            let original = text.layout_runs().next().unwrap();
+            let cursor = overlay.layout_runs().next().unwrap();
+            assert_eq!(original.glyphs.len(), cursor.glyphs.len());
+            for (original, cursor) in original.glyphs.iter().zip(cursor.glyphs) {
+                assert_eq!(
+                    (original.x, original.y, original.w, original.font_size),
+                    (cursor.x, cursor.y, cursor.w, cursor.font_size)
+                );
+                assert_eq!(cursor.color_opt, Some(GlyphColor::rgba(12, 34, 56, 255)));
+            }
+            let hidden = toyoterm_terminal::TerminalCell {
+                attributes: CellAttributes {
+                    hidden: true,
+                    ..cell.attributes
+                },
+                ..cell
+            };
+            update_cursor_text_buffer(
+                &mut overlay,
+                &mut font_system,
+                &hidden,
+                layout,
+                &style,
+                &colors,
+            );
+            assert!(
+                overlay
+                    .layout_runs()
+                    .flat_map(|run| run.glyphs)
+                    .all(|glyph| glyph.color_opt == Some(GlyphColor::rgba(12, 34, 56, 0)))
+            );
+        }
+    }
+}
+
+#[test]
 fn cursor_glyphs_cover_wide_characters_and_preserve_beam_shape() {
     let mut terminal = AlacrittyTerminalBackend::new(8, 2);
     terminal.advance("界a\u{301}\x1b[1;1H".as_bytes());
@@ -977,6 +1111,18 @@ fn isolates_and_aligns_kitty_sized_text_runs() {
             }
         ),
         Some((0, &runs[1].1[0]))
+    );
+    assert_eq!(
+        cursor_text_cell(
+            &snapshot,
+            CursorState {
+                column: 3,
+                row: 1,
+                visible: true,
+                shape: CursorShape::Block,
+            }
+        ),
+        Some(&runs[1].1[0])
     );
 }
 
