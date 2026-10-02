@@ -592,25 +592,16 @@ impl ToyotermApplication {
     }
 
     pub(super) fn mouse_cell(&self, scale_factor: f64) -> (u16, u16) {
-        let scale_factor = scale_factor.max(0.1);
         let rect = self
             .mux
             .current_pane()
             .and_then(|pane| self.ui.pane_layout.rect(pane))
             .unwrap_or_default();
-        let x = (self.ui.mouse_position.x
-            - f64::from(rect.x)
-            - f64::from(self.ui.cell_metrics.horizontal_padding) * scale_factor)
-            .max(0.0);
-        let y = (self.ui.mouse_position.y
-            - f64::from(rect.y)
-            - f64::from(self.ui.cell_metrics.vertical_padding) * scale_factor)
-            .max(0.0);
-        let column = (x / (self.ui.cell_metrics.width * scale_factor).max(1.0)).floor() as u32;
-        let row = (y / (self.ui.cell_metrics.height * scale_factor).max(1.0)).floor() as u32;
-        (
-            column.min(u16::MAX.into()) as u16,
-            row.min(u16::MAX.into()) as u16,
+        mouse_cell_at(
+            self.ui.mouse_position,
+            rect,
+            self.ui.cell_metrics,
+            scale_factor,
         )
     }
 
@@ -988,5 +979,72 @@ pub(super) fn terminal_mouse_button(button: MouseButton) -> Option<TerminalMouse
         MouseButton::Middle => Some(TerminalMouseButton::Middle),
         MouseButton::Right => Some(TerminalMouseButton::Right),
         _ => None,
+    }
+}
+
+fn mouse_cell_at(
+    position: PhysicalPosition<f64>,
+    rect: PaneRect,
+    metrics: CellMetrics,
+    scale_factor: f64,
+) -> (u16, u16) {
+    let scale_factor = scale_factor.max(0.1);
+    let x = (position.x - f64::from(rect.x) - f64::from(metrics.horizontal_padding) * scale_factor)
+        .max(0.0);
+    let y = (position.y - f64::from(rect.y) - f64::from(metrics.vertical_padding) * scale_factor)
+        .max(0.0);
+    let column = (x / (metrics.width * scale_factor).max(1.0)).floor() as u32;
+    let row = (y / (metrics.height * scale_factor).max(1.0)).floor() as u32;
+    (
+        column.min(u16::MAX.into()) as u16,
+        row.min(u16::MAX.into()) as u16,
+    )
+}
+
+#[cfg(test)]
+mod unicode_hit_tests {
+    use super::*;
+
+    #[test]
+    fn grid_hit_testing_selects_unicode_and_ligature_candidates_at_any_scale() {
+        let rect = PaneRect::new(31, 47, 800, 200);
+        let metrics = CellMetrics::default();
+        for text in [
+            "fi",
+            "fl",
+            "ffi",
+            "->",
+            "=>",
+            "==",
+            "===",
+            "!=",
+            "!==",
+            "A界e\u{301}😀Z",
+        ] {
+            let mut terminal = AlacrittyTerminalBackend::new(80, 4);
+            terminal.advance(text.as_bytes());
+            for scale in [1.0, 1.25, 2.0] {
+                for cell in &terminal.snapshot().cells[0] {
+                    for column in cell.column..cell.column + u16::from(cell.width) {
+                        let position = PhysicalPosition::new(
+                            f64::from(rect.x)
+                                + f64::from(metrics.horizontal_padding) * scale
+                                + (f64::from(column) + 0.5) * metrics.width * scale,
+                            f64::from(rect.y)
+                                + f64::from(metrics.vertical_padding) * scale
+                                + 0.5 * metrics.height * scale,
+                        );
+                        let hit = mouse_cell_at(position, rect, metrics, scale);
+                        assert_eq!(hit, (column, 0));
+                        terminal.start_selection(hit.0, hit.1, SelectionKind::Simple);
+                        assert_eq!(
+                            terminal.selected_text().as_deref(),
+                            Some(cell.text.as_str()),
+                            "{text:?}, column={column}, scale={scale}"
+                        );
+                    }
+                }
+            }
+        }
     }
 }
