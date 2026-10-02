@@ -29,6 +29,12 @@ dependency cycle between those two entry-point crates.
 
 ## Dependency contract
 
+`fuzz/` is an explicitly excluded, independent cargo-fuzz workspace. Its only
+dependencies are `toyoterm-terminal` and `libfuzzer-sys`; the architecture checker
+enforces this separate allowlist. It does not change the production graph or
+link the app's filesystem/event consumers. Normal terminal tests reuse its
+public-boundary harness to replay committed seeds without libFuzzer.
+
 The production dependency graph has three roles:
 
 - contract and leaf crates: `toyoterm-api`, `toyoterm-config`, `toyoterm-pty`,

@@ -1,0 +1,4 @@
+ac=send;id=s
+ac=file;id=s;fid=f;n=YQ==;sz=18446744073709551615
+ac=data;id=s;fid=f;d=???=
+ac=cancel;id=s

@@ -1,0 +1,49 @@
+name: Terminal fuzzing
+
+on:
+  push:
+  pull_request:
+  schedule:
+    - cron: '23 18 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  fuzz:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        target: [raw_terminal, osc, kitty_graphics, sixel, iterm_image, kitty_file_transfer]
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@nightly
+        with:
+          components: rustfmt
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: fuzz
+          key: fuzz-${{ matrix.target }}
+      - name: Install cargo-fuzz
+        run: cargo install cargo-fuzz --version 0.13.2 --locked
+      - name: Check harness formatting
+        run: cargo fmt --manifest-path fuzz/Cargo.toml --check
+      - name: Build instrumented target
+        run: python3 scripts/run-fuzz.py build ${{ matrix.target }}
+      - name: Replay every committed seed without mutation
+        run: python3 scripts/run-fuzz.py smoke ${{ matrix.target }}
+      - name: One hour of fuzzing per target
+        if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+        run: python3 scripts/run-fuzz.py run ${{ matrix.target }} --seconds 3600
+      - name: Preserve findings and evolved corpus
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: fuzz-${{ matrix.target }}-${{ github.run_id }}
+          path: |
+            fuzz/artifacts/${{ matrix.target }}/
+            fuzz/corpus/${{ matrix.target }}/
+          retention-days: 30

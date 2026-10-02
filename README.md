@@ -146,6 +146,9 @@ allowed web/mail links. Exiting the final pane closes the application.
 
 ## Development
 
+The [terminal fuzzing guide](docs/fuzzing.md) covers six cargo-fuzz targets,
+seed replay in normal tests, CI smoke runs, hourly campaigns and crash regression.
+
 The opt-in [end-to-end performance baseline](docs/performance-baseline.md) measures
 the real PTY-to-frame path, pane scaling, images, search, Ruby overhead and config
 reload. It saves JSON results for commit comparisons without CI timing thresholds.
