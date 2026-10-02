@@ -157,6 +157,7 @@ impl ConfigManager {
     ) -> Result<&ToyotermConfig, ScriptError> {
         let source_dir = self.source_path.as_deref().and_then(Path::parent);
         let loaded = load_config(source, filename, source_dir)?;
+        let _swap = performance::Stage::new("config_vm_swap");
         self.runtime = loaded.runtime;
         self.config = loaded.config;
         self.color_presets = loaded.color_presets;
@@ -766,6 +767,14 @@ pub(super) fn run_script_request(
     context: &ScriptContext,
     invocation: &ScriptInvocation,
 ) -> Result<ScriptResult, ScriptError> {
+    let stage = match invocation {
+        ScriptInvocation::KeyBinding { .. } => "ruby_key",
+        ScriptInvocation::Event(_) => "ruby_event",
+        ScriptInvocation::AsyncCallback { .. } => "ruby_async_completion",
+        ScriptInvocation::Reload => "config_reload",
+        _ => "ruby_request",
+    };
+    let _request = performance::Stage::new(stage);
     manager.set_live_handles(context.handles.iter().copied())?;
     manager.set_object_model(&context.model)?;
     manager.set_clipboard_text(context.clipboard.as_deref())?;
@@ -964,7 +973,11 @@ pub(super) fn load_config(
     unsafe { toyoterm_mruby_install_host_api(runtime.state.as_ptr()) };
     runtime.set_environment()?;
     configure_load_paths(&mut runtime, source_dir)?;
-    runtime.eval_with_filename(source, filename)?;
+    {
+        let _evaluate = performance::Stage::new("config_evaluate");
+        runtime.eval_with_filename(source, filename)?;
+    }
+    let _validation = performance::Stage::new("config_validate");
     let config = read_config(&mut runtime, source_dir, None)?;
     let color_presets = read_color_presets(&mut runtime)?;
     let registrations = RegistrySnapshot::read(&mut runtime)?;

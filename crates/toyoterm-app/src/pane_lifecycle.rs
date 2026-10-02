@@ -212,6 +212,7 @@ impl ToyotermApplication {
         window_size: PhysicalSize<u32>,
         scale_factor: f64,
     ) -> Result<(), String> {
+        let _layout = performance::Stage::new("layout");
         self.ui.tab_layout = self.calculate_tab_layout(window_size, scale_factor);
         self.ui.workspace_layout = self.calculate_workspace_layout(window_size, scale_factor);
         self.ui.config_error_layout = self.calculate_config_error_layout(window_size, scale_factor);

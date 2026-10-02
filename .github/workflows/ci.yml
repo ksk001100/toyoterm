@@ -32,6 +32,8 @@ jobs:
         run: cargo fmt --check
       - name: Check crate architecture
         run: python3 scripts/check-crate-architecture.py
+      - name: Check performance fixture and result contracts
+        run: python3 scripts/test-performance-baseline.py
       - name: Lint
         run: cargo clippy --workspace --all-targets --locked -- -D warnings
       - name: Test

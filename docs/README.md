@@ -25,6 +25,7 @@ toyoterm itself has no built-in GUI key bindings.
 | Guide | Contents |
 | --- | --- |
 | [Development](development.md) | Repository workflow and validation commands |
+| [Performance baseline](performance-baseline.md) | PTY-to-frame fixtures, timings, Ruby overhead, JSON records and commit comparison |
 | [Crate architecture](architecture.md) | Responsibilities and dependency rules |
 | [Threading](threading.md) | Ownership, request ordering, and callback budgets |
 | [Architecture decisions](adr/README.md) | Accepted decisions and rationale |

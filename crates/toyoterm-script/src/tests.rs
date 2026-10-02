@@ -417,6 +417,93 @@ fn script_test_context() -> ScriptContext {
     }
 }
 
+/// Diagnostic baseline: real script-thread request/completion boundary, no time assertions.
+#[test]
+#[ignore = "opt-in performance baseline"]
+fn performance_script_roundtrip() {
+    let (tx, rx) = mpsc::channel();
+    let config_path =
+        std::env::temp_dir().join(format!("toyoterm-performance-{}.rb", std::process::id()));
+    std::fs::write(&config_path, "# isolated performance configuration\n").unwrap();
+    let startup = ScriptThread::start(Some(config_path.clone()), move |completion| {
+        let _ = tx.send(completion);
+    });
+    std::fs::remove_file(config_path).unwrap();
+    let (worker, _) = startup.unwrap();
+    let context = script_test_context();
+    let mut request_id = 0;
+    let mut request = |invocation| {
+        request_id += 1;
+        worker
+            .submit(ScriptRequest {
+                id: request_id,
+                context: context.clone(),
+                invocation,
+            })
+            .unwrap();
+        let completion = rx.recv_timeout(Duration::from_secs(30)).unwrap();
+        assert_eq!(completion.id, request_id);
+        completion.result.unwrap()
+    };
+    request(ScriptInvocation::Eval(
+        r#"Toyoterm.configure { |c| c.keys.key("CTRL+SHIFT+F12").run { |ctx| nil } }; Toyoterm.on(:bell) { |event| nil }"#.into(),
+    ));
+    for scenario in ["ruby_key", "ruby_event", "ruby_async_completion"] {
+        let mut times = Vec::new();
+        for iteration in 0..1100 {
+            let invocation = match scenario {
+                "ruby_key" => ScriptInvocation::KeyBinding {
+                    key: "CTRL+SHIFT+F12".into(),
+                    pane: PaneId(4),
+                },
+                "ruby_event" => ScriptInvocation::Event(RubyEvent {
+                    kind: ScriptEventKind::Bell,
+                    workspace: Some(WorkspaceId(1)),
+                    window: Some(WindowId(2)),
+                    tab: Some(TabId(3)),
+                    pane: Some(PaneId(4)),
+                    title: None,
+                    cwd: None,
+                    exit_status: None,
+                    width: None,
+                    height: None,
+                    columns: None,
+                    rows: None,
+                }),
+                _ => {
+                    // Register a genuine Toyoterm.async callback; process launch is outside
+                    // this benchmark. Feed the same typed completion used by the app.
+                    let prepared = request(ScriptInvocation::Eval(
+                        "Toyoterm.async('baseline-child') { |result| nil }; nil".into(),
+                    ));
+                    assert_eq!(prepared.async_requests.len(), 1);
+                    ScriptInvocation::AsyncCallback {
+                        id: prepared.async_requests[0].id,
+                        output: AsyncProcessOutput {
+                            stdout: Vec::new(),
+                            stderr: Vec::new(),
+                            exit_status: 0,
+                            launch_error: false,
+                        },
+                    }
+                }
+            };
+            let started = Instant::now();
+            std::hint::black_box(request(invocation));
+            if iteration >= 100 {
+                times.push(started.elapsed().as_secs_f64() * 1000.0);
+            }
+        }
+        times.sort_by(f64::total_cmp);
+        println!(
+            "{{\"schema_version\":1,\"scenario\":\"{scenario}\",\"samples\":1000,\"warmup\":100,\"p50_ms\":{},\"p95_ms\":{},\"total_ms\":{}}}",
+            times[500],
+            times[950],
+            times.iter().sum::<f64>()
+        );
+    }
+}
+
 #[test]
 fn script_thread_owns_vm_and_submission_does_not_wait_for_evaluation() {
     let (completion_tx, completion_rx) = mpsc::channel();

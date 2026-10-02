@@ -649,6 +649,7 @@ impl Graphics {
         alternate: bool,
         terminal_background: [u8; 4],
     ) -> GraphicResult {
+        let _decode = crate::performance::Stage::new("image_decode_place");
         let mut result = GraphicResult {
             advance: None,
             reply: None,

@@ -1,3 +1,4 @@
+mod performance;
 use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::fmt;
 use std::io::Read;
@@ -1317,6 +1318,7 @@ impl ApplicationHandler<AppEvent> for ToyotermApplication {
                 window.request_redraw();
             }
             WindowEvent::RedrawRequested => {
+                let _frame = performance::Stage::new("frame");
                 if !self.platform.occlusion.should_render() {
                     return;
                 }
@@ -1340,7 +1342,36 @@ impl ApplicationHandler<AppEvent> for ToyotermApplication {
                         );
                         self.fail(event_loop, error.to_string());
                     }
-                    Some(Ok(RenderOutcome::Presented | RenderOutcome::Skipped)) | None => {}
+                    Some(Ok(RenderOutcome::Presented)) => {
+                        if tracing::enabled!(target: "toyoterm::perf", tracing::Level::TRACE) {
+                            let ts_ns = std::time::SystemTime::now()
+                                .duration_since(std::time::UNIX_EPOCH)
+                                .unwrap_or_default()
+                                .as_nanos();
+                            for placement in self.ui.pane_layout.panes() {
+                                if let Some(runtime) =
+                                    self.terminal_runtime.pane_runtimes.get(&placement.pane)
+                                {
+                                    // ConPTY may normalize OSC titles. A short visible sentinel
+                                    // provides the same completion boundary on every backend.
+                                    let text = runtime.terminal.visible_text();
+                                    let marker = runtime
+                                        .metadata
+                                        .title
+                                        .strip_prefix("toyoterm-perf:")
+                                        .or_else(|| {
+                                            text.lines().rev().find_map(|line| {
+                                                line.trim().strip_prefix("TOYOTERM_PERF_")
+                                            })
+                                        });
+                                    if let Some(marker) = marker {
+                                        tracing::trace!(target: "toyoterm::perf", marker, pane = placement.pane.0, columns = runtime.terminal.dimensions().0, rows = runtime.terminal.dimensions().1, ts_ns, "presented");
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    Some(Ok(RenderOutcome::Skipped)) | None => {}
                 }
             }
             _ => {}
@@ -1494,6 +1525,7 @@ impl ApplicationHandler<AppEvent> for ToyotermApplication {
     fn user_event(&mut self, event_loop: &ActiveEventLoop, event: AppEvent) {
         match event {
             AppEvent::Output { pane, pending } => {
+                let _output = performance::Stage::new("pty_event");
                 self.scripting.invalidate_context();
                 let bytes = pending.take();
                 let mut terminal_events = Vec::new();
@@ -1552,7 +1584,10 @@ impl ApplicationHandler<AppEvent> for ToyotermApplication {
                 let source_focused = window_focused && self.mux.current_pane() == Some(pane);
                 let source_visible = window_focused && self.ui.pane_layout.rect(pane).is_some();
                 if let Some(runtime) = self.terminal_runtime.pane_runtimes.get_mut(&pane) {
-                    runtime.terminal.advance(&bytes);
+                    {
+                        let _parser = performance::Stage::new("parser");
+                        runtime.terminal.advance(&bytes);
+                    }
                     terminal_events = runtime.terminal.drain_events();
                     for event in &terminal_events {
                         match event {

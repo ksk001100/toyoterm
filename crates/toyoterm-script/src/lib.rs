@@ -1,3 +1,4 @@
+mod performance;
 use std::collections::{HashMap, HashSet};
 use std::ffi::{CStr, CString, c_char, c_void};
 use std::fmt;
