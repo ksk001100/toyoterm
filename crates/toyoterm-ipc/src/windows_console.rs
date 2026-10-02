@@ -16,6 +16,7 @@ impl ConsoleInputMode {
     pub(super) fn begin(stdin: &io::Stdin) -> Result<Option<Self>, String> {
         // Redirected input is a byte stream and must retain ordinary read_line behavior.
         if !stdin.is_terminal() {
+            tracing::debug!(target: "toyoterm::ipc", "console stdin is redirected");
             return Ok(None);
         }
         let handle = stdin.as_raw_handle();
@@ -38,6 +39,7 @@ impl ConsoleInputMode {
                 io::Error::last_os_error()
             ));
         }
+        tracing::debug!(target: "toyoterm::ipc", original, mode, "configured console input mode");
         Ok(Some(Self { handle, original }))
     }
 }

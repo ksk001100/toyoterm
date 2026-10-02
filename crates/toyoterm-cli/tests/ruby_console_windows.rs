@@ -55,6 +55,7 @@ fn ruby_console_accepts_redirected_input() {
 
 fn check_console_session(raw_input: bool) {
     let mut command = PtyCommand::new("powershell.exe");
+    command.env("TOYOTERM_LOG", "ipc=debug");
     // This test reads raw ConPTY output without emulating a terminal. Disable
     // PSReadLine's terminal negotiation and history so shell startup does not
     // depend on the runner's module version or user profile.
@@ -63,13 +64,46 @@ fn check_console_session(raw_input: bool) {
         "-NoProfile",
         "-NoExit",
         "-Command",
-        "Add-Type -TypeDefinition 'using System; using System.Runtime.InteropServices; \
-         public class ConsoleMode { \
-         [DllImport(\"kernel32.dll\")] public static extern IntPtr GetStdHandle(int n); \
-         [DllImport(\"kernel32.dll\")] public static extern bool GetConsoleMode(IntPtr h, out uint m); \
-         [DllImport(\"kernel32.dll\")] public static extern bool SetConsoleMode(IntPtr h, uint m); }'; \
-         Remove-Module PSReadLine -ErrorAction SilentlyContinue; \
-         function prompt { Write-Host 'TOYOTERM_SHELL_READY'; 'PS> ' }",
+        r#"Add-Type -TypeDefinition '
+using System;
+using System.ComponentModel;
+using System.Diagnostics;
+using System.Runtime.InteropServices;
+public class ConsoleMode {
+    [DllImport("kernel32.dll", SetLastError = true)]
+    public static extern IntPtr GetStdHandle(int n);
+    [DllImport("kernel32.dll", SetLastError = true)]
+    public static extern bool GetConsoleMode(IntPtr h, out uint m);
+    [DllImport("kernel32.dll", SetLastError = true)]
+    public static extern bool SetConsoleMode(IntPtr h, uint m);
+    static uint ReadMode(IntPtr h) {
+        uint mode;
+        if (!GetConsoleMode(h, out mode)) throw new Win32Exception();
+        return mode;
+    }
+    public static void RunRaw(string executable) {
+        IntPtr h = GetStdHandle(-10);
+        uint shellMode = ReadMode(h);
+        if (!SetConsoleMode(h, 0x200)) throw new Win32Exception();
+        try {
+            uint before = ReadMode(h);
+            Console.WriteLine("TOYOTERM_INHERITED_MODE=" + before);
+            ProcessStartInfo start = new ProcessStartInfo(executable, "ruby console");
+            start.UseShellExecute = false;
+            using (Process child = Process.Start(start)) {
+                child.WaitForExit();
+                if (child.ExitCode != 0) throw new Exception("Ruby console failed");
+            }
+            uint after = ReadMode(h);
+            if (before != after) throw new Exception("Input mode was not restored: " + after);
+            Console.WriteLine("TOYOTERM_MODE_RESTORED");
+        } finally {
+            if (!SetConsoleMode(h, shellMode)) throw new Win32Exception();
+        }
+    }
+}';
+Remove-Module PSReadLine -ErrorAction SilentlyContinue;
+function prompt { Write-Host 'TOYOTERM_SHELL_READY'; 'PS> ' }"#,
     ]);
     let mut session = NativePty
         .spawn(command, PtySize::new(100, 30))
@@ -107,20 +141,20 @@ fn check_console_session(raw_input: bool) {
     });
 
     let executable = env!("CARGO_BIN_EXE_toyoterm").replace('\'', "''");
-    let set_mode = if raw_input {
-        // Simulate a shell that leaves character-at-a-time VT input enabled.
-        // Enter must still submit a line in the child REPL.
-        "[void][ConsoleMode]::SetConsoleMode($h, 0x200); "
+    let input = if raw_input {
+        // Launch without PowerShell's native-command handling between setting
+        // the mode and starting the child. Inspect restoration before the
+        // launcher restores the original shell mode in its finally block.
+        format!("[ConsoleMode]::RunRaw('{executable}')\r")
     } else {
-        ""
+        format!(
+            "$h = [ConsoleMode]::GetStdHandle(-10); \
+             $before = 0; [void][ConsoleMode]::GetConsoleMode($h, [ref]$before); \
+             & '{executable}' ruby console; \
+             $after = 0; [void][ConsoleMode]::GetConsoleMode($h, [ref]$after); \
+             if ($before -eq $after) {{ Write-Output ('TOYOTERM_MODE_' + 'RESTORED') }}\r"
+        )
     };
-    let input = format!(
-        "$h = [ConsoleMode]::GetStdHandle(-10); {set_mode}\
-         $before = 0; [void][ConsoleMode]::GetConsoleMode($h, [ref]$before); \
-         & '{executable}' ruby console; \
-         $after = 0; [void][ConsoleMode]::GetConsoleMode($h, [ref]$after); \
-         if ($before -eq $after) {{ Write-Output ('TOYOTERM_MODE_' + 'RESTORED') }}\r"
-    );
     session
         .write(&conpty_input(&input))
         .expect("start Ruby console in ConPTY");
@@ -131,6 +165,12 @@ fn check_console_session(raw_input: bool) {
         "Ruby console startup",
         |text| text.contains("toyoterm> "),
     );
+    if raw_input {
+        assert!(
+            output.contains("configured console input mode original=512 mode=7"),
+            "the Ruby console did not inherit and normalize VT input mode:\n{output}"
+        );
+    }
     session
         .write(&conpty_input("\r"))
         .expect("submit an empty console line");
