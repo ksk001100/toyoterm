@@ -30,6 +30,7 @@ toyotermはRustと組み込みmrubyによる、プログラム可能な実験的
 主な開発環境はLinuxです。CIではLinux・macOS・Windowsのビルド、テスト、パッケージ作成、
 GUI起動スモークテストを実行します。各OSの実機でも主要な動作を一通り確認しています。
 リリース候補版では[プラットフォーム検証](docs/platform-validation.md)の項目を改めて確認します。
+CIとライセンス検査はPRと`master`へのpushで実行します。作業ブランチへのpushでは実行しません。
 1つのGUIプロセス内での複数OSウィンドウとセッション永続化は初回リリースの対象外です。
 Rubyの`MuxWindow`は、そのGUIプロセスの単一OSウィンドウ内で表示するMux上のウィンドウを表します。
 

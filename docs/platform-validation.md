@@ -1,6 +1,8 @@
 # Platform validation
 
-The CI matrix validates every push on Linux, macOS, and Windows. It builds,
+The CI matrix validates pull requests and pushes to `master` on Linux, macOS,
+and Windows. Pushes to working branches do not trigger CI, avoiding duplicate
+runs when a pull request is open. It builds,
 lints, runs all tests, exercises the native PTY and terminal parser, and creates
 the platform release archive. Linux additionally starts the complete GUI under
 both X11 (Xvfb) and Wayland (headless Weston); macOS and Windows also run the

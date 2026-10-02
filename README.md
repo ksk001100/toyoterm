@@ -31,6 +31,8 @@ Linux is the primary development platform. CI runs builds, tests, packaging,
 and GUI startup smoke tests on Linux, macOS, and Windows. Core behavior has also
 been exercised on physical machines running each OS. The release candidate still
 needs the documented checks; see [platform validation](docs/platform-validation.md).
+CI and license compliance checks run on pull requests and pushes to `master`;
+pushes to working branches do not trigger these workflows.
 Multiple OS windows within one GUI process and session persistence remain outside
 the initial release scope. Ruby `MuxWindow` handles represent mux windows inside
 that GUI process's single OS window.
