@@ -62,7 +62,9 @@ jobs:
       - name: Test
         run: cargo test --workspace --all-targets --locked
       - name: Package and verify
-        run: sh scripts/package.sh
+        run: |
+          sh scripts/test-windows-msi-version.sh
+          sh scripts/package.sh
       - name: Test Windows MSI install and uninstall
         if: runner.os == 'Windows'
         shell: powershell

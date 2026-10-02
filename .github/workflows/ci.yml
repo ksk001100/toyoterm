@@ -43,7 +43,9 @@ jobs:
         if: runner.os != 'Linux'
         run: cargo run --locked -- gui-smoke-test
       - name: Package
-        run: sh scripts/package.sh
+        run: |
+          sh scripts/test-windows-msi-version.sh
+          sh scripts/package.sh
       - name: Test Windows MSI install and uninstall
         if: runner.os == 'Windows'
         shell: powershell

@@ -120,6 +120,14 @@ an extracted package. On macOS the common files are inside
 
 ## Integrity and release automation
 
+Windows MSI `ProductVersion` uses the numeric core of the Cargo version:
+`0.2.0-dev` and `0.2.0+build.42` both become `0.2.0`. The executable version and
+artifact filenames retain the full Cargo version. MSI major/minor components
+must be at most 255 and the patch component at most 65535; packaging rejects
+versions outside these limits. MSI upgrade ordering cannot distinguish prereleases
+or build metadata sharing the same numeric core. Use a higher numeric core when
+testing an upgrade; same-core builds do not count as newer MSI versions.
+
 `sh scripts/package.sh` performs a locked release build, checks license notices,
 assembles the native artifacts, and invokes `scripts/verify-package.sh`. Windows
 packaging also needs the .NET SDK to restore the pinned WiX Toolset and build
