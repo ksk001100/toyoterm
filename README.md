@@ -101,6 +101,8 @@ platform default. See [configuration loading](docs/mruby-api.md#loading-configur
 for Linux/macOS and Windows paths and error recovery.
 Reload with `toyoterm reload`; use `toyoterm ruby console` for live Ruby updates,
 including multiline definitions and variables retained between entries.
+On Windows, the console enables line input while active and restores the
+parent shell's input mode on exit. Empty lines keep the console open.
 Commands run inside a toyoterm pane connect to that pane's GUI, even when a
 shell changes its temporary-directory environment or several GUIs are open.
 

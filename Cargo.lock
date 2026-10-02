@@ -2948,6 +2948,7 @@ version = "0.2.0-dev"
 dependencies = [
  "toyoterm-api",
  "tracing",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]

@@ -1192,6 +1192,10 @@ toyoterm ruby console
 The console uses mruby's parser to recognize multiline input, including blocks,
 methods, strings, and heredocs. Top-level local variables persist between
 entries. It also supports `:history` and `exit`.
+Empty lines leave the console active. On Windows, the console temporarily
+enables processed, echoed line input and disables virtual-terminal input,
+restoring the inherited input mode when it returns (including on I/O errors).
+Redirected stdin is read as a byte stream without changing console modes.
 `Toyoterm.configure` changes are validated and applied immediately. If an
 evaluation leaves the config invalid, the whole evaluation transaction is
 rolled back.
