@@ -109,7 +109,7 @@ fn check_console_session(raw_input: bool) {
     let executable = env!("CARGO_BIN_EXE_toyoterm").replace('\'', "''");
     let set_mode = if raw_input {
         // Simulate a shell that leaves character-at-a-time VT input enabled.
-        // Plain CR must still submit a line in the child REPL.
+        // Enter must still submit a line in the child REPL.
         "[void][ConsoleMode]::SetConsoleMode($h, 0x200); "
     } else {
         ""
@@ -122,7 +122,7 @@ fn check_console_session(raw_input: bool) {
          if ($before -eq $after) {{ Write-Output ('TOYOTERM_MODE_' + 'RESTORED') }}\r"
     );
     session
-        .write(input.as_bytes())
+        .write(&conpty_input(&input))
         .expect("start Ruby console in ConPTY");
 
     receive_until(
@@ -131,14 +131,18 @@ fn check_console_session(raw_input: bool) {
         "Ruby console startup",
         |text| text.contains("toyoterm> "),
     );
-    session.write(b"\r").expect("submit an empty console line");
+    session
+        .write(&conpty_input("\r"))
+        .expect("submit an empty console line");
     receive_until(
         &output_receiver,
         &mut output,
         "Ruby console empty-line prompt",
         |text| text.matches("toyoterm> ").count() >= 2,
     );
-    session.write(b"exit\r").expect("leave Ruby console");
+    session
+        .write(&conpty_input("exit\r"))
+        .expect("leave Ruby console");
     receive_until(
         &output_receiver,
         &mut output,
@@ -150,7 +154,9 @@ fn check_console_session(raw_input: bool) {
         "the Ruby console did not restore the inherited input mode:\n{output}"
     );
     session
-        .write(b"Write-Output ('TOYOTERM_SHELL_' + 'RECOVERED')\rexit\r")
+        .write(&conpty_input(
+            "Write-Output ('TOYOTERM_SHELL_' + 'RECOVERED')\rexit\r",
+        ))
         .expect("exercise the recovered shell");
     receive_until(
         &output_receiver,
@@ -170,6 +176,16 @@ fn check_console_session(raw_input: bool) {
         output.contains("TOYOTERM_SHELL_RECOVERED"),
         "the parent shell did not recover after leaving the console:\n{output}"
     );
+}
+
+fn conpty_input(text: &str) -> Vec<u8> {
+    // A bare CR goes through ConPTY's VkKeyScanW-based key synthesis. Headless
+    // Windows runners may lack the keyboard layout needed for that conversion.
+    // Send Enter as explicit win32-input-mode key-down/key-up records instead:
+    // CSI Vk;Sc;Uc;Kd;Cs;Rc _ (VK_RETURN=13, scan code=28, Unicode CR=13).
+    // Printable text remains ordinary UTF-8; the protocol supports mixing both.
+    const ENTER: &str = "\x1b[13;28;13;1;0;1_\x1b[13;28;13;0;0;1_";
+    text.replace('\r', ENTER).into_bytes()
 }
 
 fn receive_until(
