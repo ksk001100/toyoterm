@@ -95,6 +95,8 @@ end
 Linux・macOS・Windowsのパスとエラー時の復旧は[設定の読込](docs/mruby-api.md#loading-configuration)
 を参照してください。`toyoterm reload`で再読込し、`toyoterm ruby console`で複数行の定義や
 入力間で保持される変数を使ったRubyのライブ変更ができます。
+Windowsではコンソールの実行中に行入力を有効にし、終了時に親シェルの入力モードを
+復元します。空行を入力してもコンソールは終了しません。
 toyotermのペイン内で実行したCLIコマンドは、シェルが一時ディレクトリ関連の環境変数を
 変更した場合や複数のGUIが起動している場合も、そのペインのGUIに接続します。
 

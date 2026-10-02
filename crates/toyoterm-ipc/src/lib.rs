@@ -7,6 +7,9 @@ use std::thread;
 
 use toyoterm_api::{Command, ConfigCommand, NativeCommand, PaneId, SplitDirection};
 
+#[cfg(windows)]
+mod windows_console;
+
 const MAGIC: &[u8; 4] = b"TYIP";
 const VERSION: u16 = 1;
 const MAX_MESSAGE: usize = 1024 * 1024;
@@ -161,6 +164,8 @@ pub fn eval_remote(source: &str) -> Result<String, String> {
 
 pub fn run_console() -> Result<(), String> {
     let stdin = io::stdin();
+    #[cfg(windows)]
+    let _input_mode = windows_console::ConsoleInputMode::begin(&stdin)?;
     let mut input = stdin.lock();
     let mut stdout = io::stdout();
     let mut history = load_history();
