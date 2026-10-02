@@ -92,6 +92,7 @@ case "$target" in
     fi
     ;;
   *-windows-*)
+    msi_version=$(sh scripts/windows-msi-version.sh "$version")
     copy_common_files "$staging_directory"
     cp "$binary_directory/toyoterm.exe" \
       "$binary_directory/toyoterm-gui.exe" \
@@ -115,7 +116,7 @@ case "$target" in
       exit 1
     fi
     dotnet build packaging/windows/Toyoterm.wixproj --configuration Release \
-      -p:ProductVersion="$version" \
+      -p:ProductVersion="$msi_version" \
       -p:PayloadDirectory="$(cygpath -w "$staging_directory")"
     msi_path="dist/$archive_name.msi"
     cp target/wix/output/Toyoterm.msi "$msi_path"
