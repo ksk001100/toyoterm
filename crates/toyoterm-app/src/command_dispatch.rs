@@ -529,6 +529,7 @@ impl ToyotermApplication {
             .mux
             .current_pane()
             .ok_or_else(|| "mux has no current pane".to_owned())?;
+        let _key = performance::Stage::new("key_dispatch");
         match resolve_keybinding(
             &self.scripting.snapshot,
             keys,
@@ -735,6 +736,7 @@ impl ToyotermApplication {
     }
 
     pub(super) fn apply_script_snapshot(&mut self, snapshot: ScriptSnapshot) -> Result<(), String> {
+        let _apply = performance::Stage::new("config_apply");
         let config = snapshot.config.clone();
         let color_presets = terminal_color_presets(&snapshot)?;
         let previous_opacity = self.scripting.snapshot.config.window.opacity;
@@ -994,6 +996,42 @@ fn test_terminal_runtime(panes: impl IntoIterator<Item = PaneId>) -> TerminalRun
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    #[ignore = "opt-in performance baseline"]
+    fn performance_native_key_resolution() {
+        let snapshot = ScriptSnapshot {
+            config: ToyotermConfig::default(),
+            color_presets: HashMap::new(),
+            native_actions: HashMap::from([("CTRL+SHIFT+F12".into(), NativeAction::ToggleZoom)]),
+            keybindings: HashSet::new(),
+            event_names: HashSet::new(),
+            user_command_names: HashSet::new(),
+        };
+        let mut times = Vec::new();
+        for batch in 0..1100 {
+            let started = Instant::now();
+            for _ in 0..1000 {
+                let resolved = resolve_keybinding(
+                    std::hint::black_box(&snapshot),
+                    ["CTRL+SHIFT+F12".to_owned()],
+                    false,
+                );
+                assert!(matches!(
+                    std::hint::black_box(resolved),
+                    KeybindingDispatch::Native(_)
+                ));
+            }
+            if batch >= 100 {
+                times.push(started.elapsed().as_secs_f64()); // milliseconds / 1000 resolutions
+            }
+        }
+        times.sort_by(f64::total_cmp);
+        println!(
+            "{{\"schema_version\":1,\"scenario\":\"native_key_resolution\",\"samples\":1000,\"batch_size\":1000,\"warmup_batches\":100,\"p50_ms\":{},\"p95_ms\":{}}}",
+            times[500], times[950]
+        );
+    }
 
     fn action_context() -> ActionContext {
         ActionContext {

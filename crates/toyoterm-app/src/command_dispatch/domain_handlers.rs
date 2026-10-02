@@ -90,6 +90,7 @@ pub(super) fn apply_pane_command(
             query,
             direction,
         } => {
+            let _search = performance::Stage::new("search_apply");
             effects.search = Some(apply_pane_search(
                 pane,
                 query,

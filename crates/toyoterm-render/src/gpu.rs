@@ -455,6 +455,7 @@ impl GpuRenderer {
         configuration.alpha_mode = preferred_alpha_mode(&supported_alpha_modes, style.opacity);
         configuration.desired_maximum_frame_latency = 1;
         surface.configure(&device, &configuration);
+        tracing::trace!(target: "toyoterm::perf", adapter = ?adapter.get_info(), width, height, "adapter");
         tracing::info!(
             target: "toyoterm::render",
             width,
@@ -665,6 +666,7 @@ impl GpuRenderer {
     }
 
     pub fn update_panes(&mut self, panes: &[PaneRenderData<'_>], layout: TextLayout) {
+        let _update = performance::Stage::new("pane_update_shaping");
         let has_transparent_cells = panes
             .iter()
             .any(|pane| terminal_colors_have_transparency(&pane.colors, self.style.opacity));
@@ -857,9 +859,12 @@ impl GpuRenderer {
                         None,
                     );
                 }
-                buffers
-                    .text
-                    .shape_until_scroll(&mut self.font_system, false);
+                {
+                    let _shaping = performance::Stage::new("glyph_shaping");
+                    buffers
+                        .text
+                        .shape_until_scroll(&mut self.font_system, false);
+                }
                 buffers.cached_cells.clone_from(&pane.snapshot.cells);
             }
             buffers.cursor_x = pane_cursor_x(buffers.cursor, layout.cell_width);
@@ -1390,6 +1395,7 @@ impl GpuRenderer {
     }
 
     pub fn render(&mut self) -> Result<RenderOutcome, RenderError> {
+        let _render = performance::Stage::new("gpu_frame");
         if self.device_loss.take_lost() {
             return Ok(RenderOutcome::DeviceLost);
         }
@@ -1425,6 +1431,9 @@ impl GpuRenderer {
             suboptimal,
         } = acquired;
 
+        let upload_timer = performance::Stage::new("image_upload");
+        let mut uploaded_images = 0_u64;
+        let mut retained_images = 0_u64;
         if self.background.is_none()
             && let Some(image) = self.style.background_image.as_ref()
         {
@@ -1437,7 +1446,9 @@ impl GpuRenderer {
         }
         for pane in self.panes.values_mut() {
             for (image, gpu) in &mut pane.images {
+                retained_images += 1;
                 if gpu.is_none() {
+                    uploaded_images += 1;
                     *gpu = Some(graphics::GpuImage::new(
                         &self.device,
                         &self.queue,
@@ -1448,6 +1459,14 @@ impl GpuRenderer {
             }
         }
 
+        drop(upload_timer);
+        if tracing::enabled!(target: "toyoterm::perf", tracing::Level::TRACE) {
+            let ts_ns = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos();
+            tracing::trace!(target: "toyoterm::perf", uploaded_images, retained_images, ts_ns, "image_cache");
+        }
         self.viewport.update(
             &self.queue,
             Resolution {
@@ -1768,8 +1787,14 @@ impl GpuRenderer {
                     .map_err(|error| RenderError::new("render selector text", error))?;
             }
         }
-        self.queue.submit([encoder.finish()]);
-        self.queue.present(frame);
+        {
+            let _submit = performance::Stage::new("gpu_submit");
+            self.queue.submit([encoder.finish()]);
+        }
+        {
+            let _present = performance::Stage::new("present");
+            self.queue.present(frame);
+        }
 
         if suboptimal {
             self.surface.configure(&self.device, &self.configuration);

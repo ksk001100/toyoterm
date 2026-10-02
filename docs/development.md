@@ -7,6 +7,10 @@ changing Ruby-visible behavior.
 
 ## Validation
 
+See [the end-to-end performance baseline](performance-baseline.md) for reproducible
+GUI/PTY fixtures, optional stage tracing and saving v0.2.0 JSON evidence. These
+measurements complement the terminal-only tests and have no CI time thresholds.
+
 Use locked dependency resolution for verification. Run focused tests while
 iterating, then the checks relevant to the change. The full CI-equivalent baseline is:
 

@@ -139,6 +139,10 @@ required fileでは通常の`Toyoterm.command`、`Toyoterm.on`、`Toyoterm.theme
 
 ## 開発
 
+任意実行の[end-to-end性能baseline](docs/performance-baseline.md)で、実際のPTYからframeまで、
+pane数、画像、検索、Ruby overhead、config reloadを計測できます。commit比較用のJSON結果を保存し、
+通常CIには時間thresholdを設定しません。
+
 短時間のメモリ soak は `python3 scripts/soak-test.py headless --output .soak-results/short` で任意実行できます。
 [soak 検証ガイド](docs/soak-validation.md)には実 GUI の churn、8 時間 idle、OS 別メモリ・GPU 計測、
 RC 向け sleep/wake 手順もまとめています。通常のテストでは長時間 soak を実行しません。

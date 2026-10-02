@@ -53,6 +53,7 @@ impl ToyotermApplication {
             .mux
             .current_tab()
             .and_then(|tab| self.mux.zoomed_pane(tab));
+        let snapshot_timer = performance::Stage::new("snapshot");
         let snapshots = self
             .ui
             .pane_layout
@@ -97,6 +98,8 @@ impl ToyotermApplication {
                     })
             })
             .collect::<Vec<_>>();
+        drop(snapshot_timer);
+        let _update_timer = performance::Stage::new("renderer_update");
         let panes = snapshots
             .iter()
             .map(

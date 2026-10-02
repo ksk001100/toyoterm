@@ -1,3 +1,4 @@
+mod performance;
 use std::collections::{HashMap, HashSet};
 use std::fmt;
 use std::sync::Arc;

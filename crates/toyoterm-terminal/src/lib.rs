@@ -1,3 +1,4 @@
+mod performance;
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum CursorShape {
     Block,

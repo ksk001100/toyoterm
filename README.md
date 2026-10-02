@@ -146,6 +146,10 @@ allowed web/mail links. Exiting the final pane closes the application.
 
 ## Development
 
+The opt-in [end-to-end performance baseline](docs/performance-baseline.md) measures
+the real PTY-to-frame path, pane scaling, images, search, Ruby overhead and config
+reload. It saves JSON results for commit comparisons without CI timing thresholds.
+
 Run the opt-in short memory soak with `python3 scripts/soak-test.py headless --output .soak-results/short`.
 The [soak validation guide](docs/soak-validation.md) also covers real GUI churn,
 eight-hour idle runs, OS memory/GPU measurements and sleep/wake checks for RCs.
