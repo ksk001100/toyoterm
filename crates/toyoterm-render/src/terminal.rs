@@ -168,6 +168,79 @@ pub(super) fn cursor_text_block(
     })
 }
 
+pub(super) fn cursor_text_cell(
+    snapshot: &TerminalSnapshot,
+    cursor: CursorState,
+) -> Option<&toyoterm_terminal::TerminalCell> {
+    if cursor.shape != CursorShape::Block {
+        return None;
+    }
+    cursor_text_block(snapshot, cursor)
+        .map(|(_, cell)| cell)
+        .or_else(|| cursor_cell(snapshot, cursor))
+        .filter(|cell| !cell.text.is_empty())
+}
+
+pub(super) fn cursor_text_color(colors: &TerminalColors) -> [u8; 3] {
+    colors.cursor_foreground.unwrap_or_else(|| {
+        // Choose the higher-contrast black/white foreground in linear sRGB.
+        let linear = colors.cursor.map(|channel| {
+            let value = f32::from(channel) / 255.0;
+            if value <= 0.04045 {
+                value / 12.92
+            } else {
+                ((value + 0.055) / 1.055).powf(2.4)
+            }
+        });
+        let luminance = 0.2126 * linear[0] + 0.7152 * linear[1] + 0.0722 * linear[2];
+        if (luminance + 0.05) / 0.05 >= 1.05 / (luminance + 0.05) {
+            [0; 3]
+        } else {
+            [255; 3]
+        }
+    })
+}
+
+pub(super) fn update_cursor_text_buffer(
+    buffer: &mut Buffer,
+    font_system: &mut FontSystem,
+    cell: &toyoterm_terminal::TerminalCell,
+    layout: TextLayout,
+    style: &RenderStyle,
+    colors: &TerminalColors,
+) {
+    let scale = cell
+        .text_size
+        .map_or(1.0, toyoterm_terminal::TextSize::rendered_scale);
+    buffer.set_wrap(Wrap::None);
+    buffer.set_monospace_width(Some((layout.cell_width * scale).max(0.01)));
+    buffer.set_metrics_and_size(
+        Metrics::new(
+            (layout.font_size * scale).max(0.01),
+            (layout.line_height * scale).max(0.01),
+        ),
+        cell.text_size
+            .map(|_| f32::from(cell.width) * layout.cell_width),
+        cell.text_size
+            .map(|size| f32::from(size.rows) * layout.line_height),
+    );
+    // Keep glyph styling, but do not let inverse, dim, link, or special
+    // attribute colors override the cursor's contrasting foreground.
+    let attrs = glyph_attrs(
+        cell.attributes,
+        cell.hyperlink.is_some(),
+        &style.font_family,
+        style.font_weight,
+        colors,
+    )
+    .color(glyph_color(
+        cursor_text_color(colors),
+        if cell.attributes.hidden { 0 } else { 255 },
+    ));
+    buffer.set_text(&cell.text, &attrs, Shaping::Advanced, None);
+    buffer.shape_until_scroll(font_system, false);
+}
+
 pub(super) fn cursor_glyph(shape: CursorShape, columns: usize, rows: usize) -> String {
     match shape {
         CursorShape::Block => std::iter::repeat_n("█".repeat(columns), rows)

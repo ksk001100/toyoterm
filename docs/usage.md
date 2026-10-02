@@ -19,6 +19,9 @@ See [URL opening security](url-security.md) for the allowed schemes and limits.
 
 Block and underline cursors cover the full two-cell width of wide characters,
 including in Vim/Neovim. Beam cursors retain their thin vertical shape.
+Block cursors redraw the underlying text, including wide and scaled text, using
+an explicitly set cursor-text color or whichever of black and white has greater
+contrast against the cursor color. Hidden text remains hidden.
 
 Terminal applications can enable the five Kitty keyboard progressive enhancement
 flags (disambiguation, event types, alternate keys, all keys as escape codes,
