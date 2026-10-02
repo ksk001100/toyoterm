@@ -22,8 +22,8 @@ __toyoterm_preexec() {
 }
 
 __toyoterm_precmd() {
-  local status=$?
-  printf '\e]133;D;%d\e\\' "$status"
+  local _status=$?
+  printf '\e]133;D;%d\e\\' "$_status"
   printf '\e]7;file://%s\e\\' "$(__toyoterm_urlencode_path "$PWD")"
   [[ -n ${HOST-} ]] && printf '\e]1337;RemoteHost=%s@%s\e\\' "${USERNAME-}" "$HOST"
   printf '\e]133;A\e\\'
