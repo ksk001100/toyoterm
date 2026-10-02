@@ -1,6 +1,131 @@
 use super::*;
 use toyoterm_terminal::{AlacrittyTerminalBackend, SelectionSpan, TerminalBackend};
 
+#[test]
+fn unicode_and_ligature_shaping_preserves_grid_selection_and_cursor() {
+    let mut fonts = configured_font_system(&[]);
+    let style = RenderStyle::default();
+    let colors = test_terminal_colors(style.foreground, style.background, style.ansi);
+    let layout = TextLayout {
+        font_size: 14.0,
+        line_height: 18.0,
+        cell_width: 9.0,
+        horizontal_padding: 0.0,
+        vertical_padding: 0.0,
+    };
+    for text in [
+        "fi",
+        "fl",
+        "ffi",
+        "->",
+        "=>",
+        "==",
+        "===",
+        "!=",
+        "!==",
+        "A界e\u{301}😀Z",
+        "👍🏻🇯🇵👨‍👩‍👧‍👦",
+        "\u{e0b0}\u{f120}",
+    ] {
+        let mut terminal = AlacrittyTerminalBackend::new(80, 4);
+        terminal.advance(text.as_bytes());
+        let cursor = terminal.cursor();
+        terminal.start_selection(0, 0, toyoterm_terminal::SelectionKind::Simple);
+        terminal.update_selection(cursor.column - 1, 0);
+        let snapshot = terminal.snapshot();
+        let before = snapshot.clone();
+        for (row, cells) in terminal_cell_runs(&snapshot) {
+            let mut buffer = Buffer::new(&mut fonts, Metrics::new(14.0, 18.0));
+            update_terminal_cell_buffer(
+                &mut buffer,
+                &mut fonts,
+                cells,
+                layout,
+                &style,
+                CellRenderContext {
+                    row,
+                    selection: &snapshot.selection,
+                    colors: &colors,
+                },
+            );
+            let run = buffer.layout_runs().next().expect("shaped run");
+            assert!(!run.glyphs.is_empty(), "{text:?}");
+            assert_eq!(
+                run.glyphs[0].x, 0.0,
+                "run starts at its explicit grid origin"
+            );
+            for glyph in run.glyphs {
+                assert!(glyph.x.is_finite() && glyph.y.is_finite());
+            }
+            if cells.iter().any(|cell| !cell.text.is_ascii()) {
+                assert_eq!(cells.len(), 1, "fallback and combining text are isolated");
+            }
+        }
+        assert_eq!(snapshot.cells, before.cells);
+        assert_eq!(terminal.cursor(), cursor);
+        assert_eq!(
+            pane_cursor_x(cursor, layout.cell_width),
+            f32::from(cursor.column) * 9.0
+        );
+        assert_eq!(
+            selection_highlight_rects(&snapshot, PaneRect::new(0, 0, 800, 100), layout),
+            [PaneRect::new(0, 0, u32::from(cursor.column) * 9, 18)]
+        );
+        assert_eq!(terminal.selected_text().as_deref(), Some(text));
+    }
+}
+
+#[test]
+fn unicode_cursor_shapes_span_the_occupied_rectangle() {
+    for text in ["A", "界", "e\u{301}", "a\u{308}", "😀"] {
+        for sized in [false, true] {
+            let mut terminal = AlacrittyTerminalBackend::new(40, 4);
+            let input = if sized {
+                format!("\x1b]66;s=2;{text}\x07")
+            } else {
+                text.to_owned()
+            };
+            terminal.advance(input.as_bytes());
+            let snapshot = terminal.snapshot();
+            let cell = &snapshot.cells[0][0];
+            let rows = cell.text_size.map_or(1, |size| usize::from(size.rows));
+            let columns = usize::from(cell.width);
+            for shape in [
+                CursorShape::Block,
+                CursorShape::Beam,
+                CursorShape::Underline,
+            ] {
+                let cursor = CursorState {
+                    column: 0,
+                    row: 0,
+                    visible: true,
+                    shape,
+                };
+                let glyph = cursor_glyph(shape, columns, rows);
+                assert_eq!(glyph.split('\n').count(), rows);
+                let expected = match shape {
+                    CursorShape::Block => "█".repeat(columns),
+                    CursorShape::Beam => "▏".into(),
+                    CursorShape::Underline => "▁".repeat(columns),
+                };
+                assert_eq!(glyph.split('\n').next_back().unwrap(), expected);
+                assert_eq!(
+                    cursor_text_cell(&snapshot, cursor).map(|c| c.text.as_str()),
+                    (shape == CursorShape::Block).then_some(text)
+                );
+                if sized {
+                    let interior = CursorState {
+                        column: u16::from(cell.width) - 1,
+                        row: 1,
+                        ..cursor
+                    };
+                    assert_eq!(cursor_text_block(&snapshot, interior).unwrap().1, cell);
+                }
+            }
+        }
+    }
+}
+
 fn test_terminal_colors(
     foreground: [u8; 3],
     background: [u8; 3],
@@ -910,7 +1035,16 @@ fn cursor_text_preserves_glyph_layout_and_overrides_cell_colors() {
     colors.special.override_ansi = true;
     let mut text = Buffer::new(&mut font_system, Metrics::new(14.0, 18.0));
     let mut overlay = Buffer::new(&mut font_system, Metrics::new(14.0, 18.0));
-    for (content, width) in [("a", 1), ("界", 2), ("e\u{301}", 1)] {
+    for (content, width) in [
+        ("a", 1),
+        ("界", 2),
+        ("e\u{301}", 1),
+        ("a\u{308}", 1),
+        ("😀", 2),
+        ("👍🏻", 2),
+        ("🇯🇵", 2),
+        ("👨‍👩‍👧‍👦", 2),
+    ] {
         for size in [
             None,
             Some(toyoterm_terminal::TextSize {
@@ -959,6 +1093,15 @@ fn cursor_text_preserves_glyph_layout_and_overrides_cell_colors() {
             let cursor = overlay.layout_runs().next().unwrap();
             assert_eq!(original.glyphs.len(), cursor.glyphs.len());
             for (original, cursor) in original.glyphs.iter().zip(cursor.glyphs) {
+                assert_eq!(
+                    (
+                        original.font_id,
+                        original.glyph_id,
+                        original.start,
+                        original.end
+                    ),
+                    (cursor.font_id, cursor.glyph_id, cursor.start, cursor.end)
+                );
                 assert_eq!(
                     (original.x, original.y, original.w, original.font_size),
                     (cursor.x, cursor.y, cursor.w, cursor.font_size)

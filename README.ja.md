@@ -136,6 +136,9 @@ required fileでは通常の`Toyoterm.command`、`Toyoterm.on`、`Toyoterm.theme
 
 ## 開発
 
+[Unicode・IME・描画リグレッションガイド](docs/unicode-rendering-validation.md)に、
+自動テストの対象とフォント・IMEの手動検証用fixtureをまとめています。
+
 locked指定の検証コマンド、ネイティブスモークテスト、任意実行の端末性能計測は[開発ガイド](docs/development.md)、
 パッケージ作成は[リリースチェックリスト](docs/releasing.md)を参照してください。
 [クレート構成](docs/architecture.md)と[スレッド契約](docs/threading.md)で、ネイティブ側の所有権と

@@ -142,6 +142,9 @@ allowed web/mail links. Exiting the final pane closes the application.
 
 ## Development
 
+The [Unicode / IME / rendering regression guide](docs/unicode-rendering-validation.md)
+lists automated cases and the developer fixture for manual font and IME checks.
+
 See the [development guide](docs/development.md) for locked validation commands
 and native smoke tests, including opt-in terminal performance measurements, and
 the [release checklist](docs/releasing.md) for packaging.

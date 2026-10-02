@@ -28,6 +28,9 @@ For example, terminal changes can be checked with:
 cargo test -p toyoterm-terminal --locked
 ```
 
+See [Unicode / IME / rendering validation](unicode-rendering-validation.md)
+for automated regression coverage and the interactive developer fixture.
+
 ## Terminal performance measurements
 
 The terminal crate has opt-in measurements for VT input (plain and styled
