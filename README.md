@@ -142,6 +142,11 @@ allowed web/mail links. Exiting the final pane closes the application.
 
 ## Development
 
+Run the opt-in short memory soak with `python3 scripts/soak-test.py headless --output .soak-results/short`.
+The [soak validation guide](docs/soak-validation.md) also covers real GUI churn,
+eight-hour idle runs, OS memory/GPU measurements and sleep/wake checks for RCs.
+Normal tests do not run long soaks.
+
 The [Unicode / IME / rendering regression guide](docs/unicode-rendering-validation.md)
 lists automated cases and the developer fixture for manual font and IME checks.
 

@@ -310,6 +310,49 @@ mod tests {
     use super::*;
 
     #[test]
+    #[ignore = "opt-in short soak: scripts/soak-test.py"]
+    fn soak_pane_pty_churn() {
+        let mut mux = Mux::new();
+        let baseline = mux.native_handles().len();
+        for iteration in 1..=100 {
+            let pane = mux.current_pane().unwrap();
+            mux.dispatch(Command::Split {
+                pane,
+                direction: SplitDirection::Right,
+            })
+            .unwrap();
+            let child = mux.current_pane().unwrap();
+            assert_ne!(child, pane);
+            let mut session = NativePty
+                .spawn(screen_demo_command(), PtySize::default())
+                .unwrap();
+            let mut reader = session.take_reader().unwrap();
+            let worker = std::thread::spawn(move || {
+                let mut terminal = AlacrittyTerminalBackend::with_scrollback(80, 24, 100);
+                let mut buffer = [0; 8192];
+                loop {
+                    let count = reader.read(&mut buffer).unwrap();
+                    if count == 0 {
+                        break;
+                    }
+                    terminal.advance(&buffer[..count]);
+                }
+                terminal.snapshot()
+            });
+            assert_eq!(session.wait().unwrap().code, 0);
+            assert!(!worker.join().unwrap().lines.is_empty());
+            drop(session);
+            mux.dispatch(Command::ClosePane(child)).unwrap();
+            assert_eq!(mux.native_handles().len(), baseline);
+            if iteration % 10 == 0 {
+                println!(
+                    "soak pane iteration={iteration} handles={baseline} joined_readers={iteration}"
+                );
+            }
+        }
+    }
+
+    #[test]
     fn parses_xdg_terminal_launch_options() {
         let options = parse_gui_options(
             [

@@ -171,6 +171,13 @@ impl PtyOutputBuffer {
         let PtyOutputState { bytes, spare } = &mut *state;
         std::mem::swap(bytes, spare);
         let bytes = std::mem::take(spare);
+        tracing::trace!(
+            target: "toyoterm::soak",
+            pty_pending_bytes = bytes.len(),
+            pty_pending_capacity = bytes.capacity(),
+            pty_pending_limit = MAX_PENDING_PTY_OUTPUT_BYTES,
+            "draining bounded PTY output"
+        );
         self.drained.notify_one();
         bytes
     }

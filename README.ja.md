@@ -136,6 +136,10 @@ required fileでは通常の`Toyoterm.command`、`Toyoterm.on`、`Toyoterm.theme
 
 ## 開発
 
+短時間のメモリ soak は `python3 scripts/soak-test.py headless --output .soak-results/short` で任意実行できます。
+[soak 検証ガイド](docs/soak-validation.md)には実 GUI の churn、8 時間 idle、OS 別メモリ・GPU 計測、
+RC 向け sleep/wake 手順もまとめています。通常のテストでは長時間 soak を実行しません。
+
 [Unicode・IME・描画リグレッションガイド](docs/unicode-rendering-validation.md)に、
 自動テストの対象とフォント・IMEの手動検証用fixtureをまとめています。
 

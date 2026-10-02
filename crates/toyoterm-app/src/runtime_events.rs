@@ -143,6 +143,18 @@ impl ToyotermApplication {
             pane_count = model.panes.len(),
             "built immutable script context"
         );
+        tracing::trace!(
+            target: "toyoterm::soak",
+            panes = model.panes.len(),
+            tabs = model.tabs.len(),
+            workspaces = model.workspaces.len(),
+            process_runtimes = self.terminal_runtime.pane_runtimes.len(),
+            pty_count = self.terminal_runtime.pane_runtimes.values()
+                .filter(|runtime| runtime.process.pty_session.is_some()).count(),
+            pending_requests = self.scripting.pending.len(),
+            cancelled_async_tasks = self.scripting.cancelled_async_tasks.len(),
+            "native resource counts"
+        );
         Ok(ScriptContext {
             model,
             handles,
