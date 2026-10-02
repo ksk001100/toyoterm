@@ -1,5 +1,84 @@
 use super::*;
 
+#[test]
+#[ignore = "opt-in short soak: scripts/soak-test.py"]
+fn soak_config_reload_and_async_registry() {
+    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../scripts/soak-config.rb");
+    let mut manager = ConfigManager::load_startup(Some(&path)).unwrap();
+    manager.eval("GC.start").unwrap();
+    let baseline = manager.runtime.gc_stats();
+    for iteration in 1..=1_000 {
+        manager.reload_file().unwrap();
+        assert_eq!(manager.user_command_names().count(), 1);
+        assert!(
+            manager
+                .trigger_user_command("soak_command", PaneId(0))
+                .unwrap()
+        );
+        manager.eval("GC.start").unwrap();
+        let stats = manager.runtime.gc_stats();
+        assert_eq!(stats.arena_index, baseline.arena_index);
+        assert!(stats.live_objects <= baseline.live_objects + 64);
+        if iteration % 100 == 0 {
+            println!(
+                "soak reload iteration={iteration} live_objects={} arena={}",
+                stats.live_objects, stats.arena_index
+            );
+        }
+    }
+    manager.eval("GC.start").unwrap();
+    let baseline = manager.runtime.gc_stats();
+    for iteration in 1..=2_000 {
+        assert!(
+            manager
+                .emit_event(ScriptEventKind::Bell, PaneId(0))
+                .unwrap()
+        );
+        manager
+            .eval("Toyoterm.async('fixture') { |result| $soak_result = result.exit_status }")
+            .unwrap();
+        let requests = manager.drain_async_requests().unwrap();
+        assert_eq!(requests.len(), 1);
+        manager
+            .invoke_async_callback(requests[0].id, b"ready", b"", 0)
+            .unwrap();
+        manager
+            .eval("$cancelled = Toyoterm.async('fixture') { raise 'cancelled callback ran' }")
+            .unwrap();
+        let cancelled = manager.drain_async_requests().unwrap();
+        manager.eval("$cancelled.cancel; $cancelled = nil").unwrap();
+        let cancellations = manager.drain_async_cancellations().unwrap();
+        assert_eq!(cancellations.len(), 1);
+        for request in cancelled {
+            manager
+                .invoke_async_callback(request.id, b"", b"", 0)
+                .unwrap();
+        }
+        assert_eq!(
+            manager
+                .eval("Toyoterm.instance_variable_get(:@async_tasks).length")
+                .unwrap(),
+            "0"
+        );
+        assert_eq!(
+            manager
+                .eval("Toyoterm.instance_variable_get(:@async_callbacks).length")
+                .unwrap(),
+            "0"
+        );
+        if iteration % 100 == 0 {
+            manager.eval("GC.start").unwrap();
+            let stats = manager.runtime.gc_stats();
+            assert_eq!(stats.arena_index, baseline.arena_index);
+            assert!(stats.live_objects <= baseline.live_objects + 64);
+            println!(
+                "soak async iteration={iteration} registry=0 live_objects={} arena={}",
+                stats.live_objects, stats.arena_index
+            );
+        }
+    }
+}
+
 fn invoked_action(action: NativeAction, pane: PaneId) -> NativeCommand {
     NativeCommand::Action(ActionCommand::Invoke {
         action,

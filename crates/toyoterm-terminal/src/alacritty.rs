@@ -1374,6 +1374,7 @@ impl TerminalBackend for AlacrittyTerminalBackend {
         }
         self.advance_vt(&bytes[start..]);
         self.collect_vt_events();
+        self.graphics.trace_resources();
         if !self.search.query.is_empty() {
             self.search.matches = terminal_matches(&self.terminal, &self.search.query);
             if self

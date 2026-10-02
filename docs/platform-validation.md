@@ -86,6 +86,10 @@ startup for both display protocols on every push.
   verify that user configuration remains. Uninstall any PowerShell installation
   before testing the MSI at the same destination.
 
+For RC memory stability, also run the [soak procedure](soak-validation.md),
+including short churn, eight-hour idle and physical macOS/Windows sleep/wake
+cycles. Retain per-OS memory/GPU time series; headless CI cannot establish this.
+
 Windows PTY code is confined to `crates/toyoterm-pty/src/windows.rs`; the Unix backend remains
 behind `cfg(unix)` in `crates/toyoterm-pty/src/lib.rs`. The rest of the application uses `Pty`,
 `PtySession`, `PtyCommand`, and `PtySize`, preventing ConPTY details from leaking

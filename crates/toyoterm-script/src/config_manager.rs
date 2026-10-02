@@ -872,6 +872,22 @@ pub(super) fn run_script_request(
         logs,
     };
     let gc = manager.runtime.gc_stats();
+    if tracing::enabled!(target: "toyoterm::soak", tracing::Level::TRACE) {
+        let async_tasks = manager
+            .runtime
+            .eval("Toyoterm.instance_variable_get(:@async_tasks).length")?;
+        let async_callbacks = manager
+            .runtime
+            .eval("Toyoterm.instance_variable_get(:@async_callbacks).length")?;
+        tracing::trace!(
+            target: "toyoterm::soak",
+            arena_index = gc.arena_index,
+            live_objects = gc.live_objects,
+            async_tasks = %async_tasks,
+            async_callbacks = %async_callbacks,
+            "script resource counts"
+        );
+    }
     tracing::trace!(
         target: "toyoterm::script",
         arena_index = gc.arena_index,

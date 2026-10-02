@@ -11,5 +11,6 @@ base64.workspace = true
 cursor-icon.workspace = true
 flate2.workspace = true
 image.workspace = true
+tracing.workspace = true
 unicode-width.workspace = true
 unicode-segmentation.workspace = true

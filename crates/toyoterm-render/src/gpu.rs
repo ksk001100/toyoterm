@@ -994,6 +994,14 @@ impl GpuRenderer {
     }
 
     pub fn update_tabs(&mut self, tabs: &[TabRenderData<'_>], layout: TextLayout) {
+        tracing::trace!(
+            target: "toyoterm::soak",
+            renderer_cached_panes = self.panes.len(),
+            renderer_images = self.panes.values().map(|pane| pane.images.len()).sum::<usize>(),
+            renderer_textures = self.panes.values().flat_map(|pane| &pane.images)
+                .filter(|(_, gpu)| gpu.is_some()).count(),
+            "renderer resources after pane update (textures uploaded on render)"
+        );
         let active_tabs = tabs.iter().map(|tab| tab.tab).collect::<HashSet<_>>();
         self.tabs.retain(|tab, _| active_tabs.contains(tab));
         let metrics = Metrics::new(layout.font_size.max(1.0), layout.line_height.max(1.0));

@@ -1,3 +1,5 @@
 /target
 /dist
+/.soak-results/
+/scripts/__pycache__/
 /packaging/windows/obj

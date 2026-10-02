@@ -29,6 +29,7 @@ toyoterm itself has no built-in GUI key bindings.
 | [Threading](threading.md) | Ownership, request ordering, and callback budgets |
 | [Architecture decisions](adr/README.md) | Accepted decisions and rationale |
 | [Platform validation](platform-validation.md) | CI coverage and physical-machine checks |
+| [Soak validation](soak-validation.md) | Short churn, long idle, memory trends and sleep/wake RC evidence |
 | [Releasing](releasing.md) | Versioning and release checklist |
 
 Keep the READMEs as synchronized English/Japanese introductions, detailed Ruby

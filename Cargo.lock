@@ -3007,6 +3007,7 @@ dependencies = [
  "cursor-icon",
  "flate2",
  "image",
+ "tracing",
  "unicode-segmentation",
  "unicode-width",
 ]

@@ -15,6 +15,51 @@ const MAX_IMAGES: usize = 128;
 const MAX_TEXT_BLOCKS: usize = 4_096;
 const MAX_SIDE: u32 = 4096;
 
+#[cfg(test)]
+mod soak_tests {
+    use super::*;
+
+    #[test]
+    #[ignore = "opt-in short soak: scripts/soak-test.py"]
+    fn soak_placement_byte_budget() {
+        let pixels = Pixels {
+            width: 2048,
+            height: 2048,
+            rgba: Arc::from(vec![255; 2048 * 2048 * 4]),
+        };
+        let mut graphics = Graphics::new();
+        for iteration in 1..=1_000 {
+            graphics.place(
+                pixels.clone(),
+                (0, 0),
+                (1, 1),
+                PlacementIdentity {
+                    ids: (0, 0),
+                    kind: PlacementKind::Sixel,
+                },
+                false,
+                (2048, 2048),
+            );
+            let bytes = graphics
+                .placements
+                .iter()
+                .map(|p| p.image.rgba.len())
+                .sum::<usize>();
+            assert!(bytes <= MAX_STORED_BYTES);
+            assert!(graphics.placements.len() <= 4);
+            if iteration % 100 == 0 {
+                println!(
+                    "soak placement iteration={iteration} bytes={bytes} placements={}",
+                    graphics.placements.len()
+                );
+            }
+        }
+        graphics.reset();
+        assert_eq!(graphics.resource_counts(), (0, 0, 0));
+        assert_eq!(Arc::strong_count(&pixels.rgba), 1);
+    }
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct TerminalImage {
     /// Unique revision, independent of the client-supplied Kitty image ID.
@@ -122,6 +167,25 @@ enum ItermContent {
 }
 
 impl Graphics {
+    #[cfg(test)]
+    pub(crate) fn resource_counts(&self) -> (usize, usize, usize) {
+        (
+            self.stored.len(),
+            self.placements.len(),
+            self.stored.values().map(|pixels| pixels.rgba.len()).sum(),
+        )
+    }
+    pub(crate) fn trace_resources(&self) {
+        tracing::trace!(
+            target: "toyoterm::soak",
+            image_count = self.stored.len(),
+            image_bytes = self.stored.values().map(|pixels| pixels.rgba.len()).sum::<usize>(),
+            placements = self.placements.len(),
+            placement_bytes = self.placements.iter().map(|p| p.image.rgba.len()).sum::<usize>(),
+            virtual_placements = self.virtual_placements.len(),
+            "terminal graphics resources (placement bytes may share pixels)"
+        );
+    }
     pub fn has_placements(&self) -> bool {
         !self.placements.is_empty() || !self.text_blocks.is_empty()
     }

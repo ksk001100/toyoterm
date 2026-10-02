@@ -2561,3 +2561,69 @@ fn cycles_selection_across_completed_osc133_command_outputs() {
     assert!(backend.select_command_output(SearchDirection::Previous));
     assert_eq!(backend.selected_text().as_deref(), Some("first"));
 }
+
+#[test]
+#[ignore = "opt-in short soak: scripts/soak-test.py"]
+fn soak_scrollback_search_selection() {
+    let mut backend = AlacrittyTerminalBackend::with_scrollback(80, 24, 1_000);
+    let batch = "toyoterm soak output\r\n".repeat(1_000);
+    for iteration in 1..=100 {
+        backend.advance(batch.as_bytes());
+        backend.scroll_display(10);
+        backend.search("soak", SearchDirection::Next);
+        backend.start_selection(0, 0, SelectionKind::Simple);
+        backend.update_selection(10, 0);
+        let _ = backend.selected_text();
+        let snapshot = backend.snapshot();
+        assert_eq!(snapshot.lines.len(), 24);
+        assert!(backend.terminal.history_size() <= 1_000);
+        backend.clear_selection();
+        backend.search("", SearchDirection::Next);
+        backend.scroll_to_bottom();
+        if iteration % 10 == 0 {
+            println!(
+                "soak output lines={} history={}",
+                iteration * 1_000,
+                backend.terminal.history_size()
+            );
+        }
+    }
+}
+
+#[test]
+#[ignore = "opt-in short soak: scripts/soak-test.py"]
+fn soak_image_store_churn() {
+    let mut backend = AlacrittyTerminalBackend::with_scrollback(80, 24, 1_000);
+    let png = base64::engine::general_purpose::STANDARD.encode(include_bytes!(
+        "../../../toyoterm-script/tests/fixtures/background.png"
+    ));
+    for iteration in 1..=1_000 {
+        // Unique client IDs expose retention which reusing one ID would hide.
+        backend
+            .advance(format!("\x1b_Ga=T,q=2,f=32,s=1,v=1,i={iteration};/wAA/w==\x1b\\").as_bytes());
+        assert_eq!(backend.snapshot().images.len(), 1);
+        backend.advance(format!("\x1b_Ga=d,d=I,i={iteration};\x1b\\").as_bytes());
+        backend.scroll_display(1);
+        assert!(backend.snapshot().images.is_empty());
+        assert_eq!(backend.graphics.resource_counts(), (0, 0, 0));
+        backend.scroll_to_bottom();
+        backend.advance(b"\x1bPq#0;2;100;0;0#0~\x1b\\");
+        assert!(!backend.snapshot().images.is_empty());
+        backend.advance(format!("\x1b]1337;File=inline=1:{png}\x07").as_bytes());
+        assert!(backend.snapshot().images.len() >= 2);
+        backend.advance(b"\x1b[2J\x1b[H");
+        backend.advance("\r\n".repeat(1_100).as_bytes());
+        assert_eq!(backend.graphics.resource_counts(), (0, 0, 0));
+        backend.drain_events();
+        if iteration % 100 == 0 {
+            println!("soak image iteration={iteration} stored=0 placements=0 bytes=0");
+        }
+    }
+    // No delete: exercise the count eviction limit with unique images.
+    for id in 1..=1_000 {
+        backend.advance(format!("\x1b_Ga=t,q=2,f=32,s=1,v=1,i={id};/wAA/w==\x1b\\").as_bytes());
+        let (stored, _, bytes) = backend.graphics.resource_counts();
+        assert!(stored <= 128);
+        assert!(bytes <= 64 * 1024 * 1024);
+    }
+}

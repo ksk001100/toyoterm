@@ -14,6 +14,8 @@ metadata are derived from it.
    that file when present and generates notes for other versions.
 3. Complete the manual checks in [platform validation](platform-validation.md) for the release
    candidate and link their results from the release issue.
+   Attach [soak validation](soak-validation.md) results: short churn, eight-hour
+   idle and macOS/Windows sleep/wake evidence, including unavailable metrics.
 4. Run the full locked validation baseline in the
    [development guide](development.md#validation), including the architecture check.
 5. Run `sh scripts/package.sh` locally. It must verify the archive and create
