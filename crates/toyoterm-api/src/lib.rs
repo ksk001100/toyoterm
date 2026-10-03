@@ -1,5 +1,8 @@
 use std::fmt;
 
+mod image_pixels;
+pub use image_pixels::ImagePixels;
+
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub enum HandleKind {
     Workspace,

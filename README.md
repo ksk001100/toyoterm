@@ -164,6 +164,11 @@ CPU/GPU allocations without changing fonts, wallpaper, transparency, or history.
 Actual working set still depends on the graphics driver and loaded content; use
 a release build and report CPU and GPU memory separately.
 
+Large compressible wallpapers keep losslessly compressed pixels in CPU memory
+and expand them only for GPU upload, including after device recovery. Resolution,
+colors, and PNG alpha are preserved. Small or poorly compressible images retain
+raw pixels; normal redraws reuse the uploaded texture.
+
 The [Unicode / IME / rendering regression guide](docs/unicode-rendering-validation.md)
 lists automated cases and the developer fixture for manual font and IME checks.
 

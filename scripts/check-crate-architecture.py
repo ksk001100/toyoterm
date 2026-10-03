@@ -34,7 +34,7 @@ ALLOWED_DEPENDENCIES = {
         "toyoterm-pty",
         "toyoterm-terminal",
     },
-    "toyoterm-config": set(),
+    "toyoterm-config": {"toyoterm-api"},
     "toyoterm-ipc": {"toyoterm-api"},
     "toyoterm-mux": {"toyoterm-api"},
     "toyoterm-pty": set(),

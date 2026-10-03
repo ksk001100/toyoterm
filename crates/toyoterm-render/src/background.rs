@@ -4,7 +4,7 @@ use super::*;
 pub struct BackgroundImage {
     pub width: u32,
     pub height: u32,
-    pub rgba: Arc<[u8]>,
+    pub pixels: Arc<toyoterm_api::ImagePixels>,
 }
 
 pub(super) struct GpuBackground {
@@ -26,7 +26,12 @@ impl GpuBackground {
         queue: &Queue,
         format: wgpu::TextureFormat,
         image: &BackgroundImage,
-    ) -> Self {
+    ) -> Result<Self, RenderError> {
+        let rgba = image
+            .pixels
+            .rgba()
+            .map_err(|error| RenderError::new("expand background pixels", error))?;
+        tracing::debug!(target: "toyoterm::render", stored_bytes = image.pixels.stored_len(), upload_bytes = rgba.len(), "background pixels expanded for GPU upload");
         let texture = device.create_texture(&wgpu::TextureDescriptor {
             label: Some("background image"),
             size: wgpu::Extent3d {
@@ -43,7 +48,7 @@ impl GpuBackground {
         });
         queue.write_texture(
             texture.as_image_copy(),
-            &image.rgba,
+            &rgba,
             wgpu::TexelCopyBufferLayout {
                 offset: 0,
                 bytes_per_row: Some(image.width * 4),
@@ -51,6 +56,7 @@ impl GpuBackground {
             },
             texture.size(),
         );
+        drop(rgba);
         let view = texture.create_view(&TextureViewDescriptor::default());
         let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
             label: Some("background image sampler"),
@@ -111,11 +117,11 @@ impl GpuBackground {
                 },
             ],
         });
-        Self {
+        Ok(Self {
             pipeline,
             bindings,
             uniform,
-        }
+        })
     }
 
     pub(super) fn update(
@@ -164,6 +170,11 @@ mod tests {
     #[test]
     #[ignore = "requires a working GPU or software adapter"]
     fn gpu_background_composites_image_alpha_and_window_opacity() {
+        check_background_composition(1);
+        check_background_composition(256);
+    }
+
+    fn check_background_composition(side: u32) {
         pollster::block_on(async {
             let instance = Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
             let adapter = instance.request_adapter(&Default::default()).await.unwrap();
@@ -173,11 +184,16 @@ mod tests {
                 .unwrap();
             let format = wgpu::TextureFormat::Rgba8Unorm;
             let image = BackgroundImage {
-                width: 1,
-                height: 1,
-                rgba: Arc::from([255, 0, 0, 128]),
+                width: side,
+                height: side,
+                pixels: Arc::new(toyoterm_api::ImagePixels::new(
+                    [255, 0, 0, 128].repeat((side * side) as usize),
+                )),
             };
-            let gpu = GpuBackground::new(&device, &queue, format, &image);
+            if side > 1 {
+                assert!(image.pixels.stored_len() < (side * side * 4) as usize);
+            }
+            let gpu = GpuBackground::new(&device, &queue, format, &image).unwrap();
             let target = device.create_texture(&wgpu::TextureDescriptor {
                 label: Some("background test target"),
                 size: wgpu::Extent3d {

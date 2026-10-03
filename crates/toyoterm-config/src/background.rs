@@ -1,5 +1,6 @@
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use toyoterm_api::ImagePixels;
 
 /// Decoded on the script thread; immutable pixels are shared with the renderer.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -7,7 +8,7 @@ pub struct BackgroundImage {
     pub path: PathBuf,
     pub width: u32,
     pub height: u32,
-    pub rgba: Arc<[u8]>,
+    pub pixels: Arc<ImagePixels>,
 }
 
 impl BackgroundImage {
@@ -37,7 +38,7 @@ impl BackgroundImage {
             path: path.to_owned(),
             width: pixels.width(),
             height: pixels.height(),
-            rgba: pixels.into_raw().into(),
+            pixels: Arc::new(ImagePixels::new(pixels.into_raw())),
         })
     }
 }
@@ -63,9 +64,19 @@ mod tests {
             image.save(&path).unwrap();
             let loaded = BackgroundImage::load(&path).unwrap();
             assert_eq!((loaded.width, loaded.height), (2, 3));
-            assert_eq!(loaded.rgba.len(), 24);
-            assert_eq!(loaded.rgba[3], 255);
+            let rgba = loaded.pixels.rgba().unwrap();
+            assert_eq!(rgba.len(), 24);
+            assert_eq!(rgba[3], 255);
         }
+        let large = image::RgbaImage::from_fn(256, 128, |x, y| {
+            image::Rgba([x as u8, y as u8, 77, (x ^ y) as u8])
+        });
+        let large_path = directory.join("large.png");
+        large.save(&large_path).unwrap();
+        let loaded = BackgroundImage::load(&large_path).unwrap();
+        assert_eq!((loaded.width, loaded.height), large.dimensions());
+        assert!(loaded.pixels.stored_len() < large.as_raw().len());
+        assert_eq!(loaded.pixels.rgba().unwrap().as_ref(), large.as_raw());
         let gif = directory.join("wallpaper.gif");
         image.save(&gif).unwrap();
         assert!(BackgroundImage::load(&gif).is_err());

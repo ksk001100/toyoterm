@@ -41,9 +41,15 @@ pane count for lightweight scaling measurements. Script completions carry
 inspected values, context-bound
 `NativeCommand`s, asynchronous spawn and cancellation requests, script log
 records, and validated configuration snapshots or registries when they change,
-including immutable image pixels. Before applying a non-global action, the main
-thread validates its captured workspace/window/tab/pane IDs and activates that
-hierarchy. Stale contexts fail before partially activating that hierarchy.
+including immutable image pixels. The main-thread renderer may expand losslessly
+compressed wallpaper RGBA bytes once for GPU upload. Image-file I/O, decoding,
+validation, and compression remain on the script thread (or the existing native
+OSC wallpaper worker); expansion does not run Ruby or retain a second decoded
+CPU copy.
+
+Before applying a non-global action, the main thread validates its captured
+workspace/window/tab/pane IDs and activates that hierarchy. Stale contexts fail
+before partially activating that hierarchy.
 The main thread serializes requests, applies returned commands, reconciles PTY
 runtimes, spawns background workers for asynchronous tasks, then submits the
 next request. This preserves event and re-entrant command ordering without

@@ -237,6 +237,51 @@ on every resume. Zero cached textures cannot rule out driver/swapchain duplicati
 
 ## RC evidence and findings
 
+### Lossless wallpaper CPU storage comparison (2026-10-03 JST)
+
+With the descriptor budget change already applied, a second release-build
+comparison used the same Windows 11 / RTX 4070 Ti SUPER / DX12 environment,
+960x600 window, personal settings, and isolated `cmd.exe /d` sessions described
+below. Two fresh processes per version each idled for 30 seconds; values are
+the median of the final ten one-second samples, with no overlapping builds or
+tests. Raw pixel storage was replaced by losslessly compressed `ImagePixels`
+only when an image is at least 64 KiB and compression saves at least 12.5%.
+Small/incompressible images keep raw storage. No Ruby settings changed.
+
+| Metric (MiB) | Raw wallpaper pixels, two runs | Lossless storage, two runs |
+| --- | ---: | ---: |
+| CPU wallpaper storage | 24.01 | 2.38 |
+| CPU private working set | 127.93 / 127.10 | 104.02 / 107.09 |
+| CPU total working set | 173.14 / 172.07 | 151.95 / 152.33 |
+| CPU private bytes (commitment) | 223.06 / 221.06 | 195.87 / 197.63 |
+| GPU dedicated / shared usage | 56.79 / 32.57 | 56.79 / 32.57 |
+
+The uploaded 3344x1882 image still contains exactly 25,173,632 RGBA bytes;
+CPU storage contains 2,498,129 zlib bytes. The renderer expands it once for a
+new GPU upload, drops that temporary allocation immediately after the queue
+copies the pixels, and reuses the texture on ordinary redraws. A trace-enabled
+comparison recorded an initial `image_upload` stage of 8.92 ms before and
+36.52 ms after; subsequent stages were below 0.001 ms. These are single startup
+observations, not frame-time percentiles. Compression adds work on the config
+loader and expansion adds work on uploads/recovery; it does not reduce GPU
+texture resolution or memory. Exact RGBA/alpha round trips, incompressible
+fallback, bounded corrupt-data errors, and raw/compressed GPU composition are
+covered by tests. The personal configuration still exceeded 100 MiB of private
+working set in these samples; no long-idle, sleep/wake, or other-platform
+footprint claim follows from this comparison.
+
+A separate personal-config GUI check switched to the 1704x3692 wallpaper,
+changed opacity from 0.95 to 0.5 and 1.0, cleared the image, and reloaded the
+original config. All three expected GPU uploads were logged, with no ERROR
+records and clean shutdown. Its pre-action private working set was 114.21 MiB,
+showing process-to-process variation beyond the two comparison runs; wallpaper
+storage savings alone do not predict the exact total resident footprint.
+The normal GUI harness also completed eight pane/tab/workspace/image cycles,
+four async cycles and ten reloads without sampling errors or ERROR records.
+Workspace tests, the four opt-in GPU tests, Clippy, formatting, architecture,
+and license checks passed; physical device-loss/sleep-wake and macOS/Linux GUI
+validation remain outstanding.
+
 ### Windows startup allocation comparison (2026-10-03 JST)
 
 The DX12 renderer requests 65,536 live non-sampler bindings instead of wgpu's

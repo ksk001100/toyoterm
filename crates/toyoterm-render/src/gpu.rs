@@ -558,7 +558,7 @@ impl GpuRenderer {
             (Some(old), Some(new)) => {
                 old.width == new.width
                     && old.height == new.height
-                    && Arc::ptr_eq(&old.rgba, &new.rgba)
+                    && Arc::ptr_eq(&old.pixels, &new.pixels)
             }
             (None, None) => true,
             _ => false,
@@ -1444,7 +1444,7 @@ impl GpuRenderer {
                 &self.queue,
                 self.configuration.format,
                 image,
-            ));
+            )?);
         }
         for pane in self.panes.values_mut() {
             for (image, gpu) in &mut pane.images {
