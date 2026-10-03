@@ -400,7 +400,17 @@ impl ShellIntegrationParser {
         allow_osc52_copy: bool,
     ) -> Vec<(usize, TerminalEvent)> {
         let mut events = Vec::new();
-        for (index, &byte) in bytes.iter().enumerate() {
+        let mut index = 0;
+        while index < bytes.len() {
+            // Shell events start with ESC. Skip ordinary output in one scan,
+            // retaining the absolute byte index used to order events with VT input.
+            if matches!(self.state, ShellIntegrationState::Ground) {
+                let Some(next) = bytes[index..].iter().position(|&byte| byte == b'\x1b') else {
+                    break;
+                };
+                index += next;
+            }
+            let byte = bytes[index];
             let state = std::mem::take(&mut self.state);
             self.state = match state {
                 ShellIntegrationState::Ground if byte == b'\x1b' => ShellIntegrationState::Escape,
@@ -510,6 +520,7 @@ impl ShellIntegrationParser {
                 }
                 ShellIntegrationState::IgnoreEscape => ShellIntegrationState::Ignore,
             };
+            index += 1;
         }
         events
     }
