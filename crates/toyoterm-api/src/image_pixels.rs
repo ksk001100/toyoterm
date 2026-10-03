@@ -47,6 +47,46 @@ impl ImagePixels {
         }
     }
 
+    /// Visit consecutive RGBA chunks without allocating a full decoded image.
+    /// The final chunk may be shorter. Offsets are in bytes; no copy is cached.
+    pub fn for_each_rgba_chunk(
+        &self,
+        chunk_bytes: usize,
+        mut visit: impl FnMut(usize, &[u8]),
+    ) -> io::Result<()> {
+        if chunk_bytes == 0 {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "empty pixel chunk",
+            ));
+        }
+        match &self.storage {
+            Storage::Raw(bytes) => {
+                for (index, chunk) in bytes.chunks(chunk_bytes).enumerate() {
+                    visit(index * chunk_bytes, chunk);
+                }
+            }
+            Storage::Zlib(bytes) => {
+                let mut decoder = ZlibDecoder::new(bytes.as_slice());
+                let mut chunk = vec![0; chunk_bytes.min(self.decoded_len)];
+                let mut offset = 0;
+                while offset < self.decoded_len {
+                    let len = chunk.len().min(self.decoded_len - offset);
+                    decoder.read_exact(&mut chunk[..len])?;
+                    visit(offset, &chunk[..len]);
+                    offset += len;
+                }
+                if decoder.read(&mut [0])? != 0 {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        "background pixel length changed during expansion",
+                    ));
+                }
+            }
+        }
+        Ok(())
+    }
+
     /// Borrow raw pixels or expand compressed pixels for a single GPU upload.
     /// No decoded copy is cached; subsequent uploads reconstruct identical bytes.
     pub fn rgba(&self) -> io::Result<Cow<'_, [u8]>> {
@@ -85,6 +125,26 @@ mod tests {
     }
 
     #[test]
+    fn chunked_expansion_preserves_offsets_and_partial_final_chunks() {
+        for len in [37, 128 * 1024 + 17] {
+            let rgba: Vec<_> = (0..len).map(|index| (index % 251) as u8).collect();
+            let pixels = ImagePixels::new(rgba.clone());
+            for chunk_bytes in [1, 1028, len + 1] {
+                let mut restored = Vec::new();
+                pixels
+                    .for_each_rgba_chunk(chunk_bytes, |offset, chunk| {
+                        assert_eq!(offset, restored.len());
+                        assert!(chunk.len() <= chunk_bytes);
+                        restored.extend_from_slice(chunk);
+                    })
+                    .unwrap();
+                assert_eq!(restored, rgba);
+            }
+            assert!(pixels.for_each_rgba_chunk(0, |_, _| {}).is_err());
+        }
+    }
+
+    #[test]
     fn small_and_incompressible_pixels_stay_raw() {
         let small = ImagePixels::new(vec![255, 0, 0, 128]);
         assert!(matches!(small.rgba().unwrap(), Cow::Borrowed(_)));
@@ -110,8 +170,12 @@ mod tests {
             decoded_len: 4,
         };
         assert!(pixels.rgba().is_err());
+        assert!(pixels.for_each_rgba_chunk(3, |_, _| {}).is_err());
         let mut pixels = ImagePixels::new(vec![0; 128 * 1024]);
         pixels.decoded_len = 4;
         assert!(pixels.rgba().is_err());
+        assert!(pixels.for_each_rgba_chunk(3, |_, _| {}).is_err());
+        pixels.decoded_len = 256 * 1024;
+        assert!(pixels.for_each_rgba_chunk(1028, |_, _| {}).is_err());
     }
 }

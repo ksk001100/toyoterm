@@ -41,8 +41,11 @@ pane count for lightweight scaling measurements. Script completions carry
 inspected values, context-bound
 `NativeCommand`s, asynchronous spawn and cancellation requests, script log
 records, and validated configuration snapshots or registries when they change,
-including immutable image pixels. The main-thread renderer may expand losslessly
-compressed wallpaper RGBA bytes once for GPU upload. Image-file I/O, decoding,
+including immutable image pixels. The main-thread renderer expands losslessly
+compressed wallpaper RGBA bytes in row chunks into a mapped GPU upload buffer,
+then submits one buffer-to-texture copy without waiting for GPU completion. The
+decoded scratch buffer is at most 256 KiB (or one row if larger); no full decoded
+CPU allocation is made. Image-file I/O, decoding,
 validation, and compression remain on the script thread (or the existing native
 OSC wallpaper worker); expansion does not run Ruby or retain a second decoded
 CPU copy.

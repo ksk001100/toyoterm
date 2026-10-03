@@ -237,6 +237,52 @@ on every resume. Zero cached textures cannot rule out driver/swapchain duplicati
 
 ## RC evidence and findings
 
+### Streaming wallpaper uploads (2026-10-03 JST)
+
+After lossless CPU storage was merged, wallpaper uploads were changed to expand
+row chunks directly into one mapped `MAP_WRITE | COPY_SRC` transfer buffer,
+followed by one queued buffer-to-texture copy. The GPU texture keeps its original
+resolution, color, and alpha. The renderer no longer allocates a full decoded
+CPU `Vec`; scratch space is at most 256 KiB or one row, whichever is larger.
+For the personal 3344x1882 image, that decoded allocation changes from 24.01 MiB
+to 254,144 bytes (about 0.24 MiB). The mapped transfer buffer is still image-sized
+and lives until the GPU finishes its copy. No synchronous GPU wait was added.
+
+Two fresh 30-second processes per version used the same Windows 11 / NVIDIA
+RTX 4070 Ti SUPER / DX12 personal configuration and isolated `cmd.exe /d` as
+below. Idle values are medians of the final ten one-second samples. The first
+control overlapped a build before the final ten samples; the other runs did
+not overlap builds or tests.
+
+| Metric (MiB) | Full CPU expansion | Direct mapped upload |
+| --- | ---: | ---: |
+| Idle CPU private working set | 96.78 / 90.67 | 92.09 / 99.48 |
+| Idle CPU total working set | 145.12 / 136.84 | 137.50 / 144.90 |
+| Idle CPU private bytes (commitment) | 187.46 / 178.52 | 180.89 / 190.08 |
+| Sampled peak CPU private working set | 184.49 / 153.52 | 146.65 / 148.83 |
+| GPU dedicated / shared usage | 56.79 / 32.57 | 56.79 / 33.57 |
+
+These runs demonstrate no consistent idle working-set reduction. Removing the
+decoded allocation bounds upload scratch memory; it does not promise that
+the allocator or driver returns an equivalent number of resident pages. The
+one-second sampled peaks are not exact upload peaks. Initial `image_upload`
+trace stages were 37.68 / 38.39 ms before and 32.63 / 32.15 ms after; these are
+individual observations, not latency percentiles. A trial using many separate
+`queue.write_texture` calls increased DX12 shared GPU memory and was discarded.
+
+The personal-config check switched horizontal/vertical images, changed window
+opacity, cleared the wallpaper, and reloaded the config without ERROR records.
+CPU tests cover raw/compressed chunks, offsets, short final chunks, corrupt and
+wrong-length data. GPU composition reads every row of a 257x257 image, exercising
+row padding and a short final decoded chunk, as well as the tiny raw-image case.
+The normal GUI harness completed eight pane/tab/workspace/image cycles, four
+async cycles, and ten reloads with no sampling errors or ERROR records. Workspace
+all-target tests, all four opt-in GPU tests, workspace Clippy with warnings denied,
+formatting, architecture, and license checks passed. The short GUI run does not
+establish a memory plateau.
+Physical device loss, sleep/wake, long idle, and macOS/Linux GUI validation remain
+outstanding.
+
 ### Lossless wallpaper CPU storage comparison (2026-10-03 JST)
 
 With the descriptor budget change already applied, a second release-build
