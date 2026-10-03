@@ -3370,7 +3370,10 @@ fn background_images_reload_cache_clear_and_rollback() {
     let original = manager.config().window.background_image.clone().unwrap();
     assert_eq!(original.path, image_path);
     assert_eq!((original.width, original.height), (2, 1));
-    assert_eq!(&*original.rgba, &[255, 0, 0, 255, 0, 0, 255, 128]);
+    assert_eq!(
+        original.pixels.rgba().unwrap().as_ref(),
+        &[255, 0, 0, 255, 0, 0, 255, 128]
+    );
     assert_eq!(manager.config().window.background_image_opacity, 0.4);
 
     // Unrelated live settings reuse pixels, even if the file has been removed.

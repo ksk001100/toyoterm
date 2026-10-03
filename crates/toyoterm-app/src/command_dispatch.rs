@@ -773,7 +773,7 @@ impl ToyotermApplication {
                 .map(|image| toyoterm_render::BackgroundImage {
                     width: image.width,
                     height: image.height,
-                    rgba: image.rgba.clone(),
+                    pixels: image.pixels.clone(),
                 });
         render_style.background_image_opacity = config.window.background_image_opacity;
         let font_scale = f64::from(config.font.size) / 14.0;

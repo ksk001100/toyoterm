@@ -15,6 +15,10 @@ toyoterm is a Cargo workspace. Each crate owns one runtime responsibility:
 - `toyoterm-pty`: process spawning, PTY I/O, resize, and child lifecycle
 - `toyoterm-render`: layout plus GPU and text rendering
 - `toyoterm-config`: configuration values and path discovery
+  It depends on `toyoterm-api` for shared immutable `ImagePixels` storage.
+  Large compressible wallpaper pixels use lossless zlib storage; the shared
+  type owns compression/expansion through the existing `flate2` dependency.
+  This adds the `toyoterm-config -> toyoterm-api` edge, not a render/config edge.
 - `toyoterm-script`: mruby ownership, DSL evaluation, callbacks, and typed API conversion
 - `toyoterm-ipc`: the internal local transport shared by the app and CLI
 - `toyoterm-app`: window lifecycle and coordination of the native subsystems

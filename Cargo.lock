@@ -2894,6 +2894,9 @@ checksum = "7d56353a2a665ad0f41a421187180aab746c8c325620617ad883a99a1cbe66d2"
 [[package]]
 name = "toyoterm-api"
 version = "0.2.0-dev"
+dependencies = [
+ "flate2",
+]
 
 [[package]]
 name = "toyoterm-app"
@@ -2940,6 +2943,7 @@ name = "toyoterm-config"
 version = "0.2.0-dev"
 dependencies = [
  "image",
+ "toyoterm-api",
 ]
 
 [[package]]

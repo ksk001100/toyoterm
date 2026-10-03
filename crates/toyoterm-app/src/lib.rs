@@ -429,7 +429,7 @@ fn run_gui_inner(options: GuiOptions, exit_after_startup: bool) -> Result<(), Ap
             .map(|image| toyoterm_render::BackgroundImage {
                 width: image.width,
                 height: image.height,
-                rgba: image.rgba.clone(),
+                pixels: image.pixels.clone(),
             });
     render_style.background_image_opacity = config.window.background_image_opacity;
     let mut app = ToyotermApplication::new(
@@ -2158,7 +2158,7 @@ impl ApplicationHandler<AppEvent> for ToyotermApplication {
                         image.map(|image| toyoterm_render::BackgroundImage {
                             width: image.width,
                             height: image.height,
-                            rgba: image.rgba,
+                            pixels: image.pixels,
                         });
                     if let Some(renderer) = self.platform.renderer.as_mut() {
                         renderer.set_style(self.ui.render_style.clone());
