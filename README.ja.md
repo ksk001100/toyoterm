@@ -150,6 +150,11 @@ pane数、画像、検索、Ruby overhead、config reloadを計測できます�
 [soak 検証ガイド](docs/soak-validation.md)には実 GUI の churn、8 時間 idle、OS 別メモリ・GPU 計測、
 RC 向け sleep/wake 手順もまとめています。通常のテストでは長時間 soak を実行しません。
 
+Windows の DX12 レンダラーは、初期リソース参照領域を wgpu の既定値である100万件から
+65,536件に抑えています。フォント・壁紙・透過・履歴を変更せず、起動時の CPU/GPU メモリ確保を
+削減します。実際のワーキングセットはグラフィックスドライバーと表示内容にも依存するため、
+release ビルドを使い、CPU と GPU のメモリを分けて記録してください。
+
 [Unicode・IME・描画リグレッションガイド](docs/unicode-rendering-validation.md)に、
 自動テストの対象とフォント・IMEの手動検証用fixtureをまとめています。
 

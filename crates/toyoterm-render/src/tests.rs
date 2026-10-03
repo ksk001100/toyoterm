@@ -161,6 +161,22 @@ fn macos_renderer_initializes_only_metal() {
 
 #[test]
 #[cfg(target_os = "windows")]
+fn windows_descriptor_heap_budget_preserves_other_device_limits() {
+    let limits = renderer_device_limits();
+    let defaults = wgpu::Limits::default();
+    assert_eq!(limits.max_non_sampler_bindings, 65_536);
+    assert!(limits.max_non_sampler_bindings < defaults.max_non_sampler_bindings);
+    assert_eq!(
+        wgpu::Limits {
+            max_non_sampler_bindings: defaults.max_non_sampler_bindings,
+            ..limits
+        },
+        defaults
+    );
+}
+
+#[test]
+#[cfg(target_os = "windows")]
 fn windows_presentation_uses_direct_composition_and_premultiplied_alpha() {
     let descriptor = renderer_instance_descriptor();
     assert_eq!(descriptor.backends, wgpu::Backends::DX12);

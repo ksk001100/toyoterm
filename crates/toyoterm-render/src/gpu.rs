@@ -419,6 +419,7 @@ impl GpuRenderer {
         let (device, queue) = adapter
             .request_device(&DeviceDescriptor {
                 label: Some("toyoterm device"),
+                required_limits: renderer_device_limits(),
                 // DX12's default allocation policy reserves far more memory at startup.
                 #[cfg(target_os = "windows")]
                 memory_hints: wgpu::MemoryHints::MemoryUsage,
@@ -465,6 +466,7 @@ impl GpuRenderer {
             alpha_mode = ?configuration.alpha_mode,
             opacity = style.opacity,
             backend = ?adapter.get_info().backend,
+            adapter = %adapter.get_info().name,
             "GPU renderer initialized"
         );
 
@@ -2172,6 +2174,18 @@ impl GpuRenderer {
             .map_err(|error| RenderError::new("recreate GPU surface", error))?;
         self.surface.configure(&self.device, &self.configuration);
         Ok(())
+    }
+}
+
+pub(super) fn renderer_device_limits() -> wgpu::Limits {
+    wgpu::Limits {
+        // DX12 allocates its shader-visible descriptor heap up front. The
+        // default million entries waste memory even for one idle pane. Keep
+        // room for tens of thousands of image/text bind groups without that
+        // allocation; this limit has no effect on the other backends.
+        #[cfg(target_os = "windows")]
+        max_non_sampler_bindings: 65_536,
+        ..Default::default()
     }
 }
 
