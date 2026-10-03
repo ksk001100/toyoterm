@@ -55,6 +55,19 @@ pub(crate) enum Token<'a> {
 
 impl Stream {
     pub fn advance<'a>(&mut self, bytes: &'a [u8]) -> Vec<Token<'a>> {
+        // Complete text/CSI reads need no reconstruction. Keep the incremental
+        // path for strings, queries, malformed CSI and sequences split by a PTY
+        // read. Speculative scanning must not change state on fallback.
+        if matches!(self.state, State::Ground)
+            && let Some(continuations) = passthrough_continuations(bytes, self.utf8_continuations)
+        {
+            self.utf8_continuations = continuations;
+            return if bytes.is_empty() {
+                Vec::new()
+            } else {
+                vec![Token::Text(Cow::Borrowed(bytes))]
+            };
+        }
         let mut tokens = Vec::new();
         let mut text = Vec::new();
         let mut offset = 0;
@@ -255,6 +268,57 @@ impl Stream {
     }
 }
 
+fn passthrough_continuations(bytes: &[u8], mut continuations: u8) -> Option<u8> {
+    let mut offset = 0;
+    while offset < bytes.len() {
+        let count = bytes[offset..]
+            .iter()
+            .position(|&byte| byte == 0x1b || !byte.is_ascii())
+            .unwrap_or(bytes.len() - offset);
+        if count > 0 {
+            continuations = 0;
+            offset += count;
+            continue;
+        }
+        let byte = bytes[offset];
+        offset += 1;
+        if byte == 0x1b {
+            continuations = 0;
+            if bytes.get(offset) != Some(&b'[') {
+                return None;
+            }
+            offset += 1;
+            let start = offset;
+            loop {
+                let byte = *bytes.get(offset)?;
+                offset += 1;
+                if (0x40..=0x7e).contains(&byte) {
+                    if &bytes[start..offset] == b"16t" {
+                        return None;
+                    }
+                    break;
+                }
+                if !(0x20..=0x3f).contains(&byte) || offset - start >= 64 {
+                    return None;
+                }
+            }
+        } else if continuations > 0 && (0x80..=0xbf).contains(&byte) {
+            continuations -= 1;
+        } else {
+            if matches!(byte, 0x90 | 0x9d | 0x9e | 0x9f | 0x98) {
+                return None;
+            }
+            continuations = match byte {
+                0xc2..=0xdf => 1,
+                0xe0..=0xef => 2,
+                0xf0..=0xf4 => 3,
+                _ => 0,
+            };
+        }
+    }
+    Some(continuations)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -301,6 +365,23 @@ mod tests {
     }
 
     #[test]
+    fn borrows_complete_ansi_and_utf8_reads() {
+        let bytes = "\x1b[1;32mАĝĞğ界😀\x1b[0m\r\n".as_bytes();
+        assert!(matches!(Stream::default().advance(bytes).as_slice(),
+            [Token::Text(Cow::Borrowed(text))] if *text == bytes));
+        let mut stream = Stream::default();
+        stream.advance(b"\xc2");
+        assert!(matches!(
+            stream.advance(b"\x9f").as_slice(),
+            [Token::Text(Cow::Borrowed(b"\x9f"))]
+        ));
+        assert_eq!(
+            stream.advance(b"\x9fGq=2\x9c"),
+            vec![Token::Graphic(b'_', b"Gq=2".to_vec())]
+        );
+    }
+
+    #[test]
     fn preserves_text_and_protocol_order_at_every_chunk_boundary() {
         let fixtures: &[&[u8]] = &[
             "ASCII\r\n\x1b[32mАĝĞğ界😀\x1b[0m tail".as_bytes(),
@@ -309,6 +390,7 @@ mod tests {
             b"before\x9fGq=2\x9cafter\x9d1337;FileEnd\x07tail",
             b"text\x1bPqdata\x18tail\x1b]66;s=2;Hi\x1b\\end",
             b"\xc2text\x9fGq=2\x9c\x1b]2;cancel\x1bXafter\x1b[16t",
+            b"\x1b[32\x18mtext\x1b[\x1b[16t\x1b[1234567890123456789012345678901234567890123456789012345678901234567890t",
         ];
         for &fixture in fixtures {
             let expected = collect(&[fixture]);

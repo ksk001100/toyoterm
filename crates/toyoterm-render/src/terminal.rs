@@ -73,27 +73,9 @@ pub(super) fn update_terminal_cell_buffer(
     );
     buffer.set_rich_text(
         cells.iter().map(|cell| {
-            let mut attributes = cell.attributes;
-            let hyperlink = cell.hyperlink.is_some();
-            if hyperlink {
-                attributes.underline = true;
-            }
-            apply_selection_foreground(
-                &mut attributes,
-                context.selection,
-                context.row,
-                cell,
-                context.colors,
-            );
             (
                 cell.text.as_str(),
-                glyph_attrs(
-                    attributes,
-                    hyperlink,
-                    &style.font_family,
-                    style.font_weight,
-                    context.colors,
-                ),
+                terminal_cell_attrs(cell, style, &context),
             )
         }),
         &Attrs::new()
@@ -103,6 +85,50 @@ pub(super) fn update_terminal_cell_buffer(
         None,
     );
     buffer.shape_until_scroll(font_system, false);
+}
+
+fn terminal_cell_attrs<'a>(
+    cell: &toyoterm_terminal::TerminalCell,
+    style: &'a RenderStyle,
+    context: &CellRenderContext<'_>,
+) -> Attrs<'a> {
+    let mut attributes = cell.attributes;
+    let hyperlink = cell.hyperlink.is_some();
+    if hyperlink {
+        attributes.underline = true;
+    }
+    apply_selection_foreground(
+        &mut attributes,
+        context.selection,
+        context.row,
+        cell,
+        context.colors,
+    );
+    glyph_attrs(
+        attributes,
+        hyperlink,
+        &style.font_family,
+        style.font_weight,
+        context.colors,
+    )
+}
+
+// Ordinary isolated glyphs have no position-dependent shaping or clipping.
+// Keep sized blocks and multi-cell ASCII runs on their existing buffer path.
+pub(super) fn shared_cell_key(
+    cells: &[toyoterm_terminal::TerminalCell],
+    style: &RenderStyle,
+    context: &CellRenderContext<'_>,
+) -> Option<(String, u8, AttrsOwned)> {
+    let [cell] = cells else { return None };
+    if cell.text_size.is_some() {
+        return None;
+    }
+    Some((
+        cell.text.clone(),
+        cell.width,
+        AttrsOwned::new(&terminal_cell_attrs(cell, style, context)),
+    ))
 }
 
 pub(super) fn sized_text_offsets(

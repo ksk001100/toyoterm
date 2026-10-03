@@ -152,6 +152,10 @@ seed replay in normal tests, CI smoke runs, hourly campaigns and crash regressio
 The opt-in [end-to-end performance baseline](docs/performance-baseline.md) measures
 the real PTY-to-frame path, pane scaling, images, search, Ruby overhead and config
 reload. It saves JSON results for commit comparisons without CI timing thresholds.
+For cross-terminal output throughput, run `scripts/terminal-throughput.py` inside
+each terminal; the same guide explains its DSR acknowledgement metric and limits.
+Ordinary isolated glyphs share up to 512 shaped buffers per pane, avoiding repeated
+font fallback work for CJK and emoji while preserving grid positions and selection colors.
 
 Run the opt-in short memory soak with `python3 scripts/soak-test.py headless --output .soak-results/short`.
 The [soak validation guide](docs/soak-validation.md) also covers real GUI churn,

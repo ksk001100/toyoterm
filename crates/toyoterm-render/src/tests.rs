@@ -536,6 +536,72 @@ fn cell_run_cache_only_reuses_identical_shaping_inputs() {
 }
 
 #[test]
+fn shared_glyph_keys_follow_effective_style_and_preserve_cell_geometry() {
+    let style = RenderStyle::default();
+    let mut colors = test_terminal_colors(style.foreground, style.background, style.ansi);
+    colors.selection_foreground = Some([10, 20, 30]);
+    let cell = toyoterm_terminal::TerminalCell {
+        text: "界\u{301}".into(),
+        width: 2,
+        ..Default::default()
+    };
+    let key = |cell: &toyoterm_terminal::TerminalCell, row, selection: &[SelectionSpan]| {
+        shared_cell_key(
+            std::slice::from_ref(cell),
+            &style,
+            &CellRenderContext {
+                row,
+                selection,
+                colors: &colors,
+            },
+        )
+    };
+    let original = key(&cell, 0, &[]).unwrap();
+    let mut moved = cell.clone();
+    moved.column = 9;
+    assert_eq!(key(&moved, 3, &[]).unwrap(), original);
+    let selected = [SelectionSpan {
+        row: 3,
+        start_column: 10,
+        end_column: 10,
+    }];
+    assert_ne!(key(&moved, 3, &selected).unwrap(), original);
+    assert_eq!(key(&moved, 2, &selected).unwrap(), original);
+    moved.attributes.bold = true;
+    assert_ne!(key(&moved, 3, &[]).unwrap(), original);
+    moved = cell.clone();
+    moved.hyperlink = Some(Arc::from("https://example.com"));
+    assert_ne!(key(&moved, 0, &[]).unwrap(), original);
+    moved = cell.clone();
+    moved.width = 1;
+    assert_ne!(key(&moved, 0, &[]).unwrap(), original);
+    moved = cell.clone();
+    moved.text = "😀".into();
+    assert_ne!(key(&moved, 0, &[]).unwrap(), original);
+    moved.text_size = Some(toyoterm_terminal::TextSize {
+        scale: 2,
+        numerator: 1,
+        denominator: 1,
+        vertical_alignment: toyoterm_terminal::TextAlignment::Start,
+        horizontal_alignment: toyoterm_terminal::TextAlignment::Start,
+        rows: 2,
+    });
+    assert!(key(&moved, 0, &[]).is_none());
+    assert!(
+        shared_cell_key(
+            &[cell.clone(), cell],
+            &style,
+            &CellRenderContext {
+                row: 0,
+                selection: &[],
+                colors: &colors
+            }
+        )
+        .is_none()
+    );
+}
+
+#[test]
 fn terminal_rich_text_coalesces_adjacent_cells_with_the_same_attributes() {
     let mut terminal = AlacrittyTerminalBackend::new(10, 2);
     terminal.advance(b"abcdefghij");
