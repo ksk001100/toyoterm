@@ -319,7 +319,8 @@ transaction and preserve the previous settings and image.
 
 Images are decoded on the script thread and shared as immutable pixels with the
 renderer. Large compressible wallpaper pixels are held in lossless compressed
-CPU storage and expanded only for GPU upload; resolution, color, and PNG alpha
+CPU storage and expanded in bounded row chunks directly into one GPU upload
+buffer; no full decoded CPU image is retained. Resolution, color, and PNG alpha
 are preserved. Reload rereads the file, including changes at the same path. Live
 configuration supports changing or clearing the path and changing blend strength;
 unchanged paths reuse the loaded pixels, so use reload to refresh an edited file.

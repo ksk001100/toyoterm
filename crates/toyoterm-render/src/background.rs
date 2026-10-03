@@ -27,11 +27,6 @@ impl GpuBackground {
         format: wgpu::TextureFormat,
         image: &BackgroundImage,
     ) -> Result<Self, RenderError> {
-        let rgba = image
-            .pixels
-            .rgba()
-            .map_err(|error| RenderError::new("expand background pixels", error))?;
-        tracing::debug!(target: "toyoterm::render", stored_bytes = image.pixels.stored_len(), upload_bytes = rgba.len(), "background pixels expanded for GPU upload");
         let texture = device.create_texture(&wgpu::TextureDescriptor {
             label: Some("background image"),
             size: wgpu::Extent3d {
@@ -46,17 +41,54 @@ impl GpuBackground {
             usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
             view_formats: &[],
         });
-        queue.write_texture(
-            texture.as_image_copy(),
-            &rgba,
-            wgpu::TexelCopyBufferLayout {
-                offset: 0,
-                bytes_per_row: Some(image.width * 4),
-                rows_per_image: Some(image.height),
+        let row_bytes = image.width as usize * 4;
+        let chunk_rows = (256 * 1024 / row_bytes).max(1);
+        // Decode into a single mapped transfer buffer. Repeated write_texture
+        // calls allocate separate staging resources on DX12; a full rgba()
+        // expansion would instead allocate another image-sized CPU buffer.
+        let padded_row_bytes = row_bytes.div_ceil(wgpu::COPY_BYTES_PER_ROW_ALIGNMENT as usize)
+            * wgpu::COPY_BYTES_PER_ROW_ALIGNMENT as usize;
+        let upload = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("background image upload"),
+            size: (padded_row_bytes * image.height as usize) as u64,
+            usage: BufferUsages::MAP_WRITE | BufferUsages::COPY_SRC,
+            mapped_at_creation: true,
+        });
+        let mut mapped = upload
+            .slice(..)
+            .get_mapped_range_mut()
+            .map_err(|error| RenderError::new("map background upload", error))?;
+        image
+            .pixels
+            .for_each_rgba_chunk(chunk_rows * row_bytes, |offset, rgba| {
+                let first_row = offset / row_bytes;
+                for (index, row) in rgba.chunks_exact(row_bytes).enumerate() {
+                    let start = (first_row + index) * padded_row_bytes;
+                    mapped.slice(start..start + row_bytes).copy_from_slice(row);
+                }
+            })
+            .map_err(|error| RenderError::new("expand background pixels", error))?;
+        drop(mapped);
+        upload.unmap();
+        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some("background image upload"),
+        });
+        encoder.copy_buffer_to_texture(
+            wgpu::TexelCopyBufferInfo {
+                buffer: &upload,
+                layout: wgpu::TexelCopyBufferLayout {
+                    offset: 0,
+                    bytes_per_row: Some(padded_row_bytes as u32),
+                    rows_per_image: None,
+                },
             },
+            texture.as_image_copy(),
             texture.size(),
         );
-        drop(rgba);
+        queue.submit([encoder.finish()]);
+        // Submission retains the transfer buffer until the GPU copy completes.
+        // No CPU wait is needed before using the texture on this same queue.
+        tracing::debug!(target: "toyoterm::render", stored_bytes = image.pixels.stored_len(), chunk_bytes = chunk_rows * row_bytes, "background pixels streamed for GPU upload");
         let view = texture.create_view(&TextureViewDescriptor::default());
         let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
             label: Some("background image sampler"),
@@ -171,7 +203,8 @@ mod tests {
     #[ignore = "requires a working GPU or software adapter"]
     fn gpu_background_composites_image_alpha_and_window_opacity() {
         check_background_composition(1);
-        check_background_composition(256);
+        // Non-aligned rows and a short final upload exercise multiple chunks.
+        check_background_composition(257);
     }
 
     fn check_background_composition(side: u32) {
@@ -198,7 +231,7 @@ mod tests {
                 label: Some("background test target"),
                 size: wgpu::Extent3d {
                     width: 1,
-                    height: 1,
+                    height: side,
                     depth_or_array_layers: 1,
                 },
                 mip_level_count: 1,
@@ -211,7 +244,7 @@ mod tests {
             let view = target.create_view(&Default::default());
             let readback = device.create_buffer(&wgpu::BufferDescriptor {
                 label: Some("background test readback"),
-                size: 256,
+                size: 256 * u64::from(side),
                 usage: BufferUsages::MAP_READ | BufferUsages::COPY_DST,
                 mapped_at_creation: false,
             });
@@ -280,7 +313,7 @@ mod tests {
                         layout: wgpu::TexelCopyBufferLayout {
                             offset: 0,
                             bytes_per_row: Some(256),
-                            rows_per_image: Some(1),
+                            rows_per_image: Some(side),
                         },
                     },
                     target.size(),
@@ -296,12 +329,14 @@ mod tests {
                 receiver.recv().unwrap().unwrap();
                 {
                     let bytes = readback.slice(..).get_mapped_range().unwrap();
-                    for (actual, expected) in bytes[..4].iter().zip(expected) {
-                        assert!(
-                            i32::from(*actual).abs_diff(expected) <= 1,
-                            "{mode:?}: {:?}",
-                            &bytes[..4]
-                        );
+                    for row in bytes.as_chunks::<256>().0 {
+                        for (actual, expected) in row[..4].iter().zip(expected) {
+                            assert!(
+                                i32::from(*actual).abs_diff(expected) <= 1,
+                                "{mode:?}: {:?}",
+                                &row[..4]
+                            );
+                        }
                     }
                 }
                 readback.unmap();

@@ -165,7 +165,8 @@ Actual working set still depends on the graphics driver and loaded content; use
 a release build and report CPU and GPU memory separately.
 
 Large compressible wallpapers keep losslessly compressed pixels in CPU memory
-and expand them only for GPU upload, including after device recovery. Resolution,
+and expand them in bounded row chunks directly into one GPU upload buffer,
+including after device recovery, without a full decoded CPU image. Resolution,
 colors, and PNG alpha are preserved. Small or poorly compressible images retain
 raw pixels; normal redraws reuse the uploaded texture.
 
