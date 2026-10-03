@@ -158,6 +158,12 @@ The [soak validation guide](docs/soak-validation.md) also covers real GUI churn,
 eight-hour idle runs, OS memory/GPU measurements and sleep/wake checks for RCs.
 Normal tests do not run long soaks.
 
+On Windows, the DX12 renderer limits its initial resource descriptor heap to
+65,536 entries rather than wgpu's default million entries. This reduces startup
+CPU/GPU allocations without changing fonts, wallpaper, transparency, or history.
+Actual working set still depends on the graphics driver and loaded content; use
+a release build and report CPU and GPU memory separately.
+
 The [Unicode / IME / rendering regression guide](docs/unicode-rendering-validation.md)
 lists automated cases and the developer fixture for manual font and IME checks.
 

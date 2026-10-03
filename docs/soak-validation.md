@@ -237,6 +237,50 @@ on every resume. Zero cached textures cannot rule out driver/swapchain duplicati
 
 ## RC evidence and findings
 
+### Windows startup allocation comparison (2026-10-03 JST)
+
+The DX12 renderer requests 65,536 live non-sampler bindings instead of wgpu's
+default 1,000,000. DX12 allocates the shader-visible descriptor heap at device
+creation, so reducing this budget reduces fixed CPU/GPU commitments. Other
+device limits, the memory-usage allocation policy, and other platforms are
+unchanged. The startup renderer log includes the adapter name to identify the
+driver used for comparisons.
+
+A release-build comparison on Windows 11 with an NVIDIA GeForce RTX 4070 Ti
+SUPER used one 960x600 window, `cmd.exe /d`, and isolated IPC instances. The
+personal configuration retained 10,000 history lines, JetBrainsMono/Hack Nerd
+Fonts, 0.95 window opacity, status widgets, and a 3344x1882 RGBA wallpaper
+(24.01 MiB of CPU pixels plus its GPU texture). Each fresh process idled for
+30 seconds; CPU values below are the median of the final ten one-second
+samples. GPU values are a separate checkpoint after sampling, summed across
+all PID-matching adapter instances. Build/test jobs did not overlap these
+final comparisons; child-process memory is excluded.
+
+| Metric (MiB) | 1,000,000 descriptors | 65,536 descriptors |
+| --- | ---: | ---: |
+| CPU working set, including shared pages | 161.32 | 163.98 |
+| CPU private bytes (commitment) | 232.91 | 208.72 |
+| GPU dedicated usage | 85.41 | 56.79 |
+| GPU shared usage | 32.57 | 32.57 |
+
+This establishes lower commitments, not lower resident CPU memory: the working
+set did not decrease in this comparison. Windows `QueryWorkingSet` counted
+117.31 MiB of non-shared resident pages after the change; do not confuse that
+private working set with either total working set or private bytes. Under the
+same sampling procedure, removing only the wallpaper yielded 151.25 MiB total
+working set / 106.16 MiB private working set / 171.39 MiB private bytes. A
+minimal configuration with the same history budget yielded 139.67 / 76.69 /
+145.52 MiB, respectively. These measurements do not establish a sub-100 MiB
+footprint with the personal configuration, nor an eight-hour plateau, other
+GPU/OS results, HDR behavior, or sleep/wake stability. GPU and CPU counters can
+overlap; do not add them into a single memory total.
+
+The changed release renderer also completed a 42-second GUI harness check:
+eight pane/tab/workspace/image cycles, four async cycles, and ten reloads, with
+no sampling errors or ERROR-level log records. All four opt-in GPU composition
+tests passed. This is regression coverage for the reduced allocation budget,
+not the default RC workload or long-term stability evidence.
+
 Copy this into the RC issue and attach raw result directories:
 
 ```text
