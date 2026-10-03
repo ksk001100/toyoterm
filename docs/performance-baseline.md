@@ -193,3 +193,59 @@ tests. GUI baseline and ignored measurements are opt-in. There are **no ms or
 percentage pass/fail thresholds**. Operational timeouts detect hung/failed runs,
 not performance regressions. WezTerm/Ghostty/Alacritty comparisons, if performed
 manually, are supplementary evidence and never CI gates.
+
+## Cross-terminal throughput and parser overhead
+
+`scripts/terminal-throughput.py` runs **inside** a terminal and uses only Python's
+standard library. It generates identical ASCII, ANSI, Unicode and alternate-screen
+redraw workloads, performs one warmup per workload, then retains five samples.
+Each measurement ends at a cursor-position DSR reply after the output. This
+includes child console writes, PTY transport, parsing/backpressure and the response
+roundtrip. It does **not** establish that the final frame was presented, measure
+keyboard-to-screen latency, or count displayed intermediate redraws. ConPTY and
+Python's console transport can dominate these numbers on Windows.
+
+Use explicit isolated configs with the same grid, font, font size, scrollback
+budget and power settings. Run terminals sequentially without builds/tests in
+the background. Results contain actual grid, fixture/harness hashes, raw samples,
+median and throughput. Compare only equal grids, fixture hashes and harness
+hashes; retain configs, binary hashes, launch commands and GPU details alongside
+the JSON. Supply the actual installed version via `--version`, not a guessed
+latest version. The output file must be new. Unsupported DSR replies fail and
+are recorded; do not substitute write completion for acknowledgement.
+
+For example, after configuring each terminal to the same grid:
+
+```sh
+wezterm --config-file /absolute/path/benchmark.lua start --always-new-process -- \
+  python3 /absolute/path/toyoterm/scripts/terminal-throughput.py \
+  --output /absolute/path/wezterm.json --label wezterm --version INSTALLED_VERSION
+target/release/toyoterm --config /absolute/path/benchmark.rb -e \
+  python3 /absolute/path/toyoterm/scripts/terminal-throughput.py \
+  --output /absolute/path/toyoterm.json --label toyoterm --version 0.2.0-dev
+```
+
+On Windows use a full Python executable path and `toyoterm.exe`. Alacritty,
+Kitty and Ghostty can launch the same child with their execute option on supported
+platforms. This harness does not compare images, search, splits or scripting:
+those need terminal-specific adapters and equivalent feature semantics. Keep
+the production PTY-to-present baseline for toyoterm rendering changes.
+When relocating a Windows toyoterm binary for an A/B run, keep both `conpty.dll`
+and `OpenConsole.exe` beside it. Otherwise backend discovery can select OS ConPTY
+and invalidate the comparison. Record the selected backend as well as the renderer.
+
+The ignored Rust `vt_extension_overhead` measurement also compares toyoterm's
+wrapper with a bare `alacritty_terminal` processor using the **same dependency
+version**, bytes, 100×40 grid and 2,000-line history. It isolates the native
+extension cost and excludes GUI, PTY and rendering; do not label it an Alacritty
+application score. Run it with the isolated terminal command above.
+
+Useful primary references are [Kitty's performance methodology](https://sw.kovidgoyal.net/kitty/performance/),
+[Alacritty's vtebench](https://github.com/alacritty/vtebench),
+[Ghostty's benchmark instructions](https://github.com/ghostty-org/ghostty/blob/main/src/benchmark/AGENTS.md)
+and [WezTerm's frame-rate configuration](https://wezterm.org/config/lua/config/max_fps.html).
+Their published timings are environment-specific and must not be divided by our
+local parser or PTY-to-present timings to manufacture a cross-terminal ranking.
+
+The [2026-10-03 Windows investigation](performance-baselines/2026-10-03-windows.md)
+records a local comparison, its platform limitations and the measured optimizations.

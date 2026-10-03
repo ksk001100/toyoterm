@@ -51,6 +51,69 @@ fn vt_input_plain_and_styled() {
     }
 }
 
+// Same parser version, grid, history budget and bytes as the production wrapper.
+// This isolates extension overhead; it is not an Alacritty GUI measurement.
+#[test]
+#[ignore = "manual performance measurement"]
+fn vt_extension_overhead() {
+    use alacritty_terminal::term::Config;
+    use alacritty_terminal::vte::ansi::Processor;
+    use alacritty_terminal::{Term, event::VoidListener, grid::Dimensions};
+
+    struct Size;
+    impl Dimensions for Size {
+        fn total_lines(&self) -> usize {
+            40
+        }
+        fn screen_lines(&self) -> usize {
+            40
+        }
+        fn columns(&self) -> usize {
+            100
+        }
+    }
+    for (name, line) in [
+        (
+            "ascii",
+            "plain terminal output with a fixed width payload 0123456789\r\n",
+        ),
+        ("ansi", "\x1b[1;32mcolored\x1b[0m output 0123456789\r\n"),
+        (
+            "unicode",
+            "\x1b[1;32mcolored\x1b[0m output 界 😀 0123456789\r\n",
+        ),
+        (
+            "redraw",
+            "\x1b[H\x1b[2J\x1b[32mfull screen\x1b[0m\x1b[24;80Hend",
+        ),
+    ] {
+        let input = line.repeat(80);
+        let mut term = Term::new(
+            Config {
+                scrolling_history: 2000,
+                ..Config::default()
+            },
+            &Size,
+            VoidListener,
+        );
+        let mut parser: Processor = Processor::new();
+        measure(
+            &format!("alacritty_core_{name}"),
+            300,
+            Some(input.len()),
+            || {
+                parser.advance(&mut term, black_box(input.as_bytes()));
+                black_box(term.grid().cursor.point);
+            },
+        );
+        let mut backend = AlacrittyTerminalBackend::with_scrollback(100, 40, 2000);
+        measure(&format!("toyoterm_{name}"), 300, Some(input.len()), || {
+            backend.advance(black_box(input.as_bytes()));
+            black_box(backend.cursor());
+        });
+    }
+}
+
 #[test]
 #[ignore = "manual performance measurement"]
 fn snapshots_plain_and_urls() {

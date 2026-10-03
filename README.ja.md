@@ -145,6 +145,10 @@ CI smoke、各1時間のcampaign、crash regressionの運用手順をまとめ�
 任意実行の[end-to-end性能baseline](docs/performance-baseline.md)で、実際のPTYからframeまで、
 pane数、画像、検索、Ruby overhead、config reloadを計測できます。commit比較用のJSON結果を保存し、
 通常CIには時間thresholdを設定しません。
+端末間の出力スループット比較には、各端末内で `scripts/terminal-throughput.py` を実行します。
+同ガイドにDSR応答による指標と測定範囲の制限を記載しています。
+通常の独立した文字はpaneごとに最大512件の整形済みbufferを共有し、CJKや絵文字のfont fallbackの
+重複処理を減らします。グリッド上の位置と選択色は維持します。
 
 短時間のメモリ soak は `python3 scripts/soak-test.py headless --output .soak-results/short` で任意実行できます。
 [soak 検証ガイド](docs/soak-validation.md)には実 GUI の churn、8 時間 idle、OS 別メモリ・GPU 計測、

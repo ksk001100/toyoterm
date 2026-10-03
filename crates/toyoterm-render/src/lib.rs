@@ -7,8 +7,8 @@ use std::sync::{Mutex, OnceLock};
 
 use glyphon::cosmic_text::{Align, Fallback, PlatformFallback};
 use glyphon::{
-    Attrs, Buffer, Cache as GlyphCache, Color as GlyphColor, Family, FontSystem, Metrics,
-    Resolution, Shaping, Style, SwashCache, TextArea, TextAtlas, TextBounds, TextRenderer,
+    Attrs, AttrsOwned, Buffer, Cache as GlyphCache, Color as GlyphColor, Family, FontSystem,
+    Metrics, Resolution, Shaping, Style, SwashCache, TextArea, TextAtlas, TextBounds, TextRenderer,
     Viewport, Weight, Wrap,
 };
 use unicode_script::Script;

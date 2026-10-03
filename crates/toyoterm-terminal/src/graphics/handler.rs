@@ -300,6 +300,7 @@ pub(crate) struct GraphicsHandler<'a, E> {
     pub clipboard_capture: &'a mut Option<super::super::alacritty::ClipboardCapture>,
 }
 impl<E: EventListener> Handler for GraphicsHandler<'_, E> {
+    #[inline]
     fn input(&mut self, c: char) {
         if let Some(capture) = self.clipboard_capture.as_mut() {
             let mut encoded = [0; 4];
@@ -309,70 +310,7 @@ impl<E: EventListener> Handler for GraphicsHandler<'_, E> {
             self.terminal.input(c);
             return;
         }
-        let alternate = self.alternate();
-        if c.width().unwrap_or(0) == 0 {
-            let cursor = self.terminal.grid().cursor.point;
-            if cursor.column.0 > 0
-                && self.graphics.append_to_text_block(
-                    alternate,
-                    cursor.line.0,
-                    (cursor.column.0 - 1) as u16,
-                    c,
-                )
-            {
-                return;
-            }
-        }
-        // A lower row can contain several adjacent multicell characters. Keep
-        // skipping until the cursor reaches an ordinary cell, wrapping even
-        // when DECAWM is disabled as required by OSC 66.
-        loop {
-            let cursor = self.terminal.grid().cursor.point;
-            let Some((top, _, end)) = self.graphics.text_block_bounds_at(
-                alternate,
-                cursor.line.0,
-                cursor.column.0 as u16,
-            ) else {
-                break;
-            };
-            if cursor.line.0 <= top {
-                break;
-            }
-            if usize::from(end) >= self.terminal.columns() {
-                self.linefeed();
-                self.goto_col(0);
-            } else {
-                self.goto_col(usize::from(end));
-            }
-        }
-        let cursor = &self.terminal.grid().cursor;
-        let cursor_row = cursor.point.line.0;
-        let cursor_column = cursor.point.column.0;
-        let input_needs_wrap = cursor.input_needs_wrap;
-        let width = c.width().unwrap_or(0);
-        let wraps = self.terminal.mode().contains(TermMode::LINE_WRAP)
-            && width > 0
-            && (input_needs_wrap || (width == 2 && cursor_column + 1 >= self.terminal.columns()));
-        if wraps {
-            self.track_linefeed();
-        }
-        if width > 0 {
-            let alternate = self.alternate();
-            let (column, row) = if wraps {
-                let (_, bottom) = self.region();
-                let row = if cursor_row + 1 == bottom {
-                    cursor_row
-                } else {
-                    cursor_row + 1
-                };
-                (0, row)
-            } else {
-                (cursor_column as u16, cursor_row)
-            };
-            self.graphics
-                .overwrite(alternate, row, column, column.saturating_add(width as u16));
-        }
-        self.terminal.input(c);
+        self.input_with_placements(c);
     }
     fn linefeed(&mut self) {
         if let Some(capture) = self.clipboard_capture.as_mut() {
@@ -807,6 +745,73 @@ impl<E: EventListener> Handler for GraphicsHandler<'_, E> {
     }
 }
 impl<E: EventListener> GraphicsHandler<'_, E> {
+    // Keep placement bookkeeping out of the ordinary per-character path.
+    fn input_with_placements(&mut self, c: char) {
+        let alternate = self.alternate();
+        if c.width().unwrap_or(0) == 0 {
+            let cursor = self.terminal.grid().cursor.point;
+            if cursor.column.0 > 0
+                && self.graphics.append_to_text_block(
+                    alternate,
+                    cursor.line.0,
+                    (cursor.column.0 - 1) as u16,
+                    c,
+                )
+            {
+                return;
+            }
+        }
+        // A lower row can contain several adjacent multicell characters. Keep
+        // skipping until the cursor reaches an ordinary cell, wrapping even
+        // when DECAWM is disabled as required by OSC 66.
+        loop {
+            let cursor = self.terminal.grid().cursor.point;
+            let Some((top, _, end)) = self.graphics.text_block_bounds_at(
+                alternate,
+                cursor.line.0,
+                cursor.column.0 as u16,
+            ) else {
+                break;
+            };
+            if cursor.line.0 <= top {
+                break;
+            }
+            if usize::from(end) >= self.terminal.columns() {
+                self.linefeed();
+                self.goto_col(0);
+            } else {
+                self.goto_col(usize::from(end));
+            }
+        }
+        let cursor = &self.terminal.grid().cursor;
+        let cursor_row = cursor.point.line.0;
+        let cursor_column = cursor.point.column.0;
+        let input_needs_wrap = cursor.input_needs_wrap;
+        let width = c.width().unwrap_or(0);
+        let wraps = self.terminal.mode().contains(TermMode::LINE_WRAP)
+            && width > 0
+            && (input_needs_wrap || (width == 2 && cursor_column + 1 >= self.terminal.columns()));
+        if wraps {
+            self.track_linefeed();
+        }
+        if width > 0 {
+            let alternate = self.alternate();
+            let (column, row) = if wraps {
+                let (_, bottom) = self.region();
+                let row = if cursor_row + 1 == bottom {
+                    cursor_row
+                } else {
+                    cursor_row + 1
+                };
+                (0, row)
+            } else {
+                (cursor_column as u16, cursor_row)
+            };
+            self.graphics
+                .overwrite(alternate, row, column, column.saturating_add(width as u16));
+        }
+        self.terminal.input(c);
+    }
     fn reply(&self, text: String) {
         let _ = self.output.send(crate::TerminalEvent::PtyWrite(text));
     }

@@ -189,6 +189,7 @@ struct PaneBuffers {
     images: Vec<(toyoterm_terminal::TerminalImage, Option<graphics::GpuImage>)>,
     text: Buffer,
     cell_runs: Vec<CellRunBuffer>,
+    shared_cells: HashMap<(String, u8, AttrsOwned), Arc<Buffer>>,
     cursor_glyph: Buffer,
     cursor_text: Buffer,
     has_cursor_text: bool,
@@ -219,7 +220,7 @@ struct PaneBuffers {
 }
 
 struct CellRunBuffer {
-    text: Buffer,
+    text: Arc<Buffer>,
     column: u16,
     row: u16,
     offset_x: f32,
@@ -362,6 +363,7 @@ impl PaneBuffers {
         Self {
             text: buffer(),
             cell_runs: Vec::new(),
+            shared_cells: HashMap::new(),
             cursor_glyph: buffer(),
             cursor_text: buffer(),
             has_cursor_text: false,
@@ -589,6 +591,7 @@ impl GpuRenderer {
         // update path with another cache key.
         for pane in self.panes.values_mut() {
             pane.text_cache_valid = false;
+            pane.shared_cells.clear();
             for run in &mut pane.cell_runs {
                 run.cells.clear();
             }
@@ -876,13 +879,16 @@ impl GpuRenderer {
             } else {
                 Vec::new()
             };
+            if !text_cache_matches {
+                buffers.shared_cells.clear();
+            }
             buffers.cell_runs.truncate(cell_runs.len());
             for (index, (row, cells)) in cell_runs.into_iter().enumerate() {
                 if index == buffers.cell_runs.len() {
                     let mut text = Buffer::new(&mut self.font_system, metrics);
                     text.set_wrap(Wrap::None);
                     buffers.cell_runs.push(CellRunBuffer {
-                        text,
+                        text: Arc::new(text),
                         column: 0,
                         row: 0,
                         offset_x: 0.0,
@@ -892,6 +898,24 @@ impl GpuRenderer {
                 }
                 let run = &mut buffers.cell_runs[index];
                 let column = cells[0].column;
+                let context = CellRenderContext {
+                    row,
+                    selection: &pane.snapshot.selection,
+                    colors: &pane.colors,
+                };
+                let shared_key = shared_cell_key(cells, &self.style, &context);
+                if let Some(shared) = shared_key
+                    .as_ref()
+                    .and_then(|key| buffers.shared_cells.get(key))
+                {
+                    run.text = Arc::clone(shared);
+                    run.column = column;
+                    run.row = row;
+                    (run.offset_x, run.offset_y) = sized_text_offsets(&cells[0], layout);
+                    run.cells.clear();
+                    run.cells.extend_from_slice(cells);
+                    continue;
+                }
                 if !cell_run_cache_matches(
                     text_cache_matches,
                     run.column,
@@ -903,20 +927,26 @@ impl GpuRenderer {
                     run.column = column;
                     run.row = row;
                     (run.offset_x, run.offset_y) = sized_text_offsets(&cells[0], layout);
+                    if Arc::get_mut(&mut run.text).is_none() {
+                        run.text = Arc::new(Buffer::new(&mut self.font_system, metrics));
+                    }
                     update_terminal_cell_buffer(
-                        &mut run.text,
+                        Arc::get_mut(&mut run.text).expect("cell buffer is uniquely owned"),
                         &mut self.font_system,
                         cells,
                         layout,
                         &self.style,
-                        CellRenderContext {
-                            row,
-                            selection: &pane.snapshot.selection,
-                            colors: &pane.colors,
-                        },
+                        context,
                     );
                     run.cells.clear();
                     run.cells.extend_from_slice(cells);
+                }
+                // Bound retained shaping data independently of scrollback or the
+                // number of distinct glyphs printed over the pane's lifetime.
+                if let Some(key) = shared_key
+                    && buffers.shared_cells.len() < 512
+                {
+                    buffers.shared_cells.insert(key, Arc::clone(&run.text));
                 }
             }
 
