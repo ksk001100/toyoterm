@@ -16,6 +16,8 @@ metadata are derived from it.
    candidate and link their results from the release issue.
    Attach [soak validation](soak-validation.md) results: short churn, eight-hour
    idle and macOS/Windows sleep/wake evidence, including unavailable metrics.
+   Attach [fuzzing](fuzzing.md) evidence: at least one hour each for raw terminal,
+   OSC and graphics targets, with crashes, timeouts and allocation failures triaged.
 4. Run the full locked validation baseline in the
    [development guide](development.md#validation), including the architecture check.
 5. Run `sh scripts/package.sh` locally. It must verify the archive and create

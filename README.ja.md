@@ -139,6 +139,9 @@ required fileでは通常の`Toyoterm.command`、`Toyoterm.on`、`Toyoterm.theme
 
 ## 開発
 
+[端末fuzzingガイド](docs/fuzzing.md)に、6種類のcargo-fuzz target、通常テストでのseed再実行、
+CI smoke、各1時間のcampaign、crash regressionの運用手順をまとめています。
+
 任意実行の[end-to-end性能baseline](docs/performance-baseline.md)で、実際のPTYからframeまで、
 pane数、画像、検索、Ruby overhead、config reloadを計測できます。commit比較用のJSON結果を保存し、
 通常CIには時間thresholdを設定しません。

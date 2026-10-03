@@ -1,0 +1,59 @@
+[package]
+name = "toyoterm-fuzz"
+version = "0.0.0"
+edition = "2024"
+publish = false
+license = "MIT"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+toyoterm-terminal = { path = "../crates/toyoterm-terminal" }
+
+# Deliberately separate from the production workspace and its default builds.
+[workspace]
+members = ["."]
+
+[[bin]]
+name = "raw_terminal"
+path = "fuzz_targets/raw_terminal.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "osc"
+path = "fuzz_targets/osc.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "kitty_graphics"
+path = "fuzz_targets/kitty_graphics.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "sixel"
+path = "fuzz_targets/sixel.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "iterm_image"
+path = "fuzz_targets/iterm_image.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "kitty_file_transfer"
+path = "fuzz_targets/kitty_file_transfer.rs"
+test = false
+doc = false
+bench = false

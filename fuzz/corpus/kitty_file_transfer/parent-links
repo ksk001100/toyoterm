@@ -1,0 +1,7 @@
+ac=send;id=s
+ac=file;id=s;fid=d;ft=directory;n=ZGly
+ac=file;id=s;fid=f;pr=d;n=ZGlyL2E=;sz=1
+ac=end_data;id=s;fid=f;d=YQ==
+ac=file;id=s;fid=l;ft=symlink;pr=d;n=ZGlyL2xpbms=
+ac=end_data;id=s;fid=l;d=YQ==
+ac=finish;id=s

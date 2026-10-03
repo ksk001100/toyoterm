@@ -110,6 +110,20 @@ def main() -> int:
     workspace_crates = set(packages)
     errors: list[str] = []
 
+    # The separate fuzz workspace must never link app filesystem/event handlers.
+    fuzz_result = subprocess.run(
+        ["cargo", "metadata", "--format-version", "1", "--locked", "--no-deps",
+         "--manifest-path", "fuzz/Cargo.toml"],
+        cwd=REPOSITORY_ROOT, check=True, capture_output=True, text=True,
+    )
+    fuzz_packages = json.loads(fuzz_result.stdout)["packages"]
+    fuzz_dependencies = {
+        dependency["name"] for package in fuzz_packages
+        for dependency in package["dependencies"]
+    }
+    if fuzz_dependencies != {"toyoterm-terminal", "libfuzzer-sys"}:
+        errors.append("fuzz workspace may depend only on toyoterm-terminal and libfuzzer-sys")
+
     missing_contracts = workspace_crates - set(ALLOWED_DEPENDENCIES)
     stale_contracts = set(ALLOWED_DEPENDENCIES) - workspace_crates
     for crate in sorted(missing_contracts):
