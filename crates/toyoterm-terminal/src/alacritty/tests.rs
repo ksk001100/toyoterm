@@ -28,6 +28,26 @@ fn preserves_utf8_across_input_chunks() {
 }
 
 #[test]
+fn orders_shell_events_with_mixed_output_at_every_chunk_boundary() {
+    let input = "plain А界😀\x1b[32m green\x1b[0m\x1b]7;file:///tmp/work\x07\x1b]2;title\x07\x07tail\x1b]133;A\x1b\\prompt ";
+    let bytes = input.as_bytes();
+    let mut whole = AlacrittyTerminalBackend::new(80, 4);
+    whole.advance(bytes);
+    let expected = whole.snapshot();
+    let events = whole.drain_events();
+    assert!(matches!(events[0], TerminalEvent::CwdChanged(_)));
+    assert!(matches!(events[1], TerminalEvent::TitleChanged(_)));
+    assert!(matches!(events[2], TerminalEvent::Bell { .. }));
+    for split in 0..=bytes.len() {
+        let mut fragmented = AlacrittyTerminalBackend::new(80, 4);
+        fragmented.advance(&bytes[..split]);
+        fragmented.advance(&bytes[split..]);
+        assert_eq!(fragmented.snapshot(), expected, "split at {split}");
+        assert_eq!(fragmented.drain_events(), events, "split at {split}");
+    }
+}
+
+#[test]
 fn tracks_wide_combining_cjk_and_emoji_cell_widths() {
     let mut backend = AlacrittyTerminalBackend::new(20, 2);
     backend.advance("A界e\u{301}😀".as_bytes());
