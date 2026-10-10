@@ -267,6 +267,11 @@ For configuration transactions and live updates, see the
 
 ## Rendering
 
+When the window loses focus, a subtle gray tint fades all application content,
+including terminal text, bars, wallpaper, and inline images. The original colors
+return immediately on focus. This automatic effect preserves configured window
+opacity and does not alter OS-managed title bars or borders.
+
 A Nerd Font's exact installed family name can be set in `config.font.family`;
 the Mono variant is useful for terminal prompts. Glyphs are positioned at
 terminal cell coordinates. Fallback families, wallpaper, and opacity settings

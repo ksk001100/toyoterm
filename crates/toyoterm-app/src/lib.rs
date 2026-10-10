@@ -1112,6 +1112,7 @@ impl ApplicationHandler<AppEvent> for ToyotermApplication {
             }
             WindowEvent::ModifiersChanged(modifiers) => self.ui.modifiers = modifiers.state(),
             WindowEvent::Focused(focused) => {
+                window.request_redraw();
                 // A platform is not required to send key-release events after
                 // the window loses focus. Do not leave modifiers (especially
                 // AltGraph) stuck when focus returns.
