@@ -168,6 +168,10 @@ CPU/GPU allocations without changing fonts, wallpaper, transparency, or history.
 Actual working set still depends on the graphics driver and loaded content; use
 a release build and report CPU and GPU memory separately.
 
+Unfocused windows fade slightly towards gray across terminal text, bars, and
+images. Focusing the window restores the original colors; configured transparency
+is preserved.
+
 Large compressible wallpapers keep losslessly compressed pixels in CPU memory
 and expand them in bounded row chunks directly into one GPU upload buffer,
 including after device recovery, without a full decoded CPU image. Resolution,

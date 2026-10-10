@@ -2,6 +2,16 @@ use super::*;
 use toyoterm_terminal::{AlacrittyTerminalBackend, SelectionSpan, TerminalBackend};
 
 #[test]
+fn inactive_window_tint_covers_surface_and_disappears_on_focus() {
+    let vertices = inactive_window_vertices(800, 600, false);
+    assert_eq!(vertices.len(), 6);
+    assert_eq!(vertices[0].position, [-1.0, 1.0]);
+    assert_eq!(vertices[2].position, [1.0, -1.0]);
+    assert!(inactive_window_vertices(800, 600, true).is_empty());
+    assert!(inactive_window_vertices(0, 600, false).is_empty());
+}
+
+#[test]
 fn unicode_and_ligature_shaping_preserves_grid_selection_and_cursor() {
     let mut fonts = configured_font_system(&[]);
     let style = RenderStyle::default();

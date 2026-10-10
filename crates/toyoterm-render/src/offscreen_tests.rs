@@ -8,6 +8,101 @@ const GLYPH_WIDTH: u32 = 5;
 const GLYPH_HEIGHT: u32 = 7;
 
 #[test]
+#[ignore = "requires a working GPU or software adapter"]
+fn gpu_inactive_window_tint_preserves_transparency() {
+    pollster::block_on(async {
+        let instance = Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
+        let adapter = instance.request_adapter(&Default::default()).await.unwrap();
+        let (device, queue) = adapter
+            .request_device(&DeviceDescriptor::default())
+            .await
+            .unwrap();
+        let format = wgpu::TextureFormat::Rgba8Unorm;
+        let pipeline = create_inactive_window_pipeline(&device, format);
+        let vertices = inactive_window_vertices(1, 1, false);
+        let buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("inactive tint test"),
+            contents: bytemuck::cast_slice(&vertices),
+            usage: BufferUsages::VERTEX,
+        });
+        for alpha in [0.0, 0.5, 1.0] {
+            let target = device.create_texture(&wgpu::TextureDescriptor {
+                label: Some("inactive tint target"),
+                size: wgpu::Extent3d {
+                    width: 1,
+                    height: 1,
+                    depth_or_array_layers: 1,
+                },
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format,
+                usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+                view_formats: &[],
+            });
+            let view = target.create_view(&Default::default());
+            let readback = device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("inactive tint pixels"),
+                size: 256,
+                usage: BufferUsages::MAP_READ | BufferUsages::COPY_DST,
+                mapped_at_creation: false,
+            });
+            let mut encoder = device.create_command_encoder(&Default::default());
+            {
+                let attachments = [Some(RenderPassColorAttachment {
+                    view: &view,
+                    depth_slice: None,
+                    resolve_target: None,
+                    ops: Operations {
+                        load: LoadOp::Clear(Color {
+                            r: alpha,
+                            g: 0.0,
+                            b: 0.0,
+                            a: alpha,
+                        }),
+                        store: StoreOp::Store,
+                    },
+                })];
+                let mut pass = encoder.begin_render_pass(&RenderPassDescriptor {
+                    color_attachments: &attachments,
+                    ..Default::default()
+                });
+                pass.set_pipeline(&pipeline);
+                pass.set_vertex_buffer(0, buffer.slice(..));
+                pass.draw(0..vertices.len() as u32, 0..1);
+            }
+            encoder.copy_texture_to_buffer(
+                target.as_image_copy(),
+                wgpu::TexelCopyBufferInfo {
+                    buffer: &readback,
+                    layout: wgpu::TexelCopyBufferLayout {
+                        offset: 0,
+                        bytes_per_row: Some(256),
+                        rows_per_image: Some(1),
+                    },
+                },
+                target.size(),
+            );
+            queue.submit([encoder.finish()]);
+            let (sender, receiver) = std::sync::mpsc::channel();
+            readback
+                .slice(..)
+                .map_async(wgpu::MapMode::Read, move |result| {
+                    sender.send(result).unwrap()
+                });
+            device.poll(wgpu::PollType::wait_indefinitely()).unwrap();
+            receiver.recv().unwrap().unwrap();
+            let bytes = readback.slice(..).get_mapped_range().unwrap();
+            let gray = f64::from(srgb_channel_to_linear(128)) * 0.16;
+            let expected = [(0.84 + gray) * alpha, gray * alpha, gray * alpha, alpha];
+            for (actual, expected) in bytes[..4].iter().zip(expected) {
+                assert!(actual.abs_diff((expected * 255.0).round() as u8) <= 1);
+            }
+        }
+    });
+}
+
+#[test]
 fn unicode_render_colors_and_wide_cursor_have_stable_pixels() {
     unicode_pixel_fixtures();
 }

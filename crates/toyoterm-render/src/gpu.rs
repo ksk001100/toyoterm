@@ -122,6 +122,7 @@ pub struct GpuRenderer {
     text_renderer: TextRenderer,
     selector_text_renderer: TextRenderer,
     ui_pipeline: RenderPipeline,
+    inactive_window_pipeline: RenderPipeline,
     transparent_cell_pipeline: RenderPipeline,
     background: Option<background::GpuBackground>,
     panes: HashMap<PaneId, PaneBuffers>,
@@ -490,6 +491,8 @@ impl GpuRenderer {
             None,
         );
         let ui_pipeline = create_ui_pipeline(&device, configuration.format);
+        let inactive_window_pipeline =
+            create_inactive_window_pipeline(&device, configuration.format);
         let transparent_cell_pipeline = create_ui_replace_pipeline(&device, configuration.format);
         let mut preedit = Buffer::new(&mut font_system, Metrics::new(14.0, 18.0));
         preedit.set_wrap(Wrap::None);
@@ -531,6 +534,7 @@ impl GpuRenderer {
             text_renderer,
             selector_text_renderer,
             ui_pipeline,
+            inactive_window_pipeline,
             transparent_cell_pipeline,
             background,
             panes: HashMap::new(),
@@ -1732,6 +1736,19 @@ impl GpuRenderer {
                 })
         });
         let selector_vertices = self.selector_vertices();
+        let inactive_vertices = inactive_window_vertices(
+            self.configuration.width,
+            self.configuration.height,
+            self.window.has_focus(),
+        );
+        let inactive_buffer = (!inactive_vertices.is_empty()).then(|| {
+            self.device
+                .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                    label: Some("toyoterm inactive window vertices"),
+                    contents: bytemuck::cast_slice(&inactive_vertices),
+                    usage: BufferUsages::VERTEX,
+                })
+        });
         let selector_buffer = (!selector_vertices.is_empty()).then(|| {
             self.device
                 .create_buffer_init(&wgpu::util::BufferInitDescriptor {
@@ -1817,6 +1834,12 @@ impl GpuRenderer {
                 self.selector_text_renderer
                     .render(&self.text_atlas, &self.viewport, &mut pass)
                     .map_err(|error| RenderError::new("render selector text", error))?;
+            }
+            // Apply after every layer, including images and modal UI.
+            if let Some(inactive_buffer) = inactive_buffer.as_ref() {
+                pass.set_pipeline(&self.inactive_window_pipeline);
+                pass.set_vertex_buffer(0, inactive_buffer.slice(..));
+                pass.draw(0..inactive_vertices.len() as u32, 0..1);
             }
         }
         {

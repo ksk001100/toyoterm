@@ -21,6 +21,50 @@ pub(super) fn create_ui_replace_pipeline(
     )
 }
 
+pub(super) fn inactive_window_blend() -> BlendState {
+    // Tint premultiplied RGB towards gray without changing surface opacity.
+    BlendState {
+        color: wgpu::BlendComponent {
+            src_factor: wgpu::BlendFactor::DstAlpha,
+            dst_factor: wgpu::BlendFactor::OneMinusSrcAlpha,
+            operation: wgpu::BlendOperation::Add,
+        },
+        alpha: wgpu::BlendComponent {
+            src_factor: wgpu::BlendFactor::Zero,
+            dst_factor: wgpu::BlendFactor::One,
+            operation: wgpu::BlendOperation::Add,
+        },
+    }
+}
+
+pub(super) fn create_inactive_window_pipeline(
+    device: &Device,
+    format: wgpu::TextureFormat,
+) -> RenderPipeline {
+    create_ui_pipeline_with_blend(
+        device,
+        format,
+        inactive_window_blend(),
+        "toyoterm inactive window pipeline",
+    )
+}
+
+pub(super) fn inactive_window_vertices(width: u32, height: u32, focused: bool) -> Vec<UiVertex> {
+    let mut vertices = Vec::new();
+    if !focused {
+        let strength = 0.16;
+        let gray = srgb_channel_to_linear(128) * strength;
+        push_ui_rect(
+            &mut vertices,
+            PaneRect::new(0, 0, width, height),
+            [gray, gray, gray, strength],
+            width,
+            height,
+        );
+    }
+    vertices
+}
+
 fn create_ui_pipeline_with_blend(
     device: &Device,
     format: wgpu::TextureFormat,
