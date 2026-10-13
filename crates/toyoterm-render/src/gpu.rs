@@ -267,10 +267,16 @@ impl UiVertex {
     };
 }
 
+type ScriptFallbackCache = Box<[OnceLock<Vec<&'static str>>; 256]>;
+
 pub(super) struct ConfiguredFallback {
     pub(super) configured: Vec<&'static str>,
     pub(super) common: Vec<&'static str>,
     pub(super) platform: PlatformFallback,
+    // PlatformFallback currently distinguishes five locale groups. Keep each
+    // group's per-script lists separate so the Fallback API can be queried with
+    // different locales without borrowing data through a lock or leaking it.
+    scripts: [OnceLock<ScriptFallbackCache>; 5],
 }
 
 impl ConfiguredFallback {
@@ -286,6 +292,7 @@ impl ConfiguredFallback {
             configured,
             common,
             platform,
+            scripts: std::array::from_fn(|_| OnceLock::new()),
         }
     }
 }
@@ -299,10 +306,32 @@ impl Fallback for ConfiguredFallback {
         self.platform.forbidden_fallback()
     }
 
-    fn script_fallback(&self, _script: Script, _locale: &str) -> &[&'static str] {
-        // Script-specific candidates are considered before the common list, so
-        // returning the configured list here preserves the user's priority.
-        &self.configured
+    fn script_fallback(&self, script: Script, locale: &str) -> &[&'static str] {
+        let (locale_index, locale) = platform_fallback_locale(locale);
+        let scripts = self.scripts[locale_index]
+            .get_or_init(|| Box::new(std::array::from_fn(|_| OnceLock::new())));
+        scripts[script as usize].get_or_init(|| {
+            // Configured families stay first, followed by the platform's
+            // script-specific fonts. Omitting the latter makes unsupported CJK
+            // characters scan and retain unrelated installed fonts.
+            let mut families = self.configured.clone();
+            families.extend_from_slice(self.platform.script_fallback(script, locale));
+            families
+        })
+    }
+}
+
+fn platform_fallback_locale(locale: &str) -> (usize, &'static str) {
+    let mut parts = locale.split(['-', '_']);
+    match parts.next() {
+        Some("ja") => (0, "ja"),
+        Some("ko") => (1, "ko"),
+        Some("zh") => match parts.find(|part| *part == "HK" || *part == "TW") {
+            Some("HK") => (2, "zh-HK"),
+            Some("TW") => (3, "zh-TW"),
+            _ => (4, "en-US"),
+        },
+        _ => (4, "en-US"),
     }
 }
 
@@ -332,6 +361,96 @@ pub(super) fn resolve_font_family(family: &str) -> Family<'_> {
     }
 }
 
+pub(super) fn resolved_font_family_name(
+    database: &glyphon::fontdb::Database,
+    family: &str,
+    weight: u16,
+) -> String {
+    if resolve_font_family(family) != Family::Monospace {
+        return family.to_owned();
+    }
+    let query = glyphon::fontdb::Query {
+        families: &[Family::Monospace],
+        weight: Weight(weight),
+        ..Default::default()
+    };
+    let preferred_name = database.family_name(&Family::Monospace);
+    let preferred = database
+        .query(&query)
+        .and_then(|id| database.face(id))
+        .filter(|face| font_face_matches_weight(database, face, weight))
+        .or_else(|| {
+            database
+                .faces()
+                .filter(|face| {
+                    face.families.iter().any(|(name, _)| name == preferred_name)
+                        && font_face_matches_weight(database, face, weight)
+                })
+                .min_by_key(|face| monospace_face_order(face, weight))
+        });
+    let available = preferred.or_else(|| {
+        // Minimal Linux installations need not have Noto Sans Mono. Preserve
+        // generic monospace's choice of an installed monospaced family there.
+        database
+            .faces()
+            .filter(|face| face.monospaced && !face.post_script_name.contains("Emoji"))
+            .min_by_key(|face| monospace_face_order(face, weight))
+    });
+    available
+        // cosmic-text's named path accepts only exact static weights or a
+        // supported variable weight. Preserve generic fallback for uncommon
+        // weights that only have a closest static match on this host.
+        .filter(|face| font_face_matches_weight(database, face, weight))
+        .and_then(|face| face.families.first())
+        .map_or_else(|| family.to_owned(), |(name, _)| name.clone())
+}
+
+fn monospace_face_order(
+    face: &glyphon::fontdb::FaceInfo,
+    weight: u16,
+) -> (u16, u16, bool, u16, u16, glyphon::fontdb::ID) {
+    (
+        face.weight.0.abs_diff(weight),
+        face.stretch
+            .to_number()
+            .abs_diff(glyphon::fontdb::Stretch::Normal.to_number()),
+        face.style != Style::Normal,
+        face.weight.0,
+        face.stretch.to_number(),
+        face.id,
+    )
+}
+
+fn font_face_matches_weight(
+    database: &glyphon::fontdb::Database,
+    face: &glyphon::fontdb::FaceInfo,
+    weight: u16,
+) -> bool {
+    if face.weight.0 == weight {
+        return true;
+    }
+    use glyphon::cosmic_text::skrifa::{FontRef, MetadataProvider, Tag};
+    database.with_face_data(face.id, |data, index| {
+        let font = FontRef::from_index(data, index).ok()?;
+        let axis = font.axes().get_by_tag(Tag::new(b"wght"))?;
+        let weight = f32::from(weight);
+        Some(weight >= axis.min_value() && weight <= axis.max_value())
+    }) == Some(Some(true))
+}
+
+pub(super) fn resolved_render_style<'a>(
+    font_system: &FontSystem,
+    style: &'a RenderStyle,
+) -> std::borrow::Cow<'a, RenderStyle> {
+    if resolve_font_family(&style.font_family) != Family::Monospace {
+        return std::borrow::Cow::Borrowed(style);
+    }
+    let mut resolved = style.clone();
+    resolved.font_family =
+        resolved_font_family_name(font_system.db(), &style.font_family, style.font_weight);
+    std::borrow::Cow::Owned(resolved)
+}
+
 pub(super) fn configured_font_system(fallback: &[String]) -> FontSystem {
     let locale = sys_locale::get_locale().unwrap_or_else(|| "en-US".to_owned());
     let mut database = glyphon::fontdb::Database::new();
@@ -347,6 +466,50 @@ pub(super) fn configured_font_system(fallback: &[String]) -> FontSystem {
         database,
         ConfiguredFallback::new(fallback),
     )
+}
+
+#[derive(Debug, Default, PartialEq, Eq)]
+pub(super) struct FontMemoryStats {
+    pub(super) faces: usize,
+    pub(super) mapped_faces: usize,
+    pub(super) mapped_files: usize,
+    pub(super) mapped_source_bytes: usize,
+}
+
+pub(super) fn font_memory_stats(database: &glyphon::fontdb::Database) -> FontMemoryStats {
+    let mut stats = FontMemoryStats::default();
+    let mut paths = HashSet::new();
+    let mut sources = HashSet::new();
+    for face in database.faces() {
+        stats.faces += 1;
+        if let glyphon::fontdb::Source::SharedFile(path, data) = &face.source {
+            stats.mapped_faces += 1;
+            paths.insert(path);
+            // Collection faces share one source Arc. Count its bytes once;
+            // separate mappings of the same path retain separate source Arcs.
+            if sources.insert(Arc::as_ptr(data) as *const () as usize) {
+                stats.mapped_source_bytes += data.as_ref().as_ref().len();
+            }
+        }
+    }
+    stats.mapped_files = paths.len();
+    stats
+}
+
+fn trace_font_memory(font_system: &FontSystem, phase: &'static str) {
+    if !tracing::enabled!(target: "toyoterm::soak", tracing::Level::TRACE) {
+        return;
+    }
+    let stats = font_memory_stats(font_system.db());
+    tracing::trace!(
+        target: "toyoterm::soak",
+        phase,
+        font_faces = stats.faces,
+        font_mapped_faces = stats.mapped_faces,
+        font_mapped_files = stats.mapped_files,
+        font_mapped_source_bytes = stats.mapped_source_bytes,
+        "retained font file mappings (source bytes, not resident memory)"
+    );
 }
 
 impl PaneBuffers {
@@ -403,7 +566,7 @@ impl PaneBuffers {
 }
 
 impl GpuRenderer {
-    pub async fn new(window: Arc<Window>, style: RenderStyle) -> Result<Self, RenderError> {
+    pub async fn new(window: Arc<Window>, mut style: RenderStyle) -> Result<Self, RenderError> {
         tracing::debug!(target: "toyoterm::render", "initialize GPU renderer");
         let size = window.inner_size();
         let width = size.width.max(1);
@@ -474,6 +637,11 @@ impl GpuRenderer {
         );
 
         let mut font_system = configured_font_system(&style.font_fallback);
+        // cosmic-text 0.19's generic monospace path probes and caches every
+        // monospaced face when monospace_fallback is disabled. Resolving the
+        // primary family first keeps ordinary startup text on its named path.
+        style.font_family =
+            resolved_font_family_name(font_system.db(), &style.font_family, style.font_weight);
         let swash_cache = SwashCache::new();
         let glyph_cache = GlyphCache::new(&device);
         let viewport = Viewport::new(&device, &glyph_cache);
@@ -559,7 +727,7 @@ impl GpuRenderer {
         })
     }
 
-    pub fn set_style(&mut self, style: RenderStyle) {
+    pub fn set_style(&mut self, mut style: RenderStyle) {
         let same_image = match (&self.style.background_image, &style.background_image) {
             (Some(old), Some(new)) => {
                 old.width == new.width
@@ -577,6 +745,8 @@ impl GpuRenderer {
         if self.style.font_fallback != style.font_fallback {
             self.reset_font_system(&style.font_fallback);
         }
+        style.font_family =
+            resolved_font_family_name(self.font_system.db(), &style.font_family, style.font_weight);
         let has_transparent_cells = self
             .panes
             .values()
@@ -624,12 +794,14 @@ impl GpuRenderer {
     /// independent constant: the generic `monospace` family resolves to fonts
     /// with different advances on Windows, macOS, and Linux.
     pub fn terminal_cell_width(&mut self, font_size: f32) -> f32 {
-        measure_cell_width(
+        let width = measure_cell_width(
             &mut self.font_system,
             &self.style.font_family,
             self.style.font_weight,
             font_size,
-        )
+        );
+        trace_font_memory(&self.font_system, "cell_width");
+        width
     }
 
     fn reset_font_system(&mut self, fallback: &[String]) {
@@ -1032,6 +1204,7 @@ impl GpuRenderer {
                 .badge
                 .shape_until_scroll(&mut self.font_system, false);
         }
+        trace_font_memory(&self.font_system, "pane_update");
     }
 
     pub fn update_tabs(&mut self, tabs: &[TabRenderData<'_>], layout: TextLayout) {
@@ -2272,12 +2445,13 @@ pub(super) fn measure_cell_width(
     font_size: f32,
 ) -> f32 {
     let font_size = font_size.max(1.0);
+    let font_family = resolved_font_family_name(font_system.db(), font_family, font_weight);
     let mut probe = Buffer::new(font_system, Metrics::new(font_size, font_size * 2.0));
     probe.set_wrap(Wrap::None);
     probe.set_text(
         "0",
         &Attrs::new()
-            .family(resolve_font_family(font_family))
+            .family(resolve_font_family(&font_family))
             .weight(Weight(font_weight)),
         Shaping::Advanced,
         None,

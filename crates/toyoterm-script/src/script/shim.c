@@ -654,4 +654,8 @@ void toyoterm_mruby_gc_stats(void *state, size_t *arena_index,
   *live_objects = mrb->gc.live;
 }
 
+void toyoterm_mruby_collect_garbage(void *state) {
+  mrb_full_gc((mrb_state *)state);
+}
+
 void toyoterm_mruby_string_free(char *string) { free(string); }

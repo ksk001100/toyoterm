@@ -77,6 +77,14 @@ IPC evaluations remain ordered and are never dropped by this overload policy. Tr
 `toyoterm::script` reports the pending request count, native runtime-event
 count, mruby GC arena index, and mruby live-object count.
 
+Theme validation transfers names and color values as one length-prefixed snapshot,
+instead of compiling a Ruby expression for every field of every registered theme.
+The script thread collects temporary compilation objects after a successful config
+load and completed script request, after native result values have been copied.
+Persistent Ruby roots and transaction ordering are preserved; `GC.disable` remains
+effective. The opt-in `script_gc` performance stage records collection time. No GC
+or Ruby work is added to the main-thread PTY/rendering path.
+
 ## Execution-budget investigation
 
 mruby 4.0 exposes `code_fetch_hook` and `debug_op_hook` only when built with

@@ -59,6 +59,7 @@ pub(super) fn update_terminal_cell_buffer(
     style: &RenderStyle,
     context: CellRenderContext<'_>,
 ) {
+    let style = resolved_render_style(font_system, style);
     buffer.set_wrap(Wrap::None);
     let text_size = cells.first().and_then(|cell| cell.text_size);
     let scale = text_size.map_or(1.0, toyoterm_terminal::TextSize::rendered_scale);
@@ -75,7 +76,7 @@ pub(super) fn update_terminal_cell_buffer(
         cells.iter().map(|cell| {
             (
                 cell.text.as_str(),
-                terminal_cell_attrs(cell, style, &context),
+                terminal_cell_attrs(cell, &style, &context),
             )
         }),
         &Attrs::new()
@@ -235,6 +236,7 @@ pub(super) fn update_cursor_text_buffer(
     style: &RenderStyle,
     colors: &TerminalColors,
 ) {
+    let style = resolved_render_style(font_system, style);
     let scale = cell
         .text_size
         .map_or(1.0, toyoterm_terminal::TextSize::rendered_scale);

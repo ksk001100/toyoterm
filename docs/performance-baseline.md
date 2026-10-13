@@ -135,6 +135,9 @@ overhead. Trace logging still has overhead; compare identically instrumented run
   applies the result through the existing app/renderer path. Search/reload
   end-to-end phases include the driver's IPC request and wait for a successful
   present after `search_apply` / `config_apply`.
+- `script_gc`: collection of temporary Ruby objects on the script thread after
+  configuration loading or request completion, including rollback after errors.
+  It is separate from PTY/render work and can overlap the enclosing config stage.
 
 ## Ruby and native keys
 
@@ -249,3 +252,6 @@ local parser or PTY-to-present timings to manufacture a cross-terminal ranking.
 
 The [2026-10-03 Windows investigation](performance-baselines/2026-10-03-windows.md)
 records a local comparison, its platform limitations and the measured optimizations.
+The [2026-10-13 memory investigation](performance-baselines/2026-10-13-memory.md)
+records font/theme retention fixes, controlled Windows idle comparisons and the
+custom-config macOS measurement procedure.

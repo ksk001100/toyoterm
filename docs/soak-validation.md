@@ -162,6 +162,27 @@ below. Use the nearest CSV sample and its actual UTC for each checkpoint. Keep
 the shell idle; run a separate daily-driver session using shell/Neovim.
 Use the journal's PID and UTC to align external measurements.
 
+For an idle comparison using your own configuration, add `--config`:
+
+```sh
+python3 scripts/soak-test.py gui --executable target/release/toyoterm \
+  --scenario idle --config "$HOME/.config/toyoterm/config.rb" \
+  --idle-seconds 60 --interval 1 --warmup 10 \
+  --output .soak-results/personal-idle-after
+```
+
+This option requires `--scenario idle`. It loads the selected trusted config,
+including its required libraries, wallpaper and normal shell; it does not change
+the config file. The metadata records the selected path and file hash. Retain
+required Ruby files and image assets separately, and use identical copies for
+both binaries. Keep shell profiles, window size and display scale equal. Each
+run starts a separate GUI/IPC instance and closes that instance on completion.
+Use a new output directory for every sample and compare the final idle RSS on
+the same machine. btop's macOS process memory is resident memory; select the GUI
+PID rather than a tree total that may include shell children. The
+[2026-10-13 investigation](performance-baselines/2026-10-13-memory.md) distinguishes
+measured Windows results from outstanding macOS validation.
+
 ## OS memory and GPU collection
 
 Keep raw output and UTC timestamps at each checkpoint. Some commands require

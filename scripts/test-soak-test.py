@@ -5,6 +5,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from unittest.mock import patch
 
 SCRIPT = Path(__file__).with_name("soak-test.py")
 spec = importlib.util.spec_from_file_location("soak", SCRIPT)
@@ -55,6 +56,53 @@ class TrendTests(unittest.TestCase):
             count, examples = soak.collect_log_errors(path)
             self.assertEqual(count, 105)
             self.assertEqual(len(examples), 100)
+
+    def test_custom_config_requires_idle_before_creating_output(self):
+        with tempfile.TemporaryDirectory() as directory:
+            directory = Path(directory)
+            config = directory / "config.rb"
+            config.write_text("Toyoterm.configure {}\n", encoding="utf-8")
+            output = directory / "results"
+            result = subprocess.run([sys.executable, str(SCRIPT), "gui", "--executable", "unused",
+                                     "--output", str(output), "--config", str(config)],
+                                    capture_output=True, text=True, timeout=10)
+            self.assertEqual(result.returncode, 2)
+            self.assertIn("--config requires --scenario idle", result.stderr)
+            self.assertFalse(output.exists())
+
+    def test_missing_custom_config_is_rejected_before_creating_output(self):
+        with tempfile.TemporaryDirectory() as directory:
+            directory = Path(directory)
+            output = directory / "results"
+            result = subprocess.run([sys.executable, str(SCRIPT), "gui", "--executable", "unused",
+                                     "--scenario", "idle", "--output", str(output),
+                                     "--config", str(directory / "missing.rb")],
+                                    capture_output=True, text=True, timeout=10)
+            self.assertEqual(result.returncode, 2)
+            self.assertIn("configuration is not a file", result.stderr)
+            self.assertFalse(output.exists())
+
+    def test_idle_config_path_and_hash_describe_selected_configuration(self):
+        import json
+        with tempfile.TemporaryDirectory() as directory:
+            directory = Path(directory)
+            config = directory / "config.rb"
+            config.write_text("Toyoterm.configure { |c| c.scrollback_lines = 42 }\n", encoding="utf-8")
+            for name, extra_args, expected_config in (
+                ("custom", ["--scenario", "idle", "--config", str(config)], config),
+                ("default", [], soak.ROOT / "scripts/soak-config.rb"),
+            ):
+                with self.subTest(name=name):
+                    output = directory / name
+                    argv = [str(SCRIPT), "gui", "--executable", "unused", "--output", str(output), *extra_args]
+                    with patch.object(sys, "argv", argv), patch.object(soak, "gui") as gui, \
+                         patch.object(soak.subprocess, "check_output", return_value="test\n"):
+                        soak.main()
+                    self.assertEqual(gui.call_args.args[0].config, expected_config.resolve())
+                    metadata = json.loads((output / "metadata.json").read_text(encoding="utf-8"))
+                    self.assertEqual(metadata["config_path"], str(expected_config.resolve()))
+                    self.assertEqual(metadata["config_sha256"], soak.sha256(expected_config))
+                    self.assertEqual(metadata["fixture_sha256"], metadata["config_sha256"])
 
 
 if __name__ == "__main__":
