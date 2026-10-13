@@ -192,7 +192,7 @@ def gui(args):
     started = time.monotonic()
     phase = "startup"
     with (args.output / "gui.log").open("w", encoding="utf-8") as log, (args.output / "journal.jsonl").open("w", encoding="utf-8") as journal:
-        process = subprocess.Popen([executable, "--config", str(ROOT / "scripts/soak-config.rb")], cwd=ROOT, env=env, stdout=log, stderr=log)
+        process = subprocess.Popen([executable, "--config", str(args.config)], cwd=ROOT, env=env, stdout=log, stderr=log)
 
         def record(event, **fields):
             if "iteration" in fields:
@@ -405,6 +405,7 @@ def main():
         else:
             command.add_argument("--executable", type=Path, required=True)
             command.add_argument("--scenario", choices=["all", "idle"], default="all")
+            command.add_argument("--config", type=Path, help="configuration for --scenario idle; defaults to soak-config.rb")
             command.add_argument("--iterations", type=positive, default=100)
             command.add_argument("--reloads", type=positive, default=1000)
             command.add_argument("--async-iterations", type=positive, default=300)
@@ -419,13 +420,22 @@ def main():
             parser.error("delay, seconds, and hold must be non-negative")
         fixture(args)
         return
+    if args.mode == "gui":
+        if args.config is not None and args.scenario != "idle":
+            parser.error("--config requires --scenario idle")
+        args.config = (args.config or ROOT / "scripts/soak-config.rb").resolve()
+        if not args.config.is_file():
+            parser.error(f"configuration is not a file: {args.config}")
     args.output = args.output.resolve()
     args.output.mkdir(parents=True, exist_ok=False)
     metadata = {"platform": platform.platform(), "python": sys.version, "argv": sys.argv,
                 "utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
                 "commit": subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=ROOT, text=True).strip(),
                 "dirty": subprocess.check_output(["git", "status", "--short"], cwd=ROOT, text=True)}
-    metadata["fixture_sha256"] = sha256(ROOT / "scripts/soak-config.rb")
+    metadata["fixture_sha256"] = sha256(args.config if args.mode == "gui" else ROOT / "scripts/soak-config.rb")
+    if args.mode == "gui":
+        metadata["config_path"] = str(args.config)
+        metadata["config_sha256"] = metadata["fixture_sha256"]
     metadata["harness_sha256"] = sha256(Path(__file__))
     (args.output / "metadata.json").write_text(json.dumps(metadata, indent=2), encoding="utf-8")
     try:

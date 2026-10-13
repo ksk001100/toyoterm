@@ -845,6 +845,7 @@ pub(super) fn run_script_request(
             if let Some(checkpoint) = command_checkpoint.as_deref() {
                 manager.rollback_config_transaction(checkpoint)?;
             }
+            manager.runtime.collect_garbage();
             return Err(error);
         }
     };
@@ -856,6 +857,7 @@ pub(super) fn run_script_request(
             }
             Err(error) => {
                 manager.rollback_config_transaction(checkpoint)?;
+                manager.runtime.collect_garbage();
                 return Err(error);
             }
         }
@@ -880,6 +882,9 @@ pub(super) fn run_script_request(
         async_cancellations,
         logs,
     };
+    // Validation compiles temporary expressions. Collect after completing the
+    // transaction and copying all outputs so an idle VM releases their bytecode.
+    manager.runtime.collect_garbage();
     let gc = manager.runtime.gc_stats();
     if tracing::enabled!(target: "toyoterm::soak", tracing::Level::TRACE) {
         let async_tasks = manager
@@ -982,6 +987,10 @@ pub(super) fn load_config(
     let color_presets = read_color_presets(&mut runtime)?;
     let registrations = RegistrySnapshot::read(&mut runtime)?;
 
+    // Arena restoration releases temporary roots, but compilation artifacts are
+    // not reclaimed until GC. Startup may otherwise keep tens of MiB while idle.
+    runtime.collect_garbage();
+
     Ok(LoadedConfig {
         runtime,
         config,
@@ -1034,49 +1043,91 @@ fn read_color_presets(
             format!("at most {MAX_REGISTERED_THEMES} themes may be registered"),
         ));
     }
+    // One sequential traversal avoids recompiling every field access and
+    // allocating @themes.values/keys arrays for every theme and color.
+    let encoded = runtime.eval("Toyoterm.__theme_snapshot")?;
+    decode_color_presets(&encoded, count)
+}
+
+struct ThemeSnapshotReader<'a> {
+    remaining: &'a str,
+}
+
+impl ThemeSnapshotReader<'_> {
+    fn invalid() -> ScriptError {
+        ScriptError::new("validate themes", "theme snapshot is invalid")
+    }
+
+    fn count(&mut self, separator: char) -> Result<usize, ScriptError> {
+        let (count, remaining) = self
+            .remaining
+            .split_once(separator)
+            .ok_or_else(Self::invalid)?;
+        let count = count.parse::<usize>().map_err(|_| Self::invalid())?;
+        self.remaining = remaining;
+        Ok(count)
+    }
+
+    fn text(&mut self) -> Result<String, ScriptError> {
+        let length = self.count(':')?;
+        let text = self
+            .remaining
+            .get(..length)
+            .ok_or_else(Self::invalid)?
+            .to_owned();
+        self.remaining = &self.remaining[length..];
+        Ok(text)
+    }
+}
+
+pub(super) fn decode_color_presets(
+    encoded: &str,
+    expected_count: usize,
+) -> Result<HashMap<String, ColorConfig>, ScriptError> {
+    let mut reader = ThemeSnapshotReader { remaining: encoded };
+    let count = reader.count(';')?;
+    if count != expected_count || count > MAX_REGISTERED_THEMES {
+        return Err(ThemeSnapshotReader::invalid());
+    }
     let mut presets = HashMap::with_capacity(count);
-    for index in 0..count {
-        let name = runtime.eval(&format!("Toyoterm.__theme_name({index})"))?;
+    for _ in 0..count {
+        let name = reader.text()?;
         if name.len() > 128 || name.chars().any(char::is_control) {
             return Err(ScriptError::new(
                 "validate themes",
                 "theme names must be at most 128 bytes and contain no control characters",
             ));
         }
-        let prefix = format!("Toyoterm.__theme_at({index})");
-        let ansi_count = runtime
-            .eval(&format!("{prefix}.__ansi_count"))?
-            .parse::<usize>()
-            .map_err(|_| {
-                ScriptError::new("validate themes", "theme ANSI color count is invalid")
-            })?;
+        let ansi_count = reader.count(';')?;
         if ansi_count != 16 {
             return Err(ScriptError::new(
                 "validate themes",
                 format!("theme {name} must contain exactly 16 ANSI colors"),
             ));
         }
-        let mut ansi = Vec::with_capacity(ansi_count);
-        for color_index in 0..ansi_count {
-            ansi.push(runtime.eval(&format!("{prefix}.__ansi_at({color_index})"))?);
-        }
-        let colors = ColorConfig {
-            background: runtime.eval(&format!("{prefix}.background"))?,
-            foreground: runtime.eval(&format!("{prefix}.foreground"))?,
-            cursor: runtime.eval(&format!("{prefix}.cursor"))?,
-            selection: runtime.eval(&format!("{prefix}.selection"))?,
-            ansi,
-            tab_bar: runtime.eval(&format!("{prefix}.tab_bar"))?,
-            tab_active: runtime.eval(&format!("{prefix}.tab_active"))?,
-            tab_inactive: runtime.eval(&format!("{prefix}.tab_inactive"))?,
-            workspace_bar: runtime.eval(&format!("{prefix}.workspace_bar"))?,
-            status_bar: runtime.eval(&format!("{prefix}.status_bar"))?,
-            pane_border: runtime.eval(&format!("{prefix}.pane_border"))?,
-            zoomed_pane_border: runtime.eval(&format!("{prefix}.zoomed_pane_border"))?,
-            search_match: runtime.eval(&format!("{prefix}.search_match"))?,
-            search_match_active: runtime.eval(&format!("{prefix}.search_match_active"))?,
+        let mut colors = ColorConfig {
+            background: reader.text()?,
+            foreground: reader.text()?,
+            cursor: reader.text()?,
+            selection: reader.text()?,
+            ansi: Vec::with_capacity(ansi_count),
+            tab_bar: reader.text()?,
+            tab_active: reader.text()?,
+            tab_inactive: reader.text()?,
+            workspace_bar: reader.text()?,
+            status_bar: reader.text()?,
+            pane_border: reader.text()?,
+            zoomed_pane_border: reader.text()?,
+            search_match: reader.text()?,
+            search_match_active: reader.text()?,
         };
+        for _ in 0..ansi_count {
+            colors.ansi.push(reader.text()?);
+        }
         presets.insert(name, colors);
+    }
+    if !reader.remaining.is_empty() {
+        return Err(ThemeSnapshotReader::invalid());
     }
     Ok(presets)
 }

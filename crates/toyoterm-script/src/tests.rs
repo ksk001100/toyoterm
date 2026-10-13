@@ -1417,6 +1417,144 @@ fn accepts_theme_collections_larger_than_the_previous_limit() {
 }
 
 #[test]
+fn theme_snapshots_preserve_unicode_names_and_live_mutations_after_collection() {
+    let mut manager = ConfigManager::new().unwrap();
+    manager
+        .reload(
+            r##"
+                128.times do |index|
+                  theme = Toyoterm.theme("theme:#{index};日本") do |colors|
+                    colors.zoomed_pane_border = "#102030"
+                    colors.search_match_active = "#405060"
+                  end
+                  $saved_theme = theme if index == 0
+                end
+                Toyoterm.command(:mutate_theme) do
+                  $saved_theme.background = "#123456"
+                  $saved_theme.ansi[3] = "#654321"
+                end
+            "##,
+        )
+        .unwrap();
+    let after_load = manager.runtime.gc_stats();
+    manager.runtime.collect_garbage();
+    assert_eq!(manager.runtime.gc_stats(), after_load);
+    assert_eq!(manager.color_presets.len(), 128);
+    let preset = manager.color_presets.get("theme:0;日本").unwrap();
+    assert_eq!(preset.zoomed_pane_border, "#102030");
+    assert_eq!(preset.search_match_active, "#405060");
+
+    let result = run_script_request(
+        &mut manager,
+        &script_test_context(),
+        &ScriptInvocation::UserCommand {
+            name: "mutate_theme".into(),
+            pane: PaneId(0),
+        },
+    )
+    .unwrap();
+    let preset = result
+        .snapshot
+        .as_ref()
+        .unwrap()
+        .color_presets
+        .get("theme:0;日本")
+        .unwrap();
+    assert_eq!(preset.background, "#123456");
+    assert_eq!(preset.ansi[3], "#654321");
+    let after_request = manager.runtime.gc_stats();
+    manager.runtime.collect_garbage();
+    assert_eq!(manager.runtime.gc_stats(), after_request);
+}
+
+#[test]
+fn theme_snapshot_decoder_rejects_truncated_lengths_counts_and_trailing_data() {
+    for (encoded, count) in [
+        ("", 0),
+        ("0;extra", 0),
+        ("1;", 1),
+        ("1;2:日本16;", 1),
+        ("1;999999999999999999999999:theme16;", 1),
+        ("1;5:theme15;", 1),
+        ("0;", 1),
+    ] {
+        assert!(decode_color_presets(encoded, count).is_err(), "{encoded}");
+    }
+    assert!(decode_color_presets("0;", 0).unwrap().is_empty());
+}
+
+#[test]
+fn collection_boundaries_honor_disabled_ruby_gc() {
+    let mut manager = ConfigManager::new().unwrap();
+    manager
+        .reload("GC.disable; $retained = Object.new")
+        .unwrap();
+    let before = manager.runtime.gc_stats();
+    manager.eval("100.times { Object.new }").unwrap();
+    let allocated = manager.runtime.gc_stats();
+    assert!(allocated.live_objects > before.live_objects);
+    manager.runtime.collect_garbage();
+    assert_eq!(manager.runtime.gc_stats(), allocated);
+    assert_eq!(manager.eval("GC.enable").unwrap(), "true");
+    manager.runtime.collect_garbage();
+    assert!(manager.runtime.gc_stats().live_objects < allocated.live_objects);
+    assert_eq!(manager.eval("$retained.class.to_s").unwrap(), "Object");
+}
+
+#[test]
+fn invalid_theme_palette_rolls_back_the_registration_and_commands() {
+    let mut manager = ConfigManager::new().unwrap();
+    manager
+        .reload(
+            r#"
+                Toyoterm.theme('retained') { |_| }
+                Toyoterm.command(:retained_callback) do |context|
+                  context.pane.send_text('survived')
+                end
+                Toyoterm.command(:broken_theme) do |context|
+                  theme = Toyoterm.theme('invalid') { |_| }
+                  theme.ansi.pop
+                  context.pane.send_text('must roll back')
+                end
+            "#,
+        )
+        .unwrap();
+    let error = run_script_request(
+        &mut manager,
+        &script_test_context(),
+        &ScriptInvocation::UserCommand {
+            name: "broken_theme".into(),
+            pane: PaneId(4),
+        },
+    )
+    .unwrap_err();
+    let after_failure = manager.runtime.gc_stats();
+    manager.runtime.collect_garbage();
+    assert_eq!(manager.runtime.gc_stats(), after_failure);
+    assert!(
+        error
+            .message()
+            .contains("theme invalid must contain exactly 16 ANSI colors")
+    );
+    assert_eq!(manager.color_presets.len(), 1);
+    assert_eq!(
+        manager.eval("Toyoterm.themes.join(',')").unwrap(),
+        "retained"
+    );
+    assert!(manager.drain_commands(PaneId(4)).unwrap().is_empty());
+    let result = run_script_request(
+        &mut manager,
+        &script_test_context(),
+        &ScriptInvocation::UserCommand {
+            name: "retained_callback".into(),
+            pane: PaneId(4),
+        },
+    )
+    .unwrap();
+    assert_eq!(result.commands.len(), 1);
+}
+
+#[test]
 fn callback_failure_rolls_back_direct_registrations_and_themes() {
     let mut manager = ConfigManager::new().unwrap();
     manager

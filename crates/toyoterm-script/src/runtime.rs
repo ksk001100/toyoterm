@@ -88,6 +88,13 @@ impl MrubyRuntime {
         }
     }
 
+    pub(super) fn collect_garbage(&mut self) {
+        let _collection = performance::Stage::new("script_gc");
+        // SAFETY: The VM is exclusively borrowed on its owner thread, outside
+        // Ruby execution. mruby preserves persistent roots and honors GC.disable.
+        unsafe { toyoterm_mruby_collect_garbage(self.state.as_ptr()) };
+    }
+
     pub(super) fn set_current_pane(&mut self, pane: PaneId) -> Result<(), ScriptError> {
         let mut error = std::ptr::null_mut();
         // SAFETY: The VM is exclusively borrowed and the shim initializes `error`.

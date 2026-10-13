@@ -1590,10 +1590,210 @@ fn configured_font_fallback_preserves_user_priority() {
         &fallback.common_fallback()[..2],
         &["CJK First", "Emoji Second"]
     );
+    for script in [Script::Han, Script::Hiragana, Script::Katakana] {
+        let families = fallback.script_fallback(script, "ja-JP");
+        assert_eq!(&families[..2], &["CJK First", "Emoji Second"]);
+        assert_eq!(
+            &families[2..],
+            PlatformFallback.script_fallback(script, "ja")
+        );
+    }
+    // A cached Japanese result must not bleed into another explicit locale.
+    let families = fallback.script_fallback(Script::Han, "ko-KR");
+    assert_eq!(&families[..2], &["CJK First", "Emoji Second"]);
     assert_eq!(
-        fallback.script_fallback(Script::Han, "ja-JP"),
+        &families[2..],
+        PlatformFallback.script_fallback(Script::Han, "ko")
+    );
+    let families = fallback.script_fallback(Script::Han, "zh-Hant-TW");
+    assert_eq!(
+        &families[2..],
+        PlatformFallback.script_fallback(Script::Han, "zh-TW")
+    );
+    assert_eq!(
+        fallback.script_fallback(Script::Unknown, "ja-JP"),
         &["CJK First", "Emoji Second"]
     );
+}
+
+fn memory_test_face(family: &str, source: glyphon::fontdb::Source) -> glyphon::fontdb::FaceInfo {
+    glyphon::fontdb::FaceInfo {
+        id: glyphon::fontdb::ID::dummy(),
+        source,
+        index: 0,
+        families: vec![(
+            family.to_owned(),
+            glyphon::fontdb::Language::English_UnitedStates,
+        )],
+        post_script_name: family.to_owned(),
+        style: Style::Normal,
+        weight: Weight::NORMAL,
+        stretch: glyphon::fontdb::Stretch::Normal,
+        monospaced: true,
+    }
+}
+
+#[test]
+fn generic_monospace_resolves_available_family_without_loading_font_data() {
+    let mut database = glyphon::fontdb::Database::new();
+    let source = glyphon::fontdb::Source::Binary(Arc::new(Vec::<u8>::new()));
+    database.push_face_info(memory_test_face("Installed Mono", source.clone()));
+    database.set_monospace_family("Missing Platform Default");
+    assert_eq!(
+        resolved_font_family_name(&database, "monospace", 400),
+        "Installed Mono"
+    );
+    assert_eq!(
+        resolved_font_family_name(&database, "Custom Family", 400),
+        "Custom Family"
+    );
+    database.push_face_info(memory_test_face("Preferred Mono", source));
+    database.set_monospace_family("Preferred Mono");
+    assert_eq!(
+        resolved_font_family_name(&database, "MONOSPACE", 400),
+        "Preferred Mono"
+    );
+    assert_eq!(font_memory_stats(&database).mapped_source_bytes, 0);
+}
+
+#[test]
+fn generic_monospace_preserves_unavailable_static_weights() {
+    let mut database = glyphon::fontdb::Database::new();
+    let source = glyphon::fontdb::Source::Binary(Arc::new(Vec::<u8>::new()));
+    database.push_face_info(memory_test_face("Platform Mono", source.clone()));
+    database.set_monospace_family("Platform Mono");
+    assert_eq!(
+        resolved_font_family_name(&database, "monospace", 600),
+        "monospace"
+    );
+    let mut semibold = memory_test_face("Semibold Mono", source);
+    semibold.weight = Weight(600);
+    database.push_face_info(semibold);
+    assert_eq!(
+        resolved_font_family_name(&database, "monospace", 600),
+        "Semibold Mono"
+    );
+    assert_eq!(
+        resolved_font_family_name(&database, "monospace", 1),
+        "monospace"
+    );
+    assert_eq!(
+        resolved_font_family_name(&database, "monospace", 1000),
+        "monospace"
+    );
+}
+
+#[test]
+fn generic_monospace_verifies_variable_weight_range_before_using_named_path() {
+    // A minimal SFNT with one fvar axis is sufficient for metadata inspection.
+    // No installed font or copyrighted font fixture is needed for this case.
+    let mut data = Vec::new();
+    data.extend_from_slice(&[0, 1, 0, 0, 0, 1, 0, 16, 0, 0, 0, 0]);
+    data.extend_from_slice(b"fvar");
+    data.extend_from_slice(&0_u32.to_be_bytes());
+    data.extend_from_slice(&28_u32.to_be_bytes());
+    data.extend_from_slice(&36_u32.to_be_bytes());
+    for value in [1_u16, 0, 16, 2, 1, 20, 0, 4] {
+        data.extend_from_slice(&value.to_be_bytes());
+    }
+    data.extend_from_slice(b"wght");
+    for value in [100_i32, 400, 900] {
+        data.extend_from_slice(&(value * 65_536).to_be_bytes());
+    }
+    data.extend_from_slice(&0_u16.to_be_bytes());
+    data.extend_from_slice(&256_u16.to_be_bytes());
+    let mut database = glyphon::fontdb::Database::new();
+    database.push_face_info(memory_test_face(
+        "Variable Mono",
+        glyphon::fontdb::Source::Binary(Arc::new(data)),
+    ));
+    database.set_monospace_family("Variable Mono");
+    assert_eq!(
+        resolved_font_family_name(&database, "monospace", 600),
+        "Variable Mono"
+    );
+    assert_eq!(
+        resolved_font_family_name(&database, "monospace", 1000),
+        "monospace"
+    );
+}
+
+#[test]
+fn font_memory_counts_shared_collection_data_once() {
+    let mut database = glyphon::fontdb::Database::new();
+    let data = Arc::new(vec![0_u8; 128]);
+    let source = glyphon::fontdb::Source::SharedFile("collection.ttc".into(), data);
+    database.push_face_info(memory_test_face("Face One", source.clone()));
+    database.push_face_info(memory_test_face("Face Two", source));
+    database.push_face_info(memory_test_face(
+        "Separate Mapping",
+        glyphon::fontdb::Source::SharedFile("collection.ttc".into(), Arc::new(vec![0_u8; 64])),
+    ));
+    assert_eq!(
+        font_memory_stats(&database),
+        FontMemoryStats {
+            faces: 3,
+            mapped_faces: 3,
+            mapped_files: 1,
+            mapped_source_bytes: 192
+        }
+    );
+}
+
+#[test]
+fn generic_monospace_shaping_does_not_map_unused_monospaced_family() {
+    let installed = configured_font_system(&[]);
+    let query = glyphon::fontdb::Query {
+        families: &[Family::Monospace],
+        ..Default::default()
+    };
+    let primary = installed
+        .db()
+        .query(&query)
+        .and_then(|id| installed.db().face(id))
+        .or_else(|| installed.db().faces().find(|face| face.monospaced));
+    let Some(primary) = primary else {
+        // Like the renderer's other shaping tests, actual font data is supplied
+        // by the host. Metadata-only fallback coverage above always runs.
+        return;
+    };
+    let Some(unused) = installed.db().faces().find(|face| {
+        face.monospaced
+            && matches!((&primary.source, &face.source),
+            (glyphon::fontdb::Source::File(primary_path), glyphon::fontdb::Source::File(path))
+                if primary_path != path)
+    }) else {
+        return;
+    };
+    let mut primary = primary.clone();
+    primary.families = vec![(
+        "Memory Test Primary".to_owned(),
+        glyphon::fontdb::Language::English_UnitedStates,
+    )];
+    primary.style = Style::Normal;
+    primary.weight = Weight::NORMAL;
+    let mut unused = unused.clone();
+    unused.families = vec![(
+        "Memory Test Unused".to_owned(),
+        glyphon::fontdb::Language::English_UnitedStates,
+    )];
+    unused.style = Style::Normal;
+    unused.weight = Weight::NORMAL;
+    let mut database = glyphon::fontdb::Database::new();
+    database.push_face_info(primary);
+    let unused_id = database.push_face_info(unused);
+    database.set_monospace_family("Memory Test Primary");
+    let mut fonts = FontSystem::new_with_locale_and_db("en-US".to_owned(), database);
+    let width = measure_cell_width(&mut fonts, "monospace", 400, 14.0);
+    assert_eq!(
+        width,
+        measure_cell_width(&mut fonts, "Memory Test Primary", 400, 14.0)
+    );
+    assert!(matches!(
+        fonts.db().face(unused_id).unwrap().source,
+        glyphon::fontdb::Source::File(_)
+    ));
+    assert_eq!(font_memory_stats(fonts.db()).mapped_files, 1);
 }
 
 #[test]

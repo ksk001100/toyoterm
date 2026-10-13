@@ -168,6 +168,16 @@ CPU/GPU allocations without changing fonts, wallpaper, transparency, or history.
 Actual working set still depends on the graphics driver and loaded content; use
 a release build and report CPU and GPU memory separately.
 
+The generic `monospace` family resolves to an installed font before shaping,
+avoiding an eager scan that retains unrelated monospaced fonts. Configured
+fallbacks keep their priority, followed by the platform's script-specific fonts.
+Configuration validation also releases temporary Ruby compilation objects on
+the script thread, including with large theme registries.
+To measure your own configuration, use the soak runner's `gui --scenario idle
+--config /absolute/path/config.rb` option; see the
+[memory investigation](docs/performance-baselines/2026-10-13-memory.md) for evidence
+and the macOS comparison procedure.
+
 Unfocused windows fade slightly towards gray across terminal text, bars, and
 images. Focusing the window restores the original colors; configured transparency
 is preserved.

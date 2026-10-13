@@ -1832,6 +1832,24 @@ module Toyoterm
     @themes.values[index]
   end
 
+  def self.__theme_snapshot
+    encoded = "#{@themes.length};"
+    @themes.each do |name, theme|
+      encoded << "#{name.bytesize}:#{name}#{theme.__ansi_count};"
+      [theme.background, theme.foreground, theme.cursor, theme.selection,
+       theme.tab_bar, theme.tab_active, theme.tab_inactive, theme.workspace_bar,
+       theme.status_bar, theme.pane_border, theme.zoomed_pane_border,
+       theme.search_match, theme.search_match_active].each do |color|
+        encoded << "#{color.bytesize}:#{color}"
+      end
+      theme.__ansi_count.times do |index|
+        color = theme.__ansi_at(index)
+        encoded << "#{color.bytesize}:#{color}"
+      end
+    end
+    encoded
+  end
+
   def self.theme(name)
     raise ArgumentError, "theme definition requires a block" unless block_given?
     colors = ColorConfig.new

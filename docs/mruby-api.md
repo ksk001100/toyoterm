@@ -242,6 +242,11 @@ end
 
 Unknown font families are skipped by the font system. Use exact installed family
 names, particularly for Nerd Fonts.
+The generic `monospace` family resolves to the installed platform default before
+shaping. For missing glyphs, configured fallback families are tried in order,
+then the platform's script-specific and common fallbacks. Japanese locales such
+as `ja-JP` use Japanese CJK fallbacks. Terminal cell positions remain fixed even
+when a fallback font has different glyph advances.
 
 ### `config.colors`
 
@@ -1183,6 +1188,12 @@ colors and individual ANSI entries override theme values. Theme registrations
 participate in the same configuration and callback transactions as commands,
 events, and keys: an exception rolls back partial registration, and a failed
 reload leaves the previous generation's theme registry intact.
+
+Native validation transfers the complete theme registry in one snapshot, including
+changes to retained color configurations. Temporary compilation objects are
+collected on the script thread after successful config loads and completed
+requests; registered themes and callbacks remain live. This honors `GC.disable`
+and does not run Ruby or garbage collection on the rendering thread.
 
 ## Live Ruby console
 

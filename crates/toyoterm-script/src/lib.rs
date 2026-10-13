@@ -394,6 +394,7 @@ unsafe extern "C" {
         arena_index: *mut usize,
         live_objects: *mut usize,
     );
+    fn toyoterm_mruby_collect_garbage(state: *mut c_void);
     fn toyoterm_mruby_string_free(string: *mut c_char);
 }
 
@@ -407,7 +408,7 @@ use config_manager::run_script_request;
 mod command_collector;
 use command_collector::CommandCollector;
 #[cfg(test)]
-use config_manager::{is_slow_callback, load_config, resolve_config_path};
+use config_manager::{decode_color_presets, is_slow_callback, load_config, resolve_config_path};
 mod parsing;
 use parsing::*;
 mod registry;
