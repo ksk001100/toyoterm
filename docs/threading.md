@@ -12,17 +12,17 @@ main thread         --ScriptRequest--------------> toyoterm-script
 toyoterm-script     --ScriptCompletion-----------> main thread
 ```
 
-The main thread also owns searchable selection overlays requested by Ruby.
+The main thread also owns searchable selection overlays requested by Scheme.
 Choosing or cancelling an item enqueues a typed `SelectCallback` request; the
 saved block is resumed only on the script thread and never from winit input or
 rendering code.
 
 The main thread owns the winit event loop, terminal backends, mux, renderer, and
 PTY session handles. Each PTY reader owns only its blocking reader. The named
-`toyoterm-script` thread constructs, calls, reloads, and drops the single mruby
-VM. `MrubyRuntime` remains `!Send + !Sync`, so the C API cannot cross the owner
+`toyoterm-script` thread constructs, calls, reloads, and drops the single Steel
+VM. `SteelRuntime` remains `!Send + !Sync`, so the VM cannot cross the owner
 thread through Rust's safe type system. Dedicated background threads execute
-asynchronous child processes requested via `Toyoterm.async` and report output
+asynchronous child processes requested via `async!` and report output
 back to the main thread through the winit event loop.
 
 Each pane's PTY reader coalesces consecutive reads behind one winit wakeup. Its
@@ -47,7 +47,7 @@ then submits one buffer-to-texture copy without waiting for GPU completion. The
 decoded scratch buffer is at most 256 KiB (or one row if larger); no full decoded
 CPU allocation is made. Image-file I/O, decoding,
 validation, and compression remain on the script thread (or the existing native
-OSC wallpaper worker); expansion does not run Ruby or retain a second decoded
+OSC wallpaper worker); expansion does not run Scheme or retain a second decoded
 CPU copy.
 
 Before applying a non-global action, the main thread validates its captured
@@ -56,18 +56,18 @@ before partially activating that hierarchy.
 The main thread serializes requests, applies returned commands, reconciles PTY
 runtimes, spawns background workers for asynchronous tasks, then submits the
 next request. This preserves event and re-entrant command ordering without
-allowing Ruby to mutate native state directly.
+allowing Scheme to mutate native state directly.
 
-Ruby evaluation is asynchronous from the GUI's point of view. A slow or stuck
+Scheme evaluation is asynchronous from the GUI's point of view. A slow or stuck
 callback delays later script requests, but it does not prevent PTY output from
 being parsed or frames from being scheduled and rendered. Asynchronous tasks
-(`Toyoterm.async`) execute outside both the main and script threads, keeping
+(`async!`) execute outside both the main and script threads, keeping
 long-running external calls from blocking either subsystem. Cancelling an async
 task suppresses its callback and discards its eventual result. A process that
 has already started may continue in the background; cancellation is deliberately
 not presented as an operating-system process-kill guarantee.
 
-The main-thread request queue bounds only Ruby runtime events: at most 1,024
+The main-thread request queue bounds only Scheme runtime events: at most 1,024
 event requests may wait behind the active callback. State notifications for the
 same object (`title_changed`, `cwd_changed`, `pane_focused`,
 `workspace_changed`, and `window_resized`) coalesce to the newest snapshot.
@@ -75,29 +75,29 @@ Other events are dropped with rate-limited warnings once that event budget is
 exhausted. Lossless inputs such as key bindings, named commands, reloads, and
 IPC evaluations remain ordered and are never dropped by this overload policy. Trace logging under
 `toyoterm::script` reports the pending request count, native runtime-event
-count, mruby GC arena index, and mruby live-object count.
+count. VM collection stays on the script thread.
 
-Theme validation transfers names and color values as one length-prefixed snapshot,
-instead of compiling a Ruby expression for every field of every registered theme.
-The script thread collects temporary compilation objects after a successful config
-load and completed script request, after native result values have been copied.
-Persistent Ruby roots and transaction ordering are preserved; `GC.disable` remains
-effective. The opt-in `script_gc` performance stage records collection time. No GC
-or Ruby work is added to the main-thread PTY/rendering path.
+Native configuration, registry, queue and theme reads use typed Steel calls;
+they do not compile source expressions for each field on every request. Strings,
+object models, events and process outputs cross the host boundary as Steel values,
+not interpolated source. Steel's allocation-driven collector runs only on the
+owner thread while Scheme executes. The host does not force a full collection
+after requests or configuration loads: in Steel 0.8.3, forced collections grow
+free-list storage even when it is mostly unused. Persistent closures, task
+handles and rollback checkpoints remain rooted during automatic or explicitly
+user-requested collection. See [ADR 0010](adr/0010-allocation-driven-steel-gc.md).
 
-## Execution-budget investigation
+Native config/registry snapshots are decoded only when their revision changes.
+The revision belongs to the same persistent Scheme state as settings, themes,
+bindings, events, commands, leader and bar registrations, so rollback restores
+it together with those values. Widget caches, process queues, badges and object
+snapshots do not invalidate it. A candidate snapshot is fully validated before
+replacing any native cached values or its revision. Fresh-VM reload replaces
+the revision with the candidate generation's revision.
 
-mruby 4.0 exposes `code_fetch_hook` and `debug_op_hook` only when built with
-`MRB_USE_DEBUG_HOOK`; toyoterm's vendored build does not currently enable that
-option. Enabling a fetch hook could implement a cooperative instruction counter
-or deadline check, but it adds overhead to every executed opcode and needs a
-well-tested, VM-native exception/unwind path.
+## Execution budgets
 
-A wall-clock timeout on another Rust thread cannot safely kill or unwind an
-mruby C call. Dropping the worker or detaching it would leak the VM and leave
-script ordering undefined. The current implementation therefore provides
-isolation, duration logging, and slow-callback warnings, but no unsafe forced
-cancellation. A future budget should be implemented with the mruby debug hook,
-benchmarked, and converted into a normal Ruby exception at a safe VM boundary.
-Cancellation before a queued request starts is safe and can be added when the
-public scripting API has a request/cancellation handle.
+There is no forced callback timeout. Slow-callback logging starts at 100 ms.
+A future budget must use a supported Steel VM interruption boundary and preserve
+transaction and request ordering. Detaching or terminating a running thread is
+not an acceptable mechanism for cancelling an evaluation.

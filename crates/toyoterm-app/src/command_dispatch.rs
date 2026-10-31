@@ -17,7 +17,7 @@ use ui_controller::apply_ui_command;
 #[derive(Debug, PartialEq)]
 enum KeybindingDispatch {
     Native(NativeAction),
-    Ruby(String),
+    Scheme(String),
     Unassigned,
 }
 
@@ -84,7 +84,7 @@ fn resolve_keybinding(
             return KeybindingDispatch::Native(action);
         }
         if snapshot.keybindings.contains(&key) {
-            return KeybindingDispatch::Ruby(key);
+            return KeybindingDispatch::Scheme(key);
         }
     }
     KeybindingDispatch::Unassigned
@@ -317,45 +317,45 @@ fn visual_prev_word(
     (0, 0)
 }
 
-fn ruby_event_from_mux_event(event: MuxEvent) -> Option<RubyEvent> {
+fn script_event_from_mux_event(event: MuxEvent) -> Option<ScriptEvent> {
     match event {
         MuxEvent::WorkspaceChanged { workspace } => {
-            let mut event = RubyEvent::new(ScriptEventKind::WorkspaceChanged);
+            let mut event = ScriptEvent::new(ScriptEventKind::WorkspaceChanged);
             event.workspace = Some(workspace);
             Some(event)
         }
         MuxEvent::WindowCreated { window } => {
-            let mut event = RubyEvent::new(ScriptEventKind::WindowCreated);
+            let mut event = ScriptEvent::new(ScriptEventKind::WindowCreated);
             event.window = Some(window);
             Some(event)
         }
         MuxEvent::WindowClosed { window } => {
-            let mut event = RubyEvent::new(ScriptEventKind::WindowClosed);
+            let mut event = ScriptEvent::new(ScriptEventKind::WindowClosed);
             event.window = Some(window);
             Some(event)
         }
         MuxEvent::TabCreated { tab } => {
-            let mut event = RubyEvent::new(ScriptEventKind::TabCreated);
+            let mut event = ScriptEvent::new(ScriptEventKind::TabCreated);
             event.tab = Some(tab);
             Some(event)
         }
         MuxEvent::TabClosed { tab } => {
-            let mut event = RubyEvent::new(ScriptEventKind::TabClosed);
+            let mut event = ScriptEvent::new(ScriptEventKind::TabClosed);
             event.tab = Some(tab);
             Some(event)
         }
         MuxEvent::PaneCreated { pane } => {
-            let mut event = RubyEvent::new(ScriptEventKind::PaneCreated);
+            let mut event = ScriptEvent::new(ScriptEventKind::PaneCreated);
             event.pane = Some(pane);
             Some(event)
         }
         MuxEvent::PaneClosed { pane } => {
-            let mut event = RubyEvent::new(ScriptEventKind::PaneClosed);
+            let mut event = ScriptEvent::new(ScriptEventKind::PaneClosed);
             event.pane = Some(pane);
             Some(event)
         }
         MuxEvent::PaneFocused { pane } => {
-            let mut event = RubyEvent::new(ScriptEventKind::PaneFocused);
+            let mut event = ScriptEvent::new(ScriptEventKind::PaneFocused);
             event.pane = Some(pane);
             Some(event)
         }
@@ -374,7 +374,7 @@ pub(super) enum PaneCreation {
 
 pub(super) fn dispatch_pane_creation(
     mux: &mut Mux,
-    runtime_events: &mut VecDeque<RubyEvent>,
+    runtime_events: &mut VecDeque<ScriptEvent>,
     creation: PaneCreation,
 ) -> Result<PaneId, String> {
     let (command, expected) = match creation {
@@ -403,11 +403,11 @@ pub(super) fn dispatch_pane_creation(
 
 pub(super) fn dispatch_coordinator_command(
     mux: &mut Mux,
-    runtime_events: &mut VecDeque<RubyEvent>,
+    runtime_events: &mut VecDeque<ScriptEvent>,
     command: Command,
 ) -> Result<CommandResult, String> {
     let result = mux.dispatch(command).map_err(|error| error.to_string())?;
-    runtime_events.extend(mux.drain_events().filter_map(ruby_event_from_mux_event));
+    runtime_events.extend(mux.drain_events().filter_map(script_event_from_mux_event));
     Ok(result)
 }
 
@@ -557,7 +557,7 @@ impl ToyotermApplication {
                 }
                 Ok(true)
             }
-            KeybindingDispatch::Ruby(key) => {
+            KeybindingDispatch::Scheme(key) => {
                 self.submit_script(ScriptInvocation::KeyBinding { key, pane })?;
                 Ok(true)
             }
@@ -862,7 +862,7 @@ impl ToyotermApplication {
             .mux
             .current_pane()
             .ok_or_else(|| "mux has no current pane".to_owned())?;
-        let mut event = RubyEvent::new(kind);
+        let mut event = ScriptEvent::new(kind);
         event.pane = Some(pane);
         self.scripting.runtime_events.push_back(event);
         self.deliver_runtime_events()
@@ -889,7 +889,7 @@ impl ToyotermApplication {
             .ui
             .cell_metrics
             .terminal_size_at_scale(size, scale_factor);
-        let mut event = RubyEvent::new(ScriptEventKind::WindowResized);
+        let mut event = ScriptEvent::new(ScriptEventKind::WindowResized);
         event.window = Some(window);
         event.width = Some(logical_size.width.round().max(1.0) as u32);
         event.height = Some(logical_size.height.round().max(1.0) as u32);
@@ -903,7 +903,7 @@ impl ToyotermApplication {
         self.scripting.runtime_events.extend(
             self.mux
                 .drain_events()
-                .filter_map(ruby_event_from_mux_event),
+                .filter_map(script_event_from_mux_event),
         );
     }
 
@@ -914,7 +914,7 @@ impl ToyotermApplication {
         while let Some(event) = self.scripting.runtime_events.pop_front() {
             delivered += 1;
             if delivered > MAX_EVENTS_PER_TURN {
-                return Err("Ruby runtime event delivery exceeded 1024 events".to_owned());
+                return Err("Scheme runtime event delivery exceeded 1024 events".to_owned());
             }
             if !self.scripting.snapshot.event_names.contains(event.name()) {
                 continue;
@@ -1408,8 +1408,8 @@ mod tests {
         ));
     }
 
-    fn event_names(events: &VecDeque<RubyEvent>) -> Vec<&'static str> {
-        events.iter().map(RubyEvent::name).collect()
+    fn event_names(events: &VecDeque<ScriptEvent>) -> Vec<&'static str> {
+        events.iter().map(ScriptEvent::name).collect()
     }
 
     #[test]
@@ -1528,10 +1528,10 @@ mod tests {
     #[test]
     fn runtime_events_stay_fifo_across_reload_and_callback_commands() {
         let mut mux = Mux::new();
-        let mut events = VecDeque::from([RubyEvent::new(ScriptEventKind::TitleChanged)]);
+        let mut events = VecDeque::from([ScriptEvent::new(ScriptEventKind::TitleChanged)]);
 
         dispatch_coordinator_command(&mut mux, &mut events, Command::NewTab).unwrap();
-        events.push_back(RubyEvent::new(ScriptEventKind::ConfigReloaded));
+        events.push_back(ScriptEvent::new(ScriptEventKind::ConfigReloaded));
         let pane = mux.current_pane().unwrap();
         dispatch_coordinator_command(
             &mut mux,
@@ -1558,7 +1558,7 @@ mod tests {
     }
 
     #[test]
-    fn unassigned_keys_do_not_schedule_ruby_invocations() {
+    fn unassigned_keys_do_not_schedule_script_invocations() {
         let snapshot = ScriptSnapshot {
             config: ToyotermConfig::default(),
             color_presets: HashMap::new(),
@@ -1567,15 +1567,15 @@ mod tests {
             event_names: HashSet::new(),
             user_command_names: HashSet::new(),
         };
-        let mut ruby_invocations = 0;
+        let mut script_invocations = 0;
 
         let dispatch = resolve_keybinding(&snapshot, ["CTRL+UNASSIGNED".to_owned()], false);
-        if matches!(dispatch, KeybindingDispatch::Ruby(_)) {
-            ruby_invocations += 1;
+        if matches!(dispatch, KeybindingDispatch::Scheme(_)) {
+            script_invocations += 1;
         }
 
         assert_eq!(dispatch, KeybindingDispatch::Unassigned);
-        assert_eq!(ruby_invocations, 0);
+        assert_eq!(script_invocations, 0);
     }
 
     #[test]

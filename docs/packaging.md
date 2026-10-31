@@ -1,6 +1,6 @@
 # Packaging and installation
 
-toyoterm packages target-named artifacts with the embedded mruby runtime. The version comes
+toyoterm packages target-named artifacts with the embedded Steel runtime. The version comes
 from the Cargo workspace and the target comes from `rustc`; filenames therefore
 identify exactly which binary they contain. The project is not published to
 crates.io.
@@ -95,7 +95,7 @@ of installed files.
 The MSI, archive, and installed directory contain `toyoterm.exe` for CLI use and
 `toyoterm-gui.exe` as the no-console Start Menu launcher. Both start the same
 terminal application; keeping the CLI executable in the console subsystem makes
-interactive commands such as `toyoterm ruby console` own their input normally.
+interactive commands such as `toyoterm steel console` own their input normally.
 
 The installed directory keeps `conpty.dll` and `OpenConsole.exe` next to both
 executables. This matched Microsoft ConPTY bundle preserves private
@@ -108,13 +108,13 @@ project-owned code-signing certificate. Interactive validation is tracked
 separately in the [platform checklist](platform-validation.md).
 
 All platforms preserve user configuration when uninstalling. Configuration paths
-are listed in the [API reference](mruby-api.md#loading-configuration).
+are listed in the [API reference](steel-api.md#loading-configuration).
 
 ## Included documentation
 
 Packages include both READMEs, the `docs/` and `examples/` trees, the README icon,
-`AGENTS.md`, the project license, third-party notices, and applicable mruby/ConPTY
-licenses. README links to local guides, examples, and the mruby license work from
+`AGENTS.md`, the project license, third-party notices, and applicable ConPTY
+licenses. README links to local guides and examples work from
 an extracted package. On macOS the common files are inside
 `toyoterm.app/Contents/Resources`.
 

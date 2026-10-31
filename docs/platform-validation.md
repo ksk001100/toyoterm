@@ -21,7 +21,7 @@ result in the release issue.
 - Start `toyoterm`, type ASCII and non-ASCII text, and run `printf '\e[31mred\e[0m\n'`.
 - Compose one accented character and enter Japanese text through an IME.
 - Copy and paste between toyoterm and a native desktop application.
-- Set `config.window.opacity = 0.8`, reload, and confirm compositor transparency.
+- Set `(config-set! 'window.opacity 0.8)`, reload, and confirm compositor transparency.
 - Split a pane, resize the window, then close the application with shells alive.
 - Install from the archive, launch it from the desktop menu and shell, install
   the same release again, then run the packaged uninstaller. Confirm no installed
@@ -36,9 +36,9 @@ startup for both display protocols on every push.
 - Verify Command shortcuts, Option-modified input, dead keys, and Japanese IME.
 - Copy and paste to TextEdit; check rendering at 1x and Retina scale.
 - Repeat pane split, resize, reload, and shutdown checks.
-- Start with `config.window.opacity = 0.8` and confirm the desktop is visible
+- Start with `(config-set! 'window.opacity 0.8)` and confirm the desktop is visible
   through the default terminal background. Reload through `1.0`, `0.8`, `0.0`,
-  `0.5`, and `1.0`; repeat using `Toyoterm.configure` in the Ruby Console.
+  `0.5`, and `1.0`; repeat using `config-set!` in the Scheme Console.
   Confirm each change takes effect without stale terminal contents behind the
   transparent background, including after resizing and at Retina scale.
 - With JetBrainsMono Nerd Font, open a synthetic TypeScript/React buffer in
@@ -52,7 +52,7 @@ startup for both display protocols on every push.
 ## Windows
 
 - Start both PowerShell and `cmd.exe`; verify output, input, resize, and exit.
-- From a toyoterm PowerShell pane, run `toyoterm ruby console`. Submit an empty
+- From a toyoterm PowerShell pane, run `toyoterm steel console`. Submit an empty
   line and confirm the REPL remains active, then run `exit` and confirm the
   parent shell accepts input normally.
 - Run `python examples/terminal_images.py --protocol kitty` and `bsky_tui`;
@@ -60,10 +60,10 @@ startup for both display protocols on every push.
 - Verify Ctrl shortcuts, AltGr, dead keys, and a Windows IME.
 - Copy and paste to Notepad; check 100%, 150%, and 200% DPI.
 - Repeat pane split, reload, and shutdown checks.
-- Bind `CTRL+[` / `CTRL+]` to subtract/add `0.1` from `config.window.opacity`.
+- Bind `CTRL+[` / `CTRL+]` to subtract/add `0.1` from `(config-ref 'window.opacity)`.
   Start at `0.9`, press `CTRL+]` once, then `CTRL+[` once; the background must
   become opaque and then transparent again. Repeat starting at `1.0` and via
-  Ruby Console updates and config reloads. Windows should retain its transparent
+  Scheme Console updates and config reloads. Windows should retain its transparent
   window and surface alpha mode throughout, without recreating the renderer.
   Repeatedly press beyond both limits, then reverse direction. Confirm the
   background opacity changes on the first reverse press and rendering continues

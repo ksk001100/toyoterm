@@ -83,6 +83,6 @@ On Windows on 2026-10-02, the workspace/all-targets locked run passed
 composition test was also run explicitly and passed. Formatting, Clippy with
 warnings denied, crate architecture, license notices, fixture syntax and plain
 UTF-8 output checks passed. `cargo run --locked -- gui-smoke-test` exited
-successfully; its optional live Ruby console reported access denied while
+successfully; its optional live Scheme console reported access denied while
 writing IPC instance state in this restricted environment. Interactive IME,
 font inspection and Linux/macOS validation were not performed.

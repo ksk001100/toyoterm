@@ -31,7 +31,7 @@ machine; on-disk containment policy belongs to app tests. Never connect the
 harness to app transfer handlers. Future filesystem fuzzing must use a separately
 reviewed fixed temporary root and traversal/symlink containment tests.
 Kitty graphics' existing direct-transmission requirement rejects local file and
-shared-memory transports. No app, GUI, PTY, mruby, clipboard or event consumer is
+shared-memory transports. No app, GUI, PTY, Steel, clipboard or event consumer is
 linked. The architecture checker enforces the fuzz dependency allowlist.
 
 The harness does not truncate or sanitize input, alter production limits or use

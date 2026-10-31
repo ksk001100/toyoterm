@@ -2,7 +2,7 @@
 
 Repeat this procedure for v0.2 release candidates. Look for continued growth
 with time or iteration after caches warm up. An absolute RSS value is not a
-pass/fail rule. Python 3's standard library and existing CLI/IPC/Ruby operations
+pass/fail rule. Python 3's standard library and existing CLI/IPC/Scheme operations
 drive the tests; there is no special GUI execution mode or diagnostic public API.
 
 ## Automated short soak
@@ -26,8 +26,8 @@ never schedule the eight-hour procedure in normal test CI.
 | Pane/PTY | 100 splits, native child launches, bounded incremental reads, snapshots, child waits, reader joins and closes; mux handles return to baseline each cycle |
 | Output/scrollback | 100,000 lines, scroll, search and selection; history stays at 1,000 lines and viewport snapshots at 24 rows |
 | Images | 1,000 unique Kitty transmit/place/delete and Sixel/iTerm erase/scroll cycles return images, bytes and placements to zero; transmissions without deletion exercise the 128-image storage limit, and large placements the 64 MiB conservative byte budget |
-| Config | 1,000 file reloads including fonts, wallpaper PNG, colors, bar closures and command/event registrations; post-GC objects and arena remain bounded |
-| mruby/async | 2,000 event callbacks, completed tasks and cancellations after request drain; cancelled callbacks cannot run, registry returns to zero and post-GC objects/arena remain bounded |
+| Config | 1,000 file reloads including fonts, wallpaper PNG, colors, bar closures and command/event registrations; registration generations do not accumulate |
+| Steel/async | 2,000 event callbacks, completed tasks and cancellations after request drain; cancelled callbacks cannot run, registry returns to zero and pending registry sizes return to baseline |
 
 Each test retains its subsystem instance across iterations. Headless async
 drives the host completion boundary without external processes. These tests do
@@ -48,9 +48,9 @@ python3 scripts/soak-test.py gui --executable target/release/toyoterm \
 Windows: use `target/release/toyoterm.exe`, on one line or with PowerShell
 backticks. A display and working native GPU stack are required. The runner
 starts an isolated named instance with its own IPC directory and console
-history, uses `scripts/soak-config.rb`, prints the actual GUI PID and closes
+history, uses `scripts/soak-config.scm`, prints the actual GUI PID and closes
 its GUI on completion or interruption. The fixture uses `/bin/sh` or `cmd.exe`
-to avoid user shell profiles. It fails on IPC/Ruby errors, timeouts, abnormal
+to avoid user shell profiles. It fails on IPC/Scheme errors, timeouts, abnormal
 GUI exit, sampling errors, ERROR-level GUI log records or retained mux objects/stale IDs. `FAILED.txt`
 distinguishes failure from `COMPLETED.txt`; completion means workloads ran,
 not that memory stability was established.
@@ -59,7 +59,7 @@ Default work: 30 seconds idle, 30 seconds paced output, 100,000 lines with
 search/selection, 100 pane cycles, 100 tab cycles, 100 workspace shell-exit
 cycles, 100 mixed Kitty/Sixel/iTerm cycles, 300 real completed/cancelled async
 processes, 1,000 reloads, then 60 seconds recovery idle. Workspace cleanup uses
-shell exit because Ruby commands cannot close the last window/pane. Creation
+shell exit because Scheme commands cannot close the last window/pane. Creation
 and subsequent inspection use separate requests: immutable callback snapshots
 cannot expose newly created objects within the creating callback. Saved panes
 must become invalid after cleanup, and hierarchy counts must return to baseline.
@@ -120,17 +120,18 @@ as a leak.
 | Trace | Meaning |
 | --- | --- |
 | Native resources | panes, tabs, workspaces, ProcessRuntime entries, PTY handles, queued script requests, cancellation IDs awaiting completion |
-| Script resources | mruby live objects, GC arena and Ruby async task/callback registry sizes after a script request |
+| Script resources | Scheme pending task registry sizes and process-memory trends |
 | Terminal graphics | stored Kitty image count/bytes, placement count/bytes and virtual placements after input; placement bytes conservatively count shared pixels again |
 | Renderer | cached panes, image entries and uploaded textures after pane update; first-frame uploads occur later, so texture counts can lag one frame |
 | PTY output | bytes/capacity on drain and the 1 MiB pending-output limit |
 
-Traces are event driven; the soak instrumentation does not schedule Ruby work.
+Traces are event driven; the soak instrumentation does not schedule Scheme work.
 Idle records come from ordinary bar/script requests and PTY input. Image
 records are per terminal input batch; never add them
-across time. To capture a quiet post-churn script snapshot, evaluate `GC.start`
-in the isolated instance's console. Do not force GC throughout a production-like
-GUI run. Headless tests force GC to distinguish reachable objects from garbage.
+across time. Observe post-churn memory with Steel's normal allocation-driven GC.
+Do not insert forced collection into a production-like GUI run: Steel 0.8.3's
+full collector can expand its free list even when most slots are unused.
+Explicit full-GC tests are separate diagnostics, not a neutral memory barrier.
 PTY handle count is not reader-thread count: use OS threads and the headless
 reader-join test. GPU counters describe application references, not driver
 residency or swapchains; glyph/font/driver caches are not fully inventoried.
@@ -166,7 +167,7 @@ For an idle comparison using your own configuration, add `--config`:
 
 ```sh
 python3 scripts/soak-test.py gui --executable target/release/toyoterm \
-  --scenario idle --config "$HOME/.config/toyoterm/config.rb" \
+  --scenario idle --config "$HOME/.config/toyoterm/config.scm" \
   --idle-seconds 60 --interval 1 --warmup 10 \
   --output .soak-results/personal-idle-after
 ```
@@ -174,7 +175,7 @@ python3 scripts/soak-test.py gui --executable target/release/toyoterm \
 This option requires `--scenario idle`. It loads the selected trusted config,
 including its required libraries, wallpaper and normal shell; it does not change
 the config file. The metadata records the selected path and file hash. Retain
-required Ruby files and image assets separately, and use identical copies for
+required Scheme files and image assets separately, and use identical copies for
 both binaries. Keep shell profiles, window size and display scale equal. Each
 run starts a separate GUI/IPC instance and closes that instance on completion.
 Use a new output directory for every sample and compare the final idle RSS on
@@ -313,7 +314,7 @@ below. Two fresh processes per version each idled for 30 seconds; values are
 the median of the final ten one-second samples, with no overlapping builds or
 tests. Raw pixel storage was replaced by losslessly compressed `ImagePixels`
 only when an image is at least 64 KiB and compression saves at least 12.5%.
-Small/incompressible images keep raw storage. No Ruby settings changed.
+Small/incompressible images keep raw storage. No Scheme settings changed.
 
 | Metric (MiB) | Raw wallpaper pixels, two runs | Lossless storage, two runs |
 | --- | ---: | ---: |
@@ -409,6 +410,8 @@ Unavailable metrics/platforms and remaining checks:
 Findings (numbers, exact reproducer, plateau or continued growth):
 Decision and links to logs/issues:
 ```
+
+Historical measurements below predate the Steel migration and describe mruby.
 
 Initial Windows development evidence (unoptimized build): 100 headless PTY
 cycles returned to four native handles with all readers joined; 1,000 reloads

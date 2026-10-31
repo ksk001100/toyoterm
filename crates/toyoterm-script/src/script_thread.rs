@@ -1,32 +1,32 @@
 use super::*;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct RubyObjectModel {
+pub struct ScriptObjectModel {
     pub current_workspace: WorkspaceId,
     pub current_window: WindowId,
     pub current_tab: TabId,
     pub current_pane: PaneId,
-    pub workspaces: Vec<RubyWorkspace>,
-    pub windows: Vec<RubyWindow>,
-    pub tabs: Vec<RubyTab>,
-    pub panes: Vec<RubyPane>,
+    pub workspaces: Vec<ScriptWorkspace>,
+    pub windows: Vec<ScriptWindow>,
+    pub tabs: Vec<ScriptTab>,
+    pub panes: Vec<ScriptPane>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct RubyWorkspace {
+pub struct ScriptWorkspace {
     pub id: WorkspaceId,
     pub name: String,
     pub windows: Vec<WindowId>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct RubyWindow {
+pub struct ScriptWindow {
     pub id: WindowId,
     pub tabs: Vec<TabId>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct RubyTab {
+pub struct ScriptTab {
     pub id: TabId,
     pub title: String,
     pub panes: Vec<PaneId>,
@@ -34,7 +34,7 @@ pub struct RubyTab {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct RubyPane {
+pub struct ScriptPane {
     pub id: PaneId,
     pub title: String,
     pub icon_title: Option<String>,
@@ -51,7 +51,7 @@ pub struct RubyPane {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct RubyEvent {
+pub struct ScriptEvent {
     pub kind: ScriptEventKind,
     pub workspace: Option<WorkspaceId>,
     pub window: Option<WindowId>,
@@ -80,7 +80,7 @@ pub struct ScriptSnapshot {
 
 #[derive(Clone, Debug)]
 pub struct ScriptContext {
-    pub model: Arc<RubyObjectModel>,
+    pub model: Arc<ScriptObjectModel>,
     pub handles: Arc<[NativeHandle]>,
     pub clipboard: Option<Arc<str>>,
 }
@@ -106,7 +106,7 @@ pub enum ScriptInvocation {
     DrainStartup,
     KeyBinding { key: String, pane: PaneId },
     UserCommand { name: String, pane: PaneId },
-    Event(RubyEvent),
+    Event(ScriptEvent),
     Eval(String),
     Reload,
     Bar { position: StatusBarPosition },
@@ -165,9 +165,9 @@ pub struct ScriptStartup {
     pub config_error: Option<ScriptError>,
 }
 
-/// Channel endpoint for the single owner thread of the GUI's mruby VM.
+/// Channel endpoint for the single owner thread of the GUI's Steel VM.
 ///
-/// `MrubyRuntime` is deliberately `!Send + !Sync`; it is constructed, used,
+/// `SteelRuntime` is deliberately `!Send + !Sync`; it is constructed, used,
 /// reloaded, and dropped inside the named worker.  Main/PTY/render code can
 /// only exchange owned snapshots, invocations, and native commands with it.
 pub struct ScriptThread {
@@ -239,7 +239,7 @@ impl ScriptThread {
 impl Drop for ScriptThread {
     fn drop(&mut self) {
         // Closing the channel lets an idle worker drop the VM on its owner
-        // thread. Do not join here: an unbounded Ruby callback must not hang
+        // thread. Do not join here: an unbounded Scheme callback must not hang
         // GUI shutdown. Dropping a JoinHandle detaches it until process exit.
         let (replacement, receiver) = mpsc::channel();
         drop(receiver);
@@ -248,7 +248,7 @@ impl Drop for ScriptThread {
     }
 }
 
-impl RubyEvent {
+impl ScriptEvent {
     pub const fn new(kind: ScriptEventKind) -> Self {
         Self {
             kind,

@@ -1,395 +1,28 @@
 use super::*;
 
-#[test]
-#[ignore = "opt-in short soak: scripts/soak-test.py"]
-fn soak_config_reload_and_async_registry() {
-    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../scripts/soak-config.rb");
-    let mut manager = ConfigManager::load_startup(Some(&path)).unwrap();
-    manager.eval("GC.start").unwrap();
-    let baseline = manager.runtime.gc_stats();
-    for iteration in 1..=1_000 {
-        manager.reload_file().unwrap();
-        assert_eq!(manager.user_command_names().count(), 1);
-        assert!(
-            manager
-                .trigger_user_command("soak_command", PaneId(0))
-                .unwrap()
-        );
-        manager.eval("GC.start").unwrap();
-        let stats = manager.runtime.gc_stats();
-        assert_eq!(stats.arena_index, baseline.arena_index);
-        assert!(stats.live_objects <= baseline.live_objects + 64);
-        if iteration % 100 == 0 {
-            println!(
-                "soak reload iteration={iteration} live_objects={} arena={}",
-                stats.live_objects, stats.arena_index
-            );
-        }
-    }
-    manager.eval("GC.start").unwrap();
-    let baseline = manager.runtime.gc_stats();
-    for iteration in 1..=2_000 {
-        assert!(
-            manager
-                .emit_event(ScriptEventKind::Bell, PaneId(0))
-                .unwrap()
-        );
-        manager
-            .eval("Toyoterm.async('fixture') { |result| $soak_result = result.exit_status }")
-            .unwrap();
-        let requests = manager.drain_async_requests().unwrap();
-        assert_eq!(requests.len(), 1);
-        manager
-            .invoke_async_callback(requests[0].id, b"ready", b"", 0)
-            .unwrap();
-        manager
-            .eval("$cancelled = Toyoterm.async('fixture') { raise 'cancelled callback ran' }")
-            .unwrap();
-        let cancelled = manager.drain_async_requests().unwrap();
-        manager.eval("$cancelled.cancel; $cancelled = nil").unwrap();
-        let cancellations = manager.drain_async_cancellations().unwrap();
-        assert_eq!(cancellations.len(), 1);
-        for request in cancelled {
-            manager
-                .invoke_async_callback(request.id, b"", b"", 0)
-                .unwrap();
-        }
-        assert_eq!(
-            manager
-                .eval("Toyoterm.instance_variable_get(:@async_tasks).length")
-                .unwrap(),
-            "0"
-        );
-        assert_eq!(
-            manager
-                .eval("Toyoterm.instance_variable_get(:@async_callbacks).length")
-                .unwrap(),
-            "0"
-        );
-        if iteration % 100 == 0 {
-            manager.eval("GC.start").unwrap();
-            let stats = manager.runtime.gc_stats();
-            assert_eq!(stats.arena_index, baseline.arena_index);
-            assert!(stats.live_objects <= baseline.live_objects + 64);
-            println!(
-                "soak async iteration={iteration} registry=0 live_objects={} arena={}",
-                stats.live_objects, stats.arena_index
-            );
-        }
-    }
-}
-
-fn invoked_action(action: NativeAction, pane: PaneId) -> NativeCommand {
-    NativeCommand::Action(ActionCommand::Invoke {
-        action,
-        context: ActionContext {
-            workspace: WorkspaceId(0),
-            window: WindowId(0),
-            tab: TabId(0),
-            pane,
-        },
-    })
-}
-
-#[test]
-fn removed_dsl_methods_and_action_aliases_are_rejected() {
-    let mut manager = ConfigManager::new().unwrap();
-    for source in [
-        "Toyoterm.configure { |c| c.bind('CTRL+A') {} }",
-        "Toyoterm.current_workspace.create_window",
-        "Toyoterm.current_workspace.focus",
-        "Toyoterm.current_window.focus",
-        "Toyoterm.current_tab.focus",
-        "Toyoterm.current_pane.focus",
-        "Toyoterm.workspace(:old)",
-        "Toyoterm.switch_workspace(:old)",
-        "Toyoterm.plugin('old')",
-        "Toyoterm::BarConfig.new.add(:left, 'old')",
-        "Toyoterm::BarConfig.new.group(:left) { |_| }",
-    ] {
-        let error = manager.eval(source).unwrap_err();
-        assert!(
-            error.message().contains("NoMethodError"),
-            "{source}: {error}"
-        );
-    }
-    assert!(
-        manager
-            .eval("Toyoterm::Window")
-            .unwrap_err()
-            .message()
-            .contains("NameError")
-    );
-    assert!(
-        manager
-            .eval("Toyoterm::Plugin")
-            .unwrap_err()
-            .message()
-            .contains("NameError")
-    );
-    assert!(
-        manager
-            .eval("Toyoterm::BarGroup")
-            .unwrap_err()
-            .message()
-            .contains("NameError")
-    );
-    assert!(
-        manager
-            .eval("Toyoterm.configure { |c| c.theme('moon') }")
-            .unwrap_err()
-            .message()
-            .contains("ArgumentError")
-    );
-    for name in [
-        "toggle_pane_zoom",
-        "enter_visual_mode",
-        "toggle_visual_selection",
-        "select",
-        "exit_visual_mode",
-        "visual_move",
-        "copy_visual_selection",
-    ] {
-        let error = manager
-            .eval(&format!(
-                "Toyoterm.configure {{ |c| c.keys.ctrl('a').{name} }}"
-            ))
-            .unwrap_err();
-        assert!(error.message().contains("NoMethodError"), "{name}: {error}");
-        for source in [
-            format!("Toyoterm.action(:{name})"),
-            format!("Toyoterm.configure {{ |c| c.keys.ctrl('a').action(:{name}) }}"),
-        ] {
-            assert!(
-                manager
-                    .eval(&source)
-                    .unwrap_err()
-                    .message()
-                    .contains("unsupported action")
-            );
-        }
-    }
-    assert!(manager.drain_commands(PaneId(0)).unwrap().is_empty());
-}
-
-#[test]
-fn static_and_runtime_actions_share_names_and_arguments() {
-    let actions = [
-        ("new_tab", "nil"),
-        ("close_pane", "nil"),
-        ("close_tab", "nil"),
-        ("new_workspace", "nil"),
-        ("reload_config", "nil"),
-        ("search", "nil"),
-        ("maximize_window", "nil"),
-        ("toggle_maximize", "nil"),
-        ("minimize_window", "nil"),
-        ("toggle_fullscreen", "nil"),
-        ("toggle_zoom", "nil"),
-        ("next_tab", "nil"),
-        ("previous_tab", "nil"),
-        ("next_workspace", "nil"),
-        ("previous_workspace", "nil"),
-        ("next_prompt", "nil"),
-        ("previous_prompt", "nil"),
-        ("next_mark", "nil"),
-        ("previous_mark", "nil"),
-        ("next_mark", "nil"),
-        ("previous_mark", "nil"),
-        ("select_next_command_output", "nil"),
-        ("select_previous_command_output", "nil"),
-        ("select_last_command_output", "nil"),
-        ("copy_selection", "nil"),
-        ("paste_clipboard", "nil"),
-        ("start_visual_mode", "nil"),
-        ("toggle_visual_mode", "nil"),
-        ("start_visual_selection", "nil"),
-        ("select_visual_selection", "nil"),
-        ("end_visual_selection", "nil"),
-        ("yank_selection", "nil"),
-        ("split", ":RIGHT"),
-        ("activate_pane", ":DOWN"),
-        ("move_visual_selection", ":LINE_END"),
-    ];
-    for (name, argument) in actions {
-        let mut manager = ConfigManager::new().unwrap();
-        let args = if argument == "nil" { "" } else { argument };
-        manager.reload(&format!(
-            "Toyoterm.configure {{ |c| c.keys.ctrl('a').{name}({args}); c.keys.ctrl('b').action('{name}', {argument}) }}"
-        )).unwrap();
-        let expected = manager.native_action("CTRL+A").unwrap();
-        assert_eq!(
-            manager.native_action("CTRL+B"),
-            Some(expected.clone()),
-            "{name}"
-        );
-        manager
-            .eval(&format!(
-                "Toyoterm.action('{}', {argument})",
-                name.to_uppercase()
-            ))
-            .unwrap();
-        assert_eq!(
-            manager.drain_commands(PaneId(0)).unwrap(),
-            vec![invoked_action(expected, PaneId(0))],
-            "{name}"
-        );
-    }
-    let mut manager = ConfigManager::new().unwrap();
-    for args in [
-        "''",
-        ":unknown",
-        ":split",
-        ":split, :diagonal",
-        ":toggle_zoom, :extra",
-        ":visual_move, :page_down",
-        ":command, :foo",
-    ] {
-        let runtime = manager
-            .eval(&format!("Toyoterm.action({args})"))
-            .unwrap_err();
-        let binding = manager
-            .eval(&format!(
-                "Toyoterm.configure {{ |c| c.keys.ctrl('a').action({args}) }}"
-            ))
-            .unwrap_err();
-        assert!(runtime.message().contains("ArgumentError"));
-        assert!(binding.message().contains("ArgumentError"));
-        assert!(manager.drain_commands(PaneId(0)).unwrap().is_empty());
-    }
-}
-
-#[test]
-fn fluent_dynamic_bindings_share_context_and_rollback() {
-    let mut manager = ConfigManager::new().unwrap();
-    manager
-        .reload(
-            r#"
-      Toyoterm.configure do |config|
-        config.keys do
-          ctrl("a").run do |ctx|
-            ctx.pane.send_text([ctx.workspace.id, ctx.window.id, ctx.tab.id, ctx.pane.id].join(":"))
-          end
-          physical("KeyB", "CTRL").run do |ctx|
-            ctx.pane.send_text("discard")
-            Toyoterm.action(:toggle_zoom)
-            raise "cancel"
-          end
-        end
-      end
-      Toyoterm.command(:context) do |ctx|
-        ctx.pane.send_text([ctx.workspace.id, ctx.window.id, ctx.tab.id, ctx.pane.id].join(":"))
-      end
-    "#,
-        )
-        .unwrap();
-    let context = script_test_context();
-    manager
-        .set_live_handles(context.handles.iter().copied())
-        .unwrap();
-    manager.set_object_model(&context.model).unwrap();
-    assert!(manager.native_action("CTRL+A").is_none());
-    manager.trigger_keybinding("CTRL+A", PaneId(4)).unwrap();
-    manager.trigger_user_command("context", PaneId(4)).unwrap();
-    let expected = NativeCommand::Mux(Command::SendText {
-        pane: PaneId(4),
-        text: "1:2:3:4".into(),
-    });
-    assert_eq!(
-        manager.drain_commands(PaneId(4)).unwrap(),
-        vec![expected.clone(), expected]
-    );
-    assert!(
-        manager
-            .trigger_keybinding("CTRL+PHYSICAL:KEYB", PaneId(4))
-            .is_err()
-    );
-    assert!(manager.drain_commands(PaneId(4)).unwrap().is_empty());
-    for source in [
-        "c.keys.ctrl('a').run",
-        "c.keys.ctrl('a').run {}; c.keys.ctrl('a').new_tab",
-        "c.keys.ctrl('a').new_tab; c.keys.ctrl('a').run {}",
-        "c.keys.key('CTRL+A').run {}; c.keys.ctrl('a').run {}",
-    ] {
-        assert!(
-            manager
-                .reload(&format!("Toyoterm.configure {{ |c| {source} }}"))
-                .is_err()
-        );
-    }
-}
-
-#[test]
-fn configuration_sections_return_objects_and_handles_use_consistent_verbs() {
-    let mut manager = ConfigManager::new().unwrap();
-    manager.eval(r#"
-      config = Toyoterm.configure do |c|
-        [
-          [c.font { nil }, c.font], [c.colors { nil }, c.colors],
-          [c.window { nil }, c.window], [c.ui { nil }, c.ui],
-          [c.behavior { nil }, c.behavior], [c.keys { nil }, c.keys]
-        ].each do |pair|
-          raise "wrong section" unless pair[0].class == pair[1].class
-        end
-      end
-      raise "wrong config" unless config.is_a?(Toyoterm::Config)
-      [Toyoterm.current_workspace, Toyoterm.current_window, Toyoterm.current_tab, Toyoterm.current_pane].each do |handle|
-        raise "wrong receiver" unless handle.activate == handle
-      end
-      Toyoterm.current_workspace.new_window(command: ["echo", "hello"])
-    "#).unwrap();
-    let commands = manager.drain_commands(PaneId(0)).unwrap();
-    assert_eq!(commands.len(), 5);
-    assert!(matches!(
-        commands[4],
-        NativeCommand::Window(WindowCommand::CreateWithLaunch { .. })
-    ));
-    assert!(
-        manager
-            .eval("Toyoterm.configure")
-            .unwrap_err()
-            .message()
-            .contains("configuration requires a block")
-    );
-    manager.set_live_handles([]).unwrap();
-    for source in [
-        "Toyoterm.current_window.activate",
-        "Toyoterm.current_pane.activate",
-        "Toyoterm.current_workspace.new_window",
-    ] {
-        assert!(
-            manager
-                .eval(source)
-                .unwrap_err()
-                .message()
-                .contains("InvalidHandleError")
-        );
-    }
-}
-
 fn script_test_context() -> ScriptContext {
     ScriptContext {
-        model: RubyObjectModel {
+        model: ScriptObjectModel {
             current_workspace: WorkspaceId(1),
             current_window: WindowId(2),
             current_tab: TabId(3),
             current_pane: PaneId(4),
-            workspaces: vec![RubyWorkspace {
+            workspaces: vec![ScriptWorkspace {
                 id: WorkspaceId(1),
                 name: "Workspace 1".into(),
                 windows: vec![WindowId(2)],
             }],
-            windows: vec![RubyWindow {
+            windows: vec![ScriptWindow {
                 id: WindowId(2),
                 tabs: vec![TabId(3)],
             }],
-            tabs: vec![RubyTab {
+            tabs: vec![ScriptTab {
                 id: TabId(3),
                 title: "Tab 3".into(),
                 panes: vec![PaneId(4)],
                 zoomed: false,
             }],
-            panes: vec![RubyPane {
+            panes: vec![ScriptPane {
                 id: PaneId(4),
                 title: "Pane 4".into(),
                 icon_title: None,
@@ -418,13 +51,584 @@ fn script_test_context() -> ScriptContext {
 }
 
 /// Diagnostic baseline: real script-thread request/completion boundary, no time assertions.
+fn request(manager: &mut ConfigManager, source: &str) -> Result<ScriptResult, ScriptError> {
+    run_script_request(
+        manager,
+        &script_test_context(),
+        &ScriptInvocation::Eval(source.into()),
+    )
+}
+
 #[test]
-#[ignore = "opt-in performance baseline"]
+fn defaults_match_native_defaults_and_scheme_is_persistent() {
+    let mut manager = ConfigManager::new().unwrap();
+    assert_eq!(manager.config(), &ToyotermConfig::default());
+    assert_eq!(
+        manager
+            .eval("(define (twice x) (* x 2)) (twice 21)")
+            .unwrap(),
+        "42"
+    );
+    assert_eq!(manager.eval("(twice 5)").unwrap(), "10");
+    assert_eq!(manager.eval_inspect("\"text\"").unwrap(), "\"text\"");
+}
+
+#[test]
+fn reload_is_atomic_and_replaces_registry_generation() {
+    let mut manager = ConfigManager::new().unwrap();
+    manager
+        .reload("(config-set! 'font.size 18) (command! 'old (lambda (ctx) void))")
+        .unwrap();
+    assert!(
+        manager
+            .reload("(config-set! 'font.size 20) (error \"failed\")")
+            .is_err()
+    );
+    assert_eq!(manager.config().font.size, 18.0);
+    assert_eq!(manager.user_command_names().collect::<Vec<_>>(), ["old"]);
+    manager
+        .reload("(command! 'new (lambda (ctx) void))")
+        .unwrap();
+    assert_eq!(manager.user_command_names().collect::<Vec<_>>(), ["new"]);
+}
+
+#[test]
+fn settings_validate_types_ranges_and_nested_values() {
+    let mut manager = ConfigManager::new().unwrap();
+    for source in [
+        "(config-set! 'font.size 0)",
+        "(config-set! 'font.weight 1001)",
+        "(config-set! 'font.weight 1.5)",
+        "(config-set! 'font.fallback '(\"monospace\"))",
+        "(config-set! 'font.fallback '(\"a\" \"a\"))",
+        "(config-set! 'font.fallback '(1))",
+        "(config-set! 'colors.background \"red\")",
+        "(config-set! 'colors.ansi '(\"#000000\"))",
+        "(config-set! 'window.decorations 1)",
+        "(config-set! 'window.title \"\")",
+        "(config-set! 'window.image.opacity 1.1)",
+        "(config-set! 'window.image.path 1)",
+        "(config-set! 'ui.padding_x -1)",
+        "(config-set! 'scrollback_lines -1)",
+        "(config-set! 'behavior.osc_download_directory \"relative\")",
+        "(config-set! 'unknown 1)",
+    ] {
+        assert!(manager.reload(source).is_err(), "accepted {source}");
+        assert_eq!(manager.config(), &ToyotermConfig::default());
+    }
+    manager.reload("(config-set! 'font.fallback '(\"A\" \"B\")) (config-set! 'window.opacity 5) (config-set! 'ui.padding-x 0)").unwrap();
+    assert_eq!(manager.config().window.opacity, 1.0);
+    assert_eq!(manager.config().font.fallback, ["A", "B"]);
+}
+
+#[test]
+fn callback_failure_rolls_back_commands_config_clipboard_and_registrations() {
+    let mut manager = ConfigManager::new().unwrap();
+    manager
+        .reload(
+            r#"(bind! "CTRL+E" (lambda (ctx)
+      (pane-send-text! (context-ref ctx 'pane) "discard")
+      (clipboard-write! "discard")
+      (config-set! 'font.size 22)
+      (command! 'discard (lambda (ctx) void))
+      (error "intentional callback failure")))"#,
+        )
+        .unwrap();
+    let result = run_script_request(
+        &mut manager,
+        &script_test_context(),
+        &ScriptInvocation::KeyBinding {
+            key: "CTRL+E".into(),
+            pane: PaneId(4),
+        },
+    );
+    assert!(
+        result
+            .unwrap_err()
+            .message()
+            .contains("intentional callback failure")
+    );
+    assert_eq!(manager.config().font.size, 14.0);
+    assert!(manager.user_command_names().next().is_none());
+    assert!(manager.drain_commands(PaneId(4)).unwrap().is_empty());
+    assert_eq!(
+        request(&mut manager, "(+ 2 3)").unwrap().value.as_deref(),
+        Some("5")
+    );
+}
+
+#[test]
+fn live_config_changes_validate_and_return_snapshots() {
+    let mut manager = ConfigManager::new().unwrap();
+    let result = request(
+        &mut manager,
+        "(config-set! 'font.size 16) (bind-action! \"CTRL+T\" 'new-tab)",
+    )
+    .unwrap();
+    assert_eq!(result.snapshot.unwrap().config.font.size, 16.0);
+    assert_eq!(manager.native_action("ctrl+t"), Some(NativeAction::NewTab));
+    assert!(
+        request(
+            &mut manager,
+            "(config-set! 'font.fallback '(\"monospace\"))"
+        )
+        .is_err()
+    );
+    assert!(manager.config().font.fallback.is_empty());
+}
+
+#[test]
+fn cached_snapshots_follow_all_public_mutations_and_survive_failed_validation() {
+    let mut manager = ConfigManager::new().unwrap();
+    // Each category affects the native snapshot independently of font settings.
+    for source in [
+        "(config-set! 'font.size 18)",
+        "(theme! 'cached (hash 'colors.background \"#112233\"))",
+        "(config-set! 'theme 'cached)",
+        "(theme! 'cached (hash 'colors.background \"#445566\") #t)",
+        "(ansi-color-set! 1 \"#123456\")",
+        "(leader! \"CTRL+J\" 900)",
+        "(define cached-binding (bind! \"CTRL+X\" (lambda (ctx) void)))",
+        "(bind-action! \"CTRL+Y\" 'new-tab)",
+        "(unbind! \"CTRL+Y\")",
+        "(registration-remove! cached-binding)",
+        "(define cached-event (on! 'bell (lambda (event) void)))",
+        "(registration-remove! cached-event)",
+        "(define cached-command (command! 'cached-command (lambda (ctx) void)))",
+        "(registration-remove! cached-command)",
+        "(define cached-bar (bar! 'top 'left \" | \" (list (widget \"cached\"))))",
+        "(registration-remove! cached-bar)",
+    ] {
+        assert!(
+            request(&mut manager, source).unwrap().snapshot.is_some(),
+            "missing change: {source}"
+        );
+        assert!(request(&mut manager, "(+ 1 2)").unwrap().snapshot.is_none());
+    }
+    let before = manager.snapshot();
+    for _ in 0..2 {
+        // Scheme accepts this value; native validation must reject it each time
+        // even though rollback reuses the same revision for the next attempt.
+        assert!(request(&mut manager, "(config-set! 'font.fallback '(\"A\" \"A\"))").is_err());
+        assert_eq!(manager.snapshot(), before);
+        assert!(request(&mut manager, "void").unwrap().snapshot.is_none());
+    }
+    assert!(
+        request(&mut manager, "(config-set! 'font.size 19)")
+            .unwrap()
+            .snapshot
+            .is_some()
+    );
+    assert_eq!(manager.config().font.size, 19.0);
+    manager.reload("(config-set! 'font.size 21)").unwrap();
+    assert!(request(&mut manager, "void").unwrap().snapshot.is_none());
+    assert!(
+        request(&mut manager, "(config-set! 'font.size 22)")
+            .unwrap()
+            .snapshot
+            .is_some()
+    );
+}
+
+#[test]
+fn static_and_targeted_dynamic_actions_use_the_same_decoder() {
+    let mut manager = ConfigManager::new().unwrap();
+    manager.reload("(bind-action! \"CTRL+T\" 'new-tab) (bind-action! \"CTRL+H\" 'split 'left) (leader! \"CTRL+SPACE\" 750)").unwrap();
+    assert_eq!(manager.native_action("ctrl+t"), Some(NativeAction::NewTab));
+    assert_eq!(
+        manager.native_action("ctrl+h"),
+        Some(NativeAction::Split(SplitDirection::Left))
+    );
+    assert_eq!(manager.config().leader.as_ref().unwrap().timeout_ms, 750);
+    let result = request(&mut manager, "(context-action! (context) 'split 'right)").unwrap();
+    assert_eq!(
+        result.commands,
+        [NativeCommand::Action(ActionCommand::Invoke {
+            action: NativeAction::Split(SplitDirection::Right),
+            context: ActionContext {
+                workspace: WorkspaceId(1),
+                window: WindowId(2),
+                tab: TabId(3),
+                pane: PaneId(4)
+            }
+        })]
+    );
+    for source in [
+        "(bind-action! \"X\" 'unknown)",
+        "(action! 'split)",
+        "(action! 'split 'diagonal)",
+        "(bind! \"CTRL+T\" (lambda (ctx) void))",
+    ] {
+        assert!(request(&mut manager, source).is_err(), "accepted {source}");
+    }
+}
+
+#[test]
+fn typed_object_model_and_stale_handles() {
+    let mut manager = ConfigManager::new().unwrap();
+    let result = request(&mut manager, "(list (handle-id (current-pane)) (handle-ref (current-pane) 'title) (handle-ref (current-pane) 'screen-text))").unwrap();
+    assert_eq!(result.value.as_deref(), Some("(4 \"Pane 4\" \"prompt>\")"));
+    assert!(request(&mut manager, "(pane-send-text! (handle 'pane 999) \"bad\")").is_err());
+    let result = request(&mut manager, "(pane-send-text! (current-pane) \"こんにちは\\n\") (pane-badge-set! (current-pane) \"bell\")").unwrap();
+    assert_eq!(result.commands.len(), 2);
+    assert_eq!(
+        result.commands[0],
+        NativeCommand::Mux(Command::SendText {
+            pane: PaneId(4),
+            text: "こんにちは\n".into()
+        })
+    );
+}
+
+#[test]
+fn custom_launch_and_search_cross_the_native_boundary() {
+    let mut manager = ConfigManager::new().unwrap();
+    let result = request(&mut manager, r#"(split! (current-pane) 'right (hash 'program "test" 'args '("a" "b") 'env (hash "A" "1" "B" #f)))
+      (pane-search! (current-pane) "needle" 'previous)"#).unwrap();
+    let NativeCommand::Pane(PaneCommand::SplitWithLaunch { launch, .. }) = &result.commands[0]
+    else {
+        panic!("{:?}", result.commands)
+    };
+    assert_eq!(launch.program.as_deref(), Some("test"));
+    assert_eq!(launch.args, ["a", "b"]);
+    assert!(launch.environment.contains(&("B".into(), None)));
+    assert!(matches!(
+        result.commands[1],
+        NativeCommand::Pane(PaneCommand::Search {
+            direction: PaneSearchDirection::Previous,
+            ..
+        })
+    ));
+}
+
+#[test]
+fn registration_removal_does_not_remove_a_replacement() {
+    let mut manager = ConfigManager::new().unwrap();
+    request(&mut manager, "(define old (command! 'test (lambda (ctx) void))) (command! 'test (lambda (ctx) void) #t) (registration-remove! old)").unwrap();
+    assert_eq!(manager.user_command_names().collect::<Vec<_>>(), ["test"]);
+    assert_eq!(
+        request(&mut manager, "(registration-active? old)")
+            .unwrap()
+            .value
+            .as_deref(),
+        Some("#false")
+    );
+}
+
+#[test]
+fn events_are_typed_ordered_and_failures_are_isolated() {
+    let mut manager = ConfigManager::new().unwrap();
+    manager.reload(r#"(on! 'bell (lambda (event) (pane-send-text! (context-ref event 'pane) "discard") (error "broken handler")))
+      (on! 'bell (lambda (event) (pane-send-text! (context-ref event 'pane) (context-ref event 'title))))"#).unwrap();
+    let mut event = ScriptEvent::new(ScriptEventKind::Bell);
+    event.pane = Some(PaneId(4));
+    event.title = Some("after".into());
+    let result = run_script_request(
+        &mut manager,
+        &script_test_context(),
+        &ScriptInvocation::Event(event),
+    )
+    .unwrap();
+    assert_eq!(
+        result.commands,
+        [NativeCommand::Mux(Command::SendText {
+            pane: PaneId(4),
+            text: "after".into()
+        })]
+    );
+    assert_eq!(result.logs.len(), 1);
+    assert!(result.logs[0].message.contains("broken handler"));
+}
+
+#[test]
+fn themes_apply_and_explicit_colors_win() {
+    let mut manager = ConfigManager::new().unwrap();
+    manager
+        .reload(
+            r##"(theme! 'moon (hash 'colors.background "#10131a" 'colors.cursor "#88c0d0"))
+      (config-set! 'theme 'moon) (config-set! 'colors.cursor "#ffffff")"##,
+        )
+        .unwrap();
+    assert_eq!(manager.config().colors.background, "#10131a");
+    assert_eq!(manager.config().colors.cursor, "#ffffff");
+    assert_eq!(manager.color_presets["moon"].cursor, "#88c0d0");
+    assert!(manager.reload("(config-set! 'theme 'unknown)").is_err());
+}
+
+#[test]
+fn selection_resumes_with_origin_context() {
+    let mut manager = ConfigManager::new().unwrap();
+    let result = request(&mut manager, r#"(select! "Choose" '("a" "b") (lambda (selected ctx) (when selected (pane-send-text! (context-ref ctx 'pane) selected))))"#).unwrap();
+    let NativeCommand::Ui(UiCommand::OpenSelector { id, .. }) = result.commands[0] else {
+        panic!("missing selector")
+    };
+    let result = run_script_request(
+        &mut manager,
+        &script_test_context(),
+        &ScriptInvocation::SelectCallback {
+            id,
+            selection: Some("b".into()),
+        },
+    )
+    .unwrap();
+    assert_eq!(
+        result.commands,
+        [NativeCommand::Mux(Command::SendText {
+            pane: PaneId(4),
+            text: "b".into()
+        })]
+    );
+}
+
+#[test]
+fn async_completion_and_cancellation_preserve_origin() {
+    let mut manager = ConfigManager::new().unwrap();
+    let result = request(&mut manager, r#"(define task (async! "program" '("arg") (lambda (result ctx) (pane-send-text! (context-ref ctx 'pane) "done"))))"#).unwrap();
+    assert_eq!(result.async_requests.len(), 1);
+    let id = result.async_requests[0].id;
+    let result = run_script_request(
+        &mut manager,
+        &script_test_context(),
+        &ScriptInvocation::AsyncCallback {
+            id,
+            output: AsyncProcessOutput {
+                stdout: b"ok".to_vec(),
+                stderr: Vec::new(),
+                exit_status: 0,
+                launch_error: false,
+            },
+        },
+    )
+    .unwrap();
+    assert_eq!(result.commands.len(), 1);
+    assert_eq!(manager.eval("(task-success? task)").unwrap(), "true");
+    let result = request(
+        &mut manager,
+        "(define cancelled (async! \"program\" '() #f)) (task-cancel! cancelled)",
+    )
+    .unwrap();
+    assert!(result.async_requests.is_empty());
+}
+
+#[test]
+fn bars_render_unicode_and_discard_commands() {
+    let mut manager = ConfigManager::new().unwrap();
+    manager.reload(r#"(bar! 'top 'left " | " (list (widget "日本語" 1.0) (widget (lambda (ctx) (pane-send-text! (context-ref ctx 'pane) "discard") "status") 1.0)))"#).unwrap();
+    manager
+        .set_live_handles(script_test_context().handles.iter().copied())
+        .unwrap();
+    manager
+        .set_object_model(&script_test_context().model)
+        .unwrap();
+    assert_eq!(
+        manager.render_bar(StatusBarPosition::Top).unwrap(),
+        [BarItem {
+            alignment: BarAlignment::Left,
+            text: "日本語 | status".into()
+        }]
+    );
+    assert!(manager.drain_commands(PaneId(4)).unwrap().is_empty());
+}
+
+#[test]
+fn script_thread_executes_scheme_requests() {
+    let (tx, rx) = mpsc::channel();
+    let (thread, _) = ScriptThread::start(None, move |completion| {
+        tx.send(completion).unwrap();
+    })
+    .unwrap();
+    thread
+        .submit(ScriptRequest {
+            id: 7,
+            context: script_test_context(),
+            invocation: ScriptInvocation::Eval("(+ 19 23)".into()),
+        })
+        .unwrap();
+    let result = rx.recv_timeout(Duration::from_secs(10)).unwrap();
+    assert_eq!(result.id, 7);
+    assert_eq!(result.result.unwrap().value.as_deref(), Some("42"));
+}
+
+#[test]
+fn slow_threshold_and_snapshot_decoder_validation() {
+    assert!(!is_slow_callback(Duration::from_millis(99)));
+    assert!(is_slow_callback(Duration::from_millis(100)));
+    assert!(decode_color_presets("1;4:name16;", 1).is_err());
+    assert_eq!(
+        resolve_config_path(Some(Path::new("explicit")), None, Some("default".into())),
+        Some("explicit".into())
+    );
+}
+#[test]
+fn native_scheme_modules_load_relative_to_config() {
+    let dir = std::env::temp_dir().join(format!("toyoterm-steel-module-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(
+        dir.join("helper.scm"),
+        "(provide setup) (define (setup) (config-set! 'font.size 19))",
+    )
+    .unwrap();
+    let path = dir.join("config.scm");
+    std::fs::write(&path, "(require \"helper.scm\") (setup)").unwrap();
+    let manager = ConfigManager::load_startup(Some(&path)).unwrap();
+    assert_eq!(manager.config().font.size, 19.0);
+    std::fs::remove_file(path).unwrap();
+    std::fs::remove_file(dir.join("helper.scm")).unwrap();
+    std::fs::remove_dir(dir).unwrap();
+}
+
+#[test]
+fn sync_process_output_remains_byte_exact() {
+    let mut manager = ConfigManager::new().unwrap();
+    #[cfg(windows)]
+    let source = "(process-exit-status (spawn \"cmd.exe\" '(\"/c\" \"exit 7\")))";
+    #[cfg(unix)]
+    let source = "(process-exit-status (spawn \"/bin/sh\" '(\"-c\" \"exit 7\")))";
+    assert_eq!(manager.eval(source).unwrap(), "7");
+}
+#[test]
+fn bundled_scheme_examples_are_executable() {
+    let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../examples");
+    for name in [
+        "minimal_config.scm",
+        "default_config.scm",
+        "theme_selector.scm",
+        "async_bar.scm",
+        "performance.scm",
+    ] {
+        ConfigManager::load_startup(Some(&dir.join(name)))
+            .unwrap_or_else(|error| panic!("{name}: {error}"));
+    }
+}
+
+#[test]
+fn failing_completions_release_their_pending_registry_slots() {
+    let mut manager = ConfigManager::new().unwrap();
+    let selected = request(
+        &mut manager,
+        "(select! \"Pick\" '(\"a\") (lambda (value ctx) (error \"selection failed\")))",
+    )
+    .unwrap();
+    let NativeCommand::Ui(UiCommand::OpenSelector { id, .. }) = selected.commands[0] else {
+        panic!("missing selector")
+    };
+    assert!(
+        run_script_request(
+            &mut manager,
+            &script_test_context(),
+            &ScriptInvocation::SelectCallback {
+                id,
+                selection: Some("a".into())
+            }
+        )
+        .is_err()
+    );
+    request(
+        &mut manager,
+        "(select! \"Next\" '(\"b\") (lambda (value ctx) void))",
+    )
+    .unwrap();
+    let spawned = request(&mut manager, "(define failed-task (async! \"program\" '() (lambda (result ctx) (error \"async failed\"))))").unwrap();
+    assert!(
+        run_script_request(
+            &mut manager,
+            &script_test_context(),
+            &ScriptInvocation::AsyncCallback {
+                id: spawned.async_requests[0].id,
+                output: AsyncProcessOutput {
+                    stdout: Vec::new(),
+                    stderr: Vec::new(),
+                    exit_status: 0,
+                    launch_error: false
+                }
+            }
+        )
+        .is_err()
+    );
+    assert_eq!(manager.eval("(length (__ref 'tasks '()))").unwrap(), "0");
+    assert_eq!(
+        manager.eval("(task-complete? failed-task)").unwrap(),
+        "true"
+    );
+}
+
+#[test]
+fn switching_themes_recomputes_unmodified_colors() {
+    let mut manager = ConfigManager::new().unwrap();
+    manager.reload(r##"(theme! 'a (hash 'colors.background "#111111")) (theme! 'b (hash 'colors.background "#222222")) (config-set! 'theme 'a)"##).unwrap();
+    assert_eq!(manager.config().colors.background, "#111111");
+    request(&mut manager, "(config-set! 'theme 'b)").unwrap();
+    assert_eq!(manager.config().colors.background, "#222222");
+    request(&mut manager, "(config-set! 'theme #f)").unwrap();
+    assert_eq!(
+        manager.config().colors.background,
+        ToyotermConfig::default().colors.background
+    );
+}
+
+#[test]
+fn typed_transfers_preserve_nuls_unicode_and_do_not_compile_data() {
+    let mut manager = ConfigManager::new().unwrap();
+    manager
+        .set_clipboard_text(Some("日本語\0\" (error \"injected\")"))
+        .unwrap();
+    assert_eq!(
+        manager.eval("(clipboard-read)").unwrap(),
+        "日本語\0\" (error \"injected\")"
+    );
+    let mut ctx = script_test_context();
+    Arc::make_mut(&mut ctx.model).panes[0].title = "title\0with\"quotes".into();
+    manager.set_object_model(&ctx.model).unwrap();
+    manager
+        .set_live_handles(ctx.handles.iter().copied())
+        .unwrap();
+    assert_eq!(
+        manager.eval("(handle-ref (current-pane) 'title)").unwrap(),
+        "title\0with\"quotes"
+    );
+}
+
+#[test]
+fn window_images_preserve_atomic_reload_and_live_cache() {
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let mut manager = ConfigManager::new().unwrap();
+    let file = root
+        .join("tests/fixtures/background.png")
+        .to_string_lossy()
+        .replace('\\', "/");
+    manager
+        .reload(&format!(
+            "(config-set! 'window.image.path \"{file}\") (config-set! 'window.image.opacity 0.3)"
+        ))
+        .unwrap();
+    let image = manager.config().window.background_image.clone().unwrap();
+    request(&mut manager, "(config-set! 'window.image.opacity 0.6)").unwrap();
+    assert!(Arc::ptr_eq(
+        &image,
+        manager.config().window.background_image.as_ref().unwrap()
+    ));
+    assert!(
+        request(
+            &mut manager,
+            "(config-set! 'window.image.path \"missing-wallpaper.png\")"
+        )
+        .is_err()
+    );
+    assert!(Arc::ptr_eq(
+        &image,
+        manager.config().window.background_image.as_ref().unwrap()
+    ));
+    request(&mut manager, "(config-set! 'window.image.path #f)").unwrap();
+    assert!(manager.config().window.background_image.is_none());
+}
+
+#[test]
+#[ignore = "opt-in script performance baseline"]
 fn performance_script_roundtrip() {
     let (tx, rx) = mpsc::channel();
     let config_path =
-        std::env::temp_dir().join(format!("toyoterm-performance-{}.rb", std::process::id()));
-    std::fs::write(&config_path, "# isolated performance configuration\n").unwrap();
+        std::env::temp_dir().join(format!("toyoterm-performance-{}.scm", std::process::id()));
+    std::fs::write(&config_path, "; isolated performance configuration\n").unwrap();
     let startup = ScriptThread::start(Some(config_path.clone()), move |completion| {
         let _ = tx.send(completion);
     });
@@ -446,17 +650,17 @@ fn performance_script_roundtrip() {
         completion.result.unwrap()
     };
     request(ScriptInvocation::Eval(
-        r#"Toyoterm.configure { |c| c.keys.key("CTRL+SHIFT+F12").run { |ctx| nil } }; Toyoterm.on(:bell) { |event| nil }"#.into(),
+        r#"(bind! "CTRL+SHIFT+F12" (lambda (ctx) void)) (on! 'bell (lambda (event) void))"#.into(),
     ));
-    for scenario in ["ruby_key", "ruby_event", "ruby_async_completion"] {
+    for scenario in ["steel_key", "steel_event", "steel_async_completion"] {
         let mut times = Vec::new();
         for iteration in 0..1100 {
             let invocation = match scenario {
-                "ruby_key" => ScriptInvocation::KeyBinding {
+                "steel_key" => ScriptInvocation::KeyBinding {
                     key: "CTRL+SHIFT+F12".into(),
                     pane: PaneId(4),
                 },
-                "ruby_event" => ScriptInvocation::Event(RubyEvent {
+                "steel_event" => ScriptInvocation::Event(ScriptEvent {
                     kind: ScriptEventKind::Bell,
                     workspace: Some(WorkspaceId(1)),
                     window: Some(WindowId(2)),
@@ -471,10 +675,10 @@ fn performance_script_roundtrip() {
                     rows: None,
                 }),
                 _ => {
-                    // Register a genuine Toyoterm.async callback; process launch is outside
+                    // Register a genuine async! callback; process launch is outside
                     // this benchmark. Feed the same typed completion used by the app.
                     let prepared = request(ScriptInvocation::Eval(
-                        "Toyoterm.async('baseline-child') { |result| nil }; nil".into(),
+                        "(async! \"baseline-child\" '() (lambda (result ctx) void)) void".into(),
                     ));
                     assert_eq!(prepared.async_requests.len(), 1);
                     ScriptInvocation::AsyncCallback {
@@ -505,3817 +709,287 @@ fn performance_script_roundtrip() {
 }
 
 #[test]
-fn script_thread_owns_vm_and_submission_does_not_wait_for_evaluation() {
-    let (completion_tx, completion_rx) = mpsc::channel();
-    let (thread, _) = ScriptThread::start(None, move |completion| {
-        completion_tx
-            .send((thread::current().name().map(str::to_owned), completion))
+#[ignore = "opt-in script reload/async soak: scripts/soak-test.py"]
+fn soak_config_reload_and_async_registry() {
+    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../scripts/soak-config.scm");
+    let mut manager = ConfigManager::load_startup(Some(&path)).unwrap();
+    let iterations = std::env::var("TOYOTERM_SOAK_ITERATIONS")
+        .ok()
+        .and_then(|s| s.parse::<usize>().ok())
+        .unwrap_or(1000);
+    for iteration in 1..=iterations {
+        manager.reload_file().unwrap();
+        assert_eq!(manager.user_command_names().count(), 1);
+        manager
+            .trigger_user_command("soak_command", PaneId(0))
             .unwrap();
-    })
-    .unwrap();
-    let started = Instant::now();
-    thread
-        .submit(ScriptRequest {
-            id: 7,
-            context: script_test_context(),
-            invocation: ScriptInvocation::Eval(
-                "i = 0; while i < 2_000_000; i += 1; end; 42".into(),
-            ),
-        })
-        .unwrap();
-    assert!(started.elapsed() < Duration::from_millis(50));
-
-    let (owner, completion) = completion_rx.recv_timeout(Duration::from_secs(10)).unwrap();
-    assert_eq!(owner.as_deref(), Some("toyoterm-script"));
-    assert_eq!(completion.id, 7);
-    assert_eq!(completion.result.unwrap().value.as_deref(), Some("42"));
+        if iteration % 100 == 0 {
+            println!("soak reload iteration={iteration}");
+        }
+    }
+    for iteration in 1..=iterations * 2 {
+        manager
+            .emit_event(ScriptEventKind::Bell, PaneId(0))
+            .unwrap();
+        manager
+            .eval("(async! \"fixture\" '() (lambda (result ctx) void))")
+            .unwrap();
+        let spawned = manager.drain_async_requests().unwrap();
+        assert_eq!(spawned.len(), 1);
+        manager
+            .invoke_async_callback(spawned[0].id, b"ready", b"", 0)
+            .unwrap();
+        manager.eval("(define cancelled (async! \"fixture\" '() (lambda (r ctx) (error \"cancelled callback ran\"))))").unwrap();
+        let cancelled = manager.drain_async_requests().unwrap();
+        manager.eval("(task-cancel! cancelled)").unwrap();
+        assert_eq!(manager.drain_async_cancellations().unwrap().len(), 1);
+        manager
+            .invoke_async_callback(cancelled[0].id, b"", b"", 0)
+            .unwrap();
+        assert_eq!(manager.eval("(length (__ref 'tasks '()))").unwrap(), "0");
+        if iteration % 100 == 0 {
+            println!("soak async iteration={iteration} registry=0");
+        }
+    }
 }
 
 #[test]
-fn classifies_callbacks_at_the_slow_threshold() {
-    assert!(!is_slow_callback(Duration::from_millis(99)));
-    assert!(is_slow_callback(Duration::from_millis(100)));
-}
-
-#[test]
-fn window_bar_uses_typed_context_and_discards_commands() {
+fn async_widgets_update_release_and_cancel_with_their_sections() {
     let mut manager = ConfigManager::new().unwrap();
-    manager
-        .reload(
-            r#"
-                Toyoterm.configure do |config|
-                  config.window.bar(:bottom) do |bar|
-                    bar.section(:left, separator: " ") do |section|
-                      section.add do |ctx|
-                        ctx.pane.send_text("must not run")
-                        [ctx.workspace.name, ctx.tab.title, ctx.pane.title].join(" | ")
-                      end
-                      section.add("SECOND")
-                    end
-                    bar.section(:center) { |section| section.add("中央:表示") }
-                    bar.section(:right) { |section| section.add { |ctx| ctx.pane.cwd } }
-                  end
-                end
-                "#,
-        )
-        .unwrap();
-    let context = script_test_context();
-    manager
-        .set_live_handles(context.handles.iter().copied())
-        .unwrap();
-    manager.set_object_model(&context.model).unwrap();
-
-    assert_eq!(
-        manager.config().status_bars,
-        vec![StatusBarConfig {
-            position: StatusBarPosition::Bottom,
-        }]
-    );
-    assert_eq!(
-        manager.render_bar(StatusBarPosition::Bottom).unwrap(),
-        vec![
-            BarItem {
-                alignment: BarAlignment::Left,
-                text: "Workspace 1 | Tab 3 | Pane 4 SECOND".into(),
-            },
-            BarItem {
-                alignment: BarAlignment::Center,
-                text: "中央:表示".into(),
-            },
-            BarItem {
-                alignment: BarAlignment::Right,
-                text: String::new(),
-            },
-        ]
-    );
-    assert!(manager.drain_commands(PaneId(4)).unwrap().is_empty());
-}
-
-#[test]
-fn repeated_status_bar_requests_keep_the_gc_arena_bounded() {
-    let mut manager = ConfigManager::new().unwrap();
-    manager
-        .reload(
-            r#"
-                Toyoterm.configure do |config|
-                  config.window.bar(:bottom) do |bar|
-                    bar.section(:left) { |section| section.add { |context| context.workspace.name } }
-                    bar.section(:right) { |section| section.add { |context| context.pane.cwd } }
-                  end
-                end
-            "#,
-        )
-        .unwrap();
-    let context = script_test_context();
-    run_script_request(
+    manager.reload(r#"(define section (bar! 'bottom 'left " " (list (async-widget "fixture" '() 1.0 "initial" (lambda (result) (process-stdout-text result))))))"#).unwrap();
+    let result = run_script_request(
         &mut manager,
-        &context,
+        &script_test_context(),
         &ScriptInvocation::Bar {
             position: StatusBarPosition::Bottom,
         },
     )
     .unwrap();
-    manager.eval("GC.start").unwrap();
-    let baseline = manager.runtime.gc_stats();
-
-    for iteration in 0..2_000 {
-        let result = run_script_request(
-            &mut manager,
-            &context,
-            &ScriptInvocation::Bar {
-                position: StatusBarPosition::Bottom,
-            },
-        )
-        .unwrap();
-        assert_eq!(result.bar.unwrap().len(), 2);
-        assert_eq!(
-            manager.runtime.gc_stats().arena_index,
-            baseline.arena_index,
-            "GC arena grew after status bar iteration {iteration}"
-        );
-    }
-
-    // Force a collection so the object count distinguishes unreachable callback
-    // temporaries from persistent Ruby configuration state.
-    manager.eval("GC.start").unwrap();
-    let after = manager.runtime.gc_stats();
-    assert_eq!(after.arena_index, baseline.arena_index);
-    assert!(
-        after.live_objects <= baseline.live_objects + 64,
-        "live mruby objects grew from {} to {}",
-        baseline.live_objects,
-        after.live_objects,
-    );
-}
-
-#[test]
-fn rollback_restores_in_place_mutations_of_nested_config_values() {
-    let mut manager = ConfigManager::new().unwrap();
-    manager
-        .reload(
-            r##"Toyoterm.configure { |c| c.font.family = "Mono"; c.font.fallback = ["Emoji"]; c.colors.background = "#112233"; c.colors.ansi[0] = "#010203"; c.window.title = "Before" }"##,
-        )
-        .unwrap();
-    let checkpoint = manager.begin_config_transaction().unwrap();
-    let error = manager.eval("Toyoterm.__config.colors.ansi[0] = '#445566'; raise 'rollback'");
-    assert!(error.is_err());
-    manager.rollback_config_transaction(&checkpoint).unwrap();
-    assert_eq!(
-        manager.eval("Toyoterm.__config.font.family").unwrap(),
-        "Mono"
-    );
-    assert_eq!(
-        manager.eval("Toyoterm.__config.font.fallback[0]").unwrap(),
-        "Emoji"
-    );
-    assert_eq!(
-        manager.eval("Toyoterm.__config.colors.background").unwrap(),
-        "#112233"
-    );
-    assert_eq!(
-        manager.eval("Toyoterm.__config.colors.ansi[0]").unwrap(),
-        "#010203"
-    );
-    assert_eq!(
-        manager.eval("Toyoterm.__config.window.title").unwrap(),
-        "Before"
-    );
-}
-
-#[test]
-fn async_tasks_release_runtime_registry_entries_and_can_be_cancelled() {
-    let mut manager = ConfigManager::new().unwrap();
-    manager
-        .eval("$task = Toyoterm.async('printf', 'ok')")
-        .unwrap();
-    let request = manager.drain_async_requests().unwrap().remove(0);
-    manager
-        .invoke_async_callback(request.id, b"ok", b"", 0)
-        .unwrap();
-    assert_eq!(manager.eval("$task.result.stdout").unwrap(), "ok");
-    assert_eq!(
-        manager
-            .eval("Toyoterm.instance_variable_get(:@async_tasks).length")
-            .unwrap(),
-        "0"
-    );
-
-    manager
-        .eval("$cancelled = Toyoterm.async('sleep', '10')")
-        .unwrap();
-    assert_eq!(manager.eval("$cancelled.cancel").unwrap(), "true");
-    assert_eq!(manager.eval("$cancelled.cancelled?").unwrap(), "true");
-    assert_eq!(manager.eval("$cancelled.complete?").unwrap(), "true");
-    assert!(manager.drain_async_requests().unwrap().is_empty());
-
-    manager
-        .eval("$running = Toyoterm.async('sleep', '10')")
-        .unwrap();
-    let running = manager.drain_async_requests().unwrap().remove(0);
-    assert_eq!(manager.eval("$running.cancel").unwrap(), "true");
-    assert_eq!(
-        manager.drain_async_cancellations().unwrap(),
-        vec![running.id]
-    );
-}
-
-#[test]
-fn registration_handles_support_removal_replacement_and_event_validation() {
-    let mut manager = ConfigManager::new().unwrap();
-    manager
-        .eval("$subscription = Toyoterm.on(:bell) { }; $command = Toyoterm.command(:build) { }")
-        .unwrap();
-    manager.refresh_config_snapshot().unwrap();
-    assert!(manager.registrations.event_names.contains("bell"));
-    assert!(manager.registrations.user_command_names.contains("build"));
-
-    manager
-        .eval("$subscription.remove; $replacement = Toyoterm.command(:build, replace: true) { |ctx| ctx.pane.send_text('new') }")
-        .unwrap();
-    manager.refresh_config_snapshot().unwrap();
-    assert!(!manager.registrations.event_names.contains("bell"));
-    assert_eq!(manager.eval("$subscription.active?").unwrap(), "false");
-    assert_eq!(manager.eval("$command.active?").unwrap(), "false");
-    assert_eq!(manager.eval("$replacement.active?").unwrap(), "true");
-    manager.trigger_user_command("build", PaneId(7)).unwrap();
-    assert_eq!(
-        manager.drain_commands(PaneId(7)).unwrap(),
-        vec![NativeCommand::Mux(Command::SendText {
-            pane: PaneId(7),
-            text: "new".into(),
-        })]
-    );
-    assert!(manager.eval("Toyoterm.on(:pane_focusd) { }").is_err());
-
-    manager.eval("$restored = Toyoterm.on(:bell) { }").unwrap();
-    let checkpoint = manager.begin_config_transaction().unwrap();
-    assert!(manager.eval("$restored.remove; raise 'rollback'").is_err());
-    manager.rollback_config_transaction(&checkpoint).unwrap();
-    assert_eq!(manager.eval("$restored.active?").unwrap(), "true");
-}
-
-#[test]
-fn exposes_api_introspection_logging_and_a_read_only_config_snapshot() {
-    let mut manager = ConfigManager::new().unwrap();
-    assert_eq!(
-        manager.eval("Toyoterm.version").unwrap(),
-        env!("CARGO_PKG_VERSION")
-    );
-    assert_eq!(
-        manager.eval("Toyoterm.api_version").unwrap(),
-        RUBY_API_VERSION
-    );
-    assert_eq!(
-        manager
-            .eval("Toyoterm.supports?(:targeted_actions)")
-            .unwrap(),
-        "true"
-    );
-    assert_eq!(
-        manager.eval("Toyoterm.supports?(:select_overlay)").unwrap(),
-        "true"
-    );
-    assert_eq!(
-        manager.eval("Toyoterm.supports?(:bar_sections)").unwrap(),
-        "true"
-    );
-    assert_eq!(
-        manager
-            .eval("Toyoterm.supports?(:mixed_bar_groups)")
-            .unwrap(),
-        "false"
-    );
-    assert!(
-        manager
-            .eval("Toyoterm.config[:font][:family] << 'x'")
-            .is_err()
-    );
-    manager.eval("Toyoterm.log(:info, 'ready')").unwrap();
-    assert_eq!(
-        manager.drain_logs().unwrap(),
-        vec![ScriptLog {
-            level: "info".into(),
-            message: "ready".into(),
-        }]
-    );
-}
-
-#[test]
-fn dynamic_actions_capture_the_callback_object_context() {
-    let mut manager = ConfigManager::new().unwrap();
-    manager.eval("Toyoterm.action(:toggle_zoom)").unwrap();
-    assert_eq!(
-        manager
-            .drain_commands_with_context(WorkspaceId(10), WindowId(20), TabId(30), PaneId(40))
-            .unwrap(),
-        vec![NativeCommand::Action(ActionCommand::Invoke {
-            action: NativeAction::ToggleZoom,
-            context: ActionContext {
-                workspace: WorkspaceId(10),
-                window: WindowId(20),
-                tab: TabId(30),
-                pane: PaneId(40),
-            },
-        })]
-    );
-}
-
-#[test]
-fn async_callbacks_receive_origin_context_and_launch_error_metadata() {
-    let mut manager = ConfigManager::new().unwrap();
-    manager
-        .eval("Toyoterm.async('missing') { |result, context| $async_result = result; $async_context = context }")
-        .unwrap();
-    let request = manager.drain_async_requests().unwrap().remove(0);
-    manager
-        .invoke_async_callback_with_launch_error(request.id, b"", b"not found", -1, true)
-        .unwrap();
-    assert_eq!(
-        manager.eval("$async_context.class").unwrap(),
-        "Toyoterm::CallbackContext"
-    );
-    assert_eq!(manager.eval("$async_result.launch_error?").unwrap(), "true");
-    assert_eq!(manager.eval("$async_result.error_kind").unwrap(), "launch");
-}
-
-#[test]
-fn eval_errors_restore_the_gc_arena_after_copying_the_exception() {
-    let mut runtime = MrubyRuntime::new().unwrap();
-    let baseline = runtime.gc_stats().arena_index;
-    for _ in 0..100 {
-        let error = runtime
-            .eval("raise 'arena exception with backtrace'")
-            .unwrap_err();
-        assert!(error.message().contains("arena exception with backtrace"));
-        assert_eq!(runtime.gc_stats().arena_index, baseline);
-    }
-}
-
-#[test]
-fn bar_widget_interval_defaults_to_one_second_and_rejects_values_below_100ms() {
-    let mut manager = ConfigManager::new().unwrap();
-    manager
-        .reload(
-            "Toyoterm.configure { |c| c.window.bar(:bottom) { |bar| bar.section(:left) { |section| section.add('ready') } } }",
-        )
-        .unwrap();
-    assert_eq!(
-        manager.config().status_bars,
-        vec![StatusBarConfig {
-            position: StatusBarPosition::Bottom,
-        }]
-    );
-
-    let error = manager
-        .reload("Toyoterm.configure { |c| c.window.bar(:bottom) { |bar| bar.section(:left) { |section| section.add(interval: 0.099) { 'too fast' } } } }")
-        .unwrap_err();
-    assert!(error.message().contains("at least 0.1 seconds"));
-
-    manager
-        .reload("Toyoterm.configure { |c| c.window.bar(:bottom, interval: 1.0) { |_| } }")
-        .unwrap_err();
-    assert_eq!(
-        manager.render_bar(StatusBarPosition::Bottom).unwrap(),
-        vec![BarItem {
-            alignment: BarAlignment::Left,
-            text: "ready".into(),
-        }]
-    );
-}
-
-#[test]
-fn bar_widgets_refresh_independently_and_cache_values_until_due() {
-    let mut manager = ConfigManager::new().unwrap();
-    manager
-        .reload(
-            r#"
-              $left_calls = 0
-              $right_calls = 0
-              Toyoterm.configure do |config|
-                config.window.bar(:bottom) do |bar|
-                  bar.section(:left) do |section|
-                    section.add(interval: 0.1) { $left_calls += 1; "left#{$left_calls}" }
-                  end
-                  bar.section(:right) do |section|
-                    section.add(interval: 5.0) { $right_calls += 1; "right#{$right_calls}" }
-                  end
-                end
-              end
-            "#,
-        )
-        .unwrap();
-
-    let (items, next_refresh) = manager
-        .render_bar_with_schedule(StatusBarPosition::Bottom, false)
-        .unwrap();
-    assert_eq!(items[0].text, "left1");
-    assert_eq!(items[1].text, "right1");
-    assert!(next_refresh.is_some_and(|delay| delay <= Duration::from_millis(100)));
-
-    std::thread::sleep(Duration::from_millis(120));
-    let (items, _) = manager
-        .render_bar_with_schedule(StatusBarPosition::Bottom, false)
-        .unwrap();
-    assert_eq!(items[0].text, "left2");
-    assert_eq!(items[1].text, "right1");
-}
-
-#[test]
-fn window_bar_supports_top_and_bottom_only() {
-    let mut manager = ConfigManager::new().unwrap();
-    manager
-        .reload(
-            r#"
-                Toyoterm.configure do |config|
-                  config.window.bar(:top) { |bar| bar.section(:left) { |section| section.add("TOP") } }
-                  config.window.bar(:bottom) { |bar| bar.section(:right) { |section| section.add("BOTTOM") } }
-                end
-            "#,
-        )
-        .unwrap();
-
-    assert_eq!(manager.config().status_bars.len(), 2);
-    assert_eq!(
-        manager.render_bar(StatusBarPosition::Top).unwrap()[0].text,
-        "TOP"
-    );
-    assert_eq!(
-        manager.render_bar(StatusBarPosition::Bottom).unwrap()[0].text,
-        "BOTTOM"
-    );
-
-    let error = manager
-        .reload("Toyoterm.configure { |c| c.window.bar(:right) { |_| } }")
-        .unwrap_err();
-    assert!(error.message().contains("window bar position"));
-    assert_eq!(manager.config().status_bars.len(), 2);
-
-    let error = manager
-        .reload("Toyoterm.configure { |c| c.window.bar(:top) { |_| }; c.window.bar(:top) { |_| } }")
-        .unwrap_err();
-    assert!(error.message().contains("already configured"));
-    assert_eq!(manager.config().status_bars.len(), 2);
-
-    let error = manager.reload("Toyoterm.status { 'removed' }").unwrap_err();
-    assert!(error.message().contains("undefined method"));
-    assert_eq!(manager.config().status_bars.len(), 2);
-
-    let error = manager
-        .reload("Toyoterm.configure { |c| c.window.bar(:top) { |bar| bar.section(:top) { |section| section.add('invalid') } } }")
-        .unwrap_err();
-    assert!(error.message().contains("section position"));
-    assert_eq!(manager.config().status_bars.len(), 2);
-}
-
-#[test]
-fn evaluates_ruby_in_a_persistent_vm() {
-    let mut runtime = MrubyRuntime::new().unwrap();
-    assert_eq!(runtime.eval("$value = 6 * 7").unwrap(), "42");
-    assert_eq!(runtime.eval("$value + 1").unwrap(), "43");
-}
-
-#[test]
-fn exposes_bundled_metaprogramming_gems() {
-    let mut runtime = MrubyRuntime::new().unwrap();
-    assert_eq!(
-        runtime
-            .eval(
-                r##"
-                module ToyotermMetaTest
-                  class Base
-                    def value(prefix)
-                      "#{prefix}:base"
-                    end
-                  end
-
-                  class Child < Base
-                    define_method(:dynamic) { |value| value * 2 }
-                  end
-                end
-
-                object = ToyotermMetaTest::Child.new
-                object.instance_variable_set(:@answer, 21)
-                object.define_singleton_method(:answer) { @answer }
-                method = object.method(:dynamic)
-                unbound = ToyotermMetaTest::Base.instance_method(:value)
-
-                [
-                  object.send(:answer),
-                  object.instance_variables.include?(:@answer),
-                  ToyotermMetaTest::Base.subclasses.include?(ToyotermMetaTest::Child),
-                  ToyotermMetaTest::Child.class_exec { name },
-                  method.call(21),
-                  method.owner,
-                  unbound.bind(object).call("meta"),
-                  object.tap { |value| value.instance_variable_set(:@tapped, true) }
-                        .instance_variable_get(:@tapped)
-                ]
-                "##,
-            )
-            .unwrap(),
-        "[21, true, true, \"ToyotermMetaTest::Child\", 42, ToyotermMetaTest::Child, \"meta:base\", true]"
-    );
-}
-
-#[test]
-fn exposes_bundled_portable_standard_library_gemboxes() {
-    let mut runtime = MrubyRuntime::new().unwrap();
-    assert_eq!(
-        runtime
-            .eval(
-                r#"
-                raise "set" unless Set[1, 1, 2] == Set[1, 2]
-                raise "lazy enumerator" unless [1, 2, 3].lazy.map { |n| n * 2 }.force == [2, 4, 6]
-                raise "enumerator chain" unless [1].chain([2, 3]).to_a == [1, 2, 3]
-
-                fiber = Fiber.new { Fiber.yield(7); 8 }
-                raise "fiber" unless fiber.resume == 7 && fiber.resume == 8
-
-                point = Struct.new(:x, :y).new(3, 4)
-                record = Data.define(:name).new("toyoterm")
-                raise "struct" unless point.to_a == [3, 4]
-                raise "data" unless record.name == "toyoterm" && record.frozen?
-                raise "pack" unless [65, 66].pack("C*").unpack("C*") == [65, 66]
-                raise "sprintf" unless sprintf("%s-%02d", "ruby", 7) == "ruby-07"
-                raise "time" unless Time.at(0).to_i == 0
-                raise "current time" unless Time.now.is_a?(Time)
-
-                random = Random.new(1234).rand(100)
-                raise "random" unless random >= 0 && random < 100
-                raise "math" unless Math.sqrt(81) == 9.0
-                raise "rational" unless Rational(1, 3) + Rational(2, 3) == 1
-                raise "complex" unless Complex(2, 3).real == 2
-                raise "bigint" unless 2**100 > 2**99
-
-                context = binding
-                raise "binding" unless eval("6 * 7", context) == 42
-                raise "proc binding" unless proc { 1 }.binding.is_a?(Binding)
-                raise "catch" unless catch(:done) { throw(:done, 42) } == 42
-                raise "objectspace" unless ObjectSpace.count_objects[:TOTAL] > 0
-
-                "portable stdlib ok"
-                "#,
-            )
-            .unwrap(),
-        "portable stdlib ok"
-    );
-}
-
-#[test]
-fn loads_the_configuration_dsl() {
-    let mut manager = ConfigManager::new().unwrap();
-    let download_directory = if cfg!(windows) {
-        "C:/tmp/toyoterm-downloads"
-    } else {
-        "/tmp/toyoterm-downloads"
-    };
-    let source = r##"
-                Toyoterm.configure do |config|
-                  config.font do |font|
-                    font.family = "JetBrains Mono"
-                    font.fallback = ["Noto Sans Mono CJK JP", "Noto Color Emoji"]
-                    font.size = 16
-                    font.weight = 500
-                  end
-                  config.colors.background = "#111111"
-                  config.colors.tab_active = "#224466"
-                  config.window.opacity = 0.92
-                  config.window.title = "my terminal"
-                  config.window.width = 1200
-                  config.window.always_on_top = true
-                  config.ui.padding_x = 12
-                  config.ui.line_height = 1.4
-                  config.ui.tab_bar = false
-                  config.ui.pane_divider_width = 0
-                  config.behavior.scroll_lines = 5
-                  config.behavior.copy_on_select = true
-                  config.behavior.allow_osc52_copy = true
-                  config.behavior.allow_osc_notifications = true
-                  config.behavior.allow_osc_attention_requests = true
-                  config.behavior.allow_osc_open_url = true
-                  config.behavior.allow_osc_file_downloads = true
-                  config.behavior.osc_download_directory = "__DOWNLOAD_DIRECTORY__"
-                  config.behavior.allow_osc_file_uploads = true
-                  config.behavior.osc_upload_directory = "__DOWNLOAD_DIRECTORY__"
-                  config.behavior.allow_osc_background_image = true
-                  config.behavior.osc_background_image_directory = "__DOWNLOAD_DIRECTORY__"
-                  config.behavior.allow_osc_focus_requests = true
-                  config.default_shell = "/bin/zsh"
-                  config.scrollback_lines = 50_000
-                end
-                "##
-    .replace("__DOWNLOAD_DIRECTORY__", download_directory);
-    let config = manager.reload(&source).unwrap();
-
-    assert_eq!(config.font.family, "JetBrains Mono");
-    assert_eq!(
-        config.font.fallback,
-        ["Noto Sans Mono CJK JP", "Noto Color Emoji"]
-    );
-    assert_eq!(config.font.size, 16.0);
-    assert_eq!(config.font.weight, 500);
-    assert_eq!(config.colors.background, "#111111");
-    assert_eq!(config.colors.tab_active, "#224466");
-    assert_eq!(config.window.opacity, 0.92);
-    assert_eq!(config.window.title, "my terminal");
-    assert_eq!(config.window.width, 1200.0);
-    assert!(config.window.always_on_top);
-    assert_eq!(config.ui.padding_x, 12.0);
-    assert_eq!(config.ui.line_height, 1.4);
-    assert!(!config.ui.tab_bar);
-    assert_eq!(config.ui.pane_divider_width, 0.0);
-    assert_eq!(config.behavior.scroll_lines, 5.0);
-    assert!(config.behavior.copy_on_select);
-    assert!(config.behavior.allow_osc52_copy);
-    assert!(config.behavior.allow_osc_notifications);
-    assert!(config.behavior.allow_osc_attention_requests);
-    assert!(config.behavior.allow_osc_open_url);
-    assert!(config.behavior.allow_osc_file_downloads);
-    assert_eq!(
-        config.behavior.osc_download_directory.as_deref(),
-        Some(std::path::Path::new(download_directory))
-    );
-    assert!(config.behavior.allow_osc_file_uploads);
-    assert_eq!(
-        config.behavior.osc_upload_directory.as_deref(),
-        Some(std::path::Path::new(download_directory))
-    );
-    assert!(config.behavior.allow_osc_background_image);
-    assert_eq!(
-        config.behavior.osc_background_image_directory.as_deref(),
-        Some(std::path::Path::new(download_directory))
-    );
-    assert!(config.behavior.allow_osc_focus_requests);
-    assert_eq!(config.default_shell.as_deref(), Some("/bin/zsh"));
-    assert_eq!(config.scrollback_lines, 50_000);
-}
-
-#[test]
-fn required_ruby_source_registers_commands_events_and_keys() {
-    let directory = temporary_test_directory("ruby-library-registrations");
-    let library = directory.join("git.rb");
-    std::fs::write(
-        &library,
-        r##"
-            prefix = "git"
-            Toyoterm.command(:git_root) { |ctx| ctx.pane.send_text("#{prefix} root\n") }
-            Toyoterm.on(:bell) { |event| event.pane.badge = "bell" }
-            Toyoterm.configure do |config|
-              config.keys.key("CTRL+G").run { |ctx| ctx.pane.send_text("git status\n") }
-              config.keys.ctrl("h").run { |ctx| ctx.pane.send_text("git log\n") }
-              config.keys { ctrl_shift("G").command(:git_root) }
-            end
-            "##,
-    )
-    .unwrap();
-
-    let mut loaded = load_config(
-        &format!(
-            "require({})",
-            ruby_string_literal(&library.display().to_string())
-        ),
-        &directory.join("config.rb").display().to_string(),
-        Some(&directory),
-    )
-    .unwrap();
-    assert!(loaded.user_command_names.contains("git_root"));
-    assert!(loaded.event_names.contains("bell"));
-    assert!(loaded.keybindings.contains("CTRL+G"));
-    assert!(loaded.keybindings.contains("CTRL+H"));
-    assert_eq!(
-        loaded.native_actions.get("CTRL+SHIFT+G"),
-        Some(&NativeAction::UserCommand("git_root".into()))
-    );
-    assert_eq!(
-        loaded
-            .runtime
-            .eval("Toyoterm.__invoke_command(:git_root, Toyoterm.current_pane); Toyoterm.__next_command; Toyoterm.__current_command_payload")
-            .unwrap(),
-        "git root\n"
-    );
-    std::fs::remove_dir_all(directory).unwrap();
-}
-
-#[test]
-fn rejects_relative_osc_background_image_roots() {
-    let mut manager = ConfigManager::new().unwrap();
-    let error = manager
-        .reload(
-            "Toyoterm.configure { |config| config.behavior.osc_background_image_directory = 'relative' }",
-        )
-        .unwrap_err();
-    assert!(
-        error
-            .message()
-            .contains("osc_background_image_directory must be an absolute path")
-    );
-}
-
-#[test]
-fn osc_config_maps_permissions_and_directories_to_native_behavior() {
-    let directory = if cfg!(windows) {
-        "C:/tmp/toyoterm-osc"
-    } else {
-        "/tmp/toyoterm-osc"
-    };
-    let source = r#"
-        Toyoterm.configure do |config|
-          config.osc do |osc|
-            osc.clipboard = true
-            osc.notifications = true
-            osc.attention = true
-            osc.open_url = true
-            osc.focus = true
-            osc.downloads = "__DIRECTORY__"
-            osc.uploads = "__DIRECTORY__"
-            osc.background_image = "__DIRECTORY__"
-          end
-        end
-    "#
-    .replace("__DIRECTORY__", directory);
-    let mut manager = ConfigManager::new().unwrap();
-    let config = manager.reload(&source).unwrap();
-    assert!(config.behavior.allow_osc52_copy);
-    assert!(config.behavior.allow_osc_notifications);
-    assert!(config.behavior.allow_osc_attention_requests);
-    assert!(config.behavior.allow_osc_open_url);
-    assert!(config.behavior.allow_osc_focus_requests);
-    assert!(config.behavior.allow_osc_file_downloads);
-    assert_eq!(
-        config.behavior.osc_download_directory.as_deref(),
-        Some(std::path::Path::new(directory))
-    );
-    assert!(config.behavior.allow_osc_file_uploads);
-    assert_eq!(
-        config.behavior.osc_upload_directory.as_deref(),
-        Some(std::path::Path::new(directory))
-    );
-    assert!(config.behavior.allow_osc_background_image);
-    assert_eq!(
-        config.behavior.osc_background_image_directory.as_deref(),
-        Some(std::path::Path::new(directory))
-    );
-
-    let config = manager.reload("Toyoterm.configure { |config| config.osc { |osc| osc.downloads = nil; osc.uploads = nil; osc.background_image = nil } }").unwrap();
-    assert!(!config.behavior.allow_osc_file_downloads);
-    assert!(config.behavior.osc_download_directory.is_none());
-    assert!(!config.behavior.allow_osc_file_uploads);
-    assert!(config.behavior.osc_upload_directory.is_none());
-    assert!(!config.behavior.allow_osc_background_image);
-    assert!(config.behavior.osc_background_image_directory.is_none());
-}
-
-#[test]
-fn osc_config_rejects_invalid_values_without_committing_them() {
-    let mut manager = ConfigManager::new().unwrap();
-    let error = manager
-        .reload("Toyoterm.configure { |config| config.osc.downloads = 'relative' }")
-        .unwrap_err();
-    assert!(
-        error
-            .message()
-            .contains("osc_download_directory must be an absolute path")
-    );
-    let error = manager
-        .reload("Toyoterm.configure { |config| config.osc.notifications = 1 }")
-        .unwrap_err();
-    assert!(
-        error
-            .message()
-            .contains("osc.notifications must be true or false")
-    );
-    let config = manager
-        .reload("Toyoterm.configure { |config| config.osc.downloads = nil }")
-        .unwrap();
-    assert!(!config.behavior.allow_osc_file_downloads);
-    assert!(config.behavior.osc_download_directory.is_none());
-}
-
-#[test]
-fn require_loads_plain_ruby_from_the_config_lib_directory() {
-    let directory = temporary_test_directory("require-library");
-    let library_directory = directory.join("lib");
-    std::fs::create_dir_all(&library_directory).unwrap();
-    std::fs::write(
-        library_directory.join("helper.rb"),
-        "require_relative 'nested'; REQUIRED_HELPER_VALUE = NESTED_HELPER_VALUE + 1",
-    )
-    .unwrap();
-    std::fs::write(
-        library_directory.join("nested.rb"),
-        "NESTED_HELPER_VALUE = 41",
-    )
-    .unwrap();
-
-    let mut loaded = load_config(
-        "raise 'require failed' unless require('helper'); raise 'constant unavailable' unless REQUIRED_HELPER_VALUE == 42; raise 'duplicate require' if require('helper')",
-        &directory.join("config.rb").display().to_string(),
-        Some(&directory),
-    )
-    .unwrap();
-    assert_eq!(loaded.runtime.eval("REQUIRED_HELPER_VALUE").unwrap(), "42");
-    assert_eq!(
-        loaded
-            .runtime
-            .eval(&format!(
-                "$LOAD_PATH.include?({})",
-                ruby_string_literal(&library_directory.display().to_string())
-            ))
-            .unwrap(),
-        "true"
-    );
-    std::fs::remove_dir_all(directory).unwrap();
-}
-
-#[test]
-fn loads_and_selects_a_theme_defined_by_a_ruby_library() {
-    let directory = temporary_test_directory("theme-library");
-    let library = directory.join("night.rb");
-    std::fs::write(
-        &library,
-        r##"
-              Toyoterm.theme "moon" do |theme|
-                theme.background = "#10131a"
-                theme.foreground = "#d8dee9"
-                theme.cursor = "#88c0d0"
-                theme.zoomed_pane_border = "#abcdef"
-                theme.ansi = [
-                  "#000000", "#bf616a", "#a3be8c", "#ebcb8b",
-                  "#81a1c1", "#b48ead", "#88c0d0", "#e5e9f0",
-                  "#4c566a", "#bf616a", "#a3be8c", "#ebcb8b",
-                  "#81a1c1", "#b48ead", "#8fbcbb", "#eceff4"
-                ]
-            end
-        "##,
-    )
-    .unwrap();
-
-    let mut loaded = load_config(
-        r##"
-            require "night"
-            Toyoterm.configure do |config|
-              config.theme = "moon"
-              config.colors.cursor = "#ffffff"
-              config.colors.ansi[1] = "#ff0000"
-            end
-        "##,
-        &directory.join("config.rb").display().to_string(),
-        Some(&directory),
-    )
-    .unwrap();
-
-    assert_eq!(loaded.config.colors.background, "#10131a");
-    assert_eq!(loaded.config.colors.foreground, "#d8dee9");
-    assert_eq!(loaded.config.colors.zoomed_pane_border, "#abcdef");
-    assert_eq!(loaded.config.colors.cursor, "#ffffff");
-    assert_eq!(loaded.config.colors.ansi[1], "#ff0000");
-    assert_eq!(loaded.config.colors.ansi[2], "#a3be8c");
-    let preset = loaded.color_presets.get("moon").unwrap();
-    assert_eq!(preset.background, "#10131a");
-    assert_eq!(preset.cursor, "#88c0d0");
-    assert_eq!(preset.ansi[1], "#bf616a");
-    assert_eq!(
-        loaded.runtime.eval("Toyoterm.themes.join(',')").unwrap(),
-        "moon"
-    );
-    std::fs::remove_dir_all(directory).unwrap();
-}
-
-#[test]
-fn rejects_an_unknown_theme_without_replacing_the_active_config() {
-    let mut manager = ConfigManager::new().unwrap();
-    manager
-        .reload(r##"Toyoterm.configure { |config| config.colors.background = "#123456" }"##)
-        .unwrap();
-
-    let error = manager
-        .reload("Toyoterm.configure { |config| config.theme = 'missing' }")
-        .unwrap_err();
-
-    assert!(error.message().contains("unknown theme: missing"));
-    assert_eq!(manager.config().colors.background, "#123456");
-}
-
-#[test]
-fn rejects_duplicate_theme_names() {
-    let mut manager = ConfigManager::new().unwrap();
-    let error = manager
-        .reload("Toyoterm.theme('moon') { |_| }; Toyoterm.theme('moon') { |_| }")
-        .unwrap_err();
-    assert!(error.message().contains("duplicate theme name: moon"));
-    assert_eq!(manager.eval("Toyoterm.themes.empty?").unwrap(), "true");
-}
-
-#[test]
-fn accepts_theme_collections_larger_than_the_previous_limit() {
-    let source = (0..257)
-        .map(|index| format!("Toyoterm.theme('theme-{index}') {{ |_| }}\n"))
-        .collect::<String>();
-    let loaded = load_config(&source, "theme-pack.rb", None).unwrap();
-
-    assert_eq!(loaded.color_presets.len(), 257);
-}
-
-#[test]
-fn theme_snapshots_preserve_unicode_names_and_live_mutations_after_collection() {
-    let mut manager = ConfigManager::new().unwrap();
-    manager
-        .reload(
-            r##"
-                128.times do |index|
-                  theme = Toyoterm.theme("theme:#{index};日本") do |colors|
-                    colors.zoomed_pane_border = "#102030"
-                    colors.search_match_active = "#405060"
-                  end
-                  $saved_theme = theme if index == 0
-                end
-                Toyoterm.command(:mutate_theme) do
-                  $saved_theme.background = "#123456"
-                  $saved_theme.ansi[3] = "#654321"
-                end
-            "##,
-        )
-        .unwrap();
-    let after_load = manager.runtime.gc_stats();
-    manager.runtime.collect_garbage();
-    assert_eq!(manager.runtime.gc_stats(), after_load);
-    assert_eq!(manager.color_presets.len(), 128);
-    let preset = manager.color_presets.get("theme:0;日本").unwrap();
-    assert_eq!(preset.zoomed_pane_border, "#102030");
-    assert_eq!(preset.search_match_active, "#405060");
-
-    let result = run_script_request(
-        &mut manager,
-        &script_test_context(),
-        &ScriptInvocation::UserCommand {
-            name: "mutate_theme".into(),
-            pane: PaneId(0),
-        },
-    )
-    .unwrap();
-    let preset = result
-        .snapshot
-        .as_ref()
-        .unwrap()
-        .color_presets
-        .get("theme:0;日本")
-        .unwrap();
-    assert_eq!(preset.background, "#123456");
-    assert_eq!(preset.ansi[3], "#654321");
-    let after_request = manager.runtime.gc_stats();
-    manager.runtime.collect_garbage();
-    assert_eq!(manager.runtime.gc_stats(), after_request);
-}
-
-#[test]
-fn theme_snapshot_decoder_rejects_truncated_lengths_counts_and_trailing_data() {
-    for (encoded, count) in [
-        ("", 0),
-        ("0;extra", 0),
-        ("1;", 1),
-        ("1;2:日本16;", 1),
-        ("1;999999999999999999999999:theme16;", 1),
-        ("1;5:theme15;", 1),
-        ("0;", 1),
-    ] {
-        assert!(decode_color_presets(encoded, count).is_err(), "{encoded}");
-    }
-    assert!(decode_color_presets("0;", 0).unwrap().is_empty());
-}
-
-#[test]
-fn collection_boundaries_honor_disabled_ruby_gc() {
-    let mut manager = ConfigManager::new().unwrap();
-    manager
-        .reload("GC.disable; $retained = Object.new")
-        .unwrap();
-    let before = manager.runtime.gc_stats();
-    manager.eval("100.times { Object.new }").unwrap();
-    let allocated = manager.runtime.gc_stats();
-    assert!(allocated.live_objects > before.live_objects);
-    manager.runtime.collect_garbage();
-    assert_eq!(manager.runtime.gc_stats(), allocated);
-    assert_eq!(manager.eval("GC.enable").unwrap(), "true");
-    manager.runtime.collect_garbage();
-    assert!(manager.runtime.gc_stats().live_objects < allocated.live_objects);
-    assert_eq!(manager.eval("$retained.class.to_s").unwrap(), "Object");
-}
-
-#[test]
-fn invalid_theme_palette_rolls_back_the_registration_and_commands() {
-    let mut manager = ConfigManager::new().unwrap();
-    manager
-        .reload(
-            r#"
-                Toyoterm.theme('retained') { |_| }
-                Toyoterm.command(:retained_callback) do |context|
-                  context.pane.send_text('survived')
-                end
-                Toyoterm.command(:broken_theme) do |context|
-                  theme = Toyoterm.theme('invalid') { |_| }
-                  theme.ansi.pop
-                  context.pane.send_text('must roll back')
-                end
-            "#,
-        )
-        .unwrap();
-    let error = run_script_request(
-        &mut manager,
-        &script_test_context(),
-        &ScriptInvocation::UserCommand {
-            name: "broken_theme".into(),
-            pane: PaneId(4),
-        },
-    )
-    .unwrap_err();
-    let after_failure = manager.runtime.gc_stats();
-    manager.runtime.collect_garbage();
-    assert_eq!(manager.runtime.gc_stats(), after_failure);
-    assert!(
-        error
-            .message()
-            .contains("theme invalid must contain exactly 16 ANSI colors")
-    );
-    assert_eq!(manager.color_presets.len(), 1);
-    assert_eq!(
-        manager.eval("Toyoterm.themes.join(',')").unwrap(),
-        "retained"
-    );
-    assert!(manager.drain_commands(PaneId(4)).unwrap().is_empty());
-    let result = run_script_request(
-        &mut manager,
-        &script_test_context(),
-        &ScriptInvocation::UserCommand {
-            name: "retained_callback".into(),
-            pane: PaneId(4),
-        },
-    )
-    .unwrap();
-    assert_eq!(result.commands.len(), 1);
-}
-
-#[test]
-fn callback_failure_rolls_back_direct_registrations_and_themes() {
-    let mut manager = ConfigManager::new().unwrap();
-    manager
-        .reload(
-            "Toyoterm.command(:broken) do; Toyoterm.command(:leaked) { }; Toyoterm.on(:bell) { }; Toyoterm.theme('leaked') { |_| }; raise 'boom'; end",
-        )
-        .unwrap();
-
-    assert!(
-        run_script_request(
-            &mut manager,
-            &script_test_context(),
-            &ScriptInvocation::UserCommand {
-                name: "broken".into(),
-                pane: PaneId(4),
-            },
-        )
-        .is_err()
-    );
-    assert!(manager.trigger_user_command("leaked", PaneId(0)).is_err());
-    assert_eq!(manager.eval("Toyoterm.themes.empty?").unwrap(), "true");
-    manager.refresh_config_snapshot().unwrap();
-    assert!(!manager.registrations.event_names.contains("bell"));
-}
-
-#[test]
-fn successful_reload_replaces_the_registration_generation() {
-    let mut manager = ConfigManager::new().unwrap();
-    manager
-        .reload("Toyoterm.command(:old) { }; Toyoterm.on(:bell) { }; Toyoterm.theme('old') { |_| }")
-        .unwrap();
-    manager
-        .reload("Toyoterm.command(:new) { }; Toyoterm.on(:title_changed) { }; Toyoterm.theme('new') { |_| }")
-        .unwrap();
-
-    assert!(manager.trigger_user_command("old", PaneId(0)).is_err());
-    assert!(manager.trigger_user_command("new", PaneId(0)).is_ok());
-    assert_eq!(manager.eval("Toyoterm.themes.join(',')").unwrap(), "new");
-    assert_eq!(manager.registrations.event_names.len(), 1);
-    assert!(manager.registrations.event_names.contains("title_changed"));
-}
-
-#[test]
-fn required_source_failure_rejects_config_and_preserves_the_active_vm() {
-    let directory = temporary_test_directory("source-failure");
-    let broken = directory.join("broken.rb");
-    std::fs::write(
-        &broken,
-        r##"
-            Toyoterm.command(:leaked) { }
-            Toyoterm.on(:bell) { }
-            Toyoterm.theme("leaked") { |theme| theme.background = "#654321" }
-            raise "boom"
-            "##,
-    )
-    .unwrap();
-    let mut manager = ConfigManager::new().unwrap();
-    manager
-        .reload(r##"Toyoterm.configure { |config| config.colors.background = "#123456" }"##)
-        .unwrap();
-    let error = manager
-        .reload(&format!(
-            "require({})",
-            ruby_string_literal(&broken.display().to_string())
-        ))
-        .unwrap_err();
-    assert!(error.message().contains("boom"));
-    assert_eq!(manager.config().colors.background, "#123456");
-    assert_eq!(manager.eval("Toyoterm.themes.empty?").unwrap(), "true");
-    assert!(manager.trigger_user_command("leaked", PaneId(0)).is_err());
-    std::fs::remove_dir_all(directory).unwrap();
-}
-
-#[test]
-fn required_sources_resolve_relative_to_each_other_and_keep_declaration_order() {
-    let directory = temporary_test_directory("explicit-libraries");
-    let libraries = directory.join("lib");
-    std::fs::create_dir(&libraries).unwrap();
-    for (file, name) in [("second.rb", "second"), ("first.rb", "first")] {
-        std::fs::write(
-            libraries.join(file),
-            format!("Toyoterm.theme({name:?}) {{ |_theme| }}\n"),
-        )
-        .unwrap();
-    }
-    let mut loaded = load_config(
-        "require_relative 'lib/second'; require_relative 'lib/first'",
-        &directory.join("config.rb").display().to_string(),
-        Some(&directory),
-    )
-    .unwrap();
-    assert_eq!(
-        loaded.runtime.eval("Toyoterm.themes.join(',')").unwrap(),
-        "second,first"
-    );
-    std::fs::remove_dir_all(directory).unwrap();
-}
-
-#[test]
-fn unrequired_ruby_files_are_not_loaded() {
-    let directory = temporary_test_directory("library-no-auto-load");
-    std::fs::write(
-        directory.join("unrequested.rb"),
-        "Toyoterm.theme('unrequested') { |_theme| }",
-    )
-    .unwrap();
-    let mut loaded = load_config(
-        "",
-        &directory.join("config.rb").display().to_string(),
-        Some(&directory),
-    )
-    .unwrap();
-    assert_eq!(
-        loaded.runtime.eval("Toyoterm.themes.empty?").unwrap(),
-        "true"
-    );
-    std::fs::remove_dir_all(directory).unwrap();
-}
-
-#[test]
-fn plugin_namespace_and_registry_are_absent() {
-    let mut manager = ConfigManager::new().unwrap();
-    assert_eq!(
-        manager.eval("Toyoterm.const_defined?(:Plugin)").unwrap(),
-        "false"
-    );
-    assert!(manager.eval("Toyoterm.plugins").is_err());
-}
-
-fn temporary_test_directory(label: &str) -> PathBuf {
-    let unique = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap()
-        .as_nanos();
-    let path =
-        std::env::temp_dir().join(format!("toyoterm-{label}-{}-{unique}", std::process::id()));
-    std::fs::create_dir(&path).unwrap();
-    path
-}
-
-#[test]
-fn rejects_font_weight_outside_css_range() {
-    let mut manager = ConfigManager::new().unwrap();
-    let error = manager
-        .reload("Toyoterm.configure { |config| config.font.weight = 1001 }")
-        .unwrap_err();
-    assert!(
-        error
-            .message()
-            .contains("font weight must be between 1 and 1000")
-    );
-}
-
-#[test]
-fn rejects_invalid_font_fallbacks() {
-    let mut manager = ConfigManager::new().unwrap();
-    let error = manager
-        .reload("Toyoterm.configure { |config| config.font.fallback = 'emoji' }")
-        .unwrap_err();
-    assert!(error.message().contains("font fallback must be an array"));
-
-    let error = manager
-        .reload("Toyoterm.configure { |config| config.font.fallback = [''] }")
-        .unwrap_err();
-    assert!(error.message().contains("cannot be empty"));
-
-    let error = manager
-        .reload("Toyoterm.configure { |config| config.font.fallback = ['Noto', 'Noto'] }")
-        .unwrap_err();
-    assert!(error.message().contains("duplicate font family"));
-}
-
-#[test]
-fn bundled_minimal_configuration_is_executable() {
-    let mut manager = ConfigManager::new().unwrap();
-    manager
-        .reload(include_str!("../../../examples/minimal_config.rb"))
-        .unwrap();
-    assert_eq!(manager.config().font.size, 14.0);
-    assert_eq!(manager.config().scrollback_lines, 10_000);
-    assert!(
-        manager
-            .trigger_keybinding("CTRL+SHIFT+H", PaneId(7))
-            .unwrap()
-    );
-}
-
-#[test]
-fn failed_reload_preserves_the_previous_runtime_and_config() {
-    let mut manager = ConfigManager::new().unwrap();
-    manager
-        .reload("Toyoterm.configure { |config| config.font.size = 18 }")
-        .unwrap();
-
-    let error = manager.reload("Toyoterm.configure {").unwrap_err();
-    assert_eq!(error.operation(), "evaluate mruby");
-    assert_eq!(manager.config().font.size, 18.0);
-    assert_eq!(manager.eval("Toyoterm.__config.font.size").unwrap(), "18");
-}
-
-#[test]
-fn rejects_invalid_colors_without_replacing_the_config() {
-    let mut manager = ConfigManager::new().unwrap();
-    manager
-        .reload(r##"Toyoterm.configure { |config| config.colors.cursor = "#123456" }"##)
-        .unwrap();
-
-    let error = manager
-        .reload(r#"Toyoterm.configure { |config| config.colors.cursor = "red" }"#)
-        .unwrap_err();
-
-    assert_eq!(error.operation(), "evaluate mruby");
-    assert!(error.message().contains("#RRGGBB"));
-    assert_eq!(manager.config().colors.cursor, "#123456");
-}
-
-#[test]
-fn bundled_default_key_configuration_is_executable() {
-    let mut manager = ConfigManager::new().unwrap();
-    manager
-        .reload(include_str!("../../../examples/default_config.rb"))
-        .unwrap();
-
-    assert!(manager.native_action("F11").is_some());
-    let search_key = if cfg!(target_os = "macos") {
-        "SHIFT+SUPER+F"
-    } else {
-        "CTRL+SHIFT+F"
-    };
-    assert!(manager.native_action(search_key).is_some());
-    assert!(manager.native_action("CTRL+TAB").is_some());
-    assert!(manager.native_action("CTRL+SHIFT+P").is_none());
-    assert!(manager.native_action("SHIFT+SUPER+P").is_none());
-}
-
-#[test]
-fn registers_toggle_zoom_keybinding() {
-    let mut manager = ConfigManager::new().unwrap();
-    manager
-        .reload(
-            r#"
-            Toyoterm.configure do |config|
-              config.keys.ctrl("z").toggle_zoom
-              config.keys.ctrl_shift("z").toggle_zoom
-            end
-            "#,
-        )
-        .unwrap();
-
-    assert_eq!(
-        manager.native_action("CTRL+Z"),
-        Some(NativeAction::ToggleZoom)
-    );
-    assert_eq!(
-        manager.native_action("CTRL+SHIFT+Z"),
-        Some(NativeAction::ToggleZoom)
-    );
-}
-
-#[test]
-fn exposes_the_host_platform_to_ruby() {
-    let mut manager = ConfigManager::new().unwrap();
-    manager.reload("").unwrap();
-
-    let expected = if cfg!(target_os = "linux") {
-        "linux"
-    } else if cfg!(target_os = "macos") {
-        "macos"
-    } else if cfg!(target_os = "windows") {
-        "windows"
-    } else {
-        "other"
-    };
-    assert_eq!(manager.eval("Toyoterm.platform"), Ok(expected.to_owned()));
-    assert_eq!(
-        manager.eval("Toyoterm.platform.class"),
-        Ok("Symbol".to_owned())
-    );
-}
-
-#[test]
-fn loads_and_validates_the_ansi_palette() {
-    let mut manager = ConfigManager::new().unwrap();
-    let config = manager
-        .reload(r##"Toyoterm.configure { |config| config.colors.ansi[1] = "#123456" }"##)
-        .unwrap();
-    assert_eq!(config.colors.ansi.len(), 16);
-    assert_eq!(config.colors.ansi[1], "#123456");
-
-    let error = manager
-        .reload("Toyoterm.configure { |config| config.colors.ansi = [] }")
-        .unwrap_err();
-    assert!(error.message().contains("exactly 16 colors"));
-    assert_eq!(manager.config().colors.ansi[1], "#123456");
-}
-
-#[test]
-fn reloads_the_selected_file_atomically() {
-    let unique = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap()
-        .as_nanos();
-    let path = std::env::temp_dir().join(format!(
-        "toyoterm-config-{}-{unique}.rb",
-        std::process::id()
-    ));
-    std::fs::write(
-        &path,
-        "Toyoterm.configure { |config| config.font.size = 17 }",
-    )
-    .unwrap();
-    let mut manager = ConfigManager::load_startup(Some(&path)).unwrap();
-    assert_eq!(manager.source_path(), Some(path.as_path()));
-    assert_eq!(manager.config().font.size, 17.0);
-
-    std::fs::write(
-        &path,
-        "Toyoterm.configure { |config| config.font.size = 19 }",
-    )
-    .unwrap();
-    manager.reload_file().unwrap();
-    assert_eq!(manager.config().font.size, 19.0);
-
-    std::fs::write(&path, "Toyoterm.configure {").unwrap();
-    assert!(manager.reload_file().is_err());
-    assert_eq!(manager.config().font.size, 19.0);
-    std::fs::remove_file(path).unwrap();
-}
-
-#[test]
-fn reports_config_filename_line_and_ruby_backtrace() {
-    let unique = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap()
-        .as_nanos();
-    let path = std::env::temp_dir().join(format!(
-        "toyoterm-broken-config-{}-{unique}.rb",
-        std::process::id()
-    ));
-    std::fs::write(
-        &path,
-        r#"def fail_config
-  raise "broken config"
-end
-fail_config
-"#,
-    )
-    .unwrap();
-
-    let error = match ConfigManager::load_startup(Some(&path)) {
-        Ok(_) => panic!("broken config unexpectedly loaded"),
-        Err(error) => error,
-    };
-    std::fs::remove_file(&path).unwrap();
-    let message = error.to_string();
-
-    assert!(message.contains(&path.display().to_string()), "{message}");
-    assert!(message.contains(":2"), "{message}");
-    assert!(message.contains(":4"), "{message}");
-    assert!(message.contains("broken config"), "{message}");
-}
-
-#[test]
-fn gui_startup_recovers_with_defaults_and_keeps_the_broken_path() {
-    let unique = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap()
-        .as_nanos();
-    let path = std::env::temp_dir().join(format!(
-        "toyoterm-gui-config-{}-{unique}.rb",
-        std::process::id()
-    ));
-    std::fs::write(&path, "raise 'broken GUI config'").unwrap();
-
-    let (manager, error) = ConfigManager::load_startup_recovering(Some(&path)).unwrap();
-    std::fs::remove_file(&path).unwrap();
-
-    assert_eq!(manager.source_path(), Some(path.as_path()));
-    assert_eq!(manager.config(), &ToyotermConfig::default());
-    assert!(
-        error
-            .expect("broken config should be reported")
-            .message()
-            .contains("broken GUI config")
-    );
-}
-
-#[test]
-fn converts_pane_send_text_to_a_native_command() {
-    let mut manager = ConfigManager::new().unwrap();
-    manager.set_current_pane(PaneId(42)).unwrap();
-    manager
-        .eval(r#"Toyoterm.current_pane.send_text("echo hello\n")"#)
-        .unwrap();
-
-    assert_eq!(
-        manager.drain_commands(PaneId(42)).unwrap(),
-        vec![NativeCommand::Mux(Command::SendText {
-            pane: PaneId(42),
-            text: "echo hello\n".into(),
-        })]
-    );
-    assert!(manager.drain_commands(PaneId(42)).unwrap().is_empty());
-}
-
-#[test]
-fn exposes_the_synced_ruby_object_model() {
-    let mut manager = ConfigManager::new().unwrap();
-    manager
-        .set_live_handles([
-            NativeHandle::from(WorkspaceId(10)),
-            NativeHandle::from(WindowId(20)),
-            NativeHandle::from(TabId(30)),
-            NativeHandle::from(PaneId(40)),
-        ])
-        .unwrap();
-    manager
-        .set_object_model(&RubyObjectModel {
-            current_workspace: WorkspaceId(10),
-            current_window: WindowId(20),
-            current_tab: TabId(30),
-            current_pane: PaneId(40),
-            workspaces: vec![RubyWorkspace {
-                id: WorkspaceId(10),
-                name: "backend".into(),
-                windows: vec![WindowId(20)],
-            }],
-            windows: vec![RubyWindow {
-                id: WindowId(20),
-                tabs: vec![TabId(30)],
-            }],
-            tabs: vec![RubyTab {
-                id: TabId(30),
-                title: "server".into(),
-                panes: vec![PaneId(40)],
-                zoomed: true,
-            }],
-            panes: vec![RubyPane {
-                id: PaneId(40),
-                title: "shell".into(),
-                icon_title: Some("server icon".into()),
-                cwd: Some("/srv/app".into()),
-                remote_host: Some("alice@build.example.com".into()),
-                shell_integration_version: Some(12),
-                shell_integration_shell: Some("fish".into()),
-                user_vars: vec![("gitBranch".into(), "main".into())],
-                pid: Some(1234),
-                command_running: true,
-                last_exit_status: Some(17),
-                screen_text: "build started\ncompiling toyoterm".into(),
-                zoomed: true,
-            }],
-        })
-        .unwrap();
-
-    assert_eq!(
-        manager.eval("Toyoterm.current_workspace.name").unwrap(),
-        "backend"
-    );
-    assert_eq!(
-        manager
-            .eval("Toyoterm.find_workspace('backend').id")
-            .unwrap(),
-        "10"
-    );
-    assert_eq!(
-        manager.eval("Toyoterm.workspaces.map(&:id)").unwrap(),
-        "[10]"
-    );
-    assert_eq!(manager.eval("Toyoterm.windows.map(&:id)").unwrap(), "[20]");
-    assert_eq!(
-        manager.eval("Toyoterm.current_window.tabs[0].id").unwrap(),
-        "30"
-    );
-    assert_eq!(
-        manager.eval("Toyoterm.current_tab.title").unwrap(),
-        "server"
-    );
-    assert_eq!(
-        manager.eval("Toyoterm.current_tab.zoomed?").unwrap(),
-        "true"
-    );
-    assert_eq!(
-        manager.eval("Toyoterm.current_tab.panes[0].title").unwrap(),
-        "shell"
-    );
-    assert_eq!(
-        manager.eval("Toyoterm.current_pane.icon_title").unwrap(),
-        "server icon"
-    );
-    assert_eq!(
-        manager.eval("Toyoterm.current_pane.cwd").unwrap(),
-        "/srv/app"
-    );
-    assert_eq!(manager.eval("Toyoterm.current_pane.pid").unwrap(), "1234");
-    assert_eq!(
-        manager.eval("Toyoterm.current_pane.remote_host").unwrap(),
-        "alice@build.example.com"
-    );
-    assert_eq!(
-        manager
-            .eval("Toyoterm.current_pane.shell_integration_version")
-            .unwrap(),
-        "12"
-    );
-    assert_eq!(
-        manager
-            .eval("Toyoterm.current_pane.shell_integration_shell")
-            .unwrap(),
-        "fish"
-    );
-    assert_eq!(
-        manager.eval("Toyoterm.current_pane.user_vars").unwrap(),
-        r#"{"gitBranch" => "main"}"#
-    );
-    manager
-        .eval("Toyoterm.current_pane.user_vars['gitBranch'] = 'changed'")
-        .unwrap();
-    assert_eq!(
-        manager
-            .eval("Toyoterm.current_pane.user_vars['gitBranch']")
-            .unwrap(),
-        "main"
-    );
-    assert_eq!(
-        manager.eval("Toyoterm.current_pane.zoomed?").unwrap(),
-        "true"
-    );
-    assert_eq!(
-        manager
-            .eval("Toyoterm.current_pane.command_running?")
-            .unwrap(),
-        "true"
-    );
-    assert_eq!(
-        manager
-            .eval("Toyoterm.current_pane.last_exit_status")
-            .unwrap(),
-        "17"
-    );
-    assert_eq!(
-        manager.eval("Toyoterm.current_pane.screen_text").unwrap(),
-        "build started\ncompiling toyoterm"
-    );
-    manager
-        .eval("Toyoterm.current_pane.screen_text << ' changed'")
-        .unwrap();
-    assert_eq!(
-        manager.eval("Toyoterm.current_pane.screen_text").unwrap(),
-        "build started\ncompiling toyoterm"
-    );
-    assert_eq!(
-        manager.eval("Toyoterm.find_workspace('missing')").unwrap(),
-        ""
-    );
-
-    manager.eval("Toyoterm.current_pane.badge = 'dev'").unwrap();
-    assert_eq!(manager.eval("Toyoterm.current_pane.badge").unwrap(), "dev");
-    assert_eq!(
-        manager.drain_commands(PaneId(40)).unwrap(),
-        vec![NativeCommand::Ui(UiCommand::SetPaneBadge {
-            pane: PaneId(40),
-            badge: Some("dev".into()),
-        })]
-    );
-    manager.eval("Toyoterm.current_pane.badge = nil").unwrap();
-    assert_eq!(
-        manager.drain_commands(PaneId(40)).unwrap(),
-        vec![NativeCommand::Ui(UiCommand::SetPaneBadge {
-            pane: PaneId(40),
-            badge: None,
-        })]
-    );
-}
-
-#[test]
-fn converts_object_model_operations_to_native_commands() {
-    let mut manager = ConfigManager::new().unwrap();
-    assert_eq!(
-        manager
-            .eval(
-                "[Toyoterm.current_pane.split(:left), \
-                      Toyoterm.current_window.new_tab, \
-                      Toyoterm.current_workspace.new_window].map(&:inspect)",
-            )
-            .unwrap(),
-        "[\"nil\", \"nil\", \"nil\"]"
-    );
-    manager
-        .eval(
-            "Toyoterm.current_pane.activate; Toyoterm.current_tab.close; \
-                 Toyoterm.current_window.close; Toyoterm.current_workspace.activate",
-        )
-        .unwrap();
-
-    assert_eq!(
-        manager
-            .drain_commands_with_context(WorkspaceId(10), WindowId(20), TabId(30), PaneId(40),)
-            .unwrap(),
-        vec![
-            NativeCommand::Mux(Command::Split {
-                pane: PaneId(40),
-                direction: SplitDirection::Left,
-            }),
-            NativeCommand::Mux(Command::NewTabIn(WindowId(20))),
-            NativeCommand::Mux(Command::CreateWindow(WorkspaceId(10))),
-            NativeCommand::Mux(Command::ActivatePane(PaneId(40))),
-            NativeCommand::Mux(Command::CloseTab(TabId(30))),
-            NativeCommand::Mux(Command::CloseWindow(WindowId(20))),
-            NativeCommand::Mux(Command::ActivateWorkspace(WorkspaceId(10))),
-        ]
-    );
-}
-
-#[test]
-fn opens_a_named_workspace_through_a_native_command() {
-    let mut manager = ConfigManager::new().unwrap();
-    assert_eq!(
-        manager.eval("Toyoterm.open_workspace(:backend)").unwrap(),
-        ""
-    );
-    assert_eq!(
-        manager.drain_commands(PaneId(40)).unwrap(),
-        vec![NativeCommand::Mux(Command::SwitchWorkspace(
-            "backend".into()
-        ))]
-    );
-
-    for (source, message) in [
-        (
-            "Toyoterm.open_workspace('')",
-            "workspace name cannot be empty",
-        ),
-        (
-            "Toyoterm.open_workspace(\"bad\\0name\")",
-            "workspace name contains a NUL byte",
-        ),
-    ] {
-        let error = manager.eval(source).unwrap_err();
-        assert!(error.message().contains(message), "{error}");
-    }
-    assert!(manager.drain_commands(PaneId(40)).unwrap().is_empty());
-}
-
-#[test]
-fn queues_builtin_actions_from_ruby_callbacks() {
-    let mut manager = ConfigManager::new().unwrap();
-    manager
-        .eval(
-            r#"
-            Toyoterm.action(:toggle_fullscreen)
-            Toyoterm.action(:search)
-            Toyoterm.action(:yank_selection)
-            Toyoterm.action(:split, :down)
-            Toyoterm.action(:activate_pane, :left)
-            Toyoterm.action(:move_visual_selection, :line_end)
-            "#,
-        )
-        .unwrap();
-
-    assert_eq!(
-        manager.drain_commands(PaneId(40)).unwrap(),
-        vec![
-            invoked_action(NativeAction::ToggleFullscreen, PaneId(40)),
-            invoked_action(NativeAction::Search, PaneId(40)),
-            invoked_action(NativeAction::YankSelection, PaneId(40)),
-            invoked_action(NativeAction::Split(SplitDirection::Down), PaneId(40)),
-            invoked_action(NativeAction::ActivatePane(SplitDirection::Left), PaneId(40)),
-            invoked_action(
-                NativeAction::MoveVisualSelection(toyoterm_api::SelectionMotion::LineEnd,),
-                PaneId(40)
-            ),
-        ]
-    );
-}
-
-#[test]
-fn validates_and_rolls_back_builtin_actions() {
-    let mut manager = ConfigManager::new().unwrap();
-    for (source, message) in [
-        ("Toyoterm.action('')", "action name cannot be empty"),
-        (
-            "Toyoterm.action(:toggle_fullscreen, :extra)",
-            "does not accept an argument",
-        ),
-        (
-            "Toyoterm.action(:split)",
-            "action split requires left, right, up, or down",
-        ),
-        (
-            "Toyoterm.action(:move_visual_selection, :page_down)",
-            "move_visual_selection requires",
-        ),
-        (
-            "Toyoterm.action(:user_command, :recursive)",
-            "unsupported action: user_command",
-        ),
-    ] {
-        let error = manager.eval(source).unwrap_err();
-        assert!(error.message().contains(message), "{error}");
-    }
-    assert!(manager.drain_commands(PaneId(40)).unwrap().is_empty());
-
-    manager
-        .reload(
-            r#"
-            Toyoterm.configure do |config|
-              config.keys.key("CTRL+A").run do
-                Toyoterm.action(:toggle_fullscreen)
-                raise "cancel action"
-              end
-            end
-            "#,
-        )
-        .unwrap();
-    let error = manager
-        .trigger_keybinding("CTRL+A", PaneId(40))
-        .unwrap_err();
-    assert!(error.message().contains("cancel action"));
-    assert!(manager.drain_commands(PaneId(40)).unwrap().is_empty());
-}
-
-#[test]
-fn converts_custom_pane_launches_to_native_commands() {
-    let mut manager = ConfigManager::new().unwrap();
-    manager
-        .eval(
-            r#"
-            Toyoterm.current_pane.split(
-              :right,
-              command: ["ssh", "devbox"],
-              cwd: "/srv/app",
-              env: { "MODE" => "dev", "OLD_TOKEN" => nil }
-            )
-            Toyoterm.current_window.new_tab(command: "btop")
-            Toyoterm.current_window.new_tab(cwd: "/tmp")
-            Toyoterm.current_workspace.new_window(
-              command: ["tail", "-f", "app.log"],
-              env: { "LC_ALL" => "C" }
-            )
-            "#,
-        )
-        .unwrap();
-
-    assert_eq!(
-        manager
-            .drain_commands_with_context(WorkspaceId(10), WindowId(20), TabId(30), PaneId(40))
-            .unwrap(),
-        vec![
-            NativeCommand::Pane(PaneCommand::SplitWithLaunch {
-                pane: PaneId(40),
-                direction: SplitDirection::Right,
-                launch: PaneLaunchSpec {
-                    program: Some("ssh".into()),
-                    args: vec!["devbox".into()],
-                    cwd: Some("/srv/app".into()),
-                    environment: vec![
-                        ("MODE".into(), Some("dev".into())),
-                        ("OLD_TOKEN".into(), None),
-                    ],
-                },
-            }),
-            NativeCommand::Window(WindowCommand::NewTabWithLaunch {
-                window: WindowId(20),
-                launch: PaneLaunchSpec {
-                    program: Some("btop".into()),
-                    args: Vec::new(),
-                    cwd: None,
-                    environment: Vec::new(),
-                },
-            }),
-            NativeCommand::Window(WindowCommand::NewTabWithLaunch {
-                window: WindowId(20),
-                launch: PaneLaunchSpec {
-                    program: None,
-                    args: Vec::new(),
-                    cwd: Some("/tmp".into()),
-                    environment: Vec::new(),
-                },
-            }),
-            NativeCommand::Window(WindowCommand::CreateWithLaunch {
-                workspace: WorkspaceId(10),
-                launch: PaneLaunchSpec {
-                    program: Some("tail".into()),
-                    args: vec!["-f".into(), "app.log".into()],
-                    cwd: None,
-                    environment: vec![("LC_ALL".into(), Some("C".into()))],
-                },
-            }),
-        ]
-    );
-}
-
-#[test]
-fn validates_custom_pane_launch_options() {
-    let mut manager = ConfigManager::new().unwrap();
-    for (source, message) in [
-        (
-            "Toyoterm.current_pane.split(:right, command: [])",
-            "command array cannot be empty",
-        ),
-        (
-            "Toyoterm.current_pane.split(1)",
-            "split direction must be a String or Symbol",
-        ),
-        (
-            "Toyoterm.current_pane.split(:right, command: ['sh', 1])",
-            "command array entries must be strings",
-        ),
-        (
-            "Toyoterm.current_window.new_tab(cwd: '')",
-            "cwd cannot be empty",
-        ),
-        (
-            "Toyoterm.current_window.new_tab(env: {'OK' => 1})",
-            "environment values must be strings or nil",
-        ),
-        (
-            "Toyoterm.current_window.new_tab(env: {'BAD=NAME' => 'value'})",
-            "environment name cannot contain =",
-        ),
-        (
-            "Toyoterm.current_window.new_tab(command: \"bad\\0program\")",
-            "launch value contains a NUL byte",
-        ),
-    ] {
-        let error = manager.eval(source).unwrap_err();
-        assert!(error.message().contains(message), "{error}");
-    }
-    assert!(manager.drain_commands(PaneId(1)).unwrap().is_empty());
-}
-
-#[test]
-fn converts_pane_searches_to_native_commands() {
-    let mut manager = ConfigManager::new().unwrap();
-    assert_eq!(
-        manager
-            .eval(
-                "[Toyoterm.current_pane.search('error'), \
-                  Toyoterm.current_pane.search('warning', direction: :previous)].map(&:inspect)",
-            )
-            .unwrap(),
-        "[\"#<Toyoterm::Pane:0>\", \"#<Toyoterm::Pane:0>\"]"
-    );
-
-    assert_eq!(
-        manager.drain_commands(PaneId(42)).unwrap(),
-        vec![
-            NativeCommand::Pane(PaneCommand::Search {
-                pane: PaneId(42),
-                query: "error".into(),
-                direction: PaneSearchDirection::Next,
-            }),
-            NativeCommand::Pane(PaneCommand::Search {
-                pane: PaneId(42),
-                query: "warning".into(),
-                direction: PaneSearchDirection::Previous,
-            }),
-        ]
-    );
-}
-
-#[test]
-fn validates_pane_search_options_before_queueing() {
-    let mut manager = ConfigManager::new().unwrap();
-    for (source, message) in [
-        (
-            "Toyoterm.current_pane.search('')",
-            "search query cannot be empty",
-        ),
-        (
-            "Toyoterm.current_pane.search(\"bad\\0query\")",
-            "search query contains a NUL byte",
-        ),
-        (
-            "Toyoterm.current_pane.search('error', direction: :sideways)",
-            "search direction must be next or previous",
-        ),
-    ] {
-        let error = manager.eval(source).unwrap_err();
-        assert!(error.message().contains(message), "{error}");
-    }
-    assert!(manager.drain_commands(PaneId(1)).unwrap().is_empty());
-}
-
-#[test]
-fn ruby_native_handles_are_typed_id_values() {
-    let mut manager = ConfigManager::new().unwrap();
-    manager.set_current_pane(PaneId(42)).unwrap();
-
-    assert_eq!(
-        manager
-            .eval("Toyoterm.current_pane.class.superclass")
-            .unwrap(),
-        "Toyoterm::NativeHandle"
-    );
-    assert_eq!(manager.eval("Toyoterm.current_pane.id").unwrap(), "42");
-    assert_eq!(
-        manager.eval("Toyoterm.current_pane.inspect").unwrap(),
-        "#<Toyoterm::Pane:42>"
-    );
-    assert_eq!(
-        manager
-            .eval("Toyoterm::Pane.new(7) == Toyoterm::Pane.new(7)")
-            .unwrap(),
-        "true"
-    );
-    assert_eq!(
-        manager
-            .eval("Toyoterm::Pane.new(7) == Toyoterm::Tab.new(7)")
-            .unwrap(),
-        "false"
-    );
-
-    let error = manager.eval("Toyoterm::Pane.new(-1)").unwrap_err();
-    assert!(error.message().contains("non-negative integer"));
-}
-
-#[test]
-fn deleted_ruby_handles_raise_a_typed_exception() {
-    let mut manager = ConfigManager::new().unwrap();
-    manager
-        .set_live_handles([
-            NativeHandle::new(HandleKind::Workspace, 1),
-            NativeHandle::new(HandleKind::Pane, 7),
-        ])
-        .unwrap();
-    manager.set_current_pane(PaneId(7)).unwrap();
-    manager.eval("$saved_pane = Toyoterm.current_pane").unwrap();
-    assert_eq!(manager.eval("$saved_pane.valid?").unwrap(), "true");
-
-    manager
-        .set_live_handles([NativeHandle::new(HandleKind::Workspace, 1)])
-        .unwrap();
-    assert_eq!(manager.eval("$saved_pane.valid?").unwrap(), "false");
-    let error = manager.eval("$saved_pane.send_text('stale')").unwrap_err();
-    assert!(error.message().contains("Toyoterm::InvalidHandleError"));
-    assert!(error.message().contains("invalid pane handle 7"));
-    assert!(manager.drain_commands(PaneId(9)).unwrap().is_empty());
-}
-
-#[test]
-fn exposes_clipboard_read_and_write_to_ruby() {
-    let mut manager = ConfigManager::new().unwrap();
-    manager
-        .set_clipboard_text(Some("こんにちは\nclipboard"))
-        .unwrap();
-
-    assert_eq!(
-        manager.eval("Toyoterm.clipboard.read").unwrap(),
-        "こんにちは\nclipboard"
-    );
-    manager
-        .eval(r#"Toyoterm.clipboard.write("copied from Ruby")"#)
-        .unwrap();
-    assert_eq!(
-        manager.drain_commands(PaneId(42)).unwrap(),
-        vec![NativeCommand::Clipboard(ClipboardCommand::Write(
-            "copied from Ruby".into()
-        ))]
-    );
-}
-
-#[test]
-fn exposes_environment_as_an_isolated_string_hash() {
-    let mut manager = ConfigManager::new().unwrap();
-    assert_eq!(
-        manager
-            .eval("Toyoterm.env.is_a?(Hash) && Toyoterm.env.keys.all? { |key| key.is_a?(String) }")
-            .unwrap(),
-        "true"
-    );
-    assert_eq!(
-            manager
-                .eval("copy = Toyoterm.env; copy['TOYOTERM_TEST_ONLY'] = 'changed'; Toyoterm.env['TOYOTERM_TEST_ONLY'].nil?")
-                .unwrap(),
-            "true"
-        );
-}
-
-#[test]
-fn exposes_standard_file_io_and_path_helpers() {
-    let directory = temporary_test_directory("ruby-file");
-    let file = directory.join("sample.data.rb");
-    let directory_literal = ruby_string_literal(directory.to_str().unwrap());
-    let file_literal = ruby_string_literal(file.to_str().unwrap());
-    let mut manager = ConfigManager::new().unwrap();
-
-    assert_eq!(
-        manager
-            .eval(&format!(
-                r#"path = {file_literal}; written = File.write(path, "hello"); [written, File.read(path), File.exist?(path), File.file?(path), File.directory?({directory_literal}), File.size(path), File.basename(path), File.extname(path), File.basename(File.dirname(path)), File.basename(File.join({directory_literal}, "nested", "child.rb"))].join("|")"#
-            ))
-            .unwrap(),
-        format!(
-            "5|hello|true|true|true|5|sample.data.rb|.rb|{}|child.rb",
-            directory.file_name().unwrap().to_str().unwrap()
-        )
-    );
-    assert_eq!(
-        manager
-            .eval(&format!("File.mtime({file_literal}).is_a?(Time)"))
-            .unwrap(),
-        "true"
-    );
-    std::fs::remove_dir_all(directory).unwrap();
-}
-
-#[test]
-fn file_read_preserves_arbitrary_bytes_and_block_open_closes_descriptors() {
-    let directory = temporary_test_directory("ruby-file-descriptor");
-    let file = directory.join("bytes.bin");
-    std::fs::write(&file, b"left\0\xffright").unwrap();
-    let file_literal = ruby_string_literal(file.to_str().unwrap());
-    let mut manager = ConfigManager::new().unwrap();
-
-    assert_eq!(
-        manager
-            .eval(&format!("File.read({file_literal}).bytes.join(',')"))
-            .unwrap(),
-        "108,101,102,116,0,255,114,105,103,104,116"
-    );
-    assert_eq!(
-        manager
-            .eval(&format!(
-                "1000.times {{ File.open({file_literal}) {{ |file| file.read }} }}; File.delete({file_literal}); File.exist?({file_literal})"
-            ))
-            .unwrap(),
-        "false"
-    );
-
-    std::fs::remove_dir_all(directory).unwrap();
-}
-
-#[test]
-fn exposes_standard_directory_listing_and_globbing() {
-    let directory = temporary_test_directory("ruby-dir");
-    let nested = directory.join("nested");
-    std::fs::create_dir(&nested).unwrap();
-    std::fs::write(directory.join("top.rb"), b"top").unwrap();
-    std::fs::write(directory.join("top.txt"), b"top").unwrap();
-    std::fs::write(nested.join("child.rb"), b"child").unwrap();
-    let directory_literal = ruby_string_literal(directory.to_str().unwrap());
-    let nested_literal = ruby_string_literal(nested.to_str().unwrap());
-    let mut manager = ConfigManager::new().unwrap();
-
-    assert_eq!(
-        manager
-            .eval(&format!(
-                r#"root = {directory_literal}; entries = Dir.entries(root); children = Dir.children(root); direct = Dir.glob(File.join(root, "*.rb")).map {{ |path| File.basename(path) }}; recursive = Dir.glob(File.join(root, "**", "*.rb")).map {{ |path| File.basename(path) }}; [entries.include?("."), entries.include?(".."), children.include?("."), direct.sort.join(","), recursive.sort.join(","), Dir.pwd.empty?].join("|")"#
-            ))
-            .unwrap(),
-        "true|true|false|top.rb|child.rb,top.rb|false"
-    );
-    assert_eq!(
-        manager
-            .eval(&format!(
-                "path = File.join({nested_literal}, 'created'); Dir.mkdir(path); result = File.directory?(path); Dir.rmdir(path); result"
-            ))
-            .unwrap(),
-        "true"
-    );
-
-    std::fs::remove_dir_all(directory).unwrap();
-}
-
-#[cfg(unix)]
-#[test]
-fn spawn_captures_stdout_stderr_and_nonzero_status() {
-    let mut manager = ConfigManager::new().unwrap();
-    assert_eq!(
-            manager
-                .eval(
-                    r#"result = Toyoterm.spawn("/bin/sh", "-c", "printf out; printf err >&2; exit 7"); [result.stdout, result.stderr, result.exit_status, result.success?].join('|')"#,
-                )
-                .unwrap(),
-            "out|err|7|false"
-        );
-    let error = manager
-        .eval(r#"Toyoterm.spawn("/definitely/missing/toyoterm-program")"#)
-        .unwrap_err();
-    assert!(error.message().contains("spawn"));
-}
-
-#[cfg(unix)]
-#[test]
-fn spawn_uses_requested_working_directory() {
-    let unique = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap()
-        .as_nanos();
-    let directory = std::env::temp_dir().join(format!(
-        "toyoterm-ruby-spawn-{}-{unique}",
-        std::process::id()
-    ));
-    std::fs::create_dir(&directory).unwrap();
-    std::fs::write(directory.join("marker.txt"), b"requested cwd").unwrap();
-    let literal = ruby_string_literal(directory.to_str().unwrap());
-    let mut manager = ConfigManager::new().unwrap();
-    assert_eq!(
-        manager
-            .eval(&format!(
-                r#"Toyoterm.spawn("/bin/sh", "-c", "cat marker.txt", cwd: {literal}).stdout"#
-            ))
-            .unwrap(),
-        "requested cwd"
-    );
-    std::fs::remove_dir_all(directory).unwrap();
-}
-
-#[cfg(windows)]
-#[test]
-fn spawn_captures_stdout_stderr_and_nonzero_status() {
-    let mut manager = ConfigManager::new().unwrap();
-    assert_eq!(
-            manager
-                .eval(
-                    r#"result = Toyoterm.spawn("cmd", "/C", "<nul set /p=out&1>&2 <nul set /p=err&exit /b 7"); [result.stdout, result.stderr, result.exit_status, result.success?].join('|')"#,
-                )
-                .unwrap(),
-            "out|err|7|false"
-        );
-}
-
-#[cfg(windows)]
-#[test]
-fn spawn_uses_requested_working_directory() {
-    let unique = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap()
-        .as_nanos();
-    let directory = std::env::temp_dir().join(format!(
-        "toyoterm-ruby-spawn-{}-{unique}",
-        std::process::id()
-    ));
-    std::fs::create_dir(&directory).unwrap();
-    std::fs::write(directory.join("marker.txt"), b"requested cwd").unwrap();
-    let literal = ruby_string_literal(directory.to_str().unwrap());
-    let mut manager = ConfigManager::new().unwrap();
-    assert_eq!(
-        manager
-            .eval(&format!(
-                r#"Toyoterm.spawn("cmd", "/C", "type marker.txt", cwd: {literal}).stdout"#
-            ))
-            .unwrap(),
-        "requested cwd"
-    );
-    std::fs::remove_dir_all(directory).unwrap();
-}
-
-#[cfg(windows)]
-#[test]
-fn spawn_normalizes_windows_working_directory_with_leading_slash() {
-    let unique = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap()
-        .as_nanos();
-    let directory = std::env::temp_dir().join(format!(
-        "toyoterm-ruby-spawn-slash-{}-{unique}",
-        std::process::id()
-    ));
-    std::fs::create_dir(&directory).unwrap();
-    std::fs::write(directory.join("marker.txt"), b"normalized leading slash").unwrap();
-    let slash_path = format!("/{}", directory.to_str().unwrap().replace('\\', "/"));
-    let literal = ruby_string_literal(&slash_path);
-    let mut manager = ConfigManager::new().unwrap();
-    assert_eq!(
-        manager
-            .eval(&format!(
-                r#"Toyoterm.spawn("cmd", "/C", "type marker.txt", cwd: {literal}).stdout"#
-            ))
-            .unwrap(),
-        "normalized leading slash"
-    );
-    std::fs::remove_dir_all(directory).unwrap();
-}
-
-#[test]
-fn spawn_rejects_invalid_working_directories_before_launch() {
-    let mut manager = ConfigManager::new().unwrap();
-    let empty = manager
-        .eval(r#"Toyoterm.spawn("unused", cwd: "")"#)
-        .unwrap_err();
-    assert!(empty.message().contains("cwd cannot be empty"));
-    let nul = manager
-        .eval(r#"Toyoterm.spawn("unused", cwd: "bad\0cwd")"#)
-        .unwrap_err();
-    assert!(nul.message().contains("cwd contains a NUL byte"));
-}
-
-#[test]
-fn clipboard_text_cannot_interpolate_ruby_source() {
-    let mut manager = ConfigManager::new().unwrap();
-    let text = r#"#{raise "clipboard interpolation ran"}"#;
-
-    manager.set_clipboard_text(Some(text)).unwrap();
-
-    assert_eq!(manager.eval("Toyoterm.clipboard.read").unwrap(), text);
-}
-
-#[test]
-fn typed_clipboard_transfer_preserves_embedded_nul_bytes() {
-    let mut manager = ConfigManager::new().unwrap();
-    manager.set_clipboard_text(Some("left\0right")).unwrap();
-
-    assert_eq!(
-        manager
-            .eval("Toyoterm.clipboard.read.bytes.join(',')")
-            .unwrap(),
-        "108,101,102,116,0,114,105,103,104,116"
-    );
-}
-
-#[test]
-fn typed_mruby_calls_preserve_ruby_exceptions() {
-    let mut manager = ConfigManager::new().unwrap();
-    manager
-        .eval("def Toyoterm.__set_current_pane(id); raise ArgumentError, \"bad pane #{id}\"; end")
-        .unwrap();
-    let baseline_arena = manager.runtime.gc_stats().arena_index;
-
-    let error = manager.set_current_pane(PaneId(23)).unwrap_err();
-    assert_eq!(error.operation(), "set current pane");
-    assert!(error.message().contains("bad pane 23"));
-    assert_eq!(manager.runtime.gc_stats().arena_index, baseline_arena);
-}
-
-#[test]
-fn reports_an_unavailable_clipboard_to_ruby() {
-    let mut manager = ConfigManager::new().unwrap();
-    let error = manager.eval("Toyoterm.clipboard.read").unwrap_err();
-    assert!(error.message().contains("clipboard is unavailable"));
-}
-
-#[test]
-fn ruby_callback_errors_roll_back_clipboard_writes() {
-    let mut manager = ConfigManager::new().unwrap();
-    manager
-        .reload(
-            r#"
-                Toyoterm.configure do |config|
-                  config.keys.key("CTRL+C").run do
-                    Toyoterm.clipboard.write("must not be copied")
-                    raise "broken clipboard callback"
-                  end
-                end
-                "#,
-        )
-        .unwrap();
-
-    let error = manager.trigger_keybinding("CTRL+C", PaneId(4)).unwrap_err();
-    assert!(error.message().contains("broken clipboard callback"));
-    assert!(manager.drain_commands(PaneId(4)).unwrap().is_empty());
-}
-
-#[test]
-fn ruby_callback_errors_roll_back_pane_badges() {
-    let mut manager = ConfigManager::new().unwrap();
-    manager
-        .reload(
-            r#"
-                Toyoterm.configure do |config|
-                  config.keys.key("CTRL+B").run do |context|
-                    context.pane.badge = "must not persist"
-                    raise "broken badge callback"
-                  end
-                end
-                "#,
-        )
-        .unwrap();
-
-    let error = manager.trigger_keybinding("CTRL+B", PaneId(4)).unwrap_err();
-    assert!(error.message().contains("broken badge callback"));
-    assert!(manager.drain_commands(PaneId(4)).unwrap().is_empty());
-    assert_eq!(manager.eval("Toyoterm.current_pane.badge").unwrap(), "");
-}
-
-#[test]
-fn resolves_startup_commands_to_the_current_native_pane() {
-    let mut manager = ConfigManager::new().unwrap();
-    manager
-        .reload(r#"Toyoterm.current_pane.send_text("pwd\n")"#)
-        .unwrap();
-
-    assert_eq!(
-        manager.drain_commands(PaneId(7)).unwrap(),
-        vec![NativeCommand::Mux(Command::SendText {
-            pane: PaneId(7),
-            text: "pwd\n".into(),
-        })]
-    );
-}
-
-#[test]
-fn invokes_only_matching_dynamic_keybindings() {
-    let mut manager = ConfigManager::new().unwrap();
-    manager
-        .reload(
-            r#"
-                $callback_count = 0
-                Toyoterm.configure do |config|
-                  config.keys.key("CTRL+SHIFT+H").run do |ctx|
-                    $callback_count += 1
-                    ctx.pane.send_text("echo from ruby\n")
-                  end
-                end
-                "#,
-        )
-        .unwrap();
-
-    assert!(!manager.trigger_keybinding("A", PaneId(9)).unwrap());
-    assert_eq!(manager.eval("$callback_count").unwrap(), "0");
-    assert!(
-        manager
-            .trigger_keybinding("ctrl+shift+h", PaneId(9))
-            .unwrap()
-    );
-    assert_eq!(manager.eval("$callback_count").unwrap(), "1");
-    assert_eq!(
-        manager.drain_commands(PaneId(9)).unwrap(),
-        vec![NativeCommand::Mux(Command::SendText {
-            pane: PaneId(9),
-            text: "echo from ruby\n".into(),
-        })]
-    );
-}
-
-#[test]
-fn compiles_static_key_dsl_to_native_actions() {
-    let mut manager = ConfigManager::new().unwrap();
-    manager
-        .reload(
-            r#"
-                Toyoterm.configure do |config|
-                  config.keys do
-                    ctrl_shift("v").split(:right)
-                    ctrl_shift("j").activate_pane(:down)
-                    ctrl("t").new_tab
-                    alt("q").close_pane
-                    alt("F10").toggle_maximize
-                    alt("F9").minimize_window
-                    ctrl("F11").toggle_fullscreen
-                    primary("p").close_pane
-                    primary_shift("o").reload_config
-                    ctrl_shift("r").reload_config
-                    physical("KeyH", "CTRL").activate_pane(:left)
-                    key("v").toggle_visual_mode
-                    key("ESCAPE").end_visual_selection
-                    key("h").move_visual_selection(:left)
-                    key("w").move_visual_selection(:word_forward)
-                    key("b").move_visual_selection(:word_backward)
-                    key("0").move_visual_selection(:line_start)
-                    key("$").move_visual_selection(:line_end)
-                    key("y").yank_selection
-                  end
-                end
-                "#,
-        )
-        .unwrap();
-
-    assert_eq!(
-        manager.native_action("CTRL+SHIFT+V"),
-        Some(NativeAction::Split(SplitDirection::Right))
-    );
-    assert_eq!(
-        manager.native_action("CTRL+SHIFT+J"),
-        Some(NativeAction::ActivatePane(SplitDirection::Down))
-    );
-    assert_eq!(
-        manager.native_action("CTRL+PHYSICAL:KEYH"),
-        Some(NativeAction::ActivatePane(SplitDirection::Left))
-    );
-    assert_eq!(
-        manager.native_action("V"),
-        Some(NativeAction::ToggleVisualMode)
-    );
-    assert_eq!(
-        manager.native_action("ESCAPE"),
-        Some(NativeAction::EndVisualSelection)
-    );
-    assert_eq!(
-        manager.native_action("H"),
-        Some(NativeAction::MoveVisualSelection(
-            toyoterm_api::SelectionMotion::Left
-        ))
-    );
-    assert_eq!(
-        manager.native_action("W"),
-        Some(NativeAction::MoveVisualSelection(
-            toyoterm_api::SelectionMotion::WordForward
-        ))
-    );
-    assert_eq!(
-        manager.native_action("B"),
-        Some(NativeAction::MoveVisualSelection(
-            toyoterm_api::SelectionMotion::WordBackward
-        ))
-    );
-    assert_eq!(
-        manager.native_action("0"),
-        Some(NativeAction::MoveVisualSelection(
-            toyoterm_api::SelectionMotion::LineStart
-        ))
-    );
-    assert_eq!(
-        manager.native_action("$"),
-        Some(NativeAction::MoveVisualSelection(
-            toyoterm_api::SelectionMotion::LineEnd
-        ))
-    );
-    assert_eq!(
-        manager.native_action("Y"),
-        Some(NativeAction::YankSelection)
-    );
-    assert_eq!(manager.native_action("CTRL+T"), Some(NativeAction::NewTab));
-    assert_eq!(
-        manager.native_action("ALT+F10"),
-        Some(NativeAction::ToggleMaximize)
-    );
-    assert_eq!(
-        manager.native_action("ALT+F9"),
-        Some(NativeAction::MinimizeWindow)
-    );
-    assert_eq!(
-        manager.native_action("CTRL+F11"),
-        Some(NativeAction::ToggleFullscreen)
-    );
-    assert_eq!(
-        manager.native_action("ALT+Q"),
-        Some(NativeAction::ClosePane)
-    );
-    assert_eq!(
-        manager.native_action("CTRL+SHIFT+R"),
-        Some(NativeAction::ReloadConfig)
-    );
-    assert_eq!(
-        manager.native_action(&format!("{}+P", platform_primary_modifier())),
-        Some(NativeAction::ClosePane)
-    );
-    assert_eq!(
-        manager.native_action(if cfg!(target_os = "macos") {
-            "SHIFT+SUPER+O"
-        } else {
-            "CTRL+SHIFT+O"
-        }),
-        Some(NativeAction::ReloadConfig)
-    );
-}
-
-#[test]
-fn loads_leader_configuration_and_compiles_leader_actions() {
-    let mut manager = ConfigManager::new().unwrap();
-    let config = manager
-        .reload(
-            r#"
-                Toyoterm.configure do |config|
-                  config.leader key: "b", mods: "CTRL", timeout: 750
-                  config.keys do
-                    leader("v").split(:right)
-                    leader("t").new_tab
-                  end
-                end
-                "#,
-        )
-        .unwrap();
-
-    assert_eq!(
-        config.leader,
-        Some(LeaderConfig {
-            key: "CTRL+B".into(),
-            timeout_ms: 750,
-        })
-    );
-    assert_eq!(
-        manager.native_action("LEADER+V"),
-        Some(NativeAction::Split(SplitDirection::Right))
-    );
-    assert_eq!(
-        manager.native_action("LEADER+T"),
-        Some(NativeAction::NewTab)
-    );
-}
-
-#[test]
-fn rejects_invalid_leader_timeout() {
-    let mut manager = ConfigManager::new().unwrap();
-    let error = manager
-        .reload("Toyoterm.configure { |config| config.leader key: 'b', timeout: 0 }")
-        .unwrap_err();
-    assert!(error.message().contains("leader timeout must be positive"));
-}
-
-#[test]
-fn rejects_duplicate_static_and_dynamic_bindings() {
-    let mut manager = ConfigManager::new().unwrap();
-    let error = manager
-        .reload(
-            r#"
-                Toyoterm.configure do |config|
-                  config.keys { ctrl("x").new_tab }
-                  config.keys.key("CTRL+X").run { }
-                end
-                "#,
-        )
-        .unwrap_err();
-    assert!(error.message().contains("duplicate key binding"));
-}
-
-#[test]
-fn ruby_keybinding_errors_leave_the_runtime_usable() {
-    let mut manager = ConfigManager::new().unwrap();
-    manager
-        .reload(
-            r#"
-                Toyoterm.configure do |config|
-                  config.keys.key("CTRL+E").run do |ctx|
-                    ctx.pane.send_text("must not run\n")
-                    raise "broken callback"
-                  end
-                end
-                "#,
-        )
-        .unwrap();
-
-    let error = manager.trigger_keybinding("CTRL+E", PaneId(4)).unwrap_err();
-    assert_eq!(error.operation(), "evaluate mruby");
-    assert!(error.message().contains("broken callback"));
-    assert_eq!(manager.eval("6 * 7").unwrap(), "42");
-    assert!(manager.drain_commands(PaneId(4)).unwrap().is_empty());
-}
-
-#[test]
-fn exposes_reload_requests_from_ruby_keybindings() {
-    let mut manager = ConfigManager::new().unwrap();
-    manager
-        .reload(
-            r#"
-                Toyoterm.configure do |config|
-                  config.keys.key("CTRL+SHIFT+R").run { Toyoterm.reload_config }
-                end
-                "#,
-        )
-        .unwrap();
-
-    assert!(
-        manager
-            .trigger_keybinding("CTRL+SHIFT+R", PaneId(4))
-            .unwrap()
-    );
-    assert_eq!(
-        manager.drain_commands(PaneId(4)).unwrap(),
-        vec![NativeCommand::Config(ConfigCommand::Reload)]
-    );
-    assert!(manager.drain_commands(PaneId(4)).unwrap().is_empty());
-}
-
-#[test]
-fn emits_registered_events_with_the_current_pane() {
-    let mut manager = ConfigManager::new().unwrap();
-    manager
-        .reload(
-            r#"
-                $event_count = 0
-                Toyoterm.on :app_started do |event|
-                  $event_count += 1
-                  $event_name = event.name
-                  $event_pane = event.pane.id
-                  event.pane.send_text("echo app started\n")
-                end
-                "#,
-        )
-        .unwrap();
-
-    assert!(
-        !manager
-            .emit_event(ScriptEventKind::ConfigReloaded, PaneId(12))
-            .unwrap()
-    );
-    assert_eq!(manager.eval("$event_count").unwrap(), "0");
-    assert!(
-        manager
-            .emit_event(ScriptEventKind::AppStarted, PaneId(12))
-            .unwrap()
-    );
-    assert_eq!(manager.eval("$event_count").unwrap(), "1");
-    assert_eq!(manager.eval("$event_name").unwrap(), "app_started");
-    assert_eq!(manager.eval("$event_pane").unwrap(), "12");
-    assert_eq!(
-        manager.drain_commands(PaneId(12)).unwrap(),
-        vec![NativeCommand::Mux(Command::SendText {
-            pane: PaneId(12),
-            text: "echo app started\n".into(),
-        })]
-    );
-}
-
-#[test]
-fn emits_typed_native_event_payloads() {
-    let mut manager = ConfigManager::new().unwrap();
-    manager
-        .reload(
-            r#"
-                Toyoterm.on :title_changed do |event|
-                  $native_event = [
-                    event.name, event.workspace.id, event.window.id,
-                    event.tab.id, event.pane.id, event.title, event.cwd,
-                    event.exit_status
-                  ]
-                end
-                "#,
-        )
-        .unwrap();
-    let event = RubyEvent {
-        kind: ScriptEventKind::TitleChanged,
-        workspace: Some(WorkspaceId(1)),
-        window: Some(WindowId(2)),
-        tab: Some(TabId(3)),
-        pane: Some(PaneId(4)),
-        title: Some("server \"one\"".into()),
-        cwd: Some("/srv/日本語".into()),
-        exit_status: Some(17),
-        width: None,
-        height: None,
-        columns: None,
-        rows: None,
-    };
-
-    assert!(manager.emit_native_event(&event).unwrap());
-    assert_eq!(
-        manager.eval("$native_event[0, 5].inspect").unwrap(),
-        "[:title_changed, 1, 2, 3, 4]"
-    );
-    assert_eq!(manager.eval("$native_event[5]").unwrap(), "server \"one\"");
-    assert_eq!(manager.eval("$native_event[6]").unwrap(), "/srv/日本語");
-    assert_eq!(manager.eval("$native_event[7]").unwrap(), "17");
-}
-
-#[test]
-fn emits_window_resized_event_payload() {
-    let mut manager = ConfigManager::new().unwrap();
-    manager
-        .reload(
-            r#"
-                Toyoterm.on :window_resized do |event|
-                  $window_resize_event = [
-                    event.name, event.window.id,
-                    event.width, event.height,
-                    event.columns, event.rows,
-                    event.subject.id
-                  ]
-                end
-                "#,
-        )
-        .unwrap();
-    let mut event = RubyEvent::new(ScriptEventKind::WindowResized);
-    event.window = Some(WindowId(42));
-    event.width = Some(1280);
-    event.height = Some(720);
-    event.columns = Some(160);
-    event.rows = Some(45);
-
-    assert!(manager.emit_native_event(&event).unwrap());
-    assert_eq!(
-        manager.eval("$window_resize_event.inspect").unwrap(),
-        "[:window_resized, 42, 1280, 720, 160, 45, 42]"
-    );
-}
-
-#[test]
-fn unregistered_native_events_do_not_call_the_ruby_vm() {
-    let mut manager = ConfigManager::new().unwrap();
-    manager
-        .eval("def Toyoterm.__emit_native_event(*args); raise 'VM must not be called'; end")
-        .unwrap();
-
-    assert!(
-        !manager
-            .emit_native_event(&RubyEvent::new(ScriptEventKind::PaneCreated))
-            .unwrap()
-    );
-}
-
-#[test]
-fn ruby_event_errors_are_isolated_per_handler() {
-    let mut manager = ConfigManager::new().unwrap();
-    manager
-        .reload(
-            r#"
-                Toyoterm.on :config_reloaded do |event|
-                  event.pane.send_text("must not run\n")
-                  Toyoterm.log(:info, "must not survive")
-                  raise "broken event"
-                end
-                Toyoterm.on :config_reloaded do |event|
-                  event.pane.send_text("later handler ran\n")
-                end
-                "#,
-        )
-        .unwrap();
-
-    assert!(
-        manager
-            .emit_event(ScriptEventKind::ConfigReloaded, PaneId(3))
-            .unwrap()
-    );
-    assert_eq!(
-        manager.drain_commands(PaneId(3)).unwrap(),
-        vec![NativeCommand::Mux(Command::SendText {
-            pane: PaneId(3),
-            text: "later handler ran\n".into(),
-        })]
-    );
-    assert_eq!(
-        manager.drain_logs().unwrap(),
-        vec![ScriptLog {
-            level: "error".into(),
-            message: "event handler config_reloaded failed: broken event".into(),
-        }]
-    );
-    assert_eq!(manager.eval("21 * 2").unwrap(), "42");
-}
-
-#[test]
-fn user_commands_are_listed_and_dispatch_native_commands() {
-    let mut manager = ConfigManager::new().unwrap();
-    manager
-        .reload(
-            r#"
-            Toyoterm.command :git_status do |ctx|
-              ctx.pane.send_text("git status\n")
-            end
-            Toyoterm.configure do |config|
-              config.keys { leader("g").command(:git_status) }
-            end
-        "#,
-        )
-        .unwrap();
-
-    assert_eq!(
-        manager.user_command_names().collect::<Vec<_>>(),
-        vec!["git_status"]
-    );
-    assert_eq!(
-        manager.native_action("LEADER+G"),
-        Some(NativeAction::UserCommand("git_status".into()))
-    );
-    assert!(
-        manager
-            .trigger_user_command("git_status", PaneId(8))
-            .unwrap()
-    );
-    assert_eq!(
-        manager.drain_commands(PaneId(8)).unwrap(),
-        vec![NativeCommand::Mux(Command::SendText {
-            pane: PaneId(8),
-            text: "git status\n".into()
-        })]
-    );
-}
-
-#[test]
-fn user_command_validation_and_callback_failures_are_isolated() {
-    let mut manager = ConfigManager::new().unwrap();
-    let duplicate = manager
-        .reload(
-            r#"
-            Toyoterm.command(:same) {}
-            Toyoterm.command(:same) {}
-        "#,
-        )
-        .unwrap_err();
-    assert!(duplicate.message().contains("duplicate user command"));
-
-    manager
-        .reload(
-            r#"
-            Toyoterm.command :broken do |ctx|
-              ctx.pane.send_text("must not run\n")
-              raise "broken command"
-            end
-        "#,
-        )
-        .unwrap();
-    let undefined = manager
-        .trigger_user_command("missing", PaneId(2))
-        .unwrap_err();
-    assert!(undefined.message().contains("undefined user command"));
-    let broken = manager
-        .trigger_user_command("broken", PaneId(2))
-        .unwrap_err();
-    assert!(broken.message().contains("broken command"));
-    assert!(manager.drain_commands(PaneId(2)).unwrap().is_empty());
-    assert_eq!(manager.eval("6 * 7").unwrap(), "42");
-}
-
-#[test]
-fn interactive_evaluation_returns_inspect_output() {
-    let mut manager = ConfigManager::new().unwrap();
-    assert_eq!(manager.eval_inspect("[1, 'two']").unwrap(), "[1, \"two\"]");
-    assert_eq!(
-        manager
-            .eval_inspect("# unmatched quote ' and bracket [")
-            .unwrap(),
-        "nil"
-    );
-    assert_eq!(manager.eval_inspect("answer = 40").unwrap(), "40");
-    assert_eq!(manager.eval_inspect("answer + 2").unwrap(), "42");
-    let incomplete = manager.eval_inspect("def console_answer").unwrap_err();
-    assert!(
-        incomplete
-            .message()
-            .contains("syntax error, unexpected end of file")
-    );
-    assert_eq!(
-        manager
-            .eval_inspect("respond_to?(:console_answer)")
-            .unwrap(),
-        "false"
-    );
-    assert_eq!(
-        manager
-            .eval_inspect("def console_answer\n  42\nend")
-            .unwrap(),
-        ":console_answer"
-    );
-    assert_eq!(manager.eval_inspect("console_answer").unwrap(), "42");
-    assert!(
-        manager
-            .eval_inspect("message = <<TEXT")
-            .unwrap_err()
-            .message()
-            .contains("syntax error, unexpected end of file")
-    );
-    assert_eq!(
-        manager
-            .eval_inspect("message = <<TEXT\nhello\nTEXT")
-            .unwrap(),
-        "\"hello\\n\""
-    );
-    assert!(
-        manager
-            .eval_inspect("Toyoterm.current_pane.send_text('leak'); raise 'nope'")
-            .is_err()
-    );
-    assert!(manager.drain_commands(PaneId(1)).unwrap().is_empty());
-}
-
-#[test]
-fn opacity_bindings_saturate_and_reverse_at_both_limits() {
-    let mut manager = ConfigManager::new().unwrap();
-    manager
-        .reload(
-            r#"
-            Toyoterm.configure do |config|
-              config.window.opacity = 0.9
-              config.keys.key("CTRL+[").run do
-                config.window.opacity -= 0.1
-              end
-              config.keys.key("CTRL+]").run do
-                config.window.opacity += 0.1
-              end
-            end
-            "#,
-        )
-        .unwrap();
-    let context = script_test_context();
-    // Repeated overshoots must not accumulate in the captured Ruby config.
-    for (key, count, expected) in [
-        ("CTRL+]", 1, 1.0),
-        ("CTRL+[", 1, 0.9),
-        ("CTRL+]", 20, 1.0),
-        ("CTRL+[", 1, 0.9),
-        ("CTRL+[", 20, 0.0),
-        ("CTRL+]", 1, 0.1),
-        ("CTRL+]", 20, 1.0),
-        ("CTRL+[", 1, 0.9),
-    ] {
-        for _ in 0..count {
-            run_script_request(
-                &mut manager,
-                &context,
-                &ScriptInvocation::KeyBinding {
-                    key: key.into(),
-                    pane: context.model.current_pane,
-                },
-            )
-            .unwrap();
-        }
-        assert!((manager.config().window.opacity - expected).abs() < 0.00001);
-        let ruby_opacity: f32 = manager
-            .eval("Toyoterm.__config.window.opacity")
-            .unwrap()
-            .parse()
-            .unwrap();
-        assert!((ruby_opacity - expected).abs() < 0.00001);
-    }
-}
-
-#[test]
-fn window_image_section_returns_the_same_object_and_rejects_old_api() {
-    let mut manager = ConfigManager::new().unwrap();
-    manager
-        .eval(
-            r#"
-      Toyoterm.configure do |config|
-        image = config.window.image
-        raise "wrong defaults" unless image.path.nil? && image.opacity == 1.0
-        section = config.window.image do |value|
-          raise "wrong image" unless value.equal?(image)
-          value.opacity = 0.25
-          nil
-        end
-        raise "wrong return" unless section.equal?(image)
-        raise "wrong opacity" unless config.window.image.opacity == 0.25
-        raise "window opacity changed" unless config.window.opacity == 1.0
-      end
-    "#,
-        )
-        .unwrap();
-    for expression in [
-        "background_image",
-        "background_image = nil",
-        "background_image_opacity",
-        "background_image_opacity = 0.5",
-        "image = nil",
-    ] {
-        assert!(
-            manager
-                .eval(&format!(
-                    "Toyoterm.configure {{ |c| c.window.{expression} }}"
-                ))
-                .unwrap_err()
-                .message()
-                .contains("NoMethodError")
-        );
-    }
-}
-
-#[test]
-fn background_images_reload_cache_clear_and_rollback() {
-    let directory = temporary_test_directory("background-image");
-    let image_path = directory.join("wallpaper.png");
-    std::fs::write(
-        &image_path,
-        include_bytes!("../tests/fixtures/background.png"),
-    )
-    .unwrap();
-    let config_path = directory.join("config.rb");
-    std::fs::write(&config_path, "Toyoterm.configure { |c| c.window.image { |image| image.path = 'wallpaper.png'; image.opacity = 0.4 } }").unwrap();
-    let mut manager = ConfigManager::load_startup(Some(&config_path)).unwrap();
-    let original = manager.config().window.background_image.clone().unwrap();
-    assert_eq!(original.path, image_path);
-    assert_eq!((original.width, original.height), (2, 1));
-    assert_eq!(
-        original.pixels.rgba().unwrap().as_ref(),
-        &[255, 0, 0, 255, 0, 0, 255, 128]
-    );
-    assert_eq!(manager.config().window.background_image_opacity, 0.4);
-
-    // Unrelated live settings reuse pixels, even if the file has been removed.
-    std::fs::remove_file(&image_path).unwrap();
-    let eval = |manager: &mut ConfigManager, source: &str| {
-        run_script_request(
-            manager,
-            &script_test_context(),
-            &ScriptInvocation::Eval(source.into()),
-        )
-    };
-    eval(
-        &mut manager,
-        "Toyoterm.configure { |c| c.window.opacity = 0.7 }",
-    )
-    .unwrap();
-    assert!(std::sync::Arc::ptr_eq(
-        &original,
-        manager.config().window.background_image.as_ref().unwrap()
-    ));
-    // File reload always rereads the image and preserves the active config on failure.
-    assert!(manager.reload_file().is_err());
-    assert_eq!(manager.config().window.opacity, 0.7);
-    for source in [
-        "Toyoterm.configure { |c| c.window.image.path = 'missing.png' }",
-        "Toyoterm.configure { |c| c.window.image.path = '' }",
-        "Toyoterm.configure { |c| c.window.image.path = 123 }",
-        "Toyoterm.configure { |c| c.window.image.path = \"a\\0b\" }",
-        "Toyoterm.configure { |c| c.window.image.opacity = -0.1 }",
-        "Toyoterm.configure { |c| c.window.image.opacity = 1.1 }",
-        "Toyoterm.configure { |c| c.window.image.opacity = 0.0/0.0 }",
-        "Toyoterm.configure { |c| c.window.image.opacity = '0.5' }",
-        "Toyoterm.configure { |c| c.window.image.path = nil; c.window.image.opacity = 0; c.font.size = 0 }",
-        "Toyoterm.configure { |c| c.window.image { |image| image.path = nil; image.opacity = 0; raise 'cancel image' } }",
-    ] {
-        assert!(eval(&mut manager, source).is_err(), "{source}");
-        assert_eq!(
-            manager.config().window.background_image.as_ref().unwrap(),
-            &original
-        );
-        assert_eq!(manager.config().window.background_image_opacity, 0.4);
-        assert_eq!(
-            manager.eval("Toyoterm.__config.window.image.path").unwrap(),
-            "wallpaper.png"
-        );
-    }
-    eval(
-        &mut manager,
-        "Toyoterm.configure { |c| c.window.image.path = nil }",
-    )
-    .unwrap();
-    assert!(manager.config().window.background_image.is_none());
-    std::fs::write(
-        &image_path,
-        include_bytes!("../tests/fixtures/background.png"),
-    )
-    .unwrap();
-    manager.reload_file().unwrap();
-    assert!(manager.config().window.background_image.is_some());
-    std::fs::remove_dir_all(directory).unwrap();
-}
-
-#[test]
-fn opacity_validation_preserves_transactions() {
-    let mut manager = ConfigManager::new().unwrap();
-    for (value, expected) in [("2", 1.0), ("-1", 0.0), ("0.8", 0.8)] {
-        manager
-            .reload(&format!(
-                "Toyoterm.configure {{ |config| config.window.opacity = {value} }}"
-            ))
-            .unwrap();
-        assert_eq!(manager.config().window.opacity, expected);
-    }
-    for value in [
-        "nil",
-        "'0.5'",
-        "true",
-        "0.0 / 0.0",
-        "1.0 / 0.0",
-        "-1.0 / 0.0",
-    ] {
-        assert!(
-            run_script_request(
-                &mut manager,
-                &script_test_context(),
-                &ScriptInvocation::Eval(format!(
-                    "Toyoterm.configure {{ |c| c.window.opacity = 0.5; c.window.opacity = {value} }}"
-                )),
-            )
-            .is_err()
-        );
-        assert_eq!(manager.config().window.opacity, 0.8);
-        assert_eq!(
-            manager.eval("Toyoterm.__config.window.opacity").unwrap(),
-            "0.8"
-        );
-    }
-    assert!(
-        run_script_request(
-            &mut manager,
-            &script_test_context(),
-            &ScriptInvocation::Eval(
-                "Toyoterm.configure { |c| c.window.opacity = 2; c.font.size = 0 }".into()
-            ),
-        )
-        .is_err()
-    );
-    assert_eq!(manager.config().window.opacity, 0.8);
-    assert_eq!(
-        manager.eval("Toyoterm.__config.window.opacity").unwrap(),
-        "0.8"
-    );
-}
-
-#[test]
-fn interactive_config_mutations_return_a_new_native_snapshot() {
-    let mut manager = ConfigManager::new().unwrap();
-    manager
-        .reload(
-            r#"
-                Toyoterm.configure do |config|
-                  config.font.family = "Old Font"
-                  config.font.size = 14
-                  config.window.opacity = 1.0
-                end
-            "#,
-        )
-        .unwrap();
-
-    let result = run_script_request(
-        &mut manager,
-        &script_test_context(),
-        &ScriptInvocation::Eval(
-            r#"Toyoterm.configure { |config| config.font.family = "New Font"; config.font.size = 18; config.window.opacity = 0.8 }"#
-                .into(),
-        ),
-    )
-    .unwrap();
-
-    let config = result.snapshot.unwrap().config;
-    assert_eq!(config.font.family, "New Font");
-    assert_eq!(config.font.size, 18.0);
-    assert_eq!(config.window.opacity, 0.8);
-    assert_eq!(manager.config().font.family, "New Font");
-}
-
-#[test]
-fn select_queues_a_native_overlay_and_resumes_its_callback() {
-    let mut manager = ConfigManager::new().unwrap();
-    let result = run_script_request(
-        &mut manager,
-        &script_test_context(),
-        &ScriptInvocation::Eval(
-            r#"Toyoterm.select(title: "Theme", items: ["Ayu", "Solarized Dark"]) { |choice, context| context.pane.badge = choice }"#
-                .into(),
-        ),
-    )
-    .unwrap();
-    assert_eq!(
-        result.commands,
-        vec![NativeCommand::Ui(UiCommand::OpenSelector {
-            id: 1,
-            title: "Theme".into(),
-            items: vec!["Ayu".into(), "Solarized Dark".into()],
-        })]
-    );
-
-    let result = run_script_request(
-        &mut manager,
-        &script_test_context(),
-        &ScriptInvocation::SelectCallback {
-            id: 1,
-            selection: Some("Solarized Dark".into()),
-        },
-    )
-    .unwrap();
-    assert_eq!(
-        result.commands,
-        vec![NativeCommand::Ui(UiCommand::SetPaneBadge {
-            pane: PaneId(4),
-            badge: Some("Solarized Dark".into()),
-        })]
-    );
-}
-
-#[test]
-fn select_callback_can_apply_a_registered_theme() {
-    let directory = temporary_test_directory("theme-selector");
-    let library = directory.join("themes.rb");
-    std::fs::write(
-        &library,
-        r##"
-            Toyoterm.theme("night") { |colors| colors.background = "#101010" }
-            Toyoterm.theme("day") { |colors| colors.background = "#fafafa" }
-            Toyoterm.command :choose_theme do
-              Toyoterm.select(title: "Theme", items: Toyoterm.themes) do |theme|
-                Toyoterm.configure { |config| config.theme = theme } unless theme.nil?
-              end
-            end
-        "##,
-    )
-    .unwrap();
-    let mut manager = ConfigManager::new().unwrap();
-    manager
-        .reload(&format!(
-            "require({})",
-            ruby_string_literal(&library.display().to_string())
-        ))
-        .unwrap();
-    let opened = run_script_request(
-        &mut manager,
-        &script_test_context(),
-        &ScriptInvocation::UserCommand {
-            name: "choose_theme".into(),
-            pane: PaneId(4),
-        },
-    )
-    .unwrap();
-    let id = match &opened.commands[0] {
-        NativeCommand::Ui(UiCommand::OpenSelector { id, items, .. }) => {
-            assert_eq!(items, &["night", "day"]);
-            *id
-        }
-        command => panic!("expected selector command, got {command:?}"),
-    };
-    let selected = run_script_request(
-        &mut manager,
-        &script_test_context(),
-        &ScriptInvocation::SelectCallback {
-            id,
-            selection: Some("day".into()),
-        },
-    )
-    .unwrap();
-    assert_eq!(
-        selected.snapshot.unwrap().config.colors.background,
-        "#fafafa"
-    );
-    std::fs::remove_dir_all(directory).unwrap();
-}
-
-#[test]
-fn select_cancel_passes_nil_and_releases_the_pending_slot() {
-    let mut manager = ConfigManager::new().unwrap();
-    let open = |manager: &mut ConfigManager| {
-        run_script_request(
-            manager,
-            &script_test_context(),
-            &ScriptInvocation::Eval(
-                "Toyoterm.select(items: ['one']) { |choice| $selection = choice }".into(),
-            ),
-        )
-    };
-    let first = open(&mut manager).unwrap();
-    let id = match &first.commands[0] {
-        NativeCommand::Ui(UiCommand::OpenSelector { id, .. }) => *id,
-        command => panic!("expected selector command, got {command:?}"),
-    };
+    assert_eq!(result.bar.unwrap()[0].text, "initial");
+    assert_eq!(result.async_requests.len(), 1);
+    let id = result.async_requests[0].id;
     run_script_request(
         &mut manager,
         &script_test_context(),
-        &ScriptInvocation::SelectCallback {
+        &ScriptInvocation::AsyncCallback {
             id,
-            selection: None,
+            output: AsyncProcessOutput {
+                stdout: b"ready".to_vec(),
+                stderr: Vec::new(),
+                exit_status: 0,
+                launch_error: false,
+            },
         },
     )
     .unwrap();
-    assert_eq!(manager.eval("$selection.nil?").unwrap(), "true");
-    assert!(open(&mut manager).is_ok());
-}
-
-#[test]
-fn select_validates_input_and_rolls_back_pending_callbacks() {
-    let mut manager = ConfigManager::new().unwrap();
-    for source in [
-        "Toyoterm.select(items: ['one'])",
-        "Toyoterm.select(items: []) {}",
-        "Toyoterm.select(items: 'one') {}",
-        "Toyoterm.select(items: ['']) {}",
-        "Toyoterm.select(items: [1]) {}",
-        "Toyoterm.select(title: \"bad\\nname\", items: ['one']) {}",
-        "Toyoterm.select(title: 'x' * 257, items: ['one']) {}",
-        "Toyoterm.select(items: ['x' * 4097]) {}",
-        "Toyoterm.select(items: Array.new(4097, 'x')) {}",
-        "Toyoterm.select(items: Array.new(1025, 'x' * 4096)) {}",
-    ] {
-        assert!(
-            run_script_request(
-                &mut manager,
-                &script_test_context(),
-                &ScriptInvocation::Eval(source.into()),
-            )
-            .is_err(),
-            "{source}"
-        );
-    }
-    assert!(
-        run_script_request(
-            &mut manager,
-            &script_test_context(),
-            &ScriptInvocation::Eval(
-                "Toyoterm.select(items: ['one']) {}; raise 'rollback selector'".into(),
-            ),
-        )
-        .is_err()
-    );
-    let result = run_script_request(
-        &mut manager,
-        &script_test_context(),
-        &ScriptInvocation::Eval("Toyoterm.select(items: ['two']) {}".into()),
-    )
-    .unwrap();
-    let id = match result.commands[0] {
-        NativeCommand::Ui(UiCommand::OpenSelector { id, .. }) => id,
-        ref command => panic!("expected selector command, got {command:?}"),
-    };
-    let error = run_script_request(
-        &mut manager,
-        &script_test_context(),
-        &ScriptInvocation::SelectCallback {
-            id,
-            selection: Some("not requested".into()),
-        },
-    )
-    .unwrap_err();
-    assert!(error.message().contains("not one of the requested items"));
-    assert!(
-        run_script_request(
-            &mut manager,
-            &script_test_context(),
-            &ScriptInvocation::Eval("Toyoterm.select(items: ['three']) {}".into()),
-        )
-        .is_ok()
-    );
-}
-
-#[test]
-fn invalid_interactive_config_mutations_are_rolled_back() {
-    let mut manager = ConfigManager::new().unwrap();
-    manager
-        .reload("Toyoterm.configure { |config| config.font.size = 14 }")
-        .unwrap();
-
-    let error = run_script_request(
-        &mut manager,
-        &script_test_context(),
-        &ScriptInvocation::Eval(
-            "Toyoterm.configure { |config| config.font.size = 0; config.window.opacity = 2 }"
-                .into(),
-        ),
-    )
-    .unwrap_err();
-
-    assert!(error.message().contains("font size must be positive"));
-    assert_eq!(manager.config().font.size, 14.0);
-    assert_eq!(manager.eval("Toyoterm.__config.font.size").unwrap(), "14");
-
-    let error = run_script_request(
-        &mut manager,
-        &script_test_context(),
-        &ScriptInvocation::Eval(
-            "Toyoterm.async('echo'); Toyoterm.log(:info, 'discard'); Toyoterm.configure { |config| config.theme = :missing }"
-                .into(),
-        ),
-    )
-    .unwrap_err();
-    assert!(error.message().contains("unknown theme"));
-    assert!(manager.drain_async_requests().unwrap().is_empty());
-    assert!(manager.drain_logs().unwrap().is_empty());
-}
-
-#[test]
-fn resolves_config_paths_in_priority_order() {
-    let explicit = Path::new("custom.rb");
-    let environment = std::ffi::OsStr::new("environment.rb");
-    let default_path = PathBuf::from("/users/toyo/.config/toyoterm/config.rb");
-    assert_eq!(
-        resolve_config_path(
-            Some(explicit),
-            Some(environment),
-            Some(default_path.clone())
-        ),
-        Some(explicit.to_owned())
-    );
-    assert_eq!(
-        resolve_config_path(None, Some(environment), Some(default_path.clone())),
-        Some(PathBuf::from("environment.rb"))
-    );
-    assert_eq!(
-        resolve_config_path(None, None, Some(default_path.clone())),
-        Some(default_path)
-    );
-    assert_eq!(resolve_config_path(None, None, None), None);
-}
-
-#[test]
-fn zoomed_pane_border_supports_reload_and_atomic_runtime_updates() {
-    let mut manager = ConfigManager::new().unwrap();
-    assert_eq!(manager.config().colors.zoomed_pane_border, "#ffbe3a");
-    manager
-        .reload(r##"Toyoterm.configure { |c| c.colors.zoomed_pane_border = "#123456" }"##)
-        .unwrap();
-    assert_eq!(manager.config().colors.zoomed_pane_border, "#123456");
-    let result = run_script_request(
-        &mut manager,
-        &script_test_context(),
-        &ScriptInvocation::Eval(
-            r##"Toyoterm.configure { |c| c.colors.zoomed_pane_border = "#abcdef" }"##.into(),
-        ),
-    )
-    .unwrap();
-    assert_eq!(
-        result.snapshot.unwrap().config.colors.zoomed_pane_border,
-        "#abcdef"
-    );
-    for source in [
-        r#"Toyoterm.configure { |c| c.colors.zoomed_pane_border = "red" }"#,
-        r##"Toyoterm.configure { |c| c.colors.zoomed_pane_border = "#112233"; c.font.size = 0 }"##,
-    ] {
-        assert!(
-            run_script_request(
-                &mut manager,
-                &script_test_context(),
-                &ScriptInvocation::Eval(source.into())
-            )
-            .is_err()
-        );
-        assert_eq!(manager.config().colors.zoomed_pane_border, "#abcdef");
-        assert_eq!(
-            manager
-                .eval("Toyoterm.__config.colors.zoomed_pane_border")
-                .unwrap(),
-            "#abcdef"
-        );
-    }
-    assert!(
-        manager
-            .reload(r#"Toyoterm.configure { |c| c.colors.zoomed_pane_border = "invalid" }"#)
-            .is_err()
-    );
-    assert_eq!(manager.config().colors.zoomed_pane_border, "#abcdef");
-}
-
-#[test]
-fn async_api_validates_arguments() {
-    let mut manager = ConfigManager::new().unwrap();
-
-    // A callback is optional; the returned handle exposes the result.
-    manager.eval("$task = Toyoterm.async('ping')").unwrap();
-    assert_eq!(manager.eval("$task.class").unwrap(), "Toyoterm::AsyncTask");
-    assert_eq!(manager.eval("$task.pending?").unwrap(), "true");
-    assert_eq!(manager.eval("$task.success?").unwrap(), "false");
-
-    // Empty program rejected
-    assert!(manager.eval("Toyoterm.async('') { |r| }").is_err());
-
-    // NUL bytes rejected
-    assert!(
-        manager
-            .eval("Toyoterm.async(\"p\\x00ing\") { |r| }")
-            .is_err()
-    );
-    assert!(
-        manager
-            .eval("Toyoterm.async('ping', \"1.1.1.\\x00\") { |r| }")
-            .is_err()
-    );
-    assert!(
-        manager
-            .eval("Toyoterm.async('ping', cwd: \"/tmp/\\x00dir\") { |r| }")
-            .is_err()
-    );
-
-    // Empty cwd rejected
-    assert!(
-        manager
-            .eval("Toyoterm.async('ping', cwd: '') { |r| }")
-            .is_err()
-    );
-
-    // Text values are not implicitly stringified.
-    assert!(manager.eval("Toyoterm.async(1)").is_err());
-    assert!(
-        manager
-            .eval("Toyoterm::BarSection.new(' ').add_async('echo', initial: 1)")
-            .is_err()
-    );
-}
-
-#[test]
-fn async_task_handle_exposes_result_without_global_state() {
-    let mut manager = ConfigManager::new().unwrap();
-    manager
-        .eval(
-            r#"
-            task = Toyoterm.async("printf", "hello")
-            $task_handle = task
-            $before = [task.pending?, task.complete?]
-            "#,
-        )
-        .unwrap();
-
-    let requests = manager.drain_async_requests().unwrap();
-    assert_eq!(requests.len(), 1);
-    manager
-        .invoke_async_callback(requests[0].id, b"hello", b"", 0)
-        .unwrap();
-
-    assert_eq!(manager.eval("$before[0]").unwrap(), "true");
-    assert_eq!(manager.eval("$task_handle.complete?").unwrap(), "true");
-    assert_eq!(manager.eval("$task_handle.result.stdout").unwrap(), "hello");
-    assert_eq!(manager.eval("$task_handle.success?").unwrap(), "true");
-}
-
-#[test]
-fn async_api_queues_and_drains_requests() {
-    let mut manager = ConfigManager::new().unwrap();
-    manager
-        .eval(
-            r#"
-            $task1 = Toyoterm.async("curl", "-s", "https://wttr.in/?format=1") { |res| $res1 = res }
-            $task2 = Toyoterm.async_spawn("ping", "-c", "1", "1.1.1.1", cwd: "/tmp") { |res| $res2 = res }
-            "#,
-        )
-        .unwrap();
-
-    let requests = manager.drain_async_requests().unwrap();
-    assert_eq!(requests.len(), 2);
-    assert_eq!(requests[0].id, 1);
-    assert_eq!(requests[0].program, "curl");
-    assert_eq!(requests[0].args, vec!["-s", "https://wttr.in/?format=1"]);
-    assert_eq!(requests[0].cwd, None);
-
-    assert_eq!(requests[1].id, 2);
-    assert_eq!(requests[1].program, "ping");
-    assert_eq!(requests[1].args, vec!["-c", "1", "1.1.1.1"]);
-    assert_eq!(requests[1].cwd.as_deref(), Some("/tmp"));
-
-    // Draining again returns empty
-    assert!(manager.drain_async_requests().unwrap().is_empty());
-}
-
-#[test]
-fn async_api_invokes_callback_and_applies_results() {
-    let mut manager = ConfigManager::new().unwrap();
-    manager
-        .eval(
-            r#"
-            Toyoterm.async("curl", "https://example.com") do |res|
-              $received_stdout = res.stdout
-              $received_stderr = res.stderr
-              $received_status = res.exit_status
-              $received_success = res.success?
-              Toyoterm.current_pane.send_text("fetched: #{res.stdout}\n")
-            end
-            "#,
-        )
-        .unwrap();
-
-    let requests = manager.drain_async_requests().unwrap();
-    assert_eq!(requests.len(), 1);
-    let task_id = requests[0].id;
-
-    manager
-        .invoke_async_callback(task_id, b"hello world", b"", 0)
-        .unwrap();
-
-    assert_eq!(manager.eval("$received_stdout").unwrap(), "hello world");
-    assert_eq!(manager.eval("$received_stderr").unwrap(), "");
-    assert_eq!(manager.eval("$received_status").unwrap(), "0");
-    assert_eq!(manager.eval("$received_success").unwrap(), "true");
-
-    let commands = manager.drain_commands(PaneId(42)).unwrap();
-    assert_eq!(
-        commands,
-        vec![NativeCommand::Mux(Command::SendText {
-            pane: PaneId(42),
-            text: "fetched: hello world\n".into(),
-        })]
-    );
-}
-
-#[test]
-fn async_api_callback_exception_rolls_back_mutations() {
-    let mut manager = ConfigManager::new().unwrap();
-    manager
-        .eval(
-            r#"
-            Toyoterm.async("broken") do |res|
-              Toyoterm.current_pane.send_text("must not be sent\n")
-              raise "callback exploded"
-            end
-            "#,
-        )
-        .unwrap();
-
-    let requests = manager.drain_async_requests().unwrap();
-    assert_eq!(requests.len(), 1);
-
-    let error = manager
-        .invoke_async_callback(requests[0].id, b"", b"failed", 1)
-        .unwrap_err();
-    assert!(error.to_string().contains("callback exploded"));
-
-    // The queued send_text must have been rolled back
-    assert!(manager.drain_commands(PaneId(1)).unwrap().is_empty());
-}
-
-#[test]
-fn async_api_works_inside_window_bar_widgets() {
-    let mut manager = ConfigManager::new().unwrap();
-    manager
-        .reload(
-            r#"
-            $status_text = "initial"
-            Toyoterm.configure do |config|
-              config.window.bar :bottom do |bar|
-                bar.section(:left) do |section|
-                  section.add do
-                    Toyoterm.async("ping", "1.1.1.1") do |res|
-                      $status_text = "updated: #{res.stdout}"
-                    end
-                    $status_text
-                  end
-                end
-              end
-            end
-            "#,
-        )
-        .unwrap();
-
-    let items = manager.render_bar(StatusBarPosition::Bottom).unwrap();
-    assert_eq!(items[0].text, "initial");
-
-    // The async request queued during bar rendering should be retained and drained
-    let requests = manager.drain_async_requests().unwrap();
-    assert_eq!(requests.len(), 1);
-    assert_eq!(requests[0].program, "ping");
-
-    // Now simulate completion of that async request
-    manager
-        .invoke_async_callback(requests[0].id, b"pong", b"", 0)
-        .unwrap();
-
-    // Next bar render displays the updated value
-    let items = manager.render_bar(StatusBarPosition::Bottom).unwrap();
-    assert_eq!(items[0].text, "updated: pong");
-}
-
-#[test]
-fn async_task_can_be_retained_in_bar_closure_without_global_state() {
-    let mut manager = ConfigManager::new().unwrap();
-    manager
-        .reload(
-            r#"
-            Toyoterm.configure do |config|
-              config.window.bar :bottom do |bar|
-                task = nil
-                bar.section(:left) do |section|
-                  section.add do
-                    task = Toyoterm.async("printf", "ready") if task.nil?
-                    task.pending? ? "waiting" : task.result.stdout
-                  end
-                end
-              end
-            end
-            "#,
-        )
-        .unwrap();
-
-    assert_eq!(
-        manager.render_bar(StatusBarPosition::Bottom).unwrap()[0].text,
-        "waiting"
-    );
-    let requests = manager.drain_async_requests().unwrap();
-    manager
-        .invoke_async_callback(requests[0].id, b"ready", b"", 0)
-        .unwrap();
     assert_eq!(
         manager.render_bar(StatusBarPosition::Bottom).unwrap()[0].text,
         "ready"
     );
-    assert!(manager.drain_async_requests().unwrap().is_empty());
+    assert_eq!(manager.eval("(length (__ref 'tasks '()))").unwrap(), "0");
+    request(&mut manager, "(registration-remove! section)").unwrap();
+    assert_eq!(
+        manager
+            .eval("(length (hash-keys->list (__ref 'async-widget-state (hash))))")
+            .unwrap(),
+        "0"
+    );
 }
 
 #[test]
-fn async_bar_section_renders_multiple_tasks_with_a_separator() {
+fn per_entry_palette_overrides_survive_theme_switches() {
+    let mut manager = ConfigManager::new().unwrap();
+    manager.reload(r##"(theme! 'a (hash 'colors.ansi (map (lambda (i) "#111111") (range 0 16)))) (theme! 'b (hash 'colors.ansi (map (lambda (i) "#222222") (range 0 16)))) (config-set! 'theme 'a) (ansi-color-set! 1 "#ffffff")"##).unwrap();
+    assert_eq!(manager.config().colors.ansi[0], "#111111");
+    assert_eq!(manager.config().colors.ansi[1], "#ffffff");
+    request(&mut manager, "(config-set! 'theme 'b)").unwrap();
+    assert_eq!(manager.config().colors.ansi[0], "#222222");
+    assert_eq!(manager.config().colors.ansi[1], "#ffffff");
+}
+
+#[test]
+fn failed_evaluation_restores_cancellation_of_an_existing_task() {
+    let mut manager = ConfigManager::new().unwrap();
+    request(
+        &mut manager,
+        "(define retained-task (async! \"fixture\" '() #f))",
+    )
+    .unwrap();
+    assert!(
+        request(
+            &mut manager,
+            "(task-cancel! retained-task) (error \"rollback\")"
+        )
+        .is_err()
+    );
+    assert_eq!(
+        manager.eval("(task-pending? retained-task)").unwrap(),
+        "true"
+    );
+    assert!(manager.drain_async_cancellations().unwrap().is_empty());
+}
+
+#[test]
+fn scheme_ports_preserve_binary_file_contents() {
+    let path = std::env::temp_dir().join(format!("toyoterm-steel-binary-{}", std::process::id()));
+    std::fs::write(&path, [0_u8, 255, 65]).unwrap();
+    let mut manager = ConfigManager::new().unwrap();
+    let filename = path.to_string_lossy().replace('\\', "/");
+    assert_eq!(manager.eval(&format!("(equal? (call-with-input-file \"{filename}\" read-port-to-bytes) (bytevector 0 255 65))")).unwrap(), "true");
+    std::fs::remove_file(path).unwrap();
+}
+
+#[test]
+fn introspection_environment_and_action_validation_match_the_public_contract() {
+    let mut manager = ConfigManager::new().unwrap();
+    assert_eq!(
+        manager.eval("(toyoterm-supports? 'async-process)").unwrap(),
+        "true"
+    );
+    assert_eq!(
+        manager
+            .eval("(> (length (hash-keys->list (toyoterm-env))) 0)")
+            .unwrap(),
+        "true"
+    );
+    for source in [
+        "(bind-action! \"X\" 'new-tab \"\")",
+        "(bind-action! \"X\" 'split 'left 'right)",
+        "(on! 'bell 1)",
+        "(action! 'user-command 'name)",
+    ] {
+        assert!(request(&mut manager, source).is_err(), "accepted {source}");
+    }
+    request(
+        &mut manager,
+        "(command! 'with-hyphen (lambda (ctx) void)) (bind-command! \"CTRL+G\" 'with-hyphen)",
+    )
+    .unwrap();
+    assert_eq!(
+        manager.native_action("CTRL+G"),
+        Some(NativeAction::UserCommand("with-hyphen".into()))
+    );
+    manager
+        .runtime
+        .call("__collect_garbage", Vec::new())
+        .unwrap();
+}
+
+#[test]
+fn event_failure_restores_cancellation_and_continues_later_handlers() {
+    let mut manager = ConfigManager::new().unwrap();
+    request(&mut manager, "(define event-task (async! \"fixture\" '() #f)) (on! 'bell (lambda (event) (task-cancel! event-task) (error \"rollback event\")))").unwrap();
+    let result = run_script_request(
+        &mut manager,
+        &script_test_context(),
+        &ScriptInvocation::Event(ScriptEvent::new(ScriptEventKind::Bell)),
+    )
+    .unwrap();
+    assert_eq!(result.logs.len(), 1);
+    assert!(result.async_cancellations.is_empty());
+    assert_eq!(manager.eval("(task-pending? event-task)").unwrap(), "true");
+}
+
+#[test]
+fn collection_inside_a_failing_callback_keeps_rollback_roots_live() {
+    let mut manager = ConfigManager::new().unwrap();
+    manager.reload(r#"(bind! "CTRL+E" (lambda (ctx) (config-set! 'font.size 25) (#%gc-collect) (error "after collection")))"#).unwrap();
+    for _ in 0..2 {
+        assert!(
+            manager
+                .trigger_keybinding("CTRL+E", PaneId(4))
+                .unwrap_err()
+                .message()
+                .contains("after collection")
+        );
+        assert_eq!(manager.eval("(config-ref 'font.size)").unwrap(), "14.0");
+    }
+    assert!(
+        manager
+            .eval_inspect(
+                "(list (async-widget \"fixture\" '() 1.0 \"initial\" (lambda (r) \"done\")))"
+            )
+            .unwrap()
+            .contains("#<procedure>")
+    );
+}
+
+#[test]
+fn allocation_driven_collection_preserves_callbacks_and_rollback_roots() {
     let mut manager = ConfigManager::new().unwrap();
     manager
         .reload(
             r#"
-            Toyoterm.configure do |config|
-              config.window.bar :bottom do |bar|
-                bar.section(:right, separator: " | ") do |section|
-                  section.add_async("printf", "clock", initial: "clock...") do |result|
-                    result.success? ? result.stdout : ""
-                  end
-                  section.add_async("printf", "branch", initial: "branch...") do |result|
-                    result.success? ? result.stdout : ""
-                  end
-                end
-              end
-            end
-            "#,
+      (define (churn)
+        (let loop ([remaining 60000])
+          (unless (= remaining 0)
+            (let ([cell (box #f)])
+              (set-box! cell (lambda () cell)))
+            (loop (- remaining 1)))))
+      (let ([retained (box 23)])
+        (bind! "CTRL+S" (lambda (ctx) (config-set! 'font.size (unbox retained))))
+        (bind! "CTRL+E" (lambda (ctx)
+          (config-set! 'font.size 25)
+          (churn)
+          (error "after automatic collection"))))
+    "#,
         )
         .unwrap();
-
-    let items = manager.render_bar(StatusBarPosition::Bottom).unwrap();
-    assert_eq!(items[0].text, "clock... | branch...");
-    let requests = manager.drain_async_requests().unwrap();
-    assert_eq!(requests.len(), 2);
-
-    manager
-        .invoke_async_callback(requests[0].id, b"12:00", b"", 0)
+    for _ in 0..3 {
+        request(&mut manager, "(churn)").unwrap();
+        run_script_request(
+            &mut manager,
+            &script_test_context(),
+            &ScriptInvocation::KeyBinding {
+                key: "CTRL+S".into(),
+                pane: PaneId(4),
+            },
+        )
         .unwrap();
-    assert_eq!(
-        manager.render_bar(StatusBarPosition::Bottom).unwrap()[0].text,
-        "12:00 | branch..."
-    );
-
-    manager
-        .invoke_async_callback(requests[1].id, b"main", b"", 0)
-        .unwrap();
-    assert_eq!(
-        manager.render_bar(StatusBarPosition::Bottom).unwrap()[0].text,
-        "12:00 | main"
-    );
-    assert!(manager.drain_async_requests().unwrap().is_empty());
+        assert_eq!(manager.config().font.size, 23.0);
+        let error = run_script_request(
+            &mut manager,
+            &script_test_context(),
+            &ScriptInvocation::KeyBinding {
+                key: "CTRL+E".into(),
+                pane: PaneId(4),
+            },
+        )
+        .unwrap_err();
+        assert!(error.message().contains("after automatic collection"));
+        assert_eq!(manager.config().font.size, 23.0);
+        assert_eq!(manager.eval("(config-ref 'font.size)").unwrap(), "23");
+    }
 }
 
 #[test]
-fn bar_section_mixes_synchronous_and_asynchronous_widgets() {
+fn bar_sections_omit_empty_widgets_and_async_cwd_uses_the_current_context() {
     let mut manager = ConfigManager::new().unwrap();
     manager
         .reload(
             r#"
-            Toyoterm.configure do |config|
-              config.window.bar :top do |bar|
-                bar.section(:right, separator: " | ") do |section|
-                  updates = 0
-                  section.add_async("printf", "clock", initial: "clock...") do |result|
-                    result.success? ? result.stdout : ""
-                  end
-                  section.add("host")
-                  section.add do |_context|
-                    updates += 1
-                    "battery#{updates}"
-                  end
-                  section.add("")
-                  section.add(nil)
-                end
-              end
-            end
-            "#,
+        (bar! 'top 'left " | " (list (widget "") (widget "visible") (widget "")))
+        (bar! 'bottom 'left " | "
+          (list (async-widget "fixture" '() 1.0 "" (lambda (result) "done")
+            (lambda (ctx) (handle-ref (context-ref ctx 'pane) 'cwd)))))
+    "#,
         )
         .unwrap();
-
-    let items = manager.render_bar(StatusBarPosition::Top).unwrap();
-    assert_eq!(items[0].text, "clock... | host | battery1");
-    let requests = manager.drain_async_requests().unwrap();
-    assert_eq!(requests.len(), 1);
-
+    let mut ctx = script_test_context();
+    Arc::make_mut(&mut ctx.model).panes[0].cwd = Some("widget-working-directory".into());
     manager
-        .invoke_async_callback(requests[0].id, b"12:00", b"", 0)
+        .set_live_handles(ctx.handles.iter().copied())
         .unwrap();
+    manager.set_object_model(&ctx.model).unwrap();
     assert_eq!(
         manager.render_bar(StatusBarPosition::Top).unwrap()[0].text,
-        "12:00 | host | battery2"
+        "visible"
     );
-}
-
-#[test]
-fn bar_section_add_rejects_a_value_and_block_together() {
-    let mut manager = ConfigManager::new().unwrap();
-    let error = manager
-        .eval("Toyoterm::BarSection.new(' ').add('value') { 'block' }")
-        .unwrap_err();
-
-    assert!(
-        error
-            .to_string()
-            .contains("bar section widget accepts either a value or a block, not both")
+    assert_eq!(
+        manager.render_bar(StatusBarPosition::Bottom).unwrap()[0].text,
+        ""
     );
-}
-
-#[test]
-fn bar_section_validates_its_block_and_separator() {
-    let mut manager = ConfigManager::new().unwrap();
-
-    let missing_block = manager
-        .eval("Toyoterm::BarConfig.new.section(:left)")
-        .unwrap_err();
-    assert!(
-        missing_block
-            .to_string()
-            .contains("bar section requires a block")
-    );
-
-    let invalid_separator = manager
-        .eval("Toyoterm::BarConfig.new.section(:left, separator: 1) { |_| }")
-        .unwrap_err();
-    assert!(
-        invalid_separator
-            .to_string()
-            .contains("bar section separator must be a String")
-    );
+    let requests = manager.drain_async_requests().unwrap();
+    assert_eq!(requests.len(), 1);
+    assert_eq!(requests[0].cwd.as_deref(), Some("widget-working-directory"));
 }

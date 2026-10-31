@@ -223,17 +223,17 @@ def gui(args):
                 raise RuntimeError(f"IPC failed: {result.stderr.strip()} {result.stdout.strip()}")
             return result.stdout
 
-        def ruby(source):
-            # Console reports Ruby errors on stderr even when its exit code is zero.
-            output = run("ruby", "console", source=source + "\n:q\n")
+        def steel(source):
+            # Console reports Scheme errors on stderr even when its exit code is zero.
+            output = run("steel", "console", source=source + "\n:q\n")
             if "=> " not in output:
-                raise RuntimeError(f"missing Ruby response: {output}")
+                raise RuntimeError(f"missing Scheme response: {output}")
             return output.split("=> ", 1)[1].splitlines()[0]
 
         def wait_for(source, expected, timeout=30):
             deadline = time.monotonic() + timeout
             while time.monotonic() < deadline:
-                if ruby(source) == expected:
+                if steel(source) == expected:
                     return
                 time.sleep(0.1)
             raise RuntimeError(f"timed out waiting for {source} == {expected}")
@@ -254,8 +254,8 @@ def gui(args):
                     if time.monotonic() >= deadline:
                         raise
                     time.sleep(0.2)
-            ruby("$soak_base_pane = Toyoterm.current_pane; $soak_base_window = Toyoterm.current_window; $soak_base_workspace = Toyoterm.current_workspace")
-            baseline = ruby("[Toyoterm.workspaces.length, Toyoterm.windows.length, Toyoterm.windows.map { |w| w.tabs.length }.inject(0) { |a,b| a+b }]")
+            steel("(define soak-base-pane (current-pane)) (define soak-base-window (current-window)) (define soak-base-workspace (current-workspace))")
+            baseline = steel("(list (length (workspaces)) (length (windows)) (apply + (map (lambda (w) (length (handle-ref w 'tabs))) (windows)))")
 
             def settle(seconds):
                 if stop.wait(seconds):
@@ -276,25 +276,25 @@ def gui(args):
                 command = launch + ["--kind", kind]
                 for key, value in options.items():
                     command += ["--" + key.replace("_", "-"), str(value)]
-                argv = json.dumps(command, ensure_ascii=True)
-                ruby(f"$soak_base_pane.split(:right, command: {argv})")
-                wait_for("Toyoterm.current_pane.id != $soak_base_pane.id", "true")
+                argv = scheme_list(command)
+                steel(f"(split! soak-base-pane 'right (command-options {argv}))")
+                wait_for("(not (= (handle-id (current-pane)) (handle-id soak-base-pane)))", "#true")
                 return argv
 
             phase = "continuous-output"
             record("begin", seconds=args.output_seconds)
             pane_fixture("output", lines=10**9, seconds=args.output_seconds, delay=0.01)
-            wait_for("Toyoterm.current_pane.screen_text.include?('SOAK_FIXTURE_DONE')", "true", args.output_seconds + 30)
-            ruby("Toyoterm.current_pane.close")
+            wait_for("(string-contains? (handle-ref (current-pane) 'screen-text) \"SOAK_FIXTURE_DONE\")", "#true", args.output_seconds + 30)
+            steel("(close! (current-pane))")
             settle(1)
 
             phase = "scrollback"
             record("begin", lines=100000)
             pane_fixture("output", lines=100000, delay=0)
-            wait_for("Toyoterm.current_pane.screen_text.include?('SOAK_FIXTURE_DONE')", "true")
+            wait_for("(string-contains? (handle-ref (current-pane) 'screen-text) \"SOAK_FIXTURE_DONE\")", "#true")
             for _ in range(30):
-                ruby("Toyoterm.current_pane.search('soak'); Toyoterm.action(:toggle_visual_mode); Toyoterm.action(:move_visual_selection, :right); Toyoterm.action(:toggle_visual_mode)")
-            ruby("Toyoterm.current_pane.close")
+                steel("(pane-search! (current-pane) \"soak\") (action! 'toggle-visual-mode) (action! 'move-visual-selection 'right) (action! 'toggle-visual-mode)")
+            steel("(close! (current-pane))")
             settle(1)
 
             for kind in ("pane", "tab", "workspace"):
@@ -302,53 +302,53 @@ def gui(args):
                 record("begin", iterations=args.iterations)
                 for iteration in range(1, args.iterations + 1):
                     if kind == "workspace":
-                        ruby(f"Toyoterm.open_workspace('soak-{iteration}')")
-                        wait_for("Toyoterm.current_workspace.id != $soak_base_workspace.id", "true")
-                        ruby("$soak_stale = Toyoterm.current_pane; Toyoterm.current_pane.send_text(\"exit\\r\\n\")")
-                        wait_for("$soak_stale.valid?", "false")
+                        steel(f"(open-workspace! \"soak-{iteration}\")")
+                        wait_for("(not (= (handle-id (current-workspace)) (handle-id soak-base-workspace)))", "#true")
+                        steel("(define soak-stale (current-pane)) (pane-send-text! (current-pane) \"exit\\r\\n\")")
+                        wait_for("(handle-valid? soak-stale)", "#false")
                     else:
-                        command = json.dumps(launch + ["--lines", "100", "--delay", "0"])
+                        command = scheme_list(launch + ["--lines", "100", "--delay", "0"])
                         if kind == "pane":
-                            ruby(f"$soak_base_pane.split(:right, command: {command})")
+                            steel(f"(split! soak-base-pane 'right (command-options {command}))")
                         else:
-                            ruby(f"$soak_base_window.new_tab(command: {command})")
-                        wait_for("Toyoterm.current_pane.id != $soak_base_pane.id", "true")
-                        wait_for("Toyoterm.current_pane.screen_text.include?('SOAK_FIXTURE_DONE')", "true")
-                        ruby("$soak_stale = Toyoterm.current_pane; " + ("Toyoterm.current_pane.close" if kind == "pane" else "Toyoterm.current_tab.close"))
-                        wait_for("$soak_stale.valid?", "false")
-                    ruby("$soak_base_workspace.activate; $soak_base_pane.activate")
+                            steel(f"(new-tab! soak-base-window (command-options {command}))")
+                        wait_for("(not (= (handle-id (current-pane)) (handle-id soak-base-pane)))", "#true")
+                        wait_for("(string-contains? (handle-ref (current-pane) 'screen-text) \"SOAK_FIXTURE_DONE\")", "#true")
+                        steel("(define soak-stale (current-pane)) " + ("(close! (current-pane))" if kind == "pane" else "(close! (current-tab))"))
+                        wait_for("(handle-valid? soak-stale)", "#false")
+                    steel("(activate! soak-base-workspace) (activate! soak-base-pane)")
                     if iteration % 10 == 0:
                         record("iteration", iteration=iteration)
-                    if ruby("[Toyoterm.workspaces.length, Toyoterm.windows.length, Toyoterm.windows.map { |w| w.tabs.length }.inject(0) { |a,b| a+b }]") != baseline:
+                    if steel("(list (length (workspaces)) (length (windows)) (apply + (map (lambda (w) (length (handle-ref w 'tabs))) (windows)))") != baseline:
                         raise RuntimeError(f"{kind} counts did not return to baseline")
                 settle(2)
 
             phase = "images"
             record("begin", iterations=args.iterations)
             pane_fixture("images", iterations=args.iterations, delay=0.05)
-            wait_for("Toyoterm.current_pane.screen_text.include?('SOAK_FIXTURE_DONE')", "true", args.iterations * 0.1 + 30)
-            ruby("Toyoterm.current_pane.close")
+            wait_for("(string-contains? (handle-ref (current-pane) 'screen-text) \"SOAK_FIXTURE_DONE\")", "#true", args.iterations * 0.1 + 30)
+            steel("(close! (current-pane))")
             settle(2)
 
-            phase = "mruby-async"
+            phase = "steel-async"
             record("begin", iterations=args.async_iterations)
-            command = json.dumps([sys.executable, "-c", "print('ready')"])
+            command = scheme_list([sys.executable, "-c", "print('ready')"])
             for iteration in range(1, args.async_iterations + 1):
-                slow_command = json.dumps([sys.executable, "-c", "import time; time.sleep(2)"])
-                ruby(f"$soak_task = Toyoterm.async(*{command}) {{ |r| $soak_completed = ($soak_completed || 0) + 1 }}; $soak_cancelled = Toyoterm.async(*{slow_command}) {{ raise 'cancelled callback ran' }}")
-                ruby("raise 'cancel raced with completion' unless $soak_cancelled.cancel; $soak_cancelled = nil")
-                wait_for("$soak_task.complete?", "true")
-                wait_for("Toyoterm.instance_variable_get(:@async_tasks).length", "0")
+                slow_command = scheme_list([sys.executable, "-c", "import time; time.sleep(2)"])
+                steel(f"(define soak-task (async! (car {command}) (cdr {command}) #f)) (define soak-cancelled (async! (car {slow_command}) (cdr {slow_command}) (lambda (r ctx) (error \"cancelled callback ran\"))))")
+                steel("(unless (task-pending? soak-cancelled) (error \"cancel raced with completion\")) (task-cancel! soak-cancelled)")
+                wait_for("(task-complete? soak-task)", "#true")
+                wait_for("(length (__ref 'tasks '()))", "0")
                 if iteration % 100 == 0:
                     record("iteration", iteration=iteration)
-            ruby("$soak_task = nil; GC.start")
+            steel("(set! soak-task #f)")
 
             phase = "config-reload"
             record("begin", iterations=args.reloads)
             for iteration in range(1, args.reloads + 1):
                 run("reload")
                 # Eval is a completion barrier behind reload; verify the fixture.
-                ruby("raise 'fixture command missing' unless Toyoterm.instance_variable_get(:@user_commands).key?('soak_command')")
+                steel("(unless (member \"soak_command\" (map cadr (__ref 'commands '()))) (error \"fixture command missing\"))")
                 if iteration % 100 == 0:
                     record("iteration", iteration=iteration)
             phase = "recovery-idle"
@@ -361,7 +361,7 @@ def gui(args):
             if process.poll() is None:
                 try:
                     # Exit the isolated fixture shell through the ordinary pane lifecycle.
-                    ruby('Toyoterm.current_pane.send_text("exit\\r\\n")')
+                    steel("(pane-send-text! (current-pane) \"exit\\r\\n\")")
                     process.wait(timeout=5)
                 except (RuntimeError, subprocess.TimeoutExpired):
                     process.terminate()
@@ -405,7 +405,7 @@ def main():
         else:
             command.add_argument("--executable", type=Path, required=True)
             command.add_argument("--scenario", choices=["all", "idle"], default="all")
-            command.add_argument("--config", type=Path, help="configuration for --scenario idle; defaults to soak-config.rb")
+            command.add_argument("--config", type=Path, help="configuration for --scenario idle; defaults to soak-config.scm")
             command.add_argument("--iterations", type=positive, default=100)
             command.add_argument("--reloads", type=positive, default=1000)
             command.add_argument("--async-iterations", type=positive, default=300)
@@ -423,7 +423,7 @@ def main():
     if args.mode == "gui":
         if args.config is not None and args.scenario != "idle":
             parser.error("--config requires --scenario idle")
-        args.config = (args.config or ROOT / "scripts/soak-config.rb").resolve()
+        args.config = (args.config or ROOT / "scripts/soak-config.scm").resolve()
         if not args.config.is_file():
             parser.error(f"configuration is not a file: {args.config}")
     args.output = args.output.resolve()
@@ -432,7 +432,7 @@ def main():
                 "utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
                 "commit": subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=ROOT, text=True).strip(),
                 "dirty": subprocess.check_output(["git", "status", "--short"], cwd=ROOT, text=True)}
-    metadata["fixture_sha256"] = sha256(args.config if args.mode == "gui" else ROOT / "scripts/soak-config.rb")
+    metadata["fixture_sha256"] = sha256(args.config if args.mode == "gui" else ROOT / "scripts/soak-config.scm")
     if args.mode == "gui":
         metadata["config_path"] = str(args.config)
         metadata["config_sha256"] = metadata["fixture_sha256"]
@@ -444,6 +444,10 @@ def main():
         (args.output / "FAILED.txt").write_text(f"{type(error).__name__}: {error}", encoding="utf-8")
         raise
     (args.output / "COMPLETED.txt").write_text("Scenarios completed. Review trends; long soak remains required.\n", encoding="utf-8")
+
+
+def scheme_list(values):
+    return "(list " + " ".join(json.dumps(v, ensure_ascii=False) for v in values) + ")"
 
 
 if __name__ == "__main__":

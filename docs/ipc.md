@@ -23,7 +23,7 @@ Protocol version 1 uses a 32-bit big-endian frame length, a fixed magic value, a
 
 Mutating CLI requests normalize to the `NativeCommand` transport envelope:
 pane text, split, and workspace activation use `NativeCommand::Mux`, while
-reload uses `NativeCommand::Config(ConfigCommand::Reload)`. Ruby and IPC share
+reload uses `NativeCommand::Config(ConfigCommand::Reload)`. Scheme and IPC share
 the same ingress validation and domain-dispatch path; the ingress policy limits
 IPC to the command domains exposed by the protocol.
 
@@ -31,4 +31,4 @@ IPC to the command domains exposed by the protocol.
 
 On Unix the runtime directory is mode `0700`, while state files and socket nodes are mode `0600`. Windows stores state below the current user's local application-data directory and uses a local named pipe. A fresh 256-bit token from the operating system random source authenticates every request, and token comparison does not short-circuit.
 
-This is local same-user control, not a remote security boundary. A process that can read the user's runtime state can control the terminal, including sending text to a shell and evaluating Ruby through the console. The server binds no TCP port and the protocol has no network transport.
+This is local same-user control, not a remote security boundary. A process that can read the user's runtime state can control the terminal, including sending text to a shell and evaluating Scheme through the console. The server binds no TCP port and the protocol has no network transport.

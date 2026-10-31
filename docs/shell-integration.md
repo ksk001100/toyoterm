@@ -14,10 +14,10 @@ Shells write these OSC sequences to the terminal. Both BEL (`0x07`) and ST
 | Remote host | `OSC 1337;RemoteHost=<user>@<host> ST` | `remote_host` |
 | Integration version | `OSC 1337;ShellIntegrationVersion=<version>;<shell> ST` | `shell_integration_version`, `shell_integration_shell` |
 | User variable | `OSC 1337;SetUserVar=<name>=<base64-value> ST` | `user_vars` |
-| Prompt start | `OSC 133;A ST` | Ruby `prompt_started` event |
-| Command-line start | `OSC 133;B ST` | Ruby `command_line_started` event |
-| Command start | `OSC 133;C ST` | `command_running? = true`, Ruby `command_started` event |
-| Command end | `OSC 133;D;<decimal-status> ST` | `command_running? = false`, `last_exit_status`, Ruby `command_finished` event |
+| Prompt start | `OSC 133;A ST` | Scheme `prompt_started` event |
+| Command-line start | `OSC 133;B ST` | Scheme `command_line_started` event |
+| Command start | `OSC 133;C ST` | `command_running? = true`, Scheme `command_started` event |
+| Command end | `OSC 133;D;<decimal-status> ST` | `command_running? = false`, `last_exit_status`, Scheme `command_finished` event |
 
 OSC payloads are limited to 8 KiB. Invalid UTF-8 paths and malformed status
 values are ignored; an OSC 133 command-end marker without a valid status still
@@ -33,7 +33,7 @@ URI-prefix slash (yielding `C:/path`).
 `Pane#remote_host`; an empty user is accepted, while a missing host, invalid
 UTF-8, control characters, and values over 1 KiB are ignored. Title changes remain
 the standard OSC 0/2 terminal events. Title and cwd changes are delivered to
-Ruby as `title_changed` and `cwd_changed` events. Prompt and command lifecycle
+Scheme as `title_changed` and `cwd_changed` events. Prompt and command lifecycle
 events expose the affected `pane`; `command_finished` also exposes
 `exit_status`, or `nil` when no valid decimal status was reported. The bundled
 Bash, Zsh, Fish, and PowerShell scripts emit all four markers, and compatible

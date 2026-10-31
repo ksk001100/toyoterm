@@ -95,12 +95,12 @@ fn run(mut args: impl Iterator<Item = String>) -> Result<(), String> {
             ensure_no_arguments(&mut args)?;
             run_gui_smoke_test().map_err(|error| error.to_string())
         }
-        Some("ruby") => match args.next().as_deref() {
+        Some("steel") => match args.next().as_deref() {
             None | Some("console") => {
                 ensure_no_arguments(&mut args)?;
                 run_console()
             }
-            Some(argument) => Err(format!("unexpected ruby argument `{argument}`")),
+            Some(argument) => Err(format!("unexpected steel argument `{argument}`")),
         },
         Some("gui") => match args.next() {
             None => run_gui().map_err(|error| error.to_string()),
@@ -298,10 +298,10 @@ fn demo_input() -> &'static str {
 
 fn print_help() {
     println!(
-        "toyoterm - a programmable terminal emulator powered by Rust and mruby\n\n\
+        "toyoterm - a programmable terminal emulator powered by Rust and Steel\n\n\
          Usage:\n  toyoterm [GUI-OPTIONS] [-e COMMAND [ARG...]]\n  toyoterm [COMMAND]\n\n\
-         GUI options:\n  --config PATH                    Use a specific Ruby configuration\n  --title TITLE                    Set the initial window title\n  --app-id APP-ID                  Set the Wayland app ID / X11 class on Linux\n  --working-directory DIR          Set the initial pane working directory\n  -e, --execute COMMAND [ARG...]   Run a command instead of the default shell\n\n\
-         Commands:\n  gui                              Open the native GPU window (default)\n  ruby console                     Connect to the running GUI Ruby VM\n  list                             Show the running GUI mux state\n  reload                           Reload the running GUI configuration\n  cli list-panes                   List panes in the running GUI\n  cli send-text --pane ID TEXT     Send text to a pane\n  cli split [DIRECTION]            Split the active pane (default: right)\n  cli activate-workspace NAME      Activate or create a workspace\n  demo                             Exercise tabs and pane splitting\n  pty-demo                         Spawn a process in a native PTY\n  screen-demo                      Parse PTY output into a terminal snapshot\n  shell-integration SHELL         Print the integration script for a shell\n  version                          Print version\n  help                             Print this help\n\nEnvironment:\n  TOYOTERM_INSTANCE                Select a named running GUI instance"
+         GUI options:\n  --config PATH                    Use a specific Scheme configuration\n  --title TITLE                    Set the initial window title\n  --app-id APP-ID                  Set the Wayland app ID / X11 class on Linux\n  --working-directory DIR          Set the initial pane working directory\n  -e, --execute COMMAND [ARG...]   Run a command instead of the default shell\n\n\
+         Commands:\n  gui                              Open the native GPU window (default)\n  steel console                     Connect to the running GUI Scheme VM\n  list                             Show the running GUI mux state\n  reload                           Reload the running GUI configuration\n  cli list-panes                   List panes in the running GUI\n  cli send-text --pane ID TEXT     Send text to a pane\n  cli split [DIRECTION]            Split the active pane (default: right)\n  cli activate-workspace NAME      Activate or create a workspace\n  demo                             Exercise tabs and pane splitting\n  pty-demo                         Spawn a process in a native PTY\n  screen-demo                      Parse PTY output into a terminal snapshot\n  shell-integration SHELL         Print the integration script for a shell\n  version                          Print version\n  help                             Print this help\n\nEnvironment:\n  TOYOTERM_INSTANCE                Select a named running GUI instance"
     );
 }
 

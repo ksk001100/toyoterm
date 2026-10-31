@@ -244,14 +244,14 @@ pub(crate) fn candidate_config_paths_windows(
 ) -> Vec<PathBuf> {
     let mut candidates = Vec::new();
     if let Some(appdata) = appdata.filter(|s| !s.is_empty()) {
-        candidates.push(PathBuf::from(appdata).join("toyoterm").join("config.rb"));
+        candidates.push(PathBuf::from(appdata).join("toyoterm").join("config.scm"));
     }
     if let Some(userprofile) = userprofile.filter(|s| !s.is_empty()) {
         candidates.push(
             PathBuf::from(userprofile)
                 .join(".config")
                 .join("toyoterm")
-                .join("config.rb"),
+                .join("config.scm"),
         );
     }
     candidates
@@ -278,13 +278,13 @@ pub(crate) fn candidate_config_paths_unix(
 ) -> Vec<PathBuf> {
     let mut candidates = Vec::new();
     if let Some(xdg) = xdg_config_home.filter(|s| !s.is_empty()) {
-        candidates.push(PathBuf::from(xdg).join("toyoterm").join("config.rb"));
+        candidates.push(PathBuf::from(xdg).join("toyoterm").join("config.scm"));
     } else if let Some(home) = home.filter(|s| !s.is_empty()) {
         candidates.push(
             PathBuf::from(home)
                 .join(".config")
                 .join("toyoterm")
-                .join("config.rb"),
+                .join("config.scm"),
         );
     }
     candidates
@@ -362,7 +362,7 @@ mod tests {
         let home = std::ffi::OsStr::new("/home/user");
         assert_eq!(
             default_config_path_unix(Some(xdg), Some(home)),
-            Some(PathBuf::from("/custom/xdg/toyoterm/config.rb"))
+            Some(PathBuf::from("/custom/xdg/toyoterm/config.scm"))
         );
     }
 
@@ -372,11 +372,11 @@ mod tests {
         let empty_xdg = std::ffi::OsStr::new("");
         assert_eq!(
             default_config_path_unix(None, Some(home)),
-            Some(PathBuf::from("/home/user/.config/toyoterm/config.rb"))
+            Some(PathBuf::from("/home/user/.config/toyoterm/config.scm"))
         );
         assert_eq!(
             default_config_path_unix(Some(empty_xdg), Some(home)),
-            Some(PathBuf::from("/home/user/.config/toyoterm/config.rb"))
+            Some(PathBuf::from("/home/user/.config/toyoterm/config.scm"))
         );
     }
 
@@ -388,17 +388,17 @@ mod tests {
         assert_eq!(
             candidates,
             vec![
-                PathBuf::from(appdata).join("toyoterm").join("config.rb"),
+                PathBuf::from(appdata).join("toyoterm").join("config.scm"),
                 PathBuf::from(userprofile)
                     .join(".config")
                     .join("toyoterm")
-                    .join("config.rb"),
+                    .join("config.scm"),
             ]
         );
         // If neither exists on disk, default is first candidate (APPDATA)
         assert_eq!(
             default_config_path_windows(Some(appdata), Some(userprofile)),
-            Some(PathBuf::from(appdata).join("toyoterm").join("config.rb"))
+            Some(PathBuf::from(appdata).join("toyoterm").join("config.scm"))
         );
     }
 
@@ -411,7 +411,7 @@ mod tests {
                 PathBuf::from(userprofile)
                     .join(".config")
                     .join("toyoterm")
-                    .join("config.rb")
+                    .join("config.scm")
             )
         );
     }

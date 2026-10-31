@@ -6,24 +6,21 @@ use toyoterm_pty::{NativePty, Pty, PtyCommand, PtySize};
 use toyoterm_script::ConfigManager;
 
 #[test]
-fn ruby_callback_exception_does_not_terminate_the_pty_child() {
+fn steel_callback_exception_does_not_terminate_the_pty_child() {
     let mut session = NativePty
         .spawn(waiting_command(), PtySize::new(80, 24))
         .expect("spawn waiting PTY child");
     let mut reader = session.take_reader().expect("take PTY reader");
 
-    let mut config = ConfigManager::new().expect("initialize mruby");
+    let mut config = ConfigManager::new().expect("initialize Steel");
     let mut mux = Mux::new();
     let pane = mux.current_pane().expect("active pane");
     config
         .reload(
             r#"
-                Toyoterm.configure do |config|
-                  config.keys.key("CTRL+E").run do |context|
-                    context.pane.send_text("must not reach the PTY\n")
-                    raise "intentional callback failure"
-                  end
-                end
+                (bind! "CTRL+E" (lambda (ctx)
+                  (pane-send-text! (context-ref ctx 'pane) "must not reach the PTY\n")
+                  (error "intentional callback failure")))
                 "#,
         )
         .expect("load failing callback");
@@ -35,7 +32,7 @@ fn ruby_callback_exception_does_not_terminate_the_pty_child() {
     assert_eq!(
         session.try_wait().expect("poll PTY child"),
         None,
-        "PTY child exited because the Ruby callback failed"
+        "PTY child exited because the Scheme callback failed"
     );
 
     mux.dispatch(Command::SendText {

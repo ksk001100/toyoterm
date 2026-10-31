@@ -29,7 +29,6 @@ arboard = { version = "3.6.1", default-features = false, features = [
   "wayland-data-control",
 ] }
 bytemuck = { version = "1.25.2", features = ["derive"] }
-cc = "1.5.0"
 cursor-icon = "1.2.0"
 glyphon = "0.12.0"
 image = { version = "0.25.10", default-features = false, features = [
@@ -45,6 +44,7 @@ portable-pty = "0.9.0"
 pollster = "1.0.1"
 sys-locale = "0.3.2"
 tracing = { version = "0.1.44", default-features = false, features = ["std"] }
+steel-core = "=0.8.3"
 unicode-width = "0.2.2"
 unicode-script = "0.5.8"
 unicode-segmentation = "1.13.3"

@@ -1,0 +1,6 @@
+(config-set! 'font.family "monospace")
+(config-set! 'font.size 14)
+(config-set! 'scrollback_lines 100000)
+(bind-action! "CTRL+SHIFT+F11" 'toggle-zoom)
+(bind! "CTRL+SHIFT+F12" (lambda (ctx) (context-action! ctx 'toggle-zoom)))
+(on! 'bell (lambda (event) void))

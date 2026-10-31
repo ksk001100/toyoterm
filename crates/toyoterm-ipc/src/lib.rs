@@ -204,7 +204,7 @@ pub fn run_console() -> Result<(), String> {
         }
         match eval_remote(&submitted) {
             Ok(result) => println!("=> {result}"),
-            Err(error) if is_incomplete_ruby_error(&error) => continue,
+            Err(error) if is_incomplete_steel_error(&error) => continue,
             Err(error) => eprintln!("{error}"),
         }
         history.push(submitted.replace('\n', "\\n"));
@@ -596,7 +596,7 @@ fn random_token() -> Result<String, String> {
 fn history_path() -> PathBuf {
     std::env::var_os("TOYOTERM_HISTORY_FILE")
         .map(PathBuf::from)
-        .unwrap_or_else(|| std::env::temp_dir().join("toyoterm-ruby-history"))
+        .unwrap_or_else(|| std::env::temp_dir().join("toyoterm-steel-history"))
 }
 fn load_history() -> Vec<String> {
     fs::read_to_string(history_path())
@@ -608,8 +608,9 @@ fn load_history() -> Vec<String> {
 fn save_history(h: &[String]) {
     let _ = fs::write(history_path(), h.join("\n"));
 }
-pub fn is_incomplete_ruby_error(error: &str) -> bool {
-    error.contains("syntax error") && error.contains("unexpected end of file")
+pub fn is_incomplete_steel_error(error: &str) -> bool {
+    (error.contains("error[E09]: Parse") || error.contains("Error: Parse:"))
+        && error.contains("Unexpected EOF")
 }
 
 #[cfg(unix)]
@@ -897,9 +898,8 @@ mod tests {
     }
     #[test]
     fn detects_multiline() {
-        assert!(is_incomplete_ruby_error(
-            "syntax error, unexpected end of file"
-        ));
+        assert!(is_incomplete_steel_error("Error: Parse: Unexpected EOF"));
+        assert!(!is_incomplete_steel_error("Error: Generic: Unexpected EOF"));
     }
     #[test]
     fn cleans_up_stale_instance() {

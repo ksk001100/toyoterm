@@ -60,8 +60,8 @@ class TrendTests(unittest.TestCase):
     def test_custom_config_requires_idle_before_creating_output(self):
         with tempfile.TemporaryDirectory() as directory:
             directory = Path(directory)
-            config = directory / "config.rb"
-            config.write_text("Toyoterm.configure {}\n", encoding="utf-8")
+            config = directory / "config.scm"
+            config.write_text("void\n", encoding="utf-8")
             output = directory / "results"
             result = subprocess.run([sys.executable, str(SCRIPT), "gui", "--executable", "unused",
                                      "--output", str(output), "--config", str(config)],
@@ -76,7 +76,7 @@ class TrendTests(unittest.TestCase):
             output = directory / "results"
             result = subprocess.run([sys.executable, str(SCRIPT), "gui", "--executable", "unused",
                                      "--scenario", "idle", "--output", str(output),
-                                     "--config", str(directory / "missing.rb")],
+                                     "--config", str(directory / "missing.scm")],
                                     capture_output=True, text=True, timeout=10)
             self.assertEqual(result.returncode, 2)
             self.assertIn("configuration is not a file", result.stderr)
@@ -86,11 +86,11 @@ class TrendTests(unittest.TestCase):
         import json
         with tempfile.TemporaryDirectory() as directory:
             directory = Path(directory)
-            config = directory / "config.rb"
-            config.write_text("Toyoterm.configure { |c| c.scrollback_lines = 42 }\n", encoding="utf-8")
+            config = directory / "config.scm"
+            config.write_text("(config-set! 'scrollback_lines 42)\n", encoding="utf-8")
             for name, extra_args, expected_config in (
                 ("custom", ["--scenario", "idle", "--config", str(config)], config),
-                ("default", [], soak.ROOT / "scripts/soak-config.rb"),
+                ("default", [], soak.ROOT / "scripts/soak-config.scm"),
             ):
                 with self.subTest(name=name):
                     output = directory / name

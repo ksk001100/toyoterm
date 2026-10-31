@@ -19,7 +19,7 @@ enum Operation {
 }
 
 #[test]
-fn ruby_object_operations_mutate_the_mux() {
+fn steel_object_operations_mutate_the_mux() {
     let cases = [
         Operation::SendText,
         Operation::SplitPane,
@@ -49,53 +49,52 @@ fn run_case(operation: Operation) {
 
     let script = match operation {
         Operation::SendText => format!(
-            r#"Toyoterm::Pane.new({}).send_text("from-ruby\n")"#,
+            r#"(pane-send-text! (handle 'pane {}) "from-steel\n")"#,
             original_pane.0
         ),
-        Operation::SplitPane => format!("Toyoterm::Pane.new({}).split(:right)", original_pane.0),
+        Operation::SplitPane => format!("(split! (handle 'pane {}) 'right)", original_pane.0),
         Operation::ClosePane => {
             let new_pane = split_current_pane(&mut mux);
-            format!("Toyoterm::Pane.new({}).close", new_pane.0)
+            format!("(close! (handle 'pane {}))", new_pane.0)
         }
         Operation::ActivatePane => {
             split_current_pane(&mut mux);
-            format!("Toyoterm::Pane.new({}).activate", original_pane.0)
+            format!("(activate! (handle 'pane {}))", original_pane.0)
         }
-        Operation::NewTab => format!("Toyoterm::MuxWindow.new({}).new_tab", original_window.0),
+        Operation::NewTab => format!("(new-tab! (handle 'window {}))", original_window.0),
         Operation::CloseTab => {
             let new_tab = new_tab(&mut mux);
-            format!("Toyoterm::Tab.new({}).close", new_tab.0)
+            format!("(close! (handle 'tab {}))", new_tab.0)
         }
         Operation::ActivateTab => {
             new_tab(&mut mux);
-            format!("Toyoterm::Tab.new({}).activate", original_tab.0)
+            format!("(activate! (handle 'tab {}))", original_tab.0)
         }
-        Operation::CreateWindow => format!(
-            "Toyoterm::Workspace.new({}).new_window",
-            original_workspace.0
-        ),
+        Operation::CreateWindow => {
+            format!("(new-window! (handle 'workspace {}))", original_workspace.0)
+        }
         Operation::CloseWindow => {
             let new_window = create_window(&mut mux, original_workspace);
-            format!("Toyoterm::MuxWindow.new({}).close", new_window.0)
+            format!("(close! (handle 'window {}))", new_window.0)
         }
         Operation::ActivateWindow => {
             create_window(&mut mux, original_workspace);
-            format!("Toyoterm::MuxWindow.new({}).activate", original_window.0)
+            format!("(activate! (handle 'window {}))", original_window.0)
         }
         Operation::ActivateWorkspace => {
             mux.dispatch(Command::SwitchWorkspace("second".into()))
                 .expect("create second workspace");
-            format!("Toyoterm::Workspace.new({}).activate", original_workspace.0)
+            format!("(activate! (handle 'workspace {}))", original_workspace.0)
         }
-        Operation::SwitchWorkspace => "Toyoterm.open_workspace(:backend)".to_owned(),
+        Operation::SwitchWorkspace => "(open-workspace! 'backend)".to_owned(),
     };
     mux.drain_events().for_each(drop);
 
-    let mut config = ConfigManager::new().expect("initialize mruby");
+    let mut config = ConfigManager::new().expect("initialize Steel");
     config
         .set_live_handles(mux.native_handles())
         .expect("sync native handles");
-    config.eval(&script).expect("evaluate Ruby operation");
+    config.eval(&script).expect("evaluate Scheme operation");
     let commands = config
         .drain_commands_with_context(
             mux.current_workspace(),
@@ -114,7 +113,7 @@ fn run_case(operation: Operation) {
         Operation::SendText => {
             assert_eq!(
                 mux.pending_input(original_pane),
-                Some(b"from-ruby\n".as_slice())
+                Some(b"from-steel\n".as_slice())
             );
         }
         Operation::SplitPane => assert_eq!(mux.pane_ids().count(), 2),

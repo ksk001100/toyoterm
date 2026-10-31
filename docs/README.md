@@ -8,7 +8,7 @@
 | --- | --- |
 | [Installation](packaging.md) | Artifacts, install, upgrade, uninstall, and checksums |
 | [Usage](usage.md) | Controls, CLI, logs, configuration recovery, and rendering |
-| [mruby API](mruby-api.md) | Canonical configuration and Ruby API reference, defaults, validation, and execution semantics |
+| [Steel API](steel-api.md) | Canonical configuration and Scheme API reference, defaults, validation, and execution semantics |
 | [Shell integration](shell-integration.md) | Shell setup, cwd reporting, and command lifecycle |
 | [OSC support](osc-support.md) | Supported OSC sequences, intentional restrictions, and prioritized backlog |
 | [Terminal images](image-protocols.md) | Sixel, Kitty, OSC 1337, limits, and a runnable chart |
@@ -17,7 +17,7 @@
 | [v0.1.0 release notes](releases/v0.1.0.md) | First-release highlights, setup, and current limits |
 
 Runnable configurations live in [examples](../examples). The
-[default configuration](../examples/default_config.rb) provides optional bindings;
+[default configuration](../examples/default_config.scm) provides optional bindings;
 toyoterm itself has no built-in GUI key bindings.
 
 ## Developing toyoterm
@@ -26,7 +26,7 @@ toyoterm itself has no built-in GUI key bindings.
 | --- | --- |
 | [Development](development.md) | Repository workflow and validation commands |
 | [Terminal fuzzing](fuzzing.md) | Six cargo-fuzz targets, seeds, CI, resource limits and crash regression |
-| [Performance baseline](performance-baseline.md) | PTY-to-frame fixtures, timings, Ruby overhead, JSON records and commit comparison |
+| [Performance baseline](performance-baseline.md) | PTY-to-frame fixtures, timings, Scheme overhead, JSON records and commit comparison |
 | [Crate architecture](architecture.md) | Responsibilities and dependency rules |
 | [Threading](threading.md) | Ownership, request ordering, and callback budgets |
 | [Architecture decisions](adr/README.md) | Accepted decisions and rationale |
@@ -34,7 +34,7 @@ toyoterm itself has no built-in GUI key bindings.
 | [Soak validation](soak-validation.md) | Short churn, long idle, memory trends and sleep/wake RC evidence |
 | [Releasing](releasing.md) | Versioning and release checklist |
 
-Keep the READMEs as synchronized English/Japanese introductions, detailed Ruby
+Keep the READMEs as synchronized English/Japanese introductions, detailed Scheme
 behavior in the API reference, operational instructions in the relevant guide,
 and historical design decisions in ADRs. Update the owning guide and affected
 README summaries and examples together when behavior changes.

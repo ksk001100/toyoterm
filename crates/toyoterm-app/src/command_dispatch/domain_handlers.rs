@@ -15,7 +15,7 @@ pub(super) struct PaneSearchEffect {
 pub(super) fn apply_window_command(
     command: WindowCommand,
     mux: &mut Mux,
-    runtime_events: &mut VecDeque<RubyEvent>,
+    runtime_events: &mut VecDeque<ScriptEvent>,
     terminal_runtime: &mut TerminalRuntime,
     platform: &mut PlatformState,
 ) -> Result<(), String> {
@@ -67,7 +67,7 @@ fn native_window(platform: &PlatformState) -> Result<&Window, String> {
 pub(super) fn apply_pane_command(
     command: PaneCommand,
     mux: &mut Mux,
-    runtime_events: &mut VecDeque<RubyEvent>,
+    runtime_events: &mut VecDeque<ScriptEvent>,
     terminal_runtime: &mut TerminalRuntime,
 ) -> Result<PaneEffects, String> {
     let mut effects = PaneEffects::default();
@@ -108,7 +108,7 @@ pub(super) fn stage_pane_launch(
     creation: PaneCreation,
     launch: PaneLaunchSpec,
     mux: &mut Mux,
-    runtime_events: &mut VecDeque<RubyEvent>,
+    runtime_events: &mut VecDeque<ScriptEvent>,
     terminal_runtime: &mut TerminalRuntime,
 ) -> Result<PaneId, String> {
     let pane = dispatch_pane_creation(mux, runtime_events, creation)?;
@@ -121,7 +121,7 @@ fn apply_pane_search(
     query: String,
     direction: PaneSearchDirection,
     mux: &mut Mux,
-    runtime_events: &mut VecDeque<RubyEvent>,
+    runtime_events: &mut VecDeque<ScriptEvent>,
     terminal_runtime: &mut TerminalRuntime,
 ) -> Result<PaneSearchEffect, String> {
     if query.is_empty() {

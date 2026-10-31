@@ -5,7 +5,7 @@ See the [documentation index](README.md) for configuration, installation, and de
 ## Controls
 
 There are no built-in GUI key bindings. Copy the bindings from
-[default configuration](../examples/default_config.rb) into your `config.rb` and change them as needed.
+[default configuration](../examples/default_config.scm) into your `config.scm` and change them as needed.
 
 - Type normally to send input to the PTY
 - Click a workspace or tab label to activate it
@@ -57,7 +57,7 @@ OSC 52 and iTerm2 OSC 1337 clipboard writes are disabled by default. Terminal ou
 from an untrusted local process or remote host, so enabling them lets that
 output replace the system clipboard without a user gesture. Trusted
 configuration can opt in with
-`config.osc.clipboard = true`. Decoded writes are limited to 64 KiB;
+`(osc-set! 'clipboard #t)`. Decoded writes are limited to 64 KiB;
 invalid base64, invalid UTF-8, unsupported clipboard selectors, and oversized
 payloads are ignored. The iTerm2 one-shot `Copy=:` form and unnamed
 `CopyToClipboard=` / `EndCopy` text capture use the same permission and limit;
@@ -65,13 +65,13 @@ overflow discards the complete capture, and disabling the permission cancels an
 active capture. Named `rule`, `find`, and `font` buffers are ignored because
 toyoterm has no matching clipboard destinations. OSC 52 clipboard queries
 remain disabled, so terminal output cannot read clipboard contents. Configured
-copy/paste shortcuts and the trusted-configuration Ruby clipboard API remain
+copy/paste shortcuts and the trusted-configuration Scheme clipboard API remain
 available independently.
 
 ### File-transfer security
 
 iTerm2 OSC 1337 `inline=0` and Kitty OSC 5113 downloads are disabled by default. To enable them,
-set `config.osc.downloads` to an existing absolute directory. Set it to `nil`
+set `(osc-ref 'downloads)` to an existing absolute directory. Set it to `#f`
 to disable downloads again.
 Decoded transfers are limited to 32 MiB. Remote path components and unsafe
 filename characters are removed, existing files are never overwritten, and a
@@ -85,7 +85,7 @@ IDs are required to refer to an earlier directory, link targets are limited to
 the transferred tree, and external or escaping symbolic-link targets are rejected.
 
 Kitty OSC 5113 uploads (terminal-to-client receive sessions) use a separate
-permission and root. Set `config.osc.uploads` to an existing absolute directory.
+permission and root. Set `(osc-ref 'uploads)` to an existing absolute directory.
 Requested `/...` and `~/...` protocol paths are always rebased below that root.
 Traversal and platform prefixes are rejected, directory walks do not follow
 symbolic links, and absolute or escaping symbolic-link targets are refused.
@@ -95,7 +95,7 @@ Each session is limited to 64 entries and 32 MiB; data is returned in bounded
 ### OSC background-image security
 
 iTerm2 OSC 1337 `SetBackgroundImageFile=` is disabled by default. Enable it with
-`config.osc.background_image` set to an existing absolute,
+`(osc-ref 'background-image)` set to an existing absolute,
 non-symbolic-link directory. Decoded relative, `/...`, and `~/...` paths are
 rebased below that root. Traversal, platform prefixes, directories, missing
 files, and links resolving outside the root are rejected. PNG/JPEG loading and
@@ -107,7 +107,7 @@ reloading configuration restores the configured wallpaper.
 
 OSC 9, OSC 99, and OSC 777 desktop notifications are disabled by default because remote
 output could otherwise create notification spam. Enable them with
-`config.osc.notifications = true`. Legacy messages are plain UTF-8;
+`(osc-set! 'notifications #t)`. Legacy messages are plain UTF-8;
 OSC 99 additionally accepts its bounded padded/unpadded base64 and ID-based chunk forms.
 Its `always`, `unfocused`, and `invisible` delivery occasions, urgency, expiry,
 and every standard sound (`system`, `silent`, `error`, `warn`/`warning`, `info`, and
@@ -145,14 +145,14 @@ is logged and does not block PTY parsing.
 
 iTerm2 OSC 1337 attention requests are disabled by default because remote output
 could otherwise flash or bounce the application repeatedly. Trusted configuration
-can opt in with `config.osc.attention = true`. Values `yes`,
+can opt in with `(osc-set! 'attention #t)`. Values `yes`,
 `once`, and `no` request indefinite attention, one-shot attention, or cancellation
 through the platform window API. `fireworks` renders a bounded 350 ms burst around
 the requesting pane's cursor without invoking a platform attention API.
 
 OSC 1337 `StealFocus` and `Disinter` are controlled separately because they can
 move the application to the foreground without a click. Enable them only for
-trusted output with `config.osc.focus = true`. Requests
+trusted output with `(osc-set! 'focus #t)`. Requests
 are limited to one per pane every two seconds; the window manager may still deny
 the focus change.
 
@@ -160,7 +160,7 @@ the focus change.
 
 OSC 1337 `OpenURL=:` requests are disabled by default because they launch the
 platform URL handler without a click. Trusted configuration can opt in with
-`config.osc.open_url = true`. The base64-decoded URL is limited
+`(osc-set! 'open-url #t)`. The base64-decoded URL is limited
 to 2,048 bytes, must not contain control characters, and must use `https`,
 `http`, or `mailto`. Requests are limited to one per pane every two seconds.
 
@@ -204,7 +204,7 @@ Only these commands connect to an existing GUI over local IPC:
 | --- | --- |
 | `toyoterm list` | Show the GUI's current mux state. |
 | `toyoterm reload` | Reload its selected configuration file. |
-| `toyoterm ruby console` | Open a Ruby REPL in its persistent VM. mruby parses multiline input, and local variables persist between entries. Supports `:history` and `exit`; `toyoterm ruby` is an alias. |
+| `toyoterm steel console` | Open a Scheme REPL in its persistent VM. Steel parses multiline input, and local variables persist between entries. Supports `:history` and `exit`; `:q` also exits. |
 | `toyoterm cli list-panes` | List panes. |
 | `toyoterm cli send-text --pane ID TEXT` | Send text to a pane; multiple text arguments are joined with spaces. |
 | `toyoterm cli split [left\|right\|up\|down]` | Split the active pane; defaults to `right`. Also accepts `--direction DIRECTION`. |
@@ -236,16 +236,15 @@ See [shell integration](shell-integration.md) for startup-file instructions.
 Diagnostics are written to stderr through `tracing`; the default level is `warn`. `TOYOTERM_LOG` sets the global level or comma-separated target filters. The available targets are `toyoterm::pty`, `toyoterm::render`, `toyoterm::mux`, `toyoterm::script`, `toyoterm::config`, `toyoterm::app`, and `toyoterm::ipc`. Short target names such as `pty` are accepted.
 
 Dynamic key-binding and event callback durations are emitted at `debug` under `toyoterm::script`. Callbacks taking 100 ms or longer are logged at `warn` as slow callbacks, including their kind, name, duration, and success state.
-At `trace`, the same target reports `pending_script`, `runtime_events`, the
-mruby GC arena index, and the current live-object count for memory-growth
-diagnostics.
+At `trace`, the same target reports `pending_script` and `runtime_events`
+for request-queue diagnostics. VM work and collection stay on the script thread.
 
 ```sh
 TOYOTERM_LOG=debug toyoterm
 TOYOTERM_LOG=warn,pty=trace,render=debug toyoterm
 ```
 
-toyoterm writes logs only to stderr and does not create or rotate log files. Redirecting stderr is an explicit user choice, so retention and rotation then belong to the surrounding process manager. Logs never intentionally include PTY input/output, clipboard contents, or configuration source text. Diagnostics can include configuration paths, process and pane identifiers, callback names, dimensions, error messages, and Ruby backtraces; review them before sharing.
+toyoterm writes logs only to stderr and does not create or rotate log files. Redirecting stderr is an explicit user choice, so retention and rotation then belong to the surrounding process manager. Logs never intentionally include PTY input/output, clipboard contents, or configuration source text. Diagnostics can include configuration paths, process and pane identifiers, callback names, dimensions, error messages, and Scheme backtraces; review them before sharing.
 
 PowerShell uses environment assignment syntax such as:
 
@@ -263,7 +262,7 @@ back to defaults while retaining the selected path for a later reload.
 preserves the active configuration and running terminal sessions.
 
 For configuration transactions and live updates, see the
-[mruby API reference](mruby-api.md#loading-configuration).
+[Steel API reference](steel-api.md#loading-configuration).
 
 ## Rendering
 
@@ -275,7 +274,7 @@ opacity and does not alter OS-managed title bars or borders.
 A Nerd Font's exact installed family name can be set in `config.font.family`;
 the Mono variant is useful for terminal prompts. Glyphs are positioned at
 terminal cell coordinates. Fallback families, wallpaper, and opacity settings
-are documented in the [configuration reference](mruby-api.md#configfont).
+are documented in the [configuration reference](steel-api.md#configfont).
 
 Windows requires a DirectX 12-capable graphics device and uses DirectComposition
 with premultiplied alpha. Transparency remains enabled at opacity `1.0` so it

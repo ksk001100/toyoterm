@@ -1510,7 +1510,7 @@ impl GpuRenderer {
             Some(layout.line_height),
         );
         self.config_error.title.set_text(
-            "Toyoterm Ruby Error",
+            "Toyoterm Scheme Error",
             &attrs.clone().weight(Weight(700)),
             Shaping::Advanced,
             None,

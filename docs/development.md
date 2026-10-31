@@ -2,8 +2,8 @@
 
 Read [AGENTS.md](../AGENTS.md) for the complete repository working contract,
 [architecture](architecture.md) for dependencies, and [threading](threading.md)
-for runtime ownership. Read the [mruby API reference](mruby-api.md) before
-changing Ruby-visible behavior.
+for runtime ownership. Read the [Steel API reference](steel-api.md) before
+changing Scheme-visible behavior.
 
 ## Validation
 
@@ -49,7 +49,7 @@ Each result is the median of five samples after warm-up, reported as time per
 operation; input cases also report MiB/s. The fixtures and iteration counts are
 fixed so changes can be compared on the same machine. These measurements have
 no timing pass/fail threshold and are ignored by ordinary tests. Compare runs
-under similar system load; they do not include PTY I/O, GPU rendering, or Ruby.
+under similar system load; they do not include PTY I/O, GPU rendering, or Scheme.
 
 Native smoke tests:
 
@@ -66,7 +66,7 @@ for physical-machine checks.
 
 ## Documentation and releases
 
-Keep both READMEs synchronized. Document Ruby changes in [mruby-api.md](mruby-api.md)
+Keep both READMEs synchronized. Document Scheme changes in [steel-api.md](steel-api.md)
 and update relevant runnable examples. Review rendering snapshots intentionally;
 do not refresh them just to pass tests.
 

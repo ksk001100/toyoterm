@@ -19,7 +19,7 @@ cargo build --release --locked
 python3 scripts/performance-baseline.py run \
   --executable target/release/toyoterm \
   --output .performance-results/v0.2.0-machine-A \
-  --samples 5 --label v0.2.0 --ruby \
+  --samples 5 --label v0.2.0 --steel \
   --notes 'CPU/GPU, OS, fonts/versions, display scale, backend, power mode'
 ```
 
@@ -50,7 +50,7 @@ The output directory must be new. It contains:
   OS/CPU, profile, Python version, harness hash, notes and scenario/sample selection.
 - `results.jsonl`: one JSON object per completed case/sample; failed runs are
   explicitly recorded and the driver exits unsuccessfully.
-- `ruby.jsonl` and `ruby.log` when `--ruby` is selected.
+- `steel.jsonl` and `steel.log` when `--steel` is selected.
 - Per-case config, exact fixture bytes and SHA-256, producer timestamps, gates,
   and the complete GUI log (including adapter/backend and surface size).
 
@@ -71,7 +71,7 @@ an unsupported GUI run as passed.
 | D: panes | 1 / 2 / 4 / 8 panes in one tab/window, each producing 1 MiB of mixed output with 1 ms per batch pacing | Aggregate throughput, process CPU, frame p50/p95, memory, event count |
 | E: search | 100,000 lines then `current_pane.search('needle')` | Active pane search, overlay update and first presented frame |
 | F: images | Sixel, Kitty PNG and iTerm2 PNG; 60² / 300² / 1200² pixels (well below the image limits) | First, repeat and cached redraw duration, decode/placement, upload, retained/uploaded images |
-| G: scripting | Static key resolver, Ruby key, bell event, `Toyoterm.async` callback completion | Separate machine-readable overhead distributions |
+| G: scripting | Static key resolver, Scheme key, bell event, `async!` callback completion | Separate machine-readable overhead distributions |
 | H: reload | Small config, and config registering 500 commands | Evaluate, validate, VM swap, app/config apply, presented frame |
 
 Full-screen fixtures calibrate the window before measurement: the driver
@@ -97,7 +97,7 @@ protocols need a separate supported backend run.
 
 The driver enables `TOYOTERM_LOG=warn,toyoterm::perf=trace`. Detailed clock reads
 are gated on this trace target and disabled in ordinary builds/runs. No new
-Ruby-visible API or cross-thread VM access is introduced. Stage events include
+Scheme-visible API or cross-thread VM access is introduced. Stage events include
 `stage`, `duration_us`, and integer epoch `ts_ns`; presented completion markers
 include pane ID and grid. Epoch timestamps align the child and app on one host;
 do not change the system clock during a run. Log polling does not determine the
@@ -135,38 +135,39 @@ overhead. Trace logging still has overhead; compare identically instrumented run
   applies the result through the existing app/renderer path. Search/reload
   end-to-end phases include the driver's IPC request and wait for a successful
   present after `search_apply` / `config_apply`.
-- `script_gc`: collection of temporary Ruby objects on the script thread after
-  configuration loading or request completion, including rollback after errors.
-  It is separate from PTY/render work and can overlap the enclosing config stage.
+- Steel's automatic collection is included in the enclosing script/config stage.
+  The host does not force full collection after loads or completed requests;
+  there is no separate `script_gc` stage. Explicit GC diagnostics change the
+  allocation behavior and must not be mixed into ordinary memory baselines.
 
-## Ruby and native keys
+## Scheme and native keys
 
-`--ruby` runs the two ignored diagnostic tests with locked dependencies and
+`--steel` runs the two ignored diagnostic tests with locked dependencies and
 saves four JSON records. Each discards 100 warmup iterations and measures 1,000
-samples. Ruby measurements submit typed requests to the actual named script
+samples. Scheme measurements submit typed requests to the actual named script
 thread and wait for completion, including context installation, dispatch,
 callback execution and transaction/result collection. Async registration is
 prepared outside timing, and a typed successful completion is delivered through
 the real callback path; external process launch/runtime is excluded to isolate
-mruby completion overhead. Callback failures are errors, not performance samples.
+Steel completion overhead. Callback failures are errors, not performance samples.
 
 The static-key record measures the native key **resolver** in batches of 1,000,
-reports per-key ms, and never invokes Ruby. It is narrower than a script-thread
-roundtrip: do not subtract it from Ruby results as if the two were identical
+reports per-key ms, and never invokes Scheme. It is narrower than a script-thread
+roundtrip: do not subtract it from Scheme results as if the two were identical
 end-to-end actions. Full native key dispatch is separately traceable as
-`key_dispatch`. The same stage on a Ruby key ends at enqueue; `ruby_key` records
+`key_dispatch`. The same stage on a Scheme key ends at enqueue; `steel_key` records
 script-thread service time, while the ignored test includes the channel roundtrip.
 
 For manual key-to-frame investigation use the companion config:
 
 ```sh
-TOYOTERM_LOG=warn,toyoterm::perf=trace target/release/toyoterm --config examples/performance.rb
+TOYOTERM_LOG=warn,toyoterm::perf=trace target/release/toyoterm --config examples/performance.scm
 ```
 
 Create a split, then repeatedly press Ctrl+Shift+F11 (native toggle zoom) and
-Ctrl+Shift+F12 (Ruby callback returning the same action). Retain the trace and
-environment; it exposes native dispatch, Ruby service, update and frame work.
-Manual OS key injection and display latency are not included in `ruby.jsonl`.
+Ctrl+Shift+F12 (Scheme callback returning the same action). Retain the trace and
+environment; it exposes native dispatch, Scheme service, update and frame work.
+Manual OS key injection and display latency are not included in `steel.jsonl`.
 
 The pre-existing isolated terminal measurements remain available:
 
@@ -186,7 +187,7 @@ Comparison prints JSON records with median duration per identical
 case/fixture-hash/actual-grid/phase and percentage change. Review metadata, actual grids,
 stage distributions, CPU and memory together. Nonmatching fixtures are not
 compared; unmatched cases are reported. Missing/failed cases are not evidence of equivalent performance.
-Compare `ruby.jsonl` distributions separately. Retain raw samples and look for
+Compare `steel.jsonl` distributions separately. Retain raw samples and look for
 repeatable large changes before profiling. A 5–10% difference can be noise;
 rerun under controlled conditions. Correctness and readability take precedence
 over improving a benchmark number.
@@ -223,7 +224,7 @@ For example, after configuring each terminal to the same grid:
 wezterm --config-file /absolute/path/benchmark.lua start --always-new-process -- \
   python3 /absolute/path/toyoterm/scripts/terminal-throughput.py \
   --output /absolute/path/wezterm.json --label wezterm --version INSTALLED_VERSION
-target/release/toyoterm --config /absolute/path/benchmark.rb -e \
+target/release/toyoterm --config /absolute/path/benchmark.scm -e \
   python3 /absolute/path/toyoterm/scripts/terminal-throughput.py \
   --output /absolute/path/toyoterm.json --label toyoterm --version 0.2.0-dev
 ```

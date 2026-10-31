@@ -15,10 +15,10 @@ pub(super) struct NativeCommandEffects {
     pub(super) reload_requested: bool,
 }
 
-pub(super) fn ruby_object_model(
+pub(super) fn script_object_model(
     mux: &Mux,
     pane_runtimes: Option<&HashMap<PaneId, PaneRuntime>>,
-) -> Result<RubyObjectModel, String> {
+) -> Result<ScriptObjectModel, String> {
     let current_workspace = mux.current_workspace();
     let current_window = mux
         .current_window()
@@ -39,7 +39,7 @@ pub(super) fn ruby_object_model(
             .workspace_windows(workspace_id)
             .ok_or_else(|| format!("workspace {workspace_id} is missing"))?
             .to_vec();
-        workspaces.push(RubyWorkspace {
+        workspaces.push(ScriptWorkspace {
             id: workspace_id,
             name: mux
                 .workspace_name(workspace_id)
@@ -52,7 +52,7 @@ pub(super) fn ruby_object_model(
                 .tabs(window_id)
                 .ok_or_else(|| format!("window {window_id} is missing"))?
                 .to_vec();
-            windows.push(RubyWindow {
+            windows.push(ScriptWindow {
                 id: window_id,
                 tabs: tab_ids.clone(),
             });
@@ -63,7 +63,7 @@ pub(super) fn ruby_object_model(
                 let tab_number = mux
                     .tab_number(tab_id)
                     .ok_or_else(|| format!("tab {tab_id} is missing from its window"))?;
-                tabs.push(RubyTab {
+                tabs.push(ScriptTab {
                     id: tab_id,
                     title: format!("Tab {tab_number}"),
                     panes: pane_ids.clone(),
@@ -72,7 +72,7 @@ pub(super) fn ruby_object_model(
                 let zoomed_pane = mux.zoomed_pane(tab_id);
                 for pane_id in pane_ids {
                     let runtime = pane_runtimes.and_then(|runtimes| runtimes.get(&pane_id));
-                    panes.push(RubyPane {
+                    panes.push(ScriptPane {
                         id: pane_id,
                         title: runtime
                             .map(|runtime| runtime.metadata.title.clone())
@@ -116,7 +116,7 @@ pub(super) fn ruby_object_model(
     windows.sort_by_key(|window| window.id);
     tabs.sort_by_key(|tab| tab.id);
     panes.sort_by_key(|pane| pane.id);
-    Ok(RubyObjectModel {
+    Ok(ScriptObjectModel {
         current_workspace,
         current_window,
         current_tab,
@@ -143,7 +143,7 @@ pub(super) fn dispatch_script_commands(
     let current_pane = mux
         .current_pane()
         .ok_or_else(|| "mux has no current pane".to_owned())?;
-    let model = ruby_object_model(mux, None)?;
+    let model = script_object_model(mux, None)?;
     config_manager
         .set_live_handles(mux.native_handles())
         .map_err(|error| error.to_string())?;
@@ -194,7 +194,7 @@ mod tests {
             result => panic!("expected a pane, got {result:?}"),
         };
 
-        let unzoomed = ruby_object_model(&mux, None).unwrap();
+        let unzoomed = script_object_model(&mux, None).unwrap();
         assert!(
             !unzoomed
                 .tabs
@@ -206,7 +206,7 @@ mod tests {
         assert!(unzoomed.panes.iter().all(|pane| !pane.zoomed));
 
         mux.dispatch(Command::ToggleZoom).unwrap();
-        let zoomed = ruby_object_model(&mux, None).unwrap();
+        let zoomed = script_object_model(&mux, None).unwrap();
 
         assert!(
             zoomed

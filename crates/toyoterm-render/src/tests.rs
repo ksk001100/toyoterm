@@ -1937,7 +1937,7 @@ fn opacity_transitions_update_alpha_mode_and_clear_color() {
 #[test]
 #[cfg(target_os = "windows")]
 fn windows_opacity_rounding_keeps_the_same_compositor_mode() {
-    // Ruby arithmetic uses f64, then native configuration narrows to f32.
+    // Scheme arithmetic uses f64, then native configuration narrows to f32.
     let rounded_one = (0.9_f64 + 0.1) as f32;
     let just_below_one = f32::from_bits(1.0_f32.to_bits() - 1);
     for supported in [

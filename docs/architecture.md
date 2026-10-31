@@ -19,7 +19,7 @@ toyoterm is a Cargo workspace. Each crate owns one runtime responsibility:
   Large compressible wallpaper pixels use lossless zlib storage; the shared
   type owns compression/expansion through the existing `flate2` dependency.
   This adds the `toyoterm-config -> toyoterm-api` edge, not a render/config edge.
-- `toyoterm-script`: mruby ownership, DSL evaluation, callbacks, and typed API conversion
+- `toyoterm-script`: Steel ownership, DSL evaluation, callbacks, and typed API conversion
 - `toyoterm-ipc`: the internal local transport shared by the app and CLI
 - `toyoterm-app`: window lifecycle and coordination of the native subsystems
 - `toyoterm-cli`: the `toyoterm` executable and command-line entry points
@@ -71,7 +71,7 @@ Native commands keep a small top-level domain boundary (`Mux`, `Action`,
 `Pane`, `Window`, `Ui`, `Clipboard`, `Script`, and `Config`). `NativeCommand` is a
 transport envelope: adding an operation within one domain does not grow an
 unrelated application-wide command enum or put its implementation in the
-application root. Ruby callbacks, IPC mutations, and native keybindings
+application root. Scheme callbacks, IPC mutations, and native keybindings
 converge on `apply_control_command`. An ingress policy first validates which
 domains an origin may use, then the action resolver turns every user-level
 `NativeAction` into an ID-resolved domain command. Context-bound script actions
@@ -85,6 +85,11 @@ generic intent layer.
 
 Inside `toyoterm-script`, `ConfigManager` remains the transactional coordinator:
 fresh-VM load and validation precede the active-runtime swap. Registry decoding
-belongs to `registry`, launch-command conversion belongs to `command_collector`,
-immediate `require` resolution and registration transaction state belong to the
-Ruby DSL, and VM mechanics remain in `runtime`.
+belongs to `registry`, launch-command conversion belongs to `command_collector`, and
+Steel handles native Scheme module resolution. Persistent application maps and
+registration transactions belong to `steel_prelude.scm`; typed VM conversion and
+host calls belong to `steel_runtime`. No new internal crate edges are introduced.
+The external `steel-core` dependency replaces the mruby C build and shim.
+Native config/registry snapshot reuse is keyed by a revision in the persistent
+application map. Only snapshot-visible mutations invalidate it; rollback and
+fresh-VM reload restore or replace the revision with their owning state.

@@ -3,21 +3,23 @@ use super::*;
 const MAX_REGISTERED_THEMES: usize = 4_096;
 
 pub struct ConfigManager {
-    pub(super) runtime: MrubyRuntime,
+    pub(super) runtime: SteelRuntime,
     pub(super) config: ToyotermConfig,
     pub(super) color_presets: HashMap<String, ColorConfig>,
     pub(super) registrations: RegistrySnapshot,
+    snapshot_revision: u64,
     source_path: Option<PathBuf>,
 }
 
 pub(super) struct LoadedConfig {
-    pub(super) runtime: MrubyRuntime,
+    pub(super) runtime: SteelRuntime,
     pub(super) config: ToyotermConfig,
     pub(super) color_presets: HashMap<String, ColorConfig>,
     pub(super) keybindings: HashSet<String>,
     pub(super) native_actions: HashMap<String, NativeAction>,
     pub(super) event_names: HashSet<String>,
     pub(super) user_command_names: HashSet<String>,
+    snapshot_revision: u64,
 }
 
 impl ConfigManager {
@@ -34,6 +36,7 @@ impl ConfigManager {
                 user_command_names: loaded.user_command_names,
             },
             source_path: None,
+            snapshot_revision: loaded.snapshot_revision,
         })
     }
 
@@ -41,54 +44,54 @@ impl ConfigManager {
         &self.config
     }
 
-    /// Starts a transaction for mutations made through the persistent Ruby VM.
+    /// Starts a transaction for mutations made through the persistent Scheme VM.
     /// The returned value is the command queue checkpoint associated with it.
     pub(super) fn begin_config_transaction(&mut self) -> Result<String, ScriptError> {
-        self.runtime.eval("Toyoterm.__begin_config_transaction")?;
-        self.runtime.eval("Toyoterm.__command_checkpoint")
+        self.runtime.eval_host("(__begin_config_transaction)")?;
+        self.runtime.eval_host("(__command_checkpoint)")
     }
 
     pub(super) fn rollback_config_transaction(
         &mut self,
         command_checkpoint: &str,
     ) -> Result<(), ScriptError> {
-        self.runtime
-            .eval("Toyoterm.__rollback_config_transaction")?;
+        self.runtime.eval_host("(__rollback_config_transaction)")?;
         let checkpoint = command_checkpoint
             .parse::<usize>()
             .map_err(|_| ScriptError::new("rollback config", "command checkpoint is invalid"))?;
         self.runtime
-            .eval(&format!("Toyoterm.__rollback_commands({checkpoint})"))?;
+            .eval_host(&format!("(__rollback_commands {checkpoint})"))?;
         Ok(())
     }
 
     pub(super) fn commit_config_transaction(&mut self) -> Result<(), ScriptError> {
-        self.runtime.eval("Toyoterm.__commit_config_transaction")?;
+        self.runtime.eval_host("(__commit_config_transaction)")?;
         Ok(())
     }
 
-    /// Reads and validates the live Ruby config after a persistent-VM request.
+    /// Reads and validates the live Scheme config after a persistent-VM request.
     /// A snapshot is returned only when a native setting actually changed.
     pub(super) fn refresh_config_snapshot(
         &mut self,
     ) -> Result<Option<ScriptSnapshot>, ScriptError> {
+        let revision = read_snapshot_revision(&mut self.runtime)?;
+        if revision == self.snapshot_revision {
+            return Ok(None);
+        }
         let config = read_config(
             &mut self.runtime,
             self.source_path.as_deref().and_then(Path::parent),
             Some(&self.config),
         )?;
         let color_presets = read_color_presets(&mut self.runtime)?;
+        let registrations = RegistrySnapshot::read(&mut self.runtime)?;
         let previous = self.snapshot();
         self.config = config;
         self.color_presets = color_presets;
-        self.refresh_registrations()?;
+        self.registrations = registrations;
+        self.snapshot_revision = revision;
         let current = self.snapshot();
         Ok((current != previous).then_some(current))
-    }
-
-    fn refresh_registrations(&mut self) -> Result<(), ScriptError> {
-        self.registrations = RegistrySnapshot::read(&mut self.runtime)?;
-        Ok(())
     }
 
     pub(super) fn snapshot(&self) -> ScriptSnapshot {
@@ -161,6 +164,7 @@ impl ConfigManager {
         self.runtime = loaded.runtime;
         self.config = loaded.config;
         self.color_presets = loaded.color_presets;
+        self.snapshot_revision = loaded.snapshot_revision;
         self.registrations = RegistrySnapshot {
             keybindings: loaded.keybindings,
             native_actions: loaded.native_actions,
@@ -175,14 +179,14 @@ impl ConfigManager {
         self.runtime.eval(source)
     }
 
-    /// Evaluates interactive Ruby and returns the value's `inspect` representation.
+    /// Evaluates interactive Scheme and returns the value's `inspect` representation.
     pub fn eval_inspect(&mut self, source: &str) -> Result<String, ScriptError> {
-        let checkpoint = self.runtime.eval("Toyoterm.__command_checkpoint")?;
+        let checkpoint = self.runtime.eval_host("(__command_checkpoint)")?;
         let result = self.runtime.eval_console(source);
         if result.is_err() {
             let _ = self
                 .runtime
-                .eval(&format!("Toyoterm.__rollback_commands({checkpoint})"));
+                .eval_host(&format!("(__rollback_commands {checkpoint})"));
         }
         result
     }
@@ -217,11 +221,7 @@ impl ConfigManager {
             ));
         }
         self.set_current_pane(current_pane)?;
-        let source = format!(
-            "Toyoterm.__invoke_command({}, Toyoterm.current_pane)",
-            ruby_string_literal(name)
-        );
-        match self.eval_callback(CallbackKind::UserCommand, name, &source)? {
+        match self.eval_named_callback(CallbackKind::UserCommand, name, "__invoke_command")? {
             value if value == "true" => Ok(true),
             _ => Err(ScriptError::new(
                 "invoke user command",
@@ -246,12 +246,12 @@ impl ConfigManager {
         let encoded = self.eval_callback(
             CallbackKind::Bar,
             position,
-            &format!("Toyoterm.__invoke_bar(:{position}, {force})"),
+            &format!("(__invoke_bar '{position} #{force})"),
         )?;
         decode_bar_items(&encoded)
     }
 
-    /// Updates the pane exposed by `Toyoterm.current_pane` for subsequent evaluations.
+    /// Updates the pane exposed by `(current-pane)` for subsequent evaluations.
     pub fn set_current_pane(&mut self, pane: PaneId) -> Result<(), ScriptError> {
         self.runtime.set_current_pane(pane)
     }
@@ -280,11 +280,11 @@ impl ConfigManager {
             .set_live_handles(&workspaces, &windows, &tabs, &panes)
     }
 
-    pub fn set_object_model(&mut self, model: &RubyObjectModel) -> Result<(), ScriptError> {
+    pub fn set_object_model(&mut self, model: &ScriptObjectModel) -> Result<(), ScriptError> {
         self.runtime.set_object_model(model)
     }
 
-    /// Updates the clipboard snapshot exposed to the next Ruby callback.
+    /// Updates the clipboard snapshot exposed to the next Scheme callback.
     pub fn set_clipboard_text(&mut self, text: Option<&str>) -> Result<(), ScriptError> {
         self.runtime.set_clipboard_text(text)
     }
@@ -301,9 +301,11 @@ impl ConfigManager {
         }
         self.set_current_pane(current_pane)?;
         let callback_name = key;
-        let key = ruby_string_literal(&callback_name);
-        let source = format!("Toyoterm.__config.__trigger_binding({key}, Toyoterm.current_pane)");
-        match self.eval_callback(CallbackKind::KeyBinding, &callback_name, &source)? {
+        match self.eval_named_callback(
+            CallbackKind::KeyBinding,
+            &callback_name,
+            "__trigger_binding",
+        )? {
             value if value == "true" => Ok(true),
             value if value == "false" => Ok(false),
             _ => Err(ScriptError::new(
@@ -313,7 +315,7 @@ impl ConfigManager {
         }
     }
 
-    /// Emits an event only when Ruby registered at least one handler for it.
+    /// Emits an event only when Scheme registered at least one handler for it.
     pub fn emit_event(
         &mut self,
         kind: ScriptEventKind,
@@ -325,19 +327,17 @@ impl ConfigManager {
         }
         self.set_current_pane(current_pane)?;
         let callback_name = name;
-        let name = ruby_string_literal(callback_name);
-        let source = format!("Toyoterm.__emit_event({name}, Toyoterm.current_pane)");
-        match self.eval_callback(CallbackKind::Event, callback_name, &source)? {
+        match self.eval_named_callback(CallbackKind::Event, callback_name, "__emit_event")? {
             value if value == "true" => Ok(true),
             value if value == "false" => Ok(false),
             _ => Err(ScriptError::new(
-                "emit mruby event",
+                "emit Steel event",
                 "event handler returned an invalid state",
             )),
         }
     }
 
-    pub fn emit_native_event(&mut self, event: &RubyEvent) -> Result<bool, ScriptError> {
+    pub fn emit_native_event(&mut self, event: &ScriptEvent) -> Result<bool, ScriptError> {
         if !self.registrations.event_names.contains(event.name()) {
             return Ok(false);
         }
@@ -352,6 +352,18 @@ impl ConfigManager {
         result.map(|()| true)
     }
 
+    fn eval_named_callback(
+        &mut self,
+        kind: CallbackKind,
+        name: &str,
+        function: &str,
+    ) -> Result<String, ScriptError> {
+        let started = Instant::now();
+        let result = self.runtime.invoke_named(function, name);
+        record_callback_duration(kind, name, started.elapsed(), result.is_ok());
+        result
+    }
+
     fn eval_callback(
         &mut self,
         kind: CallbackKind,
@@ -359,12 +371,12 @@ impl ConfigManager {
         source: &str,
     ) -> Result<String, ScriptError> {
         let started = Instant::now();
-        let result = self.runtime.eval(source);
+        let result = self.runtime.eval_host(source);
         record_callback_duration(kind, name, started.elapsed(), result.is_ok());
         result
     }
 
-    /// Converts commands queued by Ruby into the native command API.
+    /// Converts commands queued by Scheme into the native command API.
     ///
     /// Pane id zero is a bootstrap placeholder used while startup config is loading.
     pub fn drain_commands(
@@ -383,39 +395,39 @@ impl ConfigManager {
     ) -> Result<Vec<NativeCommand>, ScriptError> {
         let mut commands = Vec::new();
         loop {
-            let command_type = self.runtime.eval("Toyoterm.__next_command")?;
+            let command_type = self.runtime.eval_host("(__next_command)")?;
             if command_type.is_empty() {
                 break;
             }
 
             let raw_id = self
                 .runtime
-                .eval("Toyoterm.__current_command_pane")?
+                .eval_host("(__current_command_pane)")?
                 .parse::<u64>()
-                .map_err(|_| ScriptError::new("decode mruby command", "handle id is invalid"))?;
+                .map_err(|_| ScriptError::new("decode Steel command", "handle id is invalid"))?;
             let pane = if raw_id == 0 {
                 current_pane
             } else {
                 PaneId(raw_id)
             };
-            let payload = self.runtime.eval("Toyoterm.__current_command_payload")?;
+            let payload = self.runtime.eval_host("(__current_command_payload)")?;
             match command_type.as_str() {
                 "invoke_action" => {
-                    let argument = self.runtime.eval("Toyoterm.__current_command_argument")?;
+                    let argument = self.runtime.eval_host("(__current_command_argument)")?;
                     let action = decode_native_action(&payload, &argument)?;
                     if matches!(action, NativeAction::UserCommand(_)) {
                         return Err(ScriptError::new(
-                            "decode mruby command",
+                            "decode Steel command",
                             "user commands cannot be invoked as native actions",
                         ));
                     }
                     let mut context_value = |index| {
                         self.runtime
-                            .eval(&format!("Toyoterm.__current_command_context({index})"))?
+                            .eval_host(&format!("(__current_command_context {index})"))?
                             .parse::<u64>()
                             .map_err(|_| {
                                 ScriptError::new(
-                                    "decode mruby command",
+                                    "decode Steel command",
                                     "action context is invalid",
                                 )
                             })
@@ -505,14 +517,14 @@ impl ConfigManager {
                 "search_pane" => {
                     let direction = match self
                         .runtime
-                        .eval("Toyoterm.__current_command_search_direction")?
+                        .eval_host("(__current_command_search_direction)")?
                         .as_str()
                     {
                         "next" => PaneSearchDirection::Next,
                         "previous" => PaneSearchDirection::Previous,
                         other => {
                             return Err(ScriptError::new(
-                                "decode mruby command",
+                                "decode Steel command",
                                 format!("unsupported search direction {other}"),
                             ));
                         }
@@ -525,16 +537,16 @@ impl ConfigManager {
                 }
                 "open_selector" => {
                     let id = payload.parse::<u64>().map_err(|_| {
-                        ScriptError::new("decode mruby command", "selector id is invalid")
+                        ScriptError::new("decode Steel command", "selector id is invalid")
                     })?;
-                    let title = self.runtime.eval("Toyoterm.__current_selector_title")?;
+                    let title = self.runtime.eval_host("(__current_selector_title)")?;
                     let item_count = self
                         .runtime
-                        .eval("Toyoterm.__current_selector_item_count")?
+                        .eval_host("(__current_selector_item_count)")?
                         .parse::<usize>()
                         .map_err(|_| {
                             ScriptError::new(
-                                "decode mruby command",
+                                "decode Steel command",
                                 "selector item count is invalid",
                             )
                         })?;
@@ -542,7 +554,7 @@ impl ConfigManager {
                     for index in 0..item_count {
                         items.push(
                             self.runtime
-                                .eval(&format!("Toyoterm.__current_selector_item({index})"))?,
+                                .eval_host(&format!("(__current_selector_item {index})"))?,
                         );
                     }
                     commands.push(NativeCommand::Ui(UiCommand::OpenSelector {
@@ -554,7 +566,7 @@ impl ConfigManager {
                 "reload_config" => commands.push(NativeCommand::Config(ConfigCommand::Reload)),
                 other => {
                     return Err(ScriptError::new(
-                        "decode mruby command",
+                        "decode Steel command",
                         format!("unsupported command {other}"),
                     ));
                 }
@@ -566,25 +578,25 @@ impl ConfigManager {
     pub fn drain_async_requests(&mut self) -> Result<Vec<AsyncSpawnRequest>, ScriptError> {
         let mut requests = Vec::new();
         loop {
-            let id_str = self.runtime.eval("Toyoterm.__next_async_request")?;
+            let id_str = self.runtime.eval_host("(__next_async_request)")?;
             let id = id_str
                 .parse::<u64>()
                 .map_err(|_| ScriptError::new("decode async request", "async id is invalid"))?;
             if id == 0 {
                 break;
             }
-            let program = self.runtime.eval("Toyoterm.__current_async_program")?;
-            let arg_count = self.ruby_usize("Toyoterm.__current_async_arg_count")?;
+            let program = self.runtime.eval_host("(__current_async_program)")?;
+            let arg_count = self.script_usize("(__current_async_arg_count)")?;
             let mut args = Vec::with_capacity(arg_count);
             for index in 0..arg_count {
                 args.push(
                     self.runtime
-                        .eval(&format!("Toyoterm.__current_async_arg({index})"))?,
+                        .eval_host(&format!("(__current_async_arg {index})"))?,
                 );
             }
             let cwd = self
-                .ruby_bool("Toyoterm.__current_async_has_cwd")?
-                .then(|| self.runtime.eval("Toyoterm.__current_async_cwd"))
+                .script_bool("(__current_async_has_cwd)")?
+                .then(|| self.runtime.eval_host("(__current_async_cwd)"))
                 .transpose()?;
             requests.push(AsyncSpawnRequest {
                 id,
@@ -601,7 +613,7 @@ impl ConfigManager {
         loop {
             let id = self
                 .runtime
-                .eval("Toyoterm.__next_async_cancellation")?
+                .eval_host("(__next_async_cancellation)")?
                 .parse::<u64>()
                 .map_err(|_| {
                     ScriptError::new("decode async cancellation", "async id is invalid")
@@ -617,13 +629,13 @@ impl ConfigManager {
     pub fn drain_logs(&mut self) -> Result<Vec<ScriptLog>, ScriptError> {
         let mut logs = Vec::new();
         loop {
-            let level = self.runtime.eval("Toyoterm.__next_log")?;
+            let level = self.runtime.eval_host("(__next_log)")?;
             if level.is_empty() {
                 break;
             }
             logs.push(ScriptLog {
                 level,
-                message: self.runtime.eval("Toyoterm.__current_log_message")?,
+                message: self.runtime.eval_host("(__current_log_message)")?,
             });
         }
         Ok(logs)
@@ -666,10 +678,15 @@ impl ConfigManager {
         id: u64,
         selection: Option<&str>,
     ) -> Result<(), ScriptError> {
-        let name = id.to_string();
-        let selection = selection.map_or_else(|| "nil".to_owned(), ruby_string_literal);
-        let source = format!("Toyoterm.__invoke_select_callback({id}, {selection})");
-        match self.eval_callback(CallbackKind::SelectCallback, &name, &source)? {
+        let started = Instant::now();
+        let result = self.runtime.invoke_selection(id, selection);
+        record_callback_duration(
+            CallbackKind::SelectCallback,
+            &id.to_string(),
+            started.elapsed(),
+            result.is_ok(),
+        );
+        match result? {
             value if value == "true" || value == "false" => Ok(()),
             _ => Err(ScriptError::new(
                 "invoke select callback",
@@ -678,22 +695,22 @@ impl ConfigManager {
         }
     }
 
-    fn ruby_bool(&mut self, source: &str) -> Result<bool, ScriptError> {
-        match self.runtime.eval(source)?.as_str() {
+    fn script_bool(&mut self, source: &str) -> Result<bool, ScriptError> {
+        match self.runtime.eval_host(source)?.as_str() {
             "true" => Ok(true),
             "false" => Ok(false),
             _ => Err(ScriptError::new(
-                "decode mruby command",
+                "decode Steel command",
                 "launch boolean is invalid",
             )),
         }
     }
 
-    fn ruby_usize(&mut self, source: &str) -> Result<usize, ScriptError> {
+    fn script_usize(&mut self, source: &str) -> Result<usize, ScriptError> {
         self.runtime
-            .eval(source)?
+            .eval_host(source)?
             .parse()
-            .map_err(|_| ScriptError::new("decode mruby command", "launch count is invalid"))
+            .map_err(|_| ScriptError::new("decode Steel command", "launch count is invalid"))
     }
 }
 
@@ -768,11 +785,11 @@ pub(super) fn run_script_request(
     invocation: &ScriptInvocation,
 ) -> Result<ScriptResult, ScriptError> {
     let stage = match invocation {
-        ScriptInvocation::KeyBinding { .. } => "ruby_key",
-        ScriptInvocation::Event(_) => "ruby_event",
-        ScriptInvocation::AsyncCallback { .. } => "ruby_async_completion",
+        ScriptInvocation::KeyBinding { .. } => "steel_key",
+        ScriptInvocation::Event(_) => "steel_event",
+        ScriptInvocation::AsyncCallback { .. } => "steel_async_completion",
         ScriptInvocation::Reload => "config_reload",
-        _ => "ruby_request",
+        _ => "steel_request",
     };
     let _request = performance::Stage::new(stage);
     manager.set_live_handles(context.handles.iter().copied())?;
@@ -844,8 +861,8 @@ pub(super) fn run_script_request(
         Err(error) => {
             if let Some(checkpoint) = command_checkpoint.as_deref() {
                 manager.rollback_config_transaction(checkpoint)?;
+                discard_completed_callback(manager, invocation)?;
             }
-            manager.runtime.collect_garbage();
             return Err(error);
         }
     };
@@ -857,7 +874,7 @@ pub(super) fn run_script_request(
             }
             Err(error) => {
                 manager.rollback_config_transaction(checkpoint)?;
-                manager.runtime.collect_garbage();
+                discard_completed_callback(manager, invocation)?;
                 return Err(error);
             }
         }
@@ -882,33 +899,27 @@ pub(super) fn run_script_request(
         async_cancellations,
         logs,
     };
-    // Validation compiles temporary expressions. Collect after completing the
-    // transaction and copying all outputs so an idle VM releases their bytecode.
-    manager.runtime.collect_garbage();
-    let gc = manager.runtime.gc_stats();
-    if tracing::enabled!(target: "toyoterm::soak", tracing::Level::TRACE) {
-        let async_tasks = manager
-            .runtime
-            .eval("Toyoterm.instance_variable_get(:@async_tasks).length")?;
-        let async_callbacks = manager
-            .runtime
-            .eval("Toyoterm.instance_variable_get(:@async_callbacks).length")?;
-        tracing::trace!(
-            target: "toyoterm::soak",
-            arena_index = gc.arena_index,
-            live_objects = gc.live_objects,
-            async_tasks = %async_tasks,
-            async_callbacks = %async_callbacks,
-            "script resource counts"
-        );
-    }
-    tracing::trace!(
-        target: "toyoterm::script",
-        arena_index = gc.arena_index,
-        live_objects = gc.live_objects,
-        "mruby state after script request"
-    );
     Ok(result)
+}
+
+fn discard_completed_callback(
+    manager: &mut ConfigManager,
+    invocation: &ScriptInvocation,
+) -> Result<(), ScriptError> {
+    match invocation {
+        ScriptInvocation::AsyncCallback { id, .. } => {
+            manager
+                .runtime
+                .eval_host(&format!("(__discard-completion 'async {id})"))?;
+        }
+        ScriptInvocation::SelectCallback { id, .. } => {
+            manager
+                .runtime
+                .eval_host(&format!("(__discard-completion 'select {id})"))?;
+        }
+        _ => {}
+    }
+    Ok(())
 }
 
 const fn resolve_bootstrap_id(id: u64, current: u64) -> u64 {
@@ -925,7 +936,7 @@ fn record_callback_duration(kind: CallbackKind, name: &str, elapsed: Duration, s
             duration_ms,
             threshold_ms = SLOW_CALLBACK_THRESHOLD.as_millis() as u64,
             succeeded,
-            "slow Ruby callback"
+            "slow Scheme callback"
         );
     } else {
         tracing::debug!(
@@ -934,7 +945,7 @@ fn record_callback_duration(kind: CallbackKind, name: &str, elapsed: Duration, s
             callback_name = name,
             duration_ms,
             succeeded,
-            "Ruby callback completed"
+            "Scheme callback completed"
         );
     }
 }
@@ -959,37 +970,20 @@ pub(super) fn load_config(
     filename: &str,
     source_dir: Option<&Path>,
 ) -> Result<LoadedConfig, ScriptError> {
-    let mut runtime = MrubyRuntime::new()?;
-    let config_dsl = CONFIG_DSL
-        .replace("__TOYOTERM_PRIMARY_MODIFIER__", platform_primary_modifier())
-        .replace("__TOYOTERM_PLATFORM__", platform_name())
-        .replace("__TOYOTERM_VERSION__", env!("CARGO_PKG_VERSION"))
-        .replace("__TOYOTERM_API_VERSION__", RUBY_API_VERSION)
-        .replace(
-            "__TOYOTERM_NATIVE_EVENTS__",
-            &ScriptEventKind::ALL
-                .iter()
-                .map(|event| format!(":{}", event.as_str()))
-                .collect::<Vec<_>>()
-                .join(", "),
-        );
-    runtime.eval_with_filename(&config_dsl, "(toyoterm DSL)")?;
-    // SAFETY: The DSL has created the Toyoterm module in this exclusively owned VM.
-    unsafe { toyoterm_mruby_install_host_api(runtime.state.as_ptr()) };
+    let mut runtime = SteelRuntime::new()?;
     runtime.set_environment()?;
     configure_load_paths(&mut runtime, source_dir)?;
     {
         let _evaluate = performance::Stage::new("config_evaluate");
+        runtime.eval_host("(__put! 'loading #true)")?;
         runtime.eval_with_filename(source, filename)?;
+        runtime.eval_host("(__put! 'loading #false)")?;
     }
     let _validation = performance::Stage::new("config_validate");
     let config = read_config(&mut runtime, source_dir, None)?;
     let color_presets = read_color_presets(&mut runtime)?;
     let registrations = RegistrySnapshot::read(&mut runtime)?;
-
-    // Arena restoration releases temporary roots, but compilation artifacts are
-    // not reclaimed until GC. Startup may otherwise keep tens of MiB while idle.
-    runtime.collect_garbage();
+    let snapshot_revision = read_snapshot_revision(&mut runtime)?;
 
     Ok(LoadedConfig {
         runtime,
@@ -999,11 +993,19 @@ pub(super) fn load_config(
         native_actions: registrations.native_actions,
         event_names: registrations.event_names,
         user_command_names: registrations.user_command_names,
+        snapshot_revision,
     })
 }
 
+fn read_snapshot_revision(runtime: &mut SteelRuntime) -> Result<u64, ScriptError> {
+    runtime
+        .eval_host("(__snapshot_revision)")?
+        .parse()
+        .map_err(|_| ScriptError::new("read config snapshot", "invalid snapshot revision"))
+}
+
 fn configure_load_paths(
-    runtime: &mut MrubyRuntime,
+    runtime: &mut SteelRuntime,
     source_dir: Option<&Path>,
 ) -> Result<(), ScriptError> {
     let mut paths = Vec::new();
@@ -1021,20 +1023,17 @@ fn configure_load_paths(
     }
     let mut seen = HashSet::new();
     paths.retain(|path| seen.insert(path.clone()));
-    let values = paths
-        .iter()
-        .map(|path| ruby_string_literal(&path.display().to_string()))
-        .collect::<Vec<_>>()
-        .join(", ");
-    runtime.eval(&format!("Toyoterm.__set_load_paths([{values}])"))?;
+    for path in &paths {
+        runtime.add_search_directory(path.clone());
+    }
     Ok(())
 }
 
 fn read_color_presets(
-    runtime: &mut MrubyRuntime,
+    runtime: &mut SteelRuntime,
 ) -> Result<HashMap<String, ColorConfig>, ScriptError> {
     let count = runtime
-        .eval("Toyoterm.__theme_count")?
+        .eval_host("(__theme_count)")?
         .parse::<usize>()
         .map_err(|_| ScriptError::new("validate themes", "theme count is invalid"))?;
     if count > MAX_REGISTERED_THEMES {
@@ -1045,7 +1044,7 @@ fn read_color_presets(
     }
     // One sequential traversal avoids recompiling every field access and
     // allocating @themes.values/keys arrays for every theme and color.
-    let encoded = runtime.eval("Toyoterm.__theme_snapshot")?;
+    let encoded = runtime.eval_host("(__theme_snapshot)")?;
     decode_color_presets(&encoded, count)
 }
 
@@ -1133,11 +1132,11 @@ pub(super) fn decode_color_presets(
 }
 
 fn read_config(
-    runtime: &mut MrubyRuntime,
+    runtime: &mut SteelRuntime,
     source_dir: Option<&Path>,
     previous: Option<&ToyotermConfig>,
 ) -> Result<ToyotermConfig, ScriptError> {
-    let image_path = runtime.eval("Toyoterm.__config.window.image.path")?;
+    let image_path = runtime.eval_host("(or (config-ref 'window.image.path) \"\")")?;
     let background_image = if image_path.is_empty() {
         None
     } else {
@@ -1170,7 +1169,7 @@ fn read_config(
     };
     let background_image_opacity = parse_f32(
         "background image opacity",
-        &runtime.eval("Toyoterm.__config.window.image.opacity")?,
+        &runtime.eval_host("(config-ref 'window.image.opacity)")?,
     )?;
     if !(0.0..=1.0).contains(&background_image_opacity) {
         return Err(ScriptError::new(
@@ -1178,9 +1177,9 @@ fn read_config(
             "background image opacity must be between 0 and 1",
         ));
     }
-    runtime.eval("Toyoterm.__validate_theme!")?;
+    runtime.eval_host("(__validate_theme!)")?;
     let defaults = ToyotermConfig::default();
-    let family = runtime.eval("Toyoterm.__config.font.family")?;
+    let family = runtime.eval_host("(config-ref 'font.family)")?;
     if family.trim().is_empty() {
         return Err(ScriptError::new(
             "validate config",
@@ -1188,7 +1187,7 @@ fn read_config(
         ));
     }
     let fallback_count = runtime
-        .eval("Toyoterm.__config.font.__fallback_count")?
+        .eval_host("(__font_fallback_count)")?
         .parse::<usize>()
         .map_err(|_| {
             ScriptError::new("validate config", "font fallback count must be an integer")
@@ -1201,8 +1200,7 @@ fn read_config(
     }
     let mut fallback = Vec::with_capacity(fallback_count);
     for index in 0..fallback_count {
-        let fallback_family =
-            runtime.eval(&format!("Toyoterm.__config.font.__fallback_at({index})"))?;
+        let fallback_family = runtime.eval_host(&format!("(__font_fallback_at {index})"))?;
         if fallback_family.trim().is_empty() {
             return Err(ScriptError::new(
                 "validate config",
@@ -1217,9 +1215,10 @@ fn read_config(
         }
         fallback.push(fallback_family);
     }
-    let font_size = parse_positive_f32("font size", &runtime.eval("Toyoterm.__config.font.size")?)?;
+    let font_size =
+        parse_positive_f32("font size", &runtime.eval_host("(config-ref 'font.size)")?)?;
     let font_weight = runtime
-        .eval("Toyoterm.__config.font.weight")?
+        .eval_host("(config-ref 'font.weight)")?
         .parse::<u16>()
         .map_err(|_| ScriptError::new("validate config", "font weight must be an integer"))?;
     if !(1..=1000).contains(&font_weight) {
@@ -1230,7 +1229,7 @@ fn read_config(
     }
     let opacity = parse_f32(
         "window opacity",
-        &runtime.eval("Toyoterm.__config.window.opacity")?,
+        &runtime.eval_host("(config-ref 'window.opacity)")?,
     )?;
     if !(0.0..=1.0).contains(&opacity) {
         return Err(ScriptError::new(
@@ -1238,36 +1237,34 @@ fn read_config(
             "window opacity must be between 0 and 1",
         ));
     }
-    let number = |runtime: &mut MrubyRuntime, field: &str, ruby: &str| {
-        parse_positive_f32(field, &runtime.eval(ruby)?)
+    let number = |runtime: &mut SteelRuntime, field: &str, source: &str| {
+        parse_positive_f32(field, &runtime.eval_host(source)?)
     };
-    let nonnegative = |runtime: &mut MrubyRuntime, field: &str, ruby: &str| {
-        parse_nonnegative_f32(field, &runtime.eval(ruby)?)
+    let nonnegative = |runtime: &mut SteelRuntime, field: &str, source: &str| {
+        parse_nonnegative_f32(field, &runtime.eval_host(source)?)
     };
-    let boolean = |runtime: &mut MrubyRuntime, field: &str, ruby: &str| match runtime
-        .eval(&format!(
-            "({ruby}) == true ? 'true' : (({ruby}) == false ? 'false' : 'invalid')"
-        ))?
+    let boolean = |runtime: &mut SteelRuntime, field: &str, source: &str| match runtime
+        .eval_host(source)?
         .as_str()
     {
         "true" => Ok(true),
         "false" => Ok(false),
         _ => Err(ScriptError::new(
             "validate config",
-            format!("{field} must be true or false"),
+            format!("{field} must be a boolean"),
         )),
     };
     let scrollback_lines = runtime
-        .eval("Toyoterm.__config.scrollback_lines")?
+        .eval_host("(config-ref 'scrollback_lines)")?
         .parse::<usize>()
         .map_err(|_| ScriptError::new("validate config", "scrollback_lines must be an integer"))?;
-    let default_shell = runtime.eval("Toyoterm.__config.default_shell")?;
-    let leader_key = runtime.eval("Toyoterm.__config.__leader_key")?;
+    let default_shell = runtime.eval_host("(or (config-ref 'default_shell) \"\")")?;
+    let leader_key = runtime.eval_host("(__leader_key)")?;
     let leader = if leader_key.is_empty() {
         None
     } else {
         let timeout_ms = runtime
-            .eval("Toyoterm.__config.__leader_timeout")?
+            .eval_host("(__leader_timeout)")?
             .parse::<u64>()
             .map_err(|_| {
                 ScriptError::new("validate config", "leader timeout must be an integer")
@@ -1284,13 +1281,13 @@ fn read_config(
         })
     };
     let status_count = runtime
-        .eval("Toyoterm.__bar_count")?
+        .eval_host("(__bar_count)")?
         .parse::<usize>()
         .map_err(|_| ScriptError::new("validate bar", "bar count is invalid"))?;
     let mut status_bars = Vec::with_capacity(status_count);
     for index in 0..status_count {
         let position = match runtime
-            .eval(&format!("Toyoterm.__bar_position({index})"))?
+            .eval_host(&format!("(__bar_position {index})"))?
             .as_str()
         {
             "top" => StatusBarPosition::Top,
@@ -1303,7 +1300,7 @@ fn read_config(
     }
 
     let ansi_count = runtime
-        .eval("Toyoterm.__config.colors.__ansi_count")?
+        .eval_host("(__colors_ansi_count)")?
         .parse::<usize>()
         .map_err(|_| ScriptError::new("validate config", "colors.ansi length is invalid"))?;
     if ansi_count != 16 {
@@ -1314,7 +1311,7 @@ fn read_config(
     }
     let mut ansi = Vec::with_capacity(ansi_count);
     for index in 0..ansi_count {
-        ansi.push(runtime.eval(&format!("Toyoterm.__config.colors.__ansi_at({index})"))?);
+        ansi.push(runtime.eval_host(&format!("(__colors_ansi_at {index})"))?);
     }
 
     let config = ToyotermConfig {
@@ -1325,165 +1322,161 @@ fn read_config(
             weight: font_weight,
         },
         colors: ColorConfig {
-            background: runtime.eval("Toyoterm.__config.colors.background")?,
-            foreground: runtime.eval("Toyoterm.__config.colors.foreground")?,
-            cursor: runtime.eval("Toyoterm.__config.colors.cursor")?,
-            selection: runtime.eval("Toyoterm.__config.colors.selection")?,
+            background: runtime.eval_host("(config-ref 'colors.background)")?,
+            foreground: runtime.eval_host("(config-ref 'colors.foreground)")?,
+            cursor: runtime.eval_host("(config-ref 'colors.cursor)")?,
+            selection: runtime.eval_host("(config-ref 'colors.selection)")?,
             ansi,
-            tab_bar: runtime.eval("Toyoterm.__config.colors.tab_bar")?,
-            tab_active: runtime.eval("Toyoterm.__config.colors.tab_active")?,
-            tab_inactive: runtime.eval("Toyoterm.__config.colors.tab_inactive")?,
-            workspace_bar: runtime.eval("Toyoterm.__config.colors.workspace_bar")?,
-            status_bar: runtime.eval("Toyoterm.__config.colors.status_bar")?,
-            pane_border: runtime.eval("Toyoterm.__config.colors.pane_border")?,
-            zoomed_pane_border: runtime.eval("Toyoterm.__config.colors.zoomed_pane_border")?,
-            search_match: runtime.eval("Toyoterm.__config.colors.search_match")?,
-            search_match_active: runtime.eval("Toyoterm.__config.colors.search_match_active")?,
+            tab_bar: runtime.eval_host("(config-ref 'colors.tab_bar)")?,
+            tab_active: runtime.eval_host("(config-ref 'colors.tab_active)")?,
+            tab_inactive: runtime.eval_host("(config-ref 'colors.tab_inactive)")?,
+            workspace_bar: runtime.eval_host("(config-ref 'colors.workspace_bar)")?,
+            status_bar: runtime.eval_host("(config-ref 'colors.status_bar)")?,
+            pane_border: runtime.eval_host("(config-ref 'colors.pane_border)")?,
+            zoomed_pane_border: runtime.eval_host("(config-ref 'colors.zoomed_pane_border)")?,
+            search_match: runtime.eval_host("(config-ref 'colors.search_match)")?,
+            search_match_active: runtime.eval_host("(config-ref 'colors.search_match_active)")?,
         },
         ui: UiConfig {
-            padding_x: nonnegative(runtime, "ui.padding_x", "Toyoterm.__config.ui.padding_x")?,
-            padding_y: nonnegative(runtime, "ui.padding_y", "Toyoterm.__config.ui.padding_y")?,
-            line_height: number(
-                runtime,
-                "ui.line_height",
-                "Toyoterm.__config.ui.line_height",
-            )?,
-            tab_bar: boolean(runtime, "ui.tab_bar", "Toyoterm.__config.ui.tab_bar")?,
+            padding_x: nonnegative(runtime, "ui.padding_x", "(config-ref 'ui.padding_x)")?,
+            padding_y: nonnegative(runtime, "ui.padding_y", "(config-ref 'ui.padding_y)")?,
+            line_height: number(runtime, "ui.line_height", "(config-ref 'ui.line_height)")?,
+            tab_bar: boolean(runtime, "ui.tab_bar", "(config-ref 'ui.tab_bar)")?,
             tab_bar_height: number(
                 runtime,
                 "ui.tab_bar_height",
-                "Toyoterm.__config.ui.tab_bar_height",
+                "(config-ref 'ui.tab_bar_height)",
             )?,
-            tab_width: number(runtime, "ui.tab_width", "Toyoterm.__config.ui.tab_width")?,
+            tab_width: number(runtime, "ui.tab_width", "(config-ref 'ui.tab_width)")?,
             workspace_bar: boolean(
                 runtime,
                 "ui.workspace_bar",
-                "Toyoterm.__config.ui.workspace_bar",
+                "(config-ref 'ui.workspace_bar)",
             )?,
             workspace_bar_height: number(
                 runtime,
                 "ui.workspace_bar_height",
-                "Toyoterm.__config.ui.workspace_bar_height",
+                "(config-ref 'ui.workspace_bar_height)",
             )?,
             workspace_width: number(
                 runtime,
                 "ui.workspace_width",
-                "Toyoterm.__config.ui.workspace_width",
+                "(config-ref 'ui.workspace_width)",
             )?,
             status_bar_height: number(
                 runtime,
                 "ui.status_bar_height",
-                "Toyoterm.__config.ui.status_bar_height",
+                "(config-ref 'ui.status_bar_height)",
             )?,
             pane_divider_width: nonnegative(
                 runtime,
                 "ui.pane_divider_width",
-                "Toyoterm.__config.ui.pane_divider_width",
+                "(config-ref 'ui.pane_divider_width)",
             )?,
             active_pane_border_width: nonnegative(
                 runtime,
                 "ui.active_pane_border_width",
-                "Toyoterm.__config.ui.active_pane_border_width",
+                "(config-ref 'ui.active_pane_border_width)",
             )?,
         },
         window: WindowConfig {
             background_image,
             background_image_opacity,
             opacity,
-            width: number(runtime, "window.width", "Toyoterm.__config.window.width")?,
-            height: number(runtime, "window.height", "Toyoterm.__config.window.height")?,
+            width: number(runtime, "window.width", "(config-ref 'window.width)")?,
+            height: number(runtime, "window.height", "(config-ref 'window.height)")?,
             min_width: number(
                 runtime,
                 "window.min_width",
-                "Toyoterm.__config.window.min_width",
+                "(config-ref 'window.min_width)",
             )?,
             min_height: number(
                 runtime,
                 "window.min_height",
-                "Toyoterm.__config.window.min_height",
+                "(config-ref 'window.min_height)",
             )?,
             decorations: boolean(
                 runtime,
                 "window.decorations",
-                "Toyoterm.__config.window.decorations",
+                "(config-ref 'window.decorations)",
             )?,
             resizable: boolean(
                 runtime,
                 "window.resizable",
-                "Toyoterm.__config.window.resizable",
+                "(config-ref 'window.resizable)",
             )?,
             always_on_top: boolean(
                 runtime,
                 "window.always_on_top",
-                "Toyoterm.__config.window.always_on_top",
+                "(config-ref 'window.always_on_top)",
             )?,
-            title: runtime.eval("Toyoterm.__config.window.title")?,
+            title: runtime.eval_host("(config-ref 'window.title)")?,
         },
         behavior: BehaviorConfig {
             scroll_lines: number(
                 runtime,
                 "behavior.scroll_lines",
-                "Toyoterm.__config.behavior.scroll_lines",
+                "(config-ref 'behavior.scroll_lines)",
             )?,
             copy_on_select: boolean(
                 runtime,
                 "behavior.copy_on_select",
-                "Toyoterm.__config.behavior.copy_on_select",
+                "(config-ref 'behavior.copy_on_select)",
             )?,
             allow_osc52_copy: boolean(
                 runtime,
                 "behavior.allow_osc52_copy",
-                "Toyoterm.__config.behavior.allow_osc52_copy",
+                "(config-ref 'behavior.allow_osc52_copy)",
             )?,
             allow_osc_notifications: boolean(
                 runtime,
                 "behavior.allow_osc_notifications",
-                "Toyoterm.__config.behavior.allow_osc_notifications",
+                "(config-ref 'behavior.allow_osc_notifications)",
             )?,
             allow_osc_attention_requests: boolean(
                 runtime,
                 "behavior.allow_osc_attention_requests",
-                "Toyoterm.__config.behavior.allow_osc_attention_requests",
+                "(config-ref 'behavior.allow_osc_attention_requests)",
             )?,
             allow_osc_open_url: boolean(
                 runtime,
                 "behavior.allow_osc_open_url",
-                "Toyoterm.__config.behavior.allow_osc_open_url",
+                "(config-ref 'behavior.allow_osc_open_url)",
             )?,
             allow_osc_file_downloads: boolean(
                 runtime,
                 "behavior.allow_osc_file_downloads",
-                "Toyoterm.__config.behavior.allow_osc_file_downloads",
+                "(config-ref 'behavior.allow_osc_file_downloads)",
             )?,
             osc_download_directory: {
                 let path: String =
-                    runtime.eval("Toyoterm.__config.behavior.osc_download_directory")?;
+                    runtime.eval_host("(config-ref 'behavior.osc_download_directory)")?;
                 (!path.is_empty()).then(|| PathBuf::from(path))
             },
             allow_osc_file_uploads: boolean(
                 runtime,
                 "behavior.allow_osc_file_uploads",
-                "Toyoterm.__config.behavior.allow_osc_file_uploads",
+                "(config-ref 'behavior.allow_osc_file_uploads)",
             )?,
             osc_upload_directory: {
                 let path: String =
-                    runtime.eval("Toyoterm.__config.behavior.osc_upload_directory")?;
+                    runtime.eval_host("(config-ref 'behavior.osc_upload_directory)")?;
                 (!path.is_empty()).then(|| PathBuf::from(path))
             },
             allow_osc_background_image: boolean(
                 runtime,
                 "behavior.allow_osc_background_image",
-                "Toyoterm.__config.behavior.allow_osc_background_image",
+                "(config-ref 'behavior.allow_osc_background_image)",
             )?,
             osc_background_image_directory: {
                 let path: String =
-                    runtime.eval("Toyoterm.__config.behavior.osc_background_image_directory")?;
+                    runtime.eval_host("(config-ref 'behavior.osc_background_image_directory)")?;
                 (!path.is_empty()).then(|| PathBuf::from(path))
             },
             allow_osc_focus_requests: boolean(
                 runtime,
                 "behavior.allow_osc_focus_requests",
-                "Toyoterm.__config.behavior.allow_osc_focus_requests",
+                "(config-ref 'behavior.allow_osc_focus_requests)",
             )?,
         },
         default_shell: if default_shell.is_empty() {

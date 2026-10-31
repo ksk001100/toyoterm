@@ -261,24 +261,24 @@ fn reports_only_unexpired_accepted_notification_ids() {
 }
 
 #[test]
-fn maps_shell_command_lifecycle_to_ruby_events() {
+fn maps_shell_command_lifecycle_to_script_events() {
     let pane = PaneId(7);
-    let prompt = ruby_event_from_terminal_event(pane, TerminalEvent::PromptStarted).unwrap();
+    let prompt = script_event_from_terminal_event(pane, TerminalEvent::PromptStarted).unwrap();
     assert_eq!(prompt.name(), "prompt_started");
     assert_eq!(prompt.pane, Some(pane));
 
     let command_line =
-        ruby_event_from_terminal_event(pane, TerminalEvent::CommandLineStarted).unwrap();
+        script_event_from_terminal_event(pane, TerminalEvent::CommandLineStarted).unwrap();
     assert_eq!(command_line.name(), "command_line_started");
     assert_eq!(command_line.pane, Some(pane));
 
-    let started = ruby_event_from_terminal_event(pane, TerminalEvent::CommandStarted).unwrap();
+    let started = script_event_from_terminal_event(pane, TerminalEvent::CommandStarted).unwrap();
     assert_eq!(started.name(), "command_started");
     assert_eq!(started.pane, Some(pane));
     assert_eq!(started.exit_status, None);
 
     let finished =
-        ruby_event_from_terminal_event(pane, TerminalEvent::CommandFinished(Some(23))).unwrap();
+        script_event_from_terminal_event(pane, TerminalEvent::CommandFinished(Some(23))).unwrap();
     assert_eq!(finished.name(), "command_finished");
     assert_eq!(finished.pane, Some(pane));
     assert_eq!(finished.exit_status, Some(23));
@@ -698,10 +698,13 @@ fn write_input_ctrl_c_cancels_pending_pacing_immediately() {
 #[test]
 fn config_error_notice_switches_between_summary_and_log() {
     let mut notice = ConfigErrorNotice {
-        message: "error\nconfig.rb:2\nconfig.rb:5\nextra".into(),
+        message: "error\nconfig.scm:2\nconfig.scm:5\nextra".into(),
         log_expanded: false,
     };
-    assert_eq!(notice.display_message(), "error\nconfig.rb:2\nconfig.rb:5");
+    assert_eq!(
+        notice.display_message(),
+        "error\nconfig.scm:2\nconfig.scm:5"
+    );
 
     notice.log_expanded = true;
     assert_eq!(notice.display_message(), notice.message);
@@ -748,10 +751,10 @@ fn hidpi_scaling_preserves_logical_grid_size() {
 }
 
 #[test]
-fn dispatches_startup_ruby_commands_through_the_mux() {
+fn dispatches_startup_script_commands_through_the_mux() {
     let mut config_manager = ConfigManager::new().unwrap();
     config_manager
-        .reload(r#"Toyoterm.current_pane.send_text("echo hello\n")"#)
+        .reload(r#"(pane-send-text! (current-pane) "echo hello\n")"#)
         .unwrap();
     let mut mux = Mux::new();
     let pane = mux.current_pane().unwrap();
@@ -763,26 +766,26 @@ fn dispatches_startup_ruby_commands_through_the_mux() {
 }
 
 #[test]
-fn separates_ruby_clipboard_writes_from_mux_commands() {
+fn separates_script_clipboard_writes_from_mux_commands() {
     let mut config_manager = ConfigManager::new().unwrap();
     config_manager
-        .eval(r#"Toyoterm.clipboard.write("from Ruby")"#)
+        .eval(r#"(clipboard-write! "from Scheme")"#)
         .unwrap();
     let mut mux = Mux::new();
 
     assert_eq!(
         dispatch_script_commands(&mut config_manager, &mut mux).unwrap(),
         NativeCommandEffects {
-            clipboard_writes: vec!["from Ruby".to_owned()],
+            clipboard_writes: vec!["from Scheme".to_owned()],
             reload_requested: false,
         }
     );
 }
 
 #[test]
-fn normalizes_ruby_reload_requests_as_native_commands() {
+fn normalizes_script_reload_requests_as_native_commands() {
     let mut config_manager = ConfigManager::new().unwrap();
-    config_manager.eval("Toyoterm.reload_config").unwrap();
+    config_manager.eval("(reload-config!)").unwrap();
     let mut mux = Mux::new();
 
     assert_eq!(
@@ -795,7 +798,7 @@ fn normalizes_ruby_reload_requests_as_native_commands() {
 }
 
 #[test]
-fn normalizes_native_keys_for_the_ruby_binding_resolver() {
+fn normalizes_native_keys_for_the_script_binding_resolver() {
     assert_eq!(
         keybinding_name(
             &Key::Character("h".into()),

@@ -82,25 +82,6 @@ pub(super) fn parse_direction(direction: &str) -> Result<SplitDirection, ScriptE
     }
 }
 
-pub(super) fn ruby_string_literal(value: &str) -> String {
-    let mut literal = String::with_capacity(value.len() + 2);
-    literal.push('"');
-    for character in value.chars() {
-        match character {
-            '\\' => literal.push_str("\\\\"),
-            '"' => literal.push_str("\\\""),
-            '#' => literal.push_str("\\#"),
-            '\n' => literal.push_str("\\n"),
-            '\r' => literal.push_str("\\r"),
-            '\t' => literal.push_str("\\t"),
-            '\0' => literal.push_str("\\0"),
-            character => literal.push(character),
-        }
-    }
-    literal.push('"');
-    literal
-}
-
 pub(super) fn parse_positive_f32(name: &str, value: &str) -> Result<f32, ScriptError> {
     let value = parse_f32(name, value)?;
     if value <= 0.0 {

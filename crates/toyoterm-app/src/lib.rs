@@ -27,9 +27,9 @@ use toyoterm_api::{
     UiCommand, WindowCommand,
 };
 use toyoterm_script::{
-    AsyncProcessOutput, BarItem, RubyEvent, RubyObjectModel, RubyPane, RubyTab, RubyWindow,
-    RubyWorkspace, ScriptCompletion, ScriptContext, ScriptInvocation, ScriptRequest,
-    ScriptSnapshot, ScriptThread,
+    AsyncProcessOutput, BarItem, ScriptCompletion, ScriptContext, ScriptEvent, ScriptInvocation,
+    ScriptObjectModel, ScriptPane, ScriptRequest, ScriptSnapshot, ScriptTab, ScriptThread,
+    ScriptWindow, ScriptWorkspace,
 };
 
 mod command_dispatch;
@@ -835,11 +835,11 @@ struct ScriptRuntimeState {
     next_request_id: u64,
     in_flight: bool,
     pending: VecDeque<(u64, ScriptInvocation)>,
-    runtime_events: VecDeque<RubyEvent>,
+    runtime_events: VecDeque<ScriptEvent>,
     event_drops: u64,
     eval_waiters: HashMap<u64, EvalWaiter>,
     cancelled_async_tasks: HashSet<u64>,
-    cached_model: Option<Arc<RubyObjectModel>>,
+    cached_model: Option<Arc<ScriptObjectModel>>,
     cached_handles: Option<Arc<[NativeHandle]>>,
     context_dirty: bool,
 }
@@ -877,21 +877,21 @@ struct UiState {
     window_title_override: Option<String>,
 }
 
-fn ruby_event_from_terminal_event(pane: PaneId, event: TerminalEvent) -> Option<RubyEvent> {
+fn script_event_from_terminal_event(pane: PaneId, event: TerminalEvent) -> Option<ScriptEvent> {
     let mut event = match event {
         TerminalEvent::TitleChanged(title) => {
-            let mut event = RubyEvent::new(ScriptEventKind::TitleChanged);
+            let mut event = ScriptEvent::new(ScriptEventKind::TitleChanged);
             event.title = Some(title);
             event
         }
         TerminalEvent::TitleReset => {
-            let mut event = RubyEvent::new(ScriptEventKind::TitleChanged);
+            let mut event = ScriptEvent::new(ScriptEventKind::TitleChanged);
             event.title = Some(format!("Pane {}", pane.0));
             event
         }
         TerminalEvent::IconTitleChanged(_) => return None,
         TerminalEvent::CwdChanged(cwd) => {
-            let mut event = RubyEvent::new(ScriptEventKind::CwdChanged);
+            let mut event = ScriptEvent::new(ScriptEventKind::CwdChanged);
             event.cwd = Some(cwd);
             event
         }
@@ -905,11 +905,11 @@ fn ruby_event_from_terminal_event(pane: PaneId, event: TerminalEvent) -> Option<
         TerminalEvent::OpenUrlRequested(_) => return None,
         TerminalEvent::UserVarChanged { .. } => return None,
         TerminalEvent::MarkSet => return None,
-        TerminalEvent::PromptStarted => RubyEvent::new(ScriptEventKind::PromptStarted),
-        TerminalEvent::CommandLineStarted => RubyEvent::new(ScriptEventKind::CommandLineStarted),
-        TerminalEvent::CommandStarted => RubyEvent::new(ScriptEventKind::CommandStarted),
+        TerminalEvent::PromptStarted => ScriptEvent::new(ScriptEventKind::PromptStarted),
+        TerminalEvent::CommandLineStarted => ScriptEvent::new(ScriptEventKind::CommandLineStarted),
+        TerminalEvent::CommandStarted => ScriptEvent::new(ScriptEventKind::CommandStarted),
         TerminalEvent::CommandFinished(exit_status) => {
-            let mut event = RubyEvent::new(ScriptEventKind::CommandFinished);
+            let mut event = ScriptEvent::new(ScriptEventKind::CommandFinished);
             event.exit_status = exit_status;
             event
         }
@@ -950,7 +950,7 @@ fn ruby_event_from_terminal_event(pane: PaneId, event: TerminalEvent) -> Option<
         | TerminalEvent::NotificationClose(_)
         | TerminalEvent::NotificationAliveQuery(_) => return None,
         TerminalEvent::PtyWrite(_) => return None,
-        TerminalEvent::Bell { .. } => RubyEvent::new(ScriptEventKind::Bell),
+        TerminalEvent::Bell { .. } => ScriptEvent::new(ScriptEventKind::Bell),
     };
     event.pane = Some(pane);
     Some(event)
@@ -2040,7 +2040,7 @@ impl ApplicationHandler<AppEvent> for ToyotermApplication {
                     tracing::warn!(target: "toyoterm::notification", %error, "queue OSC notification failed");
                 }
                 for event in terminal_events {
-                    if let Some(runtime_event) = ruby_event_from_terminal_event(pane, event) {
+                    if let Some(runtime_event) = script_event_from_terminal_event(pane, event) {
                         self.scripting.runtime_events.push_back(runtime_event);
                     }
                 }
@@ -2313,7 +2313,7 @@ impl ToyotermApplication {
                 .map_err(|_| "toyoterm GUI event loop is closed".to_owned())
         })
         .map_err(|error| {
-            tracing::warn!(target: "toyoterm::script", %error, "live Ruby console unavailable");
+            tracing::warn!(target: "toyoterm::script", %error, "live Scheme console unavailable");
             error
         })
         .ok();

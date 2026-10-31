@@ -15,5 +15,9 @@ Accepted records:
 - [0006: Own one mruby runtime on a dedicated script thread](0006-single-script-runtime.md)
 - [0007: Use Ruby loading and direct Toyoterm registration APIs](0007-use-ruby-loading-and-direct-registration.md)
 
+- [0008: Replace mruby with Steel Scheme](0008-use-steel.md)
+- [0009: Remove unused mruby vendor artifacts](0009-remove-mruby-vendor.md)
+- [0010: Use Steel's allocation-driven collector](0010-allocation-driven-steel-gc.md)
+
 New records use the next four-digit number. An accepted record is not edited to
 hide a later reversal: add a superseding ADR and link the two records instead.

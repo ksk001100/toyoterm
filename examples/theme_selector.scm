@@ -1,0 +1,7 @@
+(theme! 'dark (hash 'colors.background "#090b0e" 'colors.foreground "#dce1e8"))
+(theme! 'light (hash 'colors.background "#ffffff" 'colors.foreground "#10131a"))
+(command! 'choose_theme (lambda (ctx)
+  (select! "Select theme" (themes)
+    (lambda (theme origin) (when theme (config-set! 'theme theme))))))
+(leader! "CTRL+B" 1000)
+(bind-command! "LEADER+T" 'choose_theme)

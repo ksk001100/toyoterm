@@ -6,8 +6,8 @@ toyoterm safely. It applies to the whole repository.
 ## Project overview
 
 toyoterm is an experimental terminal emulator written in Rust (edition 2024).
-The terminal hot path is native; embedded mruby is reserved for trusted
-configuration, callbacks, required Ruby libraries, and commands. The primary
+The terminal hot path is native; embedded Steel is reserved for trusted
+configuration, callbacks, required Scheme libraries, and commands. The primary
 development platform is Linux, but production code is expected to remain
 portable to macOS and Windows.
 
@@ -22,7 +22,7 @@ The repository is a Cargo workspace. Its default member and executable are
 - `crates/toyoterm-pty`: platform PTY spawning, I/O, resizing, and child lifecycle
 - `crates/toyoterm-render`: layout, GPU rendering, and text rendering
 - `crates/toyoterm-config`: configuration values and config-path discovery
-- `crates/toyoterm-script`: mruby VM, DSL, library loading, callbacks, and API
+- `crates/toyoterm-script`: Steel VM, DSL, library loading, callbacks, and API
   conversion
 - `crates/toyoterm-ipc`: local IPC transport shared by the app and CLI
 - `crates/toyoterm-app`: GUI lifecycle and native subsystem coordination
@@ -30,15 +30,15 @@ The repository is a Cargo workspace. Its default member and executable are
 - `shell-integration/`: bash, zsh, fish, and PowerShell integrations
 - `docs/adr/`: accepted architecture decisions
 - `scripts/`: architecture, license, packaging, and smoke-test tooling
-- `vendor/mruby/`: vendored mruby amalgamation; avoid incidental edits
+- `vendor/conpty/`: Windows ConPTY binaries and licenses; avoid incidental edits
 
 Read `docs/architecture.md` before changing crate dependencies and
 `docs/threading.md` before changing runtime ownership or message flow. Relevant
 feature-specific documents under `docs/` are part of the implementation
 contract, not background material.
 
-`docs/mruby-api.md` is the canonical user-facing reference for the mruby
-configuration DSL and runtime API. Read it before changing Ruby-visible
+`docs/steel-api.md` is the canonical user-facing reference for the Steel
+configuration DSL and runtime API. Read it before changing Scheme-visible
 behavior.
 
 ## Architectural invariants
@@ -50,14 +50,14 @@ behavior.
   applies script-produced `NativeCommand`s to the mux.
 - The winit event loop, terminal backends, mux, renderer, and PTY handles belong
   to the main thread. PTY reader workers own only blocking readers.
-- The single mruby VM belongs to the named script thread. Do not make
-  `MrubyRuntime` cross threads or bypass the request/completion boundary.
-- Ruby callbacks receive snapshots and return inspected values and native
+- The single Steel VM belongs to the named script thread. Do not make
+  `SteelRuntime` cross threads or bypass the request/completion boundary.
+- Scheme callbacks receive snapshots and return inspected values and native
   commands. They must not directly mutate native application state.
 - Preserve ordering when touching script requests, command application, PTY
-  reconciliation, or event dispatch. Slow Ruby may delay Ruby work, but must not
+  reconciliation, or event dispatch. Slow Scheme may delay Scheme work, but must not
   block PTY parsing or rendering.
-- Configuration and required Ruby libraries are trusted code, not sandboxed code. Do not
+- Configuration and required Scheme libraries are trusted code, not sandboxed code. Do not
   claim or imply a security boundary that the implementation does not provide.
 - Keep platform-specific behavior behind existing abstractions and `cfg`
   boundaries. Do not fix one desktop backend by silently breaking another.
@@ -80,13 +80,13 @@ four-digit number; accepted ADRs are not rewritten to hide later reversals.
   visually or semantically reviewed; do not refresh them merely to make a test
   pass.
 - Do not edit generated output in `target/` or packaged output in `dist/`.
-- Do not modify `vendor/mruby/` unless the task is specifically an mruby vendor
-  update or requires a reviewed change to the embedded runtime.
+- Do not modify `vendor/conpty/` unless the task specifically requires a reviewed
+  Windows ConPTY vendor update.
 - When user-facing behavior, configuration, or CLI syntax changes, update both
   `README.md` and `README.ja.md`, relevant examples, and focused docs together.
-- When adding, removing, renaming, or changing any Ruby-visible setting, DSL
+- When adding, removing, renaming, or changing any Scheme-visible setting, DSL
   method, callback context, object-model member, event, command, library hook, or
-  host API, update `docs/mruby-api.md` in the same change. Include signatures,
+  host API, update `docs/steel-api.md` in the same change. Include signatures,
   accepted values, return values, errors, execution/rollback semantics, and an
   example where useful. Do not document methods beginning with `__` as public
   API.

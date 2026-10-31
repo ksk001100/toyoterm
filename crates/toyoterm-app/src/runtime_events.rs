@@ -20,7 +20,7 @@ fn is_coalescible_event(kind: ScriptEventKind) -> bool {
     )
 }
 
-fn same_event_target(left: &RubyEvent, right: &RubyEvent) -> bool {
+fn same_event_target(left: &ScriptEvent, right: &ScriptEvent) -> bool {
     left.kind == right.kind
         && left.workspace == right.workspace
         && left.window == right.window
@@ -99,7 +99,7 @@ impl ToyotermApplication {
             .and_then(|clipboard| {
                 clipboard
                     .get_text()
-                    .map_err(|error| format!("read clipboard for Ruby: {error}"))
+                    .map_err(|error| format!("read clipboard for Scheme: {error}"))
             })
             .ok();
         let (model, handles, model_reused, handles_reused) = if !self.scripting.context_dirty {
@@ -112,7 +112,7 @@ impl ToyotermApplication {
                 return Err("script context cache is unexpectedly empty".to_owned());
             }
         } else {
-            let value = ruby_object_model(&self.mux, Some(&self.terminal_runtime.pane_runtimes))?;
+            let value = script_object_model(&self.mux, Some(&self.terminal_runtime.pane_runtimes))?;
             let (model, model_reused) =
                 reuse_immutable_snapshot(&mut self.scripting.cached_model, value);
             let native_handles = self.mux.native_handles();
@@ -176,7 +176,7 @@ impl ToyotermApplication {
                     event_name,
                     pending_script = self.scripting.pending.len(),
                     runtime_events = self.scripting.runtime_events.len(),
-                    "coalesced stale queued Ruby event"
+                    "coalesced stale queued Scheme event"
                 );
             }
             PendingScriptEnqueue::Dropped => {
@@ -188,7 +188,7 @@ impl ToyotermApplication {
                         pending_script = self.scripting.pending.len(),
                         runtime_events = self.scripting.runtime_events.len(),
                         max_pending_events = MAX_PENDING_SCRIPT_EVENTS,
-                        "dropping Ruby event because the script queue is saturated"
+                        "dropping Scheme event because the script queue is saturated"
                     );
                 }
             }
@@ -274,18 +274,21 @@ impl ToyotermApplication {
         }
         for log in std::mem::take(&mut result.logs) {
             match log.level.as_str() {
-                "debug" => {
-                    tracing::debug!(target: "toyoterm::script::ruby", message = %log.message)
+                "trace" => {
+                    tracing::trace!(target: "toyoterm::script::steel", message = %log.message)
                 }
-                "info" => tracing::info!(target: "toyoterm::script::ruby", message = %log.message),
-                "warn" => tracing::warn!(target: "toyoterm::script::ruby", message = %log.message),
-                _ => tracing::error!(target: "toyoterm::script::ruby", message = %log.message),
+                "debug" => {
+                    tracing::debug!(target: "toyoterm::script::steel", message = %log.message)
+                }
+                "info" => tracing::info!(target: "toyoterm::script::steel", message = %log.message),
+                "warn" => tracing::warn!(target: "toyoterm::script::steel", message = %log.message),
+                _ => tracing::error!(target: "toyoterm::script::steel", message = %log.message),
             }
         }
         let value = result.value.unwrap_or_default();
         let apply_result: Result<(), String> = (|| {
             if is_reload {
-                // Reload replaces the mruby VM, so its callback-owned badge state is gone too.
+                // Reload replaces the Steel VM, so its callback-owned badge state is gone too.
                 self.ui.pane_badges.clear();
                 self.ui.selector = None;
             }
@@ -374,7 +377,7 @@ impl ToyotermApplication {
         for text in writes {
             self.clipboard()?
                 .set_text(text)
-                .map_err(|error| format!("write clipboard from Ruby: {error}"))?;
+                .map_err(|error| format!("write clipboard from Scheme: {error}"))?;
         }
         Ok(())
     }
@@ -456,7 +459,7 @@ mod tests {
     }
 
     fn event(kind: ScriptEventKind, pane: u64, title: &str) -> ScriptInvocation {
-        let mut event = RubyEvent::new(kind);
+        let mut event = ScriptEvent::new(kind);
         event.pane = Some(PaneId(pane));
         event.title = Some(title.to_owned());
         ScriptInvocation::Event(event)
@@ -508,14 +511,14 @@ mod tests {
     #[test]
     fn window_resized_events_for_same_window_are_coalesced() {
         let mut queue = VecDeque::new();
-        let mut first = RubyEvent::new(ScriptEventKind::WindowResized);
+        let mut first = ScriptEvent::new(ScriptEventKind::WindowResized);
         first.window = Some(toyoterm_api::WindowId(1));
         first.width = Some(800);
         first.height = Some(600);
         first.columns = Some(80);
         first.rows = Some(24);
 
-        let mut second = RubyEvent::new(ScriptEventKind::WindowResized);
+        let mut second = ScriptEvent::new(ScriptEventKind::WindowResized);
         second.window = Some(toyoterm_api::WindowId(1));
         second.width = Some(1024);
         second.height = Some(768);

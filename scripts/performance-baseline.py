@@ -234,16 +234,14 @@ def config(case, window_size=None):
     # Redraw grids are calibrated before opening the producer gate.
     cols, rows = case.get("columns", 120), case.get("rows", 40)
     width, height = window_size or (cols * 9 + 24, rows * 18 + 100)
-    source = f'''Toyoterm.configure do |c|
-  c.font.family = "monospace"
-  c.font.size = 14
-  c.window.width = {width}
-  c.window.height = {height}
-  c.scrollback_lines = 100000
-end
-'''
+    source = f"""(config-set! 'font.family "monospace")
+(config-set! 'font.size 14)
+(config-set! 'window.width {width})
+(config-set! 'window.height {height})
+(config-set! 'scrollback_lines 100000)
+"""
     if case.get("config_size") == "large":
-        source += "\n".join(f'Toyoterm.command(:baseline_{i}) {{ {i} }}' for i in range(500))
+        source += "\n".join(f"(command! 'baseline_{i} (lambda (ctx) {i}))" for i in range(500))
     return source
 
 
@@ -254,7 +252,7 @@ def run_case(executable, directory, case):
     if repeat is not None:
         (directory / "repeat.bin").write_bytes(repeat)
         (directory / "cached.bin").write_bytes(b"\x1b[H")
-    config_path = directory / "config.rb"
+    config_path = directory / "config.scm"
     config_path.write_text(config(case), encoding="utf-8")
     env = os.environ.copy()
     env.update(TOYOTERM_INSTANCE="perf-" + uuid.uuid4().hex[:12],
@@ -274,10 +272,10 @@ def run_case(executable, directory, case):
             raise RuntimeError(f"IPC failed: {output.stderr} {output.stdout}")
         return output.stdout
 
-    def ruby(source):
-        output = ipc("ruby", "console", source=source + "\n:q\n")
+    def steel(source):
+        output = ipc("steel", "console", source=source + "\n:q\n")
         if "=> " not in output:
-            raise RuntimeError(f"missing Ruby result: {output}")
+            raise RuntimeError(f"missing Scheme result: {output}")
         return output
 
     log_path = directory / "gui.log"
@@ -306,8 +304,9 @@ def run_case(executable, directory, case):
                                            cwd=ROOT, env=env, stdout=log, stderr=log)
             for index, token in enumerate(tokens[1:], 1):
                 # Split breadth first, alternating direction, in a single tab/window.
-                ruby(f'Toyoterm.current_tab.panes[{(index - 1) // 2}].split('
-                     f'{":right" if index % 2 else ":down"}, command: {json.dumps(command(token))})')
+                direction = "right" if index % 2 else "down"
+                argv = SOAK.scheme_list(command(token))
+                steel(f"(split! (list-ref (handle-ref (current-tab) 'panes) {(index - 1) // 2}) '{direction} (command-options {argv}))")
                 wait_for(lambda: any(r.get("marker") == f"ready-{token}" for r in events(log_path)), process)
             time.sleep(.2)
             phases = []
@@ -346,11 +345,11 @@ def run_case(executable, directory, case):
             if case["scenario"] in ("search", "reload"):
                 begin = time.time_ns()
                 if case["scenario"] == "search":
-                    ruby("Toyoterm.current_pane.search('needle')")
+                    steel('(pane-search! (current-pane) "needle")' )
                 else:
                     ipc("reload")
                     # Ordered script barrier: wait for reload/application before recording completion.
-                    ruby("Toyoterm.current_pane.id")
+                    steel("(handle-id (current-pane))")
                 def next_frame():
                     rows = events(log_path)
                     stage = "search_apply" if case["scenario"] == "search" else "config_apply"
@@ -395,7 +394,7 @@ def main():
     run.add_argument("--label", default="v0.2.0")
     run.add_argument("--build-profile", default="release", help="record the actual binary profile")
     run.add_argument("--notes", default="", help="hardware, font versions, display, power settings")
-    run.add_argument("--ruby", action="store_true", help="also save native resolver and script-thread overhead")
+    run.add_argument("--steel", action="store_true", help="also save native resolver and script-thread overhead")
     run.add_argument("--quick", action="store_true", help="one small case per scenario; diagnostic only")
     compare = sub.add_parser("compare")
     compare.add_argument("before", type=Path)
@@ -442,20 +441,20 @@ def main():
                 "dirty": bool(subprocess.check_output(["git", "status", "--porcelain"], cwd=ROOT)),
                 "samples": args.samples, "cases": selected}
     (args.output / "metadata.json").write_text(json.dumps(metadata, indent=2), encoding="utf-8")
-    if args.ruby:
+    if args.steel:
         command = ["cargo", "test", "-p", "toyoterm-app", "-p", "toyoterm-script", "--locked"]
         if args.build_profile == "release":
             command += ["--release"]
         command += ["performance_", "--", "--ignored", "--nocapture", "--test-threads=1"]
         completed = subprocess.run(command, cwd=ROOT, capture_output=True, text=True, encoding="utf-8")
-        (args.output / "ruby.log").write_text(completed.stdout + completed.stderr, encoding="utf-8")
+        (args.output / "steel.log").write_text(completed.stdout + completed.stderr, encoding="utf-8")
         if completed.returncode:
-            raise RuntimeError("Ruby/native baseline failed; see ruby.log")
+            raise RuntimeError("Scheme/native baseline failed; see steel.log")
         records = [json.loads(line[line.index('{'):]) for line in completed.stdout.splitlines()
                    if '{"schema_version":' in line]
         if len(records) != 4:
-            raise RuntimeError("missing Ruby/native baseline records")
-        (args.output / "ruby.jsonl").write_text("".join(json.dumps(r) + "\n" for r in records), encoding="utf-8")
+            raise RuntimeError("missing Scheme/native baseline records")
+        (args.output / "steel.jsonl").write_text("".join(json.dumps(r) + "\n" for r in records), encoding="utf-8")
     with (args.output / "results.jsonl").open("w", encoding="utf-8") as output:
         for index, case in enumerate(selected):
             # One unrecorded warmup per case, with identical fixture/instrumentation.
