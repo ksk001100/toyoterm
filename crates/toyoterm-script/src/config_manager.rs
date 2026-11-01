@@ -18,6 +18,9 @@ pub(super) struct LoadedConfig {
     pub(super) native_actions: HashMap<String, NativeAction>,
     pub(super) event_names: HashSet<String>,
     pub(super) user_command_names: HashSet<String>,
+    pub(super) keymap_bindings: HashMap<KeymapScope, KeymapBindings>,
+    pub(super) timers: Vec<ScriptTimer>,
+    pub(super) advised_actions: HashSet<String>,
 }
 
 impl ConfigManager {
@@ -32,6 +35,9 @@ impl ConfigManager {
                 native_actions: loaded.native_actions,
                 event_names: loaded.event_names,
                 user_command_names: loaded.user_command_names,
+                keymap_bindings: loaded.keymap_bindings,
+                timers: loaded.timers,
+                advised_actions: loaded.advised_actions,
             },
             source_path: None,
         })
@@ -99,6 +105,9 @@ impl ConfigManager {
             keybindings: self.registrations.keybindings.clone(),
             event_names: self.registrations.event_names.clone(),
             user_command_names: self.registrations.user_command_names.clone(),
+            keymap_bindings: self.registrations.keymap_bindings.clone(),
+            timers: self.registrations.timers.clone(),
+            advised_actions: self.registrations.advised_actions.clone(),
         }
     }
 
@@ -166,6 +175,9 @@ impl ConfigManager {
             native_actions: loaded.native_actions,
             event_names: loaded.event_names,
             user_command_names: loaded.user_command_names,
+            keymap_bindings: loaded.keymap_bindings,
+            timers: loaded.timers,
+            advised_actions: loaded.advised_actions,
         };
         tracing::info!(target: "toyoterm::config", filename, "config loaded");
         Ok(&self.config)
@@ -523,7 +535,13 @@ impl ConfigManager {
                         direction,
                     }));
                 }
-                "open_selector" => {
+                "close_prompt" => {
+                    let id = payload
+                        .parse::<u64>()
+                        .map_err(|_| ScriptError::new("decode prompt", "invalid prompt ID"))?;
+                    commands.push(NativeCommand::Ui(UiCommand::ClosePrompt { id }));
+                }
+                "open_selector" | "open_prompt" | "open_panel" | "update_panel" => {
                     let id = payload.parse::<u64>().map_err(|_| {
                         ScriptError::new("decode mruby command", "selector id is invalid")
                     })?;
@@ -545,11 +563,57 @@ impl ConfigManager {
                                 .eval(&format!("Toyoterm.__current_selector_item({index})"))?,
                         );
                     }
-                    commands.push(NativeCommand::Ui(UiCommand::OpenSelector {
-                        id,
-                        title,
-                        items,
-                    }));
+                    let command = if command_type == "open_prompt" {
+                        let initial = self.runtime.eval("Toyoterm.__current_prompt_initial")?;
+                        let require_match = self
+                            .runtime
+                            .eval("Toyoterm.__current_prompt_require_match")?
+                            == "true";
+                        let count = self
+                            .runtime
+                            .eval("Toyoterm.__current_prompt_history_count")?
+                            .parse::<usize>()
+                            .map_err(|_| {
+                                ScriptError::new("decode prompt", "invalid history count")
+                            })?;
+                        let mut history = Vec::with_capacity(count);
+                        for index in 0..count {
+                            history
+                                .push(self.runtime.eval(&format!(
+                                    "Toyoterm.__current_prompt_history({index})"
+                                ))?);
+                        }
+                        UiCommand::OpenPrompt {
+                            id,
+                            prompt: toyoterm_api::InputPrompt {
+                                title,
+                                initial,
+                                completions: items,
+                                history,
+                                require_match,
+                                dynamic: self.runtime.eval("Toyoterm.__current_prompt_dynamic")?
+                                    == "true",
+                            },
+                        }
+                    } else if command_type == "open_panel" {
+                        UiCommand::OpenPanel {
+                            id,
+                            title,
+                            lines: items,
+                        }
+                    } else if command_type == "update_panel" {
+                        let title = (self.runtime.eval("Toyoterm.__current_panel_has_title")?
+                            == "true")
+                            .then_some(title);
+                        UiCommand::UpdatePanel {
+                            id,
+                            title,
+                            lines: items,
+                        }
+                    } else {
+                        UiCommand::OpenSelector { id, title, items }
+                    };
+                    commands.push(NativeCommand::Ui(command));
                 }
                 "reload_config" => commands.push(NativeCommand::Config(ConfigCommand::Reload)),
                 other => {
@@ -666,6 +730,8 @@ impl ConfigManager {
         id: u64,
         selection: Option<&str>,
     ) -> Result<(), ScriptError> {
+        self.runtime
+            .eval(&format!("Toyoterm.__prepare_prompt_result({id})"))?;
         let name = id.to_string();
         let selection = selection.map_or_else(|| "nil".to_owned(), ruby_string_literal);
         let source = format!("Toyoterm.__invoke_select_callback({id}, {selection})");
@@ -760,6 +826,7 @@ struct ScriptRequestOutput {
     bar: Option<Vec<BarItem>>,
     bar_next_refresh: Option<Duration>,
     snapshot: Option<ScriptSnapshot>,
+    prompt_completion: Option<UiCommand>,
 }
 
 pub(super) fn run_script_request(
@@ -767,8 +834,33 @@ pub(super) fn run_script_request(
     context: &ScriptContext,
     invocation: &ScriptInvocation,
 ) -> Result<ScriptResult, ScriptError> {
+    let result = run_script_request_inner(manager, context, invocation);
+    if matches!(invocation, ScriptInvocation::Timer { .. }) {
+        let error = result.as_ref().err().map_or_else(
+            || "nil".to_owned(),
+            |error| ruby_string_literal(&error.to_string()),
+        );
+        let failed_work = manager
+            .runtime
+            .eval(&format!("Toyoterm.__finish_work_request({error})"))?
+            == "true";
+        if failed_work {
+            // Failure diagnostics outlive rollback, but released iterator and
+            // callback roots should not retain large inputs while the VM idles.
+            manager.runtime.collect_garbage();
+        }
+    }
+    result
+}
+
+fn run_script_request_inner(
+    manager: &mut ConfigManager,
+    context: &ScriptContext,
+    invocation: &ScriptInvocation,
+) -> Result<ScriptResult, ScriptError> {
     let stage = match invocation {
-        ScriptInvocation::KeyBinding { .. } => "ruby_key",
+        ScriptInvocation::Action { .. } => "ruby_action",
+        ScriptInvocation::KeyBinding { .. } | ScriptInvocation::KeymapBinding { .. } => "ruby_key",
         ScriptInvocation::Event(_) => "ruby_event",
         ScriptInvocation::AsyncCallback { .. } => "ruby_async_completion",
         ScriptInvocation::Reload => "config_reload",
@@ -777,6 +869,35 @@ pub(super) fn run_script_request(
     let _request = performance::Stage::new(stage);
     manager.set_live_handles(context.handles.iter().copied())?;
     manager.set_object_model(&context.model)?;
+    manager.runtime.eval("Toyoterm.__begin_prompt_request")?;
+    manager.runtime.eval("Toyoterm.__begin_task_request")?;
+    match invocation {
+        ScriptInvocation::Timer { id } => {
+            manager
+                .runtime
+                .eval(&format!("Toyoterm.__prepare_timer({id})"))?;
+        }
+        ScriptInvocation::AsyncCallback { id, .. } => {
+            manager
+                .runtime
+                .eval(&format!("Toyoterm.__prepare_async({id})"))?;
+        }
+        ScriptInvocation::SelectCallback { id, .. } => {
+            manager
+                .runtime
+                .eval(&format!("Toyoterm.__prepare_prompt_result({id})"))?;
+        }
+        ScriptInvocation::TransientKeymap { id, key, pane } => {
+            let key = key
+                .as_deref()
+                .map_or_else(|| "nil".to_owned(), ruby_string_literal);
+            manager.runtime.eval(&format!(
+                "Toyoterm.__prepare_transient({id}, {key}, {})",
+                pane.0
+            ))?;
+        }
+        _ => {}
+    }
     manager.set_clipboard_text(context.clipboard.as_deref())?;
 
     let command_checkpoint = if matches!(invocation, ScriptInvocation::Reload) {
@@ -787,8 +908,50 @@ pub(super) fn run_script_request(
     let request_result: Result<ScriptRequestOutput, ScriptError> = (|| {
         Ok(match invocation {
             ScriptInvocation::DrainStartup => ScriptRequestOutput::default(),
+            ScriptInvocation::Action { action, context } => {
+                let name = action.name();
+                let argument = action
+                    .argument()
+                    .map_or_else(|| "nil".to_owned(), ruby_string_literal);
+                let source = format!(
+                    "Toyoterm.__invoke_native_action({}, {argument}, {}, {}, {}, {})",
+                    ruby_string_literal(name),
+                    context.workspace.0,
+                    context.window.0,
+                    context.tab.0,
+                    context.pane.0
+                );
+                manager.eval_callback(CallbackKind::Action, name, &source)?;
+                ScriptRequestOutput::default()
+            }
+            ScriptInvocation::Timer { id } => {
+                manager.eval_callback(
+                    CallbackKind::Timer,
+                    &id.to_string(),
+                    "Toyoterm.__invoke_timer",
+                )?;
+                ScriptRequestOutput::default()
+            }
             ScriptInvocation::KeyBinding { key, pane } => {
                 manager.trigger_keybinding(key, *pane)?;
+                ScriptRequestOutput::default()
+            }
+            ScriptInvocation::KeymapBinding { map, key, pane } => {
+                manager.set_current_pane(*pane)?;
+                let source = format!(
+                    "Toyoterm.__invoke_keymap_binding({map}, {}, Toyoterm.current_pane)",
+                    ruby_string_literal(key)
+                );
+                manager.eval_callback(CallbackKind::KeyBinding, key, &source)?;
+                ScriptRequestOutput::default()
+            }
+            ScriptInvocation::TransientKeymap { id, pane, .. } => {
+                manager.set_current_pane(*pane)?;
+                manager.eval_callback(
+                    CallbackKind::KeyBinding,
+                    &id.to_string(),
+                    "Toyoterm.__invoke_transient(Toyoterm.current_pane)",
+                )?;
                 ScriptRequestOutput::default()
             }
             ScriptInvocation::UserCommand { name, pane } => {
@@ -832,6 +995,42 @@ pub(super) fn run_script_request(
                 manager.invoke_select_callback(*id, selection.as_deref())?;
                 ScriptRequestOutput::default()
             }
+            ScriptInvocation::CompletePrompt {
+                id,
+                revision,
+                query,
+            } => {
+                let updated = manager.eval_callback(
+                    CallbackKind::Completion,
+                    &id.to_string(),
+                    &format!(
+                        "Toyoterm.__compute_prompt_completion({id}, {revision}, {})",
+                        ruby_string_literal(query)
+                    ),
+                )? == "true";
+                let prompt_completion = if updated {
+                    let count = manager.ruby_usize("Toyoterm.__completion_count")?;
+                    let mut items = Vec::with_capacity(count);
+                    for index in 0..count {
+                        items.push(
+                            manager
+                                .runtime
+                                .eval(&format!("Toyoterm.__completion_item({index})"))?,
+                        );
+                    }
+                    Some(UiCommand::UpdatePromptCompletions {
+                        id: *id,
+                        revision: *revision,
+                        items,
+                    })
+                } else {
+                    None
+                };
+                ScriptRequestOutput {
+                    prompt_completion,
+                    ..ScriptRequestOutput::default()
+                }
+            }
         })
     })();
     let ScriptRequestOutput {
@@ -839,6 +1038,7 @@ pub(super) fn run_script_request(
         bar,
         bar_next_refresh,
         mut snapshot,
+        prompt_completion,
     } = match request_result {
         Ok(result) => result,
         Err(error) => {
@@ -863,12 +1063,15 @@ pub(super) fn run_script_request(
         }
     }
     let model = &context.model;
-    let commands = manager.drain_commands_with_context(
+    let mut commands = manager.drain_commands_with_context(
         model.current_workspace,
         model.current_window,
         model.current_tab,
         model.current_pane,
     )?;
+    if let Some(command) = prompt_completion {
+        commands.push(NativeCommand::Ui(command));
+    }
     let async_requests = manager.drain_async_requests()?;
     let async_cancellations = manager.drain_async_cancellations()?;
     let logs = manager.drain_logs()?;
@@ -974,13 +1177,44 @@ pub(super) fn load_config(
                 .join(", "),
         );
     runtime.eval_with_filename(&config_dsl, "(toyoterm DSL)")?;
+    runtime.eval_with_filename(include_str!("keymaps.rb"), "(toyoterm keymaps)")?;
+    runtime.eval_with_filename(include_str!("prompts.rb"), "(toyoterm prompts)")?;
+    runtime.eval_with_filename(include_str!("timers.rb"), "(toyoterm timers)")?;
+    runtime.eval_with_filename(include_str!("actions.rb"), "(toyoterm actions)")?;
+    runtime.eval_with_filename(
+        include_str!("command_arguments.rb"),
+        "(toyoterm command arguments)",
+    )?;
+    runtime.eval_with_filename(
+        include_str!("transient_keymaps.rb"),
+        "(toyoterm transient keymaps)",
+    )?;
+    runtime.eval_with_filename(include_str!("command_help.rb"), "(toyoterm command help)")?;
+    runtime.eval_with_filename(include_str!("panels.rb"), "(toyoterm panels)")?;
+    runtime.eval_with_filename(
+        include_str!("instruction_budgets.rb"),
+        "(toyoterm instruction budgets)",
+    )?;
+    runtime.eval_with_filename(
+        include_str!("cooperative_work.rb"),
+        "(toyoterm cooperative work)",
+    )?;
+    runtime.eval_with_filename(
+        include_str!("resource_scopes.rb"),
+        "(toyoterm resource scopes)",
+    )?;
     // SAFETY: The DSL has created the Toyoterm module in this exclusively owned VM.
     unsafe { toyoterm_mruby_install_host_api(runtime.state.as_ptr()) };
     runtime.set_environment()?;
     configure_load_paths(&mut runtime, source_dir)?;
     {
         let _evaluate = performance::Stage::new("config_evaluate");
+        runtime.eval(&format!(
+            "Toyoterm.instance_variable_set(:@current_source_label, {}.freeze)",
+            ruby_string_literal(filename)
+        ))?;
         runtime.eval_with_filename(source, filename)?;
+        runtime.eval("Toyoterm.instance_variable_set(:@current_source_label, nil)")?;
     }
     let _validation = performance::Stage::new("config_validate");
     let config = read_config(&mut runtime, source_dir, None)?;
@@ -999,6 +1233,9 @@ pub(super) fn load_config(
         native_actions: registrations.native_actions,
         event_names: registrations.event_names,
         user_command_names: registrations.user_command_names,
+        keymap_bindings: registrations.keymap_bindings,
+        timers: registrations.timers,
+        advised_actions: registrations.advised_actions,
     })
 }
 
@@ -1262,6 +1499,24 @@ fn read_config(
         .parse::<usize>()
         .map_err(|_| ScriptError::new("validate config", "scrollback_lines must be an integer"))?;
     let default_shell = runtime.eval("Toyoterm.__config.default_shell")?;
+    let key_sequence_timeout_ms =
+        if runtime.eval("Toyoterm.__config.key_sequence_timeout_ms.nil?")? == "true" {
+            None
+        } else {
+            let timeout = runtime
+                .eval("Toyoterm.__config.key_sequence_timeout_ms")?
+                .parse::<u64>()
+                .map_err(|_| {
+                    ScriptError::new("validate config", "key sequence timeout must be an integer")
+                })?;
+            if !(1..=600_000).contains(&timeout) {
+                return Err(ScriptError::new(
+                    "validate config",
+                    "key sequence timeout must be between 1 and 600000",
+                ));
+            }
+            Some(timeout)
+        };
     let leader_key = runtime.eval("Toyoterm.__config.__leader_key")?;
     let leader = if leader_key.is_empty() {
         None
@@ -1493,6 +1748,7 @@ fn read_config(
         },
         scrollback_lines,
         leader,
+        key_sequence_timeout_ms,
         status_bars,
     };
     validate_color("background", &config.colors.background)?;

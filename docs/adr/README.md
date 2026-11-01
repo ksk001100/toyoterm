@@ -14,6 +14,7 @@ Accepted records:
 - [0005: Normalize control-plane mutations into native commands](0005-command-model.md)
 - [0006: Own one mruby runtime on a dedicated script thread](0006-single-script-runtime.md)
 - [0007: Use Ruby loading and direct Toyoterm registration APIs](0007-use-ruby-loading-and-direct-registration.md)
+- [0008: Provide opt-in mruby opcode budgets through the native fetch hook](0008-opt-in-instruction-budgets.md)
 
 New records use the next four-digit number. An accepted record is not edited to
 hide a later reversal: add a superseding ADR and link the two records instead.

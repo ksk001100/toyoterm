@@ -17,6 +17,18 @@ extern int toyoterm_host_spawn(const uint8_t *const *arguments,
                                int32_t *exit_status, char **error);
 extern void toyoterm_host_bytes_free(uint8_t *bytes, size_t length);
 extern void toyoterm_host_string_free(char *string);
+extern double toyoterm_host_monotonic_time(void);
+
+typedef struct toyoterm_budget_frame {
+  uint64_t remaining;
+  mrb_bool exhausted;
+  struct toyoterm_budget_frame *previous;
+} toyoterm_budget_frame;
+
+typedef struct {
+  toyoterm_budget_frame *active;
+  struct RClass *error_class;
+} toyoterm_budget_state;
 
 void *toyoterm_mruby_open(void) {
   mrb_state *mrb = mrb_open();
@@ -27,12 +39,19 @@ void *toyoterm_mruby_open(void) {
     mrb_close(mrb);
     return NULL;
   }
+  mrb->ud = calloc(1, sizeof(toyoterm_budget_state));
+  if (mrb->ud == NULL) {
+    mrb_close(mrb);
+    return NULL;
+  }
   return mrb;
 }
 
 void toyoterm_mruby_close(void *state) {
   if (state != NULL) {
+    void *budget = ((mrb_state *)state)->ud;
     mrb_close((mrb_state *)state);
+    free(budget);
   }
 }
 
@@ -323,12 +342,85 @@ static mrb_value host_spawn(mrb_state *mrb, mrb_value self) {
   return result;
 }
 
+static mrb_value host_monotonic_time(mrb_state *mrb, mrb_value self) {
+  (void)self;
+  return mrb_float_value(mrb, (mrb_float)toyoterm_host_monotonic_time());
+}
+
+static void budget_fetch_hook(mrb_state *mrb, const struct mrb_irep *irep,
+                              const mrb_code *pc, mrb_value *regs) {
+  (void)irep;
+  (void)pc;
+  (void)regs;
+  toyoterm_budget_state *state = mrb->ud;
+  mrb_bool exhausted = FALSE;
+  for (toyoterm_budget_frame *frame = state->active; frame;
+       frame = frame->previous) {
+    if (frame->exhausted) continue;
+    if (frame->remaining == 0) {
+      /* Stop checking an exhausted frame so rescue/ensure can unwind normally. */
+      frame->exhausted = TRUE;
+      exhausted = TRUE;
+    } else {
+      frame->remaining--;
+    }
+  }
+  if (exhausted) {
+    mrb_raise(mrb, state->error_class, "instruction budget exhausted");
+  }
+}
+
+static mrb_value budget_yield(mrb_state *mrb, void *data) {
+  return mrb_yield_argv(mrb, *(mrb_value *)data, 0, NULL);
+}
+
+static mrb_value host_with_instruction_budget(mrb_state *mrb, mrb_value self) {
+  (void)self;
+  mrb_int limit;
+  mrb_value block;
+  mrb_get_args(mrb, "i&", &limit, &block);
+  if (limit < 1 || limit > 1000000000 || mrb_nil_p(block)) {
+    mrb_raise(mrb, E_ARGUMENT_ERROR, "positive instruction limit and block required");
+  }
+  toyoterm_budget_state *state = mrb->ud;
+  size_t depth = 0;
+  for (toyoterm_budget_frame *parent = state->active; parent;
+       parent = parent->previous) {
+    if (++depth >= 64) {
+      mrb_raise(mrb, E_RUNTIME_ERROR, "instruction budget nesting exceeds 64");
+    }
+  }
+  toyoterm_budget_frame frame = {(uint64_t)limit, FALSE, state->active};
+  state->active = &frame;
+  mrb->code_fetch_hook = budget_fetch_hook;
+  /* All longjmp/unwind stays inside C. Restore stack pointers on every exit. */
+  mrb_bool raised = FALSE;
+  mrb_value result = mrb_protect_error(mrb, budget_yield, &block, &raised);
+  state->active = frame.previous;
+  mrb->code_fetch_hook = state->active ? budget_fetch_hook : NULL;
+  /* Exhaustion also wins over rescued returns/breaks and cleanup exceptions. */
+  if (frame.exhausted) {
+    mrb_raise(mrb, state->error_class, "instruction budget exhausted");
+  }
+  if (raised) mrb_exc_raise(mrb, result);
+  return result;
+}
+
 void toyoterm_mruby_install_host_api(void *state) {
   mrb_state *mrb = (mrb_state *)state;
   int arena_index = mrb_gc_arena_save(mrb);
   struct RClass *module = mrb_module_get(mrb, "Toyoterm");
+  toyoterm_budget_state *budget = mrb->ud;
+  budget->error_class = mrb_define_class_under(
+      mrb, module, "InstructionBudgetError", E_RUNTIME_ERROR);
+  /* Keep the C pointer valid even if trusted Ruby removes the constant. */
+  mrb_gc_register(mrb, mrb_obj_value(budget->error_class));
+  mrb_define_module_function(mrb, module, "__host_with_instruction_budget",
+                             host_with_instruction_budget, MRB_ARGS_REQ(1) | MRB_ARGS_BLOCK());
   mrb_define_module_function(mrb, module, "__host_spawn", host_spawn,
                              MRB_ARGS_REQ(2));
+  mrb_define_module_function(mrb, module, "__host_monotonic_time",
+                             host_monotonic_time, MRB_ARGS_NONE());
   mrb_gc_arena_restore(mrb, arena_index);
 }
 

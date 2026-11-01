@@ -14,6 +14,7 @@ fn main() {
         .file(mruby_source)
         .file("src/script/shim.c")
         .include("../../vendor/mruby")
+        .define("MRB_USE_DEBUG_HOOK", None)
         .warnings(false)
         .compile("toyoterm_mruby");
 

@@ -5,9 +5,12 @@ fn main() {
     println!("cargo:rerun-if-changed=../../packaging/app-icon.ico");
     println!("cargo:rerun-if-changed=../../vendor/conpty/win-x64/conpty.dll");
     println!("cargo:rerun-if-changed=../../vendor/conpty/win-x64/OpenConsole.exe");
-    embed_resource::compile("../../packaging/windows/toyoterm.rc", embed_resource::NONE)
-        .manifest_optional()
-        .unwrap();
+    // Build scripts run on the host; PE resources belong only to Windows targets.
+    if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("windows") {
+        embed_resource::compile("../../packaging/windows/toyoterm.rc", embed_resource::NONE)
+            .manifest_optional()
+            .unwrap();
+    }
 
     if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("windows")
         && std::env::var("CARGO_CFG_TARGET_ARCH").as_deref() == Ok("x86_64")

@@ -16,11 +16,19 @@ See the [usage guide](usage.md) for CLI commands and troubleshooting, or the
 - [Filesystem APIs](#filesystem-apis)
 - [Configuration DSL](#configuration-dsl)
 - [Key bindings](#key-bindings)
+- [Keymaps and modes](#keymaps-and-modes)
 - [Commands and object model](#commands-and-object-model)
+- [Native action discovery and advice](#native-action-discovery-and-advice)
 - [Selection overlays](#selection-overlays)
+- [Read-only panels](#read-only-panels)
+- [Text input and completion](#text-input-and-completion)
 - [Runtime events](#runtime-events)
+- [Extension hooks and command advice](#extension-hooks-and-command-advice)
 - [Window bars](#window-bars)
 - [Host APIs](#platform-clipboard-environment-and-processes)
+- [Timers and task ownership](#timers-and-task-ownership)
+- [Resource scopes](#resource-scopes)
+- [Cooperative work](#cooperative-work)
 - [Loading Ruby libraries](#loading-ruby-libraries)
 - [Themes](#themes)
 - [Live Ruby console](#live-ruby-console)
@@ -95,11 +103,13 @@ so use `File.size`, `File.mtime`, and the file/directory predicates instead.
 I/O errors use mruby's `SystemCallError` / `Errno` exceptions.
 
 ```ruby
-files = Dir.glob(File.join(context.pane.cwd, "**", "*.rb"))
-           .select { |path| File.file?(path) }
+directories = Dir.glob(File.join(context.pane.cwd || Dir.pwd, "*"))
+                 .select { |path| File.directory?(path) }
 
-Toyoterm.select(title: "Ruby files", items: files) do |file, context|
-  context.pane.send_text("nvim #{file}\n") if file
+unless directories.empty?
+  Toyoterm.select(title: "Terminal directory", items: directories) do |path, context|
+    context.pane.split(:right, cwd: path) if path
+  end
 end
 ```
 
@@ -229,6 +239,7 @@ end
 | --- | --- | --- |
 | `default_shell` | `nil` | Program used for new terminal sessions. `nil` or an empty value uses the platform default. Reloading does not replace a running shell. |
 | `scrollback_lines` | `10_000` | Non-negative integer number of retained scrollback lines. |
+| `key_sequence_timeout_ms` | `1000` | Integer from 1 through 600,000 milliseconds between accepted chords in a multi-step key sequence. `nil` waits until completion or cancellation. Changing the registry/configuration cancels a pending sequence. |
 | `theme` / `theme=` | `nil` | Name registered with `Toyoterm.theme`. An unknown or empty name rejects the configuration. |
 
 ### `config.font`
@@ -538,6 +549,85 @@ object during configuration. Navigation is a no-op without a prompt marker;
 output selection is a no-op without a complete `C`–`D` range and otherwise
 uses the normal selection/copy pipeline.
 
+### Multi-step key sequences and inspection
+
+`config.keys.sequence(*chords)` returns the same binding object as the key
+helpers and supports all static actions, `command(name)`, and `run` callbacks.
+Provide between 2 and 32 String chords, for example:
+
+```ruby
+Toyoterm.configure do |config|
+  config.key_sequence_timeout_ms = nil
+  config.keys.sequence("CTRL+X", "CTRL+T").new_tab
+  config.keys.sequence("CTRL+X", "R", "B").split(:right)
+  config.keys.sequence("CTRL+X", "?").run { Toyoterm.key_help(prefix: "CTRL+X") }
+  config.keys.sequence("CTRL+H", "B").run { Toyoterm.key_help }
+end
+```
+
+Chord names are case-insensitive and use the same modifier/key notation as
+single-key bindings, including `PHYSICAL:KEYH`. Each chord is nonempty, at most
+128 UTF-8 bytes, and contains no ASCII whitespace/control characters. Use
+`SPACE` for the space key. Leader chords (`LEADER+...`) cannot be embedded in
+these sequences. `ESCAPE` and `CTRL+G` are reserved for cancellation after the
+first chord and cannot be registered as suffixes. Invalid chord types raise
+`TypeError`; invalid values or lengths raise `ArgumentError` before registration.
+
+Multiple sequences can share a prefix. An exact binding cannot also be a
+prefix of another binding: defining `CTRL+X` and `CTRL+X F`, or `CTRL+X R` and
+`CTRL+X R B`, raises `ArgumentError` in either registration order. A sequence
+whose first chord equals the configured leader also raises `ArgumentError` in
+either order. Unbind a conflicting definition before replacing it. These
+checks cover static and Ruby bindings together.
+
+The main thread resolves prefixes and static completions without invoking Ruby.
+Each accepted nonfinal chord is consumed and restarts the configured interval.
+An invalid suffix, Escape, or Ctrl+G cancels the pending sequence and is consumed.
+After a timeout, the next key goes through ordinary input/binding handling.
+Repeated key events cannot advance a sequence or extend the interval. Keys
+consumed by the sequence remain suppressed through repeats until release.
+Physical candidates retain priority over logical candidates, including when
+one resolves to a single-key binding and the other to a sequence prefix.
+
+Focus loss, a mouse click, IME preedit/commit/disable, Pane/Workspace activation,
+opening a selection/search overlay, or applying a changed configuration/registry
+cancels pending sequence state. A pending sequence also checks its originating
+Pane before accepting a suffix. The existing leader behavior remains separate:
+an unmatched leader suffix continues through normal input handling.
+
+`config.keys.unbind(["CTRL+X", "CTRL+T"])` removes a sequence and returns
+whether it existed. A space-separated normalized String is also accepted by
+`unbind`, such as `"CTRL+X CTRL+T"`. Successful live edits are mirrored to the
+native resolver in the enclosing request's normal transaction. Exceptions and
+invalid configuration restore the previous bindings and timeout setting.
+
+| Method | Return value |
+| --- | --- |
+| `Toyoterm.key_bindings(pane: Toyoterm.current_pane)` | Frozen effective binding Hash for a Pane; `pane: nil` selects globals |
+| `config.keys.bindings` | Frozen Hash of the base configuration's own bindings, in sorted order |
+| `Toyoterm.describe_key(key, pane: Toyoterm.current_pane)` | Effective description Hash for the selected scope, or `nil` when unbound |
+| `config.keys.describe(key)` | Base configuration's own description, or `nil`; accepts a chord/space-separated String or an Array of 2–32 chords, as does `Toyoterm.describe_key` |
+| `Toyoterm.command_keys(name)` | Frozen sorted Array of keys directly bound to the named Ruby command; unknown names return an empty Array |
+| `Toyoterm.key_help(prefix: nil)` | Opens a searchable, read-only key-binding selector; returns `nil` |
+
+Descriptions have `:key` and `:kind`. A `:native` or `:command` entry also has
+`:action` (a Symbol, `:user_command` for a named Ruby command) and `:argument`.
+A `:ruby` entry has `:source` and `:line`, each potentially `nil` without mruby
+debug information. Description strings are frozen. `command_keys` only finds
+direct `.command(name)` bindings; it does not inspect arbitrary Ruby code.
+Names for that method accept Strings or Symbols with the usual identifier
+validation. Lookup keys accept Strings or sequence Arrays; invalid inputs use
+the same `TypeError` / `ArgumentError` rules as registration.
+
+`key_help` optionally filters to an exact normalized key prefix and its
+descendants. `prefix` must be a nonempty String, or `nil`. Entries show the
+native action, named command and its description, or a Ruby callback label.
+Newlines in command descriptions are displayed as spaces. Choosing an entry
+only closes help and never runs its action. Empty results are a no-op. The
+selection overlay's loading restriction, item/size limits, input handling, and
+reload lifecycle apply. Feature detection uses `:key_sequences` and
+`:key_inspection` with `Toyoterm.supports?`.
+
 ### Visual selection
 
 `toggle_visual_mode` enters visual mode without selecting text. Move to the
@@ -566,8 +656,8 @@ end
 `config.keys.key(chord).run { |context| ... }` invokes Ruby with a
 `Toyoterm::CallbackContext`. `Toyoterm::KeyBindingContext` and
 `Toyoterm::CommandContext` are aliases of the same class. They expose
-`context.workspace`, `context.window`, `context.tab`, and
-`context.pane`, captured when the callback starts. The first three identify the
+`context.workspace`, `context.window`, `context.tab`, and `context.pane`,
+captured when the callback starts. The first three identify the
 current objects in the request snapshot; `pane` is the callback's target pane.
 They are snapshot handles, not live mutable native objects.
 
@@ -597,9 +687,225 @@ config.keys.key("CTRL+SHIFT+H").run do |context|
 end
 ```
 
-Unmatched keys bypass mruby and go directly to the terminal input encoder. If a
+Outside an active transient keymap, unmatched keys bypass mruby and go directly
+to the terminal input encoder. If a
 callback raises, all commands and clipboard writes queued by that callback are
 discarded and the terminal keeps running.
+
+## Keymaps and modes
+
+Named keymaps layer reusable bindings over the base `config.keys`. They remain
+ordinary Ruby objects loaded through `require`; no plugin loader is involved.
+Use `Toyoterm.supports?(:keymaps)` and `Toyoterm.supports?(:modes)` for feature
+detection. The [navigation example](../examples/modes.rb) toggles a global
+minor mode with Alt+N and exits through an Escape binding in that mode.
+
+### Keymap definitions and activation
+
+`Toyoterm.keymap(name, parent: nil) { ... }` defines and returns a
+`Toyoterm::Keymap`. The block uses the same binding DSL as `config.keys` and
+may accept a `keys` argument. `parent` accepts an existing Keymap or its
+String/Symbol name. `Toyoterm.keymap(name)` retrieves a definition;
+`Toyoterm.keymaps` returns a frozen sorted Array of names. Names use ordinary
+nonempty String/Symbol identifier validation. Duplicate names, unknown names,
+an unregistered parent, or a parent supplied without a block raise
+`ArgumentError`. A definition block's failure rolls back its host-managed
+effects even if its caller rescues the exception.
+
+| Keymap method | Result |
+| --- | --- |
+| `name`, `id`, `parent` | Frozen name, monotonic VM-local ID, parent Keymap or `nil` |
+| `keys { ... }` / `keys` | Edit or retrieve its own `KeysConfig`; supports unbinding and multi-step sequences |
+| `bindings` | Frozen effective description Hash including inherited entries |
+| `activate(pane: nil)` | A removable `Toyoterm::Registration` of kind `:keymap`; defaults to global; supply a Pane for local activation |
+| `activate_transient(pane: Toyoterm.current_pane, once: true)` | Runtime-only exclusive transient activation; removable `Registration` of kind `:transient_keymap` |
+
+Removing an activation reveals the layers below it. Multiple activations of the
+same map have independent handles. Maps can be edited after activation; changes
+become native in the enclosing successful request. A child overrides the exact
+key and any conflicting ancestor/descendant binding in its parent, while
+unrelated suffixes of a shared prefix are inherited. The same rule applies
+between active layers. For example, a child `CTRL+X` masks all parent `CTRL+X …`
+bindings, while a child `CTRL+X F` preserves a parent `CTRL+X R` binding.
+Within one map, ambiguous definitions still raise the normal prefix-conflict
+error. Named layers can override the base leader chord with a binding or a
+sequence prefix; removing that activation restores the base leader. Once a
+base leader sequence has started, its suffix is resolved before a new prefix
+can start. The base `config.keys` leader-conflict check remains unchanged.
+
+Binding descriptions from named maps also have `:keymap` and `:keymap_id`,
+identifying the original definition even when inherited. Effective descriptions
+have `:layer`, a positive rank for an active map; the base configuration has no
+layer rank. These are immutable description snapshots. Key help and
+command-to-key lookup use the current Pane unless `pane:` explicitly selects
+a Pane or `nil` for global layers. Wrong target types raise `TypeError`, stale
+Panes raise `Toyoterm::InvalidHandleError`, and the startup placeholder raises
+`RuntimeError`. Activate Pane-local maps in runtime commands/events rather
+than while evaluating configuration. Global activation is valid in configuration.
+Reload replaces definitions and activations; failed reload preserves them.
+
+```ruby
+base = Toyoterm.keymap(:tools) { key("z").toggle_zoom }
+tools = Toyoterm.keymap(:extra_tools, parent: base) do
+  key("c").copy_selection
+end
+
+activation = tools.activate # global
+# Later: activation.remove
+```
+
+### Transient keymaps
+
+Capability: `Toyoterm.supports?(:transient_keymaps)`.
+`map.activate_transient(pane: Toyoterm.current_pane, once: true)` temporarily
+captures keyboard commands using a registered Keymap and its inherited
+bindings. `pane:` accepts a live Pane or `nil` for global activation; `once:`
+must be Boolean. Activation returns a `Toyoterm::Registration` with `id`,
+`name`, `kind: :transient_keymap`, `active?`, and `remove`. Removal returns true
+only while the activation exists. Activations are independent even when they
+share a map. At most 64 can exist in a VM.
+
+Local transients take precedence over global transients. Within each scope,
+newest activation wins. Only the top applicable transient receives input;
+unassigned keys do not fall through to lower maps or to the terminal. A finished
+map reveals the next map or normal bindings. Panes without that local map use
+their own stack; global maps follow focus across Panes. Search and selection/
+input overlays retain input precedence over transients.
+
+With `once: true`, a completed binding consumes the activation before dispatch.
+With `once: false`, bindings can repeat until cancellation or manual removal.
+Escape, Ctrl+G, or an unassigned nonmodifier key closes the top map and consumes
+that key without sending it to the shell or dispatching a lower binding. A
+standalone modifier press preserves the map/prefix unless explicitly bound by
+its physical key. Auto-repeat does not dispatch transient operations or extend
+sequence deadlines. Prefixes use `key_sequence_timeout_ms`; expiration resets
+the prefix and evaluates the next key from the map root. Focus loss, Pane
+switches and registry changes clear pending prefixes; focus loss leaves the
+activation itself in place. Physical candidates precede logical candidates in
+the same map.
+
+Empty maps and bindings starting with Escape/Ctrl+G raise `ArgumentError`.
+Unknown/foreign maps follow normal Keymap validation. Wrong target/Boolean
+types raise `TypeError`, stale Panes raise `InvalidHandleError`, and startup
+placeholder Panes or activation during source loading raise `RuntimeError`.
+Define maps while loading, then activate them from runtime commands, keys,
+events or tasks. Editing an active map updates its native keys on successful
+request completion; making it empty or adding a reserved cancellation binding
+fails the request and restores its prior definition.
+
+`Toyoterm.transient_keymaps(pane: Toyoterm.current_pane)` returns a frozen Array
+of frozen `{id:, keymap:, pane:, once:}` descriptions in priority order.
+`keymap` is its frozen definition name, and `pane` is a numeric Pane ID or nil.
+Use `pane: nil` to inspect just globals. `Toyoterm.key_bindings`, `describe_key`,
+`command_keys`, `action_keys`, and `key_help` inspect the top transient's
+bindings while active. Those descriptions include `:transient` (activation ID)
+and normal definition/source metadata. `map.bindings` always describes its own
+inherited definition, independently of activation.
+
+Native matching consumes one-shots immediately, so delayed Ruby work or older
+snapshots cannot re-enable them. A typed request delivers the activation ID,
+completed key (or cancellation), and originating Pane to the script owner.
+Native actions pass through action advice; named commands use command advice
+and argument collection; Ruby callbacks retain the defining keymap, including
+inherited callback owners. Removed registrations and requests from an old VM
+after successful reload are ignored. A closed originating Pane does not run
+its callback; accepted one-shots are still consumed. Failed reload preserves
+the stack.
+
+Creation, manual removal, edits and callback effects use the normal host
+transaction. Keyboard consumption happens before that checkpoint: a failed
+one-shot callback does not resurrect the map, while a failing repeated
+operation leaves its map active. Callback host effects and any maps it creates
+are rolled back on failure. Ruby objects and external effects remain outside
+rollback. Mode-owned activations are removed on disable/close/reload; their
+callbacks inherit the owner's resource scope, including typed command prompts,
+timers, async tasks and registrations they create. Pending delivery after
+removal is ignored. Other activations remain independent.
+
+```ruby
+split_keys = Toyoterm.keymap(:choose_split) do
+  key('j').split(:down)
+  key('l').split(:right)
+end
+Toyoterm.command(:choose_split) { split_keys.activate_transient }
+Toyoterm.configure { |c| c.keys.alt('s').command(:choose_split) }
+# Alt+S, then j/l chooses one split. Escape cancels.
+```
+
+The [complete example](../examples/transient_keymaps.rb) also uses a global
+`once: false` map for repeated Pane focus/zoom operations with Alt+R.
+
+### Major and minor modes
+
+`Toyoterm.mode(name, keymap:, kind: :minor) { |enabled, context| ... }` defines
+and returns a frozen `Toyoterm::Mode`. The lifecycle block is optional.
+`keymap:` accepts a registered Keymap or its name. `kind` must be `:major` or
+`:minor`; other values, duplicate names, and unknown definitions raise
+`ArgumentError`. Identifier types follow the keymap rules. `Toyoterm.mode(name)`
+retrieves a definition and `Toyoterm.modes` returns frozen sorted names.
+
+| Mode method | Result |
+| --- | --- |
+| `name`, `keymap`, `kind` | Definition name, Keymap, and `:major` / `:minor` |
+| `enable(pane: Toyoterm.current_pane)` | `true` on activation, `false` if already enabled in that exact scope |
+| `disable(pane: Toyoterm.current_pane)` | `true` on deactivation, `false` if already disabled in that scope |
+| `enabled?(pane: Toyoterm.current_pane)` | Boolean for the exact scope |
+| `Toyoterm.active_modes(pane: Toyoterm.current_pane)` | Frozen sorted Array of names enabled in the exact scope; defaults to the current Pane; use `pane: nil` for globals |
+| `Pane#enable_mode(name)`, `Pane#disable_mode(name)`, `Pane#modes` | Pane-local convenience methods for these operations |
+
+Minor modes can be global (`pane: nil`) or Pane-local. Major modes require a
+runtime Pane, and at most one major mode is enabled per target. Enabling a new
+major mode disables the previous one in the same transaction. Minor modes can
+coexist. Global minor modes apply across Pane switches; Pane-local modes stay
+with their Pane. Definitions are independent of their instances.
+
+From lowest to highest, resolution uses base bindings, global layers, then
+Pane-local layers. Within each scope the order is major mode, minor modes, then
+explicit Keymap activations. Within each category, later activations win.
+Layer rank wins before physical/logical priority; physical candidates win ties.
+Shared prefixes can fall back to unrelated suffixes in lower layers. Search and
+selection/input overlays own their input while open. Lookup remains native.
+
+The lifecycle block receives `true` on enable and `false` on disable, plus a
+captured `CallbackContext`. Its return value is ignored. Reentrant transitions
+of the same instance raise `RuntimeError`. An exception restores all
+host-managed changes and the previous enabled modes, including a major mode
+being replaced. Arbitrary Ruby object mutations and external side effects
+remain outside rollback.
+
+Registrations created directly during a mode's lifecycle block (commands,
+events, hooks, advice, explicit/transient Keymap activations, timers, cooperative work, async tasks, and input/selection/panel overlays) are owned by that mode
+instance and removed in reverse order when it disables. Registrations created
+inside an explicit `ResourceScope#within` belong to that scope instead. A new
+scope created inside the lifecycle is itself mode-owned; a pre-existing scope
+retains its independent lifetime when re-entered. Registrations created
+during its disable callback are also removed. Cleanup does not restore a
+command replaced with `replace: true`. Registrations created later by an event
+or command callback are independent; nested mode instances are independent as
+well. A mode-owned timer or async completion inherits its owner's resource
+scope, including registrations/tasks created by that callback. Disabling the
+mode cancels pending timer/async delivery and removes those descendants. An
+already-running child process may continue until it exits. Keymap edits,
+arbitrary Ruby object changes, and external effects remain outside ownership.
+
+Closed-Pane instances and activations are pruned on the next script registry
+refresh, including their owned command/event registrations in that same native
+snapshot. Their disable block is not called because its target is already stale.
+Successful reload drops all mode state with the old VM; failed reload preserves
+it. Scope changes and new registry snapshots cancel pending key sequences.
+
+```ruby
+tools = Toyoterm.keymap(:pane_tools) do
+  key("z").toggle_zoom
+  key("ESCAPE").run { |context| context.pane.disable_mode(:pane_tools) }
+end
+Toyoterm.mode(:pane_tools, keymap: tools) do |enabled, context|
+  context.pane.badge = enabled ? "TOOLS" : nil
+end
+Toyoterm.configure do |config|
+  config.keys.alt("t").run { |context| context.pane.enable_mode(:pane_tools) }
+end
+```
 
 ## Commands and object model
 
@@ -807,6 +1113,326 @@ command makes its previous registration handle inactive. A callback receives a
 `CommandContext` with `workspace`, `window`, `tab`, and `pane`.
 Its queued mutations are rolled back if it raises.
 
+### Command discovery, composition, and palette
+
+`Toyoterm.command(name, replace: false, description: nil, arguments: []) { |context, values| ... }`
+also accepts an optional String description (including an empty String).
+Names accept Strings or Symbols. Invalid description types raise `TypeError`;
+NUL bytes raise `ArgumentError` before replacing or registering a command.
+
+| Method | Return value |
+| --- | --- |
+| `Toyoterm.commands` | Frozen Array of registered Ruby command names, sorted lexically |
+| `Toyoterm.command_info(name)` | Frozen Hash with `:name`, `:description`, `:source`, `:line`, and `:arguments`, or `nil` for an unknown name |
+| `Toyoterm.command_definition(name)` | Frozen `{name:, source:, line:}` Hash, or `nil` for an unknown command or unavailable source |
+| `Toyoterm.call_command(name, context: nil, arguments: {})` | Validates arguments and returns the registered block's return value |
+| `Toyoterm.prompt_command(name, context: nil, arguments: {})` | Collects missing arguments interactively, then invokes the command; returns `nil` |
+| `Toyoterm.command_arguments` | Current command's frozen argument Hash, or a frozen empty Hash outside a command |
+| `Toyoterm.command_palette` | Opens a searchable command selector; returns `nil` |
+
+Metadata strings are frozen. Description defaults to `nil`. Source identifies
+the main configuration or required Ruby file while it loads, even without mruby
+debug information. In-memory configurations retain their virtual filename, such
+as `(config)`. Runtime-generated commands can have nil source; line may be nil
+without debug information and is never guessed. Discovery covers Ruby commands, not native
+actions; native actions remain available through `context.actions`.
+
+`call_command` executes immediately on the script thread. Nested calls inherit
+the calling command's context by default; otherwise the current Pane context
+is used. An explicit `context:` must be a `Toyoterm::CallbackContext` or raises
+`TypeError`. Stale context handles raise `Toyoterm::InvalidHandleError`.
+An unknown command raises `ArgumentError`; nesting beyond 64 active calls raises
+`RuntimeError`. The command stack is restored after success or failure.
+
+Each call checkpoints host-managed configuration, registrations, queued native
+commands, badges, bars, async requests, and logs. A raised exception restores
+that checkpoint even if the caller rescues it. Native commands are still applied
+only after the enclosing host request succeeds. Arbitrary Ruby objects, file
+I/O, and external process side effects are not rolled back.
+
+The palette uses the selection overlay's size limits and runtime-only loading
+restriction. An empty command registry is a no-op. Escape cancels without
+executing a command. The chosen command receives the context captured when the
+palette opened; stale handles are rejected. Removing or replacing a displayed
+command before choosing it raises `ArgumentError` instead of running a different
+registration. Reload closes the palette along with other selection overlays.
+Use `Toyoterm.supports?(:command_palette)` for feature detection.
+
+```ruby
+Toyoterm.command(:git_status, description: "Show Git status in this pane") do |context|
+  context.pane.send_text("git status\n")
+end
+Toyoterm.command(:project_status) { Toyoterm.call_command(:git_status) }
+
+Toyoterm.configure do |config|
+  config.keys.alt("x").run { Toyoterm.command_palette }
+end
+
+# In the live console:
+Toyoterm.commands
+Toyoterm.command_info(:git_status)
+```
+
+### Command help and definitions
+
+Capability: `Toyoterm.supports?(:command_help)`.
+`Toyoterm.command_help(name = nil) { |definition, context| ... }` returns nil
+and opens searchable help through the native selection overlay. With a
+String/Symbol name, it opens that command's details directly. With nil, it first
+lists registered Ruby commands in lexical order, with numbered labels and
+descriptions; choosing one opens its details. An empty registry is a no-op.
+Unknown names raise `ArgumentError`; invalid name types raise `TypeError`.
+It is runtime-only and follows `select`'s single-pending-overlay and size limits.
+Source-loading calls, including calls in the main configuration, raise
+`RuntimeError`. Define a command or binding that opens help instead.
+
+Details show the description, effective direct keys for the originating Pane,
+argument types/requirements/defaults/ranges/choices/completion/history, advice
+registration IDs/kinds, and definition location. Filtering, movement and paging
+stay native. Opening/reading help never invokes the inspected command or its
+advice. Escape cancels; selecting an ordinary detail row closes help. Details
+are a metadata snapshot. Source locations can be virtual labels and line
+numbers can be nil; source availability does not imply that a file still exists.
+
+An optional block runs only when a known Definition row is selected. It receives
+the full frozen `command_definition` Hash and originating `CallbackContext`.
+Core help does not open, read, or modify that file. A trusted library can use
+the callback for its navigation workflow. Names and source strings are frozen;
+the block receives untruncated values. Without a block, selecting the row just
+closes help. Unknown/unavailable source does not invoke it.
+
+Before opening details from the list, and before calling the definition handler,
+the command must still be the original registration; removal/replacement raises
+`ArgumentError`. Captured handles are validated, so a closed target raises
+`InvalidHandleError`. Handler host effects participate in ordinary callback
+rollback; arbitrary Ruby/external effects do not. Help is consumed before
+delivery, so a failed handler does not resurrect it. Mode-owned help is closed
+on disable/close/reload using the normal overlay lifecycle.
+
+Display values use escaped String representations and at most 160 characters
+each, with an ellipsis when shortened. Details show at most 32 keys, 32 advice
+entries and 16 choices per field, with notices for omitted entries. Full metadata
+remains available from `command_info`, `command_keys`, `command_advice`, and
+`command_definition`. The help selector's aggregate limits still apply.
+
+```ruby
+Toyoterm.configure do |config|
+  config.keys.alt('h').run do
+    Toyoterm.command_help do |definition, context|
+      location = definition[:source]
+      location += ':' + definition[:line].to_s if definition[:line]
+      Toyoterm.clipboard.write(location)
+      context.pane.badge = 'Definition location copied'
+    end
+  end
+end
+# Runtime direct help/inspection:
+Toyoterm.command_help(:label_pane)
+Toyoterm.command_definition(:label_pane)
+```
+
+The [runnable example](../examples/command_help.rb) also registers a terminal
+status command so its definition, description and key can be inspected.
+
+### Typed command arguments
+
+Capability: `Toyoterm.supports?(:command_arguments)`. Declare up to 16 fields
+with `arguments: [{name: :label, type: :string}, ...]`. Definition keys are
+Symbols. Names accept nonempty Strings/Symbols and must be unique after String
+normalization. Invalid schemas fail before registering/replacing a command.
+
+| Field option | Accepted values and default |
+| --- | --- |
+| `name:` | Required name; UTF-8, no controls, at most 128 bytes |
+| `type:` | `:string` (default), `:integer`, `:number`, or `:boolean` |
+| `prompt:` | Single-line UTF-8 prompt title, at most 256 bytes; defaults to name |
+| `required:` | Boolean; defaults to true unless `default:` is present |
+| `default:` | A value of the declared type; validated against choices/range at registration |
+| `choices:` | Array of 1..4096 typed values, deduplicated; accepted values must be included |
+| `min:`, `max:` | Finite numeric inclusive bounds, for integer/number fields only; minimum must not exceed maximum |
+| `history:` | Named input history (String/Symbol), or `nil` (default) |
+| `completer:` | Callable receiving `query, context`, returning candidate Strings; string fields only, mutually exclusive with choices |
+| `require_match:` | Boolean for dynamic completion, default false; static choices and booleans always require a candidate match interactively |
+
+Strings are copied/frozen, limited to 4096 UTF-8 bytes and exclude controls.
+Integer fields accept only Integers; number fields accept finite Numeric values;
+booleans accept only true/false. Optional fields accept `nil`. A missing value
+uses its default, or `nil` if optional; missing required values raise
+`ArgumentError`. Wrong types raise `TypeError`; unknown options, duplicate
+names, invalid ranges/choices and prompt limits raise `ArgumentError`.
+Static candidate display also follows `read_string`'s 4096-candidate/4 MiB
+limits, including the blank candidate for optional fields.
+
+`command_info[:arguments]` is a frozen Array of frozen normalized field Hashes,
+including `:dynamic` (Boolean), excluding the completer callable. This metadata
+retains defaults, choices, ranges, prompt and history settings.
+
+`call_command(arguments: hash)` accepts String/Symbol keys, rejects duplicate
+normalized or unknown keys, and never prompts. It validates before advice or
+body execution. Commands with fields receive `|context, values|`; values is a
+frozen Hash keyed by Strings. Commands with no fields still receive exactly
+one context argument, preserving strict lambda arity. Nested calls inherit
+context, but receive their own values/defaults. `command_arguments` exposes the
+current values to before/around/after advice without changing advice signatures;
+the previous values are restored on return or exception. Programmatic calls
+validate types, ranges and static choices without running dynamic completers.
+
+Key `.command(name)` bindings and both palettes use `prompt_command`. Supplied
+partial `arguments:` are validated and skipped; remaining fields are prompted
+in declaration order, including fields with defaults. Defaults appear as
+initial text. Integer/number inputs use `Integer(text, 10)`/`Float(text)`;
+boolean inputs use `true`/`false`. Blank optional input yields `nil` (or an
+explicit empty-string/nil default). Clear the initial text to choose nil;
+required string fields may accept an empty String. Invalid parsed values log a
+warning and reopen the same field with the attempted text; previous values
+remain collected. Static/dynamic match rejection follows `read_string` rules;
+a dynamic provider must include an empty candidate to allow blank input with
+`require_match: true`.
+
+Escape cancels without calling advice/body. No command effects are queued
+until all fields are valid. Each input is a separate host transaction: accepted
+raw input may enter its named history even if parsing triggers a retry or a
+later field is cancelled; body failure rolls back host effects and the final
+input's history change. Earlier successful input requests remain committed.
+Arbitrary Ruby objects and external effects retain the ordinary trusted-code
+semantics. Only one selector/input may be pending, and interactive collection
+is runtime-only (not during source loading).
+
+Collection retains the originating context; stale handles or a removed/replaced
+command raise instead of invoking another registration. A defining mode, or
+the calling owned task/transient callback if there is no defining mode, owns
+the prompts and closes them on disable/close/reload. Dynamic providers receive
+the originating context and follow the provider-effect rollback rules.
+
+```ruby
+Toyoterm.command(:label_pane, arguments: [
+  {name: :label, prompt: 'Pane label', history: :labels},
+  {name: :zoom, type: :boolean, default: false}
+]) do |context, values|
+  context.pane.badge = values['label']
+  context.actions.toggle_zoom if values['zoom']
+end
+# Runtime direct call; no input opens:
+Toyoterm.call_command(:label_pane, arguments: {label: 'Build'})
+# Runtime interactive call; skips label and asks about zoom:
+Toyoterm.prompt_command(:label_pane, arguments: {label: 'Build'})
+```
+
+## Native action discovery and advice
+
+The named operations available through `config.keys` and `context.actions` can
+be inspected and wrapped by independent libraries. Capability checks are
+`Toyoterm.supports?(:action_inspection)`, `:action_advice`, and `:operation_palette`.
+The [action-policy example](../examples/actions.rb) toggles a Pane's split policy
+with Alt+M, requests a right split with Alt+D, and opens the combined operation
+palette with Alt+O. Its policy changes that Pane's split direction to down and
+suppresses its close action while shell integration reports a running command.
+
+| Method | Return value and behavior |
+| --- | --- |
+| `Toyoterm.actions` | Frozen sorted Array of native action name Strings |
+| `Toyoterm.action_info(name)` | Frozen metadata Hash, or `nil` for an unknown name |
+| `Toyoterm.action_keys(name)` | Frozen sorted key Array for that action in the current Pane's effective keymaps; unknown names raise `ArgumentError` |
+| `Toyoterm.advise_action(name, kind: :before) { ... }` | Removable `Registration` of kind `:action_advice` |
+| `Toyoterm.action_advice(name)` | Frozen Array of frozen `{ id:, kind:, source:, line: }` descriptions in registration order |
+| `Toyoterm.operations` | Frozen metadata Array combining native actions (`kind: :action`) and Ruby commands (`kind: :command`), sorted by name then kind |
+| `Toyoterm.invoke_operation(kind, name, argument: nil, arguments: {}, context: nil)` | Invokes through the action/advice or Ruby command/advice path; kind must be `:action` or `:command`; native actions use singular `argument:`, Ruby commands use typed `arguments:` |
+| `Toyoterm.operation_palette` | Queues a selection of both kinds and returns `nil`; native/Ruby arguments are collected through follow-up input prompts |
+
+Action names accept nonempty Strings/Symbols, case-insensitively. Wrong name
+types raise `TypeError`; unsupported names in advice or `action_keys` raise
+`ArgumentError` (`action_info` returns `nil` for unknown names). Advice needs a block and a kind of `:before`, `:after`, or
+`:around`, otherwise `ArgumentError` is raised without registration. The special
+key-binding operation `user_command` is represented through the Ruby command
+catalog and `advise_command`, rather than as a native action definition.
+
+`action_info` includes `name` (String), `kind` (`:action`), `description` (String),
+`argument_required` (Boolean), `arguments` (frozen Array of accepted Symbols),
+`scope` (`:pane` or `:application`, following the existing global-action rules),
+and `advice` (the description Array). Native definitions have no Ruby source;
+advice descriptions include the declaring source/line when available. Ruby
+operation entries retain `command_info` metadata, including typed argument
+schemas; `argument_required` is true when any required field lacks a default.
+Passing a non-nil singular argument to a Ruby command, or nonempty command
+arguments to a native action, raises `ArgumentError`. Native/Ruby definitions
+may share a name because their kinds differ.
+Mutating descriptions cannot change registrations or keys.
+
+Before/after blocks receive a frozen `Toyoterm::ActionCall` with `name`,
+`argument`, and `context`. Name and non-`nil` argument are normalized frozen
+Strings. Context is the captured `CallbackContext` with snapshot handles.
+Around blocks receive `|proceed, call|`. Calling `proceed.call` runs the next
+layer; `proceed.call(replacement)` replaces the argument after normal action
+validation. Omitting it suppresses the base operation. To replace an operation
+with a different action, queue that other action instead of proceeding.
+
+Before handlers run in registration order, then around handlers nest in that
+order (first is outermost), then after handlers run in registration order.
+Before/after handlers describe the original request; an inner around handler
+sees an argument replaced by an outer layer. After handlers run after the around
+chain returns, including when it suppresses the base operation. Return values
+are ignored, and action calls return `nil`. The dispatch takes a registration
+snapshot: adding/removing handlers affects future invocations, not the current
+chain. Advice is global; filter `call.context` to implement a Pane-specific
+policy, as the example does. Mode ownership controls registration lifetime.
+
+Continuation calls are synchronous and once-only. Reusing a continuation or
+calling it after its block returns raises `RuntimeError`. Calling a new action
+from advice enters that action's advice normally. Nesting is limited to 64 active
+advised action calls; exceeding it raises `RuntimeError`. Call `proceed` to
+continue the same operation without recursively re-entering its advice. The
+continuation is not a deferred confirmation handle.
+
+Each advised call checkpoints host-managed settings, registrations, queued
+commands, UI, tasks and logs. An exception restores the checkpoint even if the
+caller rescues it; queued base work is discarded too. Arbitrary Ruby mutations
+and external file/process effects cannot be undone. A failed native-key advice
+request is logged and does not fall back to executing the unadvised operation.
+Removing advice reveals the original behavior. Registrations created during a
+mode lifecycle or owned task are released with that mode; failed transitions
+restore them, successful reload replaces them, and failed reload preserves them.
+
+Advice applies to named action calls from Ruby and native key/leader bindings.
+The native registry mirrors only which names need advice. A binding without
+advice keeps its native dispatch path; an advised action submits a typed request
+to the script thread with its captured hierarchy. Ruby returns ordinary typed
+action commands, which are validated/applied on the main thread without running
+advice again. A changed active Pane does not retarget the queued action; stale
+non-global targets fail validation. Slow advice delays Ruby work, while PTY
+parsing/rendering remain native.
+
+Advice wraps queuing, so an after handler does not mean the native mutation has
+already applied. Use native events to observe the resulting state. Direct
+`Pane`/mux methods, IPC domain commands, terminal protocol processing, OS window
+close and automatic child exit do not pass through these named action hooks.
+These extension points are trusted customization, not a security boundary.
+
+`invoke_operation` defaults to the enclosing command's context or the current
+Pane context; an explicit non-`CallbackContext` raises `TypeError`. Native
+arguments use normal action validation. Ruby commands currently accept no
+operation argument; a non-`nil` one raises `ArgumentError`. Native invocation
+returns `nil`; Ruby invocation returns the command's result. Unknown kinds and
+commands raise `ArgumentError`. The operation palette shares the runtime-only
+selection/input slot, limits, cancellation and reload behavior. It preserves
+the originating context and rejects a Ruby command removed/replaced while the
+palette was open. Choosing an argument is cancellable and invokes no action
+until accepted. The existing `command_palette` continues listing Ruby commands.
+
+```ruby
+policy = Toyoterm.advise_action(:split, kind: :around) do |proceed, call|
+  proceed.call(:down)
+end
+
+Toyoterm.advise_action(:new_tab, kind: :before) do |call|
+  Toyoterm.log(:info, "New tab requested from pane #{call.context.pane.id}")
+end
+
+# Later: policy.remove
+Toyoterm.action_info(:split)
+Toyoterm.action_advice(:split)
+Toyoterm.operations
+```
+
 ## Selection overlays
 
 `Toyoterm.select(title: "Select", items:) { |selection, context| ... }` opens a
@@ -817,7 +1443,9 @@ String title is limited to 256 bytes. Titles
 and items reject NUL bytes and line breaks. The method requires a block, queues
 the overlay, and returns `nil`.
 
-Typing filters items by a case-insensitive substring match. Up/Down move through
+Typing filters items by a case-insensitive substring match. Filter input is
+limited to 4 KiB; insertions containing control characters or exceeding that
+limit are ignored as a whole. Backspace removes a Unicode grapheme. Up/Down move through
 the filtered results with wraparound, PageUp/PageDown move by ten entries, and
 Home/End select the first or last result. Enter closes the overlay and invokes
 the block with the selected String. Escape cancels it and invokes the block with
@@ -847,6 +1475,200 @@ atomic callback transaction. A callback exception discards its queued work and
 is logged without stopping the terminal. Use
 `Toyoterm.supports?(:select_overlay)` when supporting older toyoterm builds.
 
+## Read-only panels
+
+Capability: `Toyoterm.supports?(:text_panels)`.
+`Toyoterm.show_panel(title: 'Panel', lines:)` opens a read-only modal overlay
+and returns a frozen `Toyoterm::Panel` handle. It is for extension output such
+as logs, task results and terminal metadata; it does not load files or provide
+editable documents. Only one panel, selection or input overlay can be pending.
+Creation requires a runtime request and is forbidden while loading Ruby source.
+Violations raise `RuntimeError` before opening a panel.
+
+`title:` is a UTF-8 String of at most 256 bytes. `lines:` is an Array of at most
+4096 UTF-8 Strings, each at most 4096 bytes, totaling at most 4 MiB. Empty arrays,
+empty lines and duplicate lines are preserved. Strings are copied/frozen and
+must not contain controls (C0, DEL or C1); supply one String per logical line.
+Wrong types raise `TypeError`; invalid encoding, controls and exceeded limits
+raise `ArgumentError`. Empty titles render with the native title `Panel`.
+
+| Handle member | Behavior |
+| --- | --- |
+| `id` | Monotonic VM-local overlay ID |
+| `active?` | Boolean indicating that the script runtime still knows this panel is open |
+| `update(lines:, title: nil)` | Replaces all displayed lines; optional non-nil title replaces the title. Returns true when queued, false if already inactive |
+| `close` / `remove` | Queues closure and releases the pending slot; returns true once, false if inactive |
+
+Updates validate/copy their data before queuing and keep the native filter query
+and selected index (clamped to remaining matches). An inactive update returns
+false without validating its payload or reopening the panel. All native updates
+are ID- and panel-kind checked, so late results cannot overwrite another
+overlay. Delivery is serialized with other script commands.
+
+Typing edits only the filter query. Up/Down, PageUp/PageDown, Home and End browse
+matching lines; Backspace edits the query. Native filtering and paging never
+call Ruby. Enter, Escape or Ctrl+G closes the panel; Enter while an IME preedit
+is active follows normal overlay composition behavior. Closing sends only a
+dismissal through the typed callback boundary, never the highlighted line.
+There is no user result callback. `active?` may remain true until that dismissal
+reaches the script owner; updates in the meantime are ignored by the closed
+native overlay. The view retains ordinary overlay viewport truncation rules.
+
+Creation, updates and explicit closure participate in host rollback. An
+exception discards queued updates and restores any existing panel registration;
+arbitrary Ruby objects and external effects remain outside rollback. User
+dismissal is consumed before the callback checkpoint and cannot be resurrected.
+A mode owns panels created during its lifecycle or owned task callbacks and
+closes them on disable/Pane closure. Successful reload closes overlays and drops
+their old-VM handles; failed reload preserves them.
+
+```ruby
+Toyoterm.command(:task_result) do
+  panel = Toyoterm.show_panel(title: 'Task output', lines: ['Waiting…'])
+  Toyoterm.after(1) do
+    panel.update(title: 'Task complete', lines: ['Done', 'No errors'])
+  end
+end
+```
+
+The [live monitor example](../examples/panels.rb) updates terminal snapshot data
+once per second inside a Pane-local mode. User closure disables that mode and
+cancels its timer on the next tick; mode disable/Pane closure also closes the
+panel. Snapshot strings are escaped for display before passing line validation.
+
+## Text input and completion
+
+`Toyoterm.read_string(title: 'Input', initial: '', completions: [],
+completer: nil, require_match: false, history: nil) { |text, context| ... }` opens a single-line
+input prompt and returns `nil`. It requires a block (`ArgumentError` without
+one) and a runtime command, key, event, asynchronous callback, or console request.
+Calling it in configuration or while loading a required source raises
+`RuntimeError`. Feature detection uses `Toyoterm.supports?(:input_prompt)`.
+
+| Argument | Accepted values and behavior |
+| --- | --- |
+| `title` | UTF-8 String, at most 256 bytes; empty uses the native default title |
+| `initial` | UTF-8 String, at most 4 KiB; point starts at the end |
+| `completions` | Array of at most 4,096 UTF-8 Strings, each at most 4 KiB and at most 4 MiB in total after deduplication; empty Strings and an empty Array are allowed |
+| `require_match` | Boolean; requires a candidate or a dynamic provider; the accepted result must be one of its candidates |
+| `completer` | Callable object or `nil`; receives a frozen query and captured context, returning an Array of candidate Strings; exclusive with nonempty `completions` |
+| `history` | Nonempty String/Symbol identifying a VM-local history, or `nil` to disable history |
+
+Strings reject NUL and Unicode control characters, including tabs and line
+breaks. Wrong types raise `TypeError`; invalid encoding, controls, lengths,
+counts, or options raise `ArgumentError`. Prompt options and candidate Strings
+are copied when requested, so later mutation of the source Array does not
+change the native prompt. Static candidates filter entirely in native code.
+Dynamic providers run on the script thread through the request boundary described below.
+
+Typing filters candidates using case-insensitive substring matching. An exact
+input match is listed first. Up/Down or Ctrl+P/N select a candidate; PageUp/Down
+move by ten. Tab replaces the input with the highlighted candidate. Enter
+accepts the typed String, including an empty String, when `require_match` is
+false; use Tab first to accept a completion in this mode. When `require_match`
+is true, Enter accepts the highlighted candidate and stays open if there are
+no matches. Escape or Ctrl+G cancels with `nil`.
+
+Left/Right and Ctrl+B/F move over Unicode graphemes; Home/End and Ctrl+A/E move
+to input edges. Backspace/Delete remove a grapheme. Ctrl+U clears text before
+point and Ctrl+K clears text after it. IME commits and Primary+V insert at point;
+Enter during IME preedit does not submit the prompt. Insertions containing
+controls or exceeding the 4 KiB input limit are ignored as a whole. Long input
+scrolls around point using Unicode display-column widths and the current cell
+metrics, preserving grapheme boundaries for Japanese text, combining marks and
+emoji sequences. Continuation ellipses indicate clipped text; extremely narrow
+views retain only the caret (or no input when there is no available column).
+Candidate highlights are omitted when there is insufficient overlay space for
+their row. While an extension overlay is open, the host supplies its visible
+input cursor as the IME candidate anchor, accounting for horizontal clipping,
+preedit and scaled cell metrics. The anchor is bounded to the overlay; after
+dismissal, normal terminal-cursor anchoring resumes. The operating system/IME
+controls the final placement of the candidate window.
+Input is visible; this API has no password/secret mode.
+
+Alt+Up/Down browse the captured history and restore the in-progress draft when
+moving past its newest entry. `Toyoterm.prompt_history(name)` returns a frozen
+Array of frozen Strings, oldest first; an unknown name returns an empty Array.
+`Toyoterm.clear_prompt_history(name)` returns whether a stored history existed.
+Both methods validate names with the usual String/Symbol identifier rules.
+There are at most 64 named histories, each retaining the last 128 distinct
+accepted values. A repeated value moves to the end. Cancellation adds nothing;
+accepting an empty String records that String. History is in memory only and
+is cleared on successful VM reload; failed reload preserves it.
+
+Prompts, `Toyoterm.select` and read-only panels share one pending slot. Opening another while one
+is pending raises `RuntimeError`. The native UI captures keyboard, paste, and
+IME input; text does not reach the PTY. Reload closes it. Confirmation
+consumes the callback once, then runs it on the script thread with the frozen String
+or `nil` and the originating `CallbackContext`, including its captured Pane.
+The callback may open a follow-up prompt because the slot is released first.
+Callbacks ignore their return values. A raised exception rolls back host-managed
+changes, queued work, follow-up prompts, and the history insertion; it does not
+reopen the consumed prompt or undo external file/process effects. History reads
+inside a successful callback already include the accepted value.
+
+```ruby
+Toyoterm.command(:name_pane) do
+  Toyoterm.read_string(title: 'Pane name', history: :pane_names) do |text, context|
+    context.pane.badge = text unless text.nil?
+  end
+end
+
+Toyoterm.command(:choose_theme) do
+  Toyoterm.read_string(title: 'Theme', completions: Toyoterm.themes,
+                      require_match: true, history: :themes) do |theme|
+    Toyoterm.configure { |c| c.theme = theme } unless theme.nil?
+  end
+end
+```
+
+### Dynamic completion providers and prompt lifetime
+
+`completer.call(query, context)` runs after the prompt opens and after input
+changes. Changes debounce for 80 ms; IME preedit postpones requests until commit.
+Only one provider request is outstanding per prompt; intervening edits coalesce.
+A slow provider delays other Ruby work, while native terminal input, PTY parsing,
+and rendering continue. Providers are ordinary trusted Ruby code and have no
+execution-time limit or preemption.
+
+The returned Array uses the same count, UTF-8, control-character and byte limits
+as static candidates. It may be empty even with `require_match: true`. Native
+code preserves provider results without applying a second substring filter, so
+providers can implement fuzzy matching. An exact match is listed first.
+Candidate updates carry the prompt ID and input revision; results for old input,
+closed prompts, or earlier VMs are ignored. Editing clears previous candidates.
+While a required-match prompt is waiting for candidates, Enter cannot accept an
+old choice. Free-input prompts can still accept the typed text. Provider errors
+are logged and show a failure notice; another edit retries without closing the
+prompt. Cursor movement alone does not regenerate candidates.
+
+Providers compute data: host-managed commands, configuration, registrations,
+history changes, task creation/cancellation, and mode changes are rolled back
+on success as well as failure. Arbitrary Ruby mutations and external I/O remain
+outside rollback; this is not a sandbox. Result callbacks use the normal commit
+transaction.
+
+Input and selection overlays created within a mode lifecycle or an owned task
+inherit that mode. Disabling/replacing the mode or closing its target closes
+them without invoking their result block. Failed transitions restore the
+pending overlay and discard its queued close. Result callbacks inherit the
+resource owner, allowing their child tasks to be cleaned up as well. A consumed
+result is not reopened by callback failure. Use
+`Toyoterm.supports?(:dynamic_completion)` and `Toyoterm.supports?(:mode_prompts)`
+for capability checks.
+
+```ruby
+Toyoterm.command(:choose_theme) do
+  provider = proc { |query, _context| Toyoterm.themes.select { |name| name.downcase.include?(query.downcase) } }
+  Toyoterm.read_string(title: "Theme", completer: provider, require_match: true) do |theme|
+    Toyoterm.configure { |c| c.theme = theme } unless theme.nil?
+  end
+end
+```
+
+The [completion example](../examples/completion.rb) traverses directory
+candidates and opens a terminal Pane in the chosen directory with Alt+P.
+
 ## Runtime events
 
 Register handlers with `Toyoterm.on(name) { |event| ... }`. `Toyoterm::Event`
@@ -868,6 +1690,7 @@ returns the most specific populated native handle.
 | `window_resized` | `window`, `width`, `height`, `columns`, `rows` |
 | `tab_created`, `tab_closed` | `tab` |
 | `pane_created`, `pane_closed`, `pane_focused` | `pane` |
+| `pane_ready`, `pane_resized` | `pane`, `columns`, `rows` |
 | `title_changed` | `pane`, `title` |
 | `cwd_changed` | `pane`, `cwd` |
 | `prompt_started` | `pane` |
@@ -894,6 +1717,55 @@ callback and are discarded if it raises. Badge text is drawn in the pane's
 upper-right corner; assigning `nil` removes it, and configuration reload clears
 badges owned by the replaced VM.
 
+### Pane readiness and grid changes
+
+Capability: `Toyoterm.supports?(:pane_lifecycle_events)`.
+`pane_ready` is queued once for each successfully started PTY-backed Pane runtime,
+after terminal initialization and its first successful size synchronization.
+Its dimensions are the layout-adjusted grid at that point; a failed spawn/resize
+does not report readiness. Mux creation events are collected first, so a new
+Pane's `pane_created` precedes its `pane_ready`. Initial readiness is queued
+before `app_started`. Register handlers while loading configuration if they
+must observe the initial Pane. Reload does not re-emit readiness for an already
+running PTY. This event does not mean that a shell has displayed its first prompt;
+use the shell-integration `prompt_started` marker for that.
+
+`pane_resized` is queued after a subsequent successful PTY size synchronization
+changes columns or rows. This includes native window/DPI/font, split, zoom and
+layout changes. Repeated synchronization with unchanged row/column counts,
+pixel-only changes, missing/exited PTYs, or failed resizes emit no grid event.
+Failure preserves the last reported size, allowing a later successful retry to
+report the change. This reports the PTY grid rather than full-window dimensions;
+`width`, `height`, `window` and unrelated event fields are nil.
+
+Events carry copied dimensions and a typed Pane handle. The context cache is
+invalidated when the runtime/grid changes, so handlers receive a fresh native
+model. `event.context` for all Pane events derives missing hierarchy members
+from the reported Pane, rather than the currently focused tab/window. Focus
+changes while a notification waits do not redirect its actions to another Pane.
+The Pane may already have closed by delivery; guard `event.pane.valid?` before
+dereferencing it. Notification dimensions remain the recorded values even if
+the native grid has since changed.
+
+Per-Pane resize notifications coalesce while Ruby is busy, preserving the latest
+dimensions for each target independently. Readiness is not coalesced. Both follow
+the existing runtime-event queue limits, overload/drop policy and per-handler
+rollback; neither waits for Ruby before completing native geometry or PTY work.
+There is no cancellation/veto result. Handler return values are ignored.
+
+```ruby
+[:pane_ready, :pane_resized].each do |name|
+  Toyoterm.on(name) do |event|
+    next unless event.pane.valid?
+    event.pane.badge = "#{event.columns} cols x #{event.rows} rows"
+  end
+end
+```
+
+The [runnable example](../examples/pane_events.rb) also binds Alt+D to split right.
+
+### Delivery and rollback
+
 Closed-object events retain the deleted object's typed ID, but dereferencing it
 raises `Toyoterm::InvalidHandleError`. Events are processed in FIFO order and
 callbacks are never entered recursively. Each handler has its own transaction.
@@ -905,11 +1777,142 @@ Events without a registered handler are skipped before invoking Ruby. Delivery
 is limited to 1,024 events per application turn to bound self-generated loops.
 While Ruby is slower than event production, at most 1,024 event requests wait
 behind the active callback. Queued `title_changed`, `cwd_changed`,
-`pane_focused`, `workspace_changed`, and `window_resized` events for the same
+`pane_focused`, `pane_resized`, `workspace_changed`, and `window_resized` events for the same
 native object are coalesced to their newest snapshot. If the event portion of
 the queue is still full, newer events are dropped and a rate-limited warning is
 logged. Key bindings, named commands, configuration reloads, and live-console
 evaluations are lossless and are not subject to the event limit.
+
+## Extension hooks and command advice
+
+These APIs let ordinary required Ruby libraries publish extension points and
+adapt commands without replacing their registered blocks. They run on the
+same script thread as commands and events. Feature detection uses
+`Toyoterm.supports?(:named_hooks)` and `Toyoterm.supports?(:command_advice)`.
+
+### Named hooks
+
+- `Toyoterm.add_hook(name, priority: 0, label: nil) { |*arguments| ... }` returns a removable
+  `Toyoterm::Registration` of kind `:hook`.
+- `Toyoterm.hooks` returns a frozen, sorted Array of hook names that have
+  registered handlers.
+- `Toyoterm.hook_handlers(name)` returns a frozen Array of frozen descriptions
+  in execution order: `{id:, label:, priority:, source:, line:}`. It exposes no
+  callable. Unknown names return an empty Array.
+- `Toyoterm.run_hook(name, *arguments)` returns a frozen Array of handler
+  results in execution order. Result objects themselves are not frozen.
+  An unknown hook returns an empty Array.
+- `Toyoterm.run_hook_until_success(name, *arguments)` returns the first truthy
+  handler result without freezing/copying it, or nil if none succeeds. Later
+  handlers do not run. Both nil and false mean no result; 0 and empty Strings/
+  Arrays are truthy Ruby values.
+- `Toyoterm.run_hook_until_failure(name, *arguments)` returns false on the first
+  nil/false handler result and stops; returns true if all handlers are truthy,
+  including an empty/unknown hook. It does not return individual handler values.
+
+Names accept nonempty Strings or Symbols; wrong types raise `TypeError`, and
+empty names or NUL bytes raise `ArgumentError`. Registration without a block
+raises `ArgumentError`. Multiple handlers for the same name are supported.
+Priorities must be Integers within -32768..32767; wrong types raise `TypeError`
+and out-of-range values raise `ArgumentError` before registration. Lower values
+run earlier. Equal priorities run in registration order, preserving existing
+behavior with the default 0. A label accepts a nonempty String/Symbol or nil,
+is copied/frozen, and is descriptive rather than unique identity: remove a
+specific subscription through its registration handle. Duplicate labels are
+allowed. Source/line follow command metadata rules (including virtual main
+configuration labels and potentially nil runtime/debug locations).
+Capabilities are `:hook_inspection`, `:hook_priority`, and `:hook_strategies`.
+Arguments are ordinary Ruby objects passed by reference. Handler registration
+or removal during dispatch takes effect on the next invocation; the current
+invocation uses a snapshot of the handler list. Removing the last registration
+removes its name from `hooks`.
+
+A handler exception stops the remaining handlers, rolls back host-managed
+changes from the entire hook call, and propagates to the caller. All three
+execution strategies use the same checkpoint. A normal early stop commits
+effects of handlers that ran, subject to the enclosing host request. This
+differs from native runtime events, whose handlers are isolated individually.
+Nesting beyond 64 hook invocations across all strategies raises `RuntimeError`; depth is restored
+after exceptions. Mutations to arbitrary Ruby argument objects and external
+side effects are not rolled back.
+
+```ruby
+# A library publishes a hook; another library can subscribe to it.
+subscription = Toyoterm.add_hook(:project_opened) do |name, context|
+  context.pane.badge = name
+end
+
+Toyoterm.command(:open_backend) do |context|
+  Toyoterm.run_hook(:project_opened, "backend", context)
+end
+
+# Later: subscription.remove
+```
+
+Independent libraries can export provider, policy, and observation hooks:
+
+```ruby
+Toyoterm.add_hook(:terminal_directory, priority: 100, label: :fallback) { Dir.pwd }
+Toyoterm.add_hook(:terminal_directory, priority: -10, label: :project) do |context|
+  path = context.pane.cwd
+  path if path && File.directory?(path)
+end
+# In a runtime command:
+path = Toyoterm.run_hook_until_success(:terminal_directory, context)
+allowed = Toyoterm.run_hook_until_failure(:allow_terminal_directory, path, context)
+context.pane.split(:right, cwd: path) if path && allowed
+```
+
+These policies are trusted application conventions, not access control over
+Ruby libraries. See [the runnable composition example](../examples/hook_composition.rb)
+and [the library guide](extension-libraries.md) for explicit loading, inspection,
+cleanup and compatibility conventions.
+
+### Command advice
+
+`Toyoterm.advise_command(name, kind: :before) { ... }` returns a
+`Toyoterm::Registration` of kind `:advice`. `name` uses the same validation as
+command names. `kind` must be the Symbol `:before`, `:after`, or `:around`;
+other values and missing blocks raise `ArgumentError`. Advice may be registered
+before its command exists. It targets the command name, survives command
+replacement/removal within the VM, and applies if that name is registered again.
+It covers registered Ruby commands, not direct calls to native actions.
+
+| Kind | Block signature | Behavior |
+| --- | --- | --- |
+| `:before` | `{ |context| ... }` | Runs before the around chain; its return value is ignored |
+| `:around` | `{ |proceed, context| ... }` | Wraps the next advice or command; its return value becomes that operation's result |
+| `:after` | `{ |context, result| ... }` | Runs after successful completion of the around chain; its return value is ignored |
+
+Before and after handlers run in registration order. Around handlers nest with
+the first registered handler outermost. An around handler can skip
+`proceed.call` to suppress the command and inner around handlers; the before
+handlers have already run, and after handlers still receive its returned result.
+After handlers do not run when a before/around handler or the command raises.
+
+`proceed` takes no arguments and may be called at most once, synchronously
+before its around handler returns. Repeated or retained calls raise
+`RuntimeError`. Advice changes during execution take effect on the next command
+invocation. All advice shares the command's context and rollback checkpoint;
+an exception from any stage rolls back the entire command's host-managed work.
+
+`Toyoterm.command_advice(name)` returns a frozen Array of frozen Hashes with
+`:id` and `:kind`, in registration order. Unknown names return an empty Array.
+The corresponding registration handle exposes `active?` and `remove`.
+Hooks and advice participate in configuration and callback transactions:
+failed transactions restore registrations, successful reloads replace them,
+and failed reloads preserve the existing VM's registrations.
+
+```ruby
+Toyoterm.advise_command(:git_status, kind: :around) do |proceed, context|
+  if context.pane.cwd
+    proceed.call
+  else
+    Toyoterm.log(:warn, "No working directory was reported")
+    nil
+  end
+end
+```
 
 ## Window bars
 
@@ -1067,7 +2070,8 @@ sandboxed and carry the authority of the toyoterm process.
   safely without error.
 
 `Toyoterm::AsyncTask` exposes `id`, `context`, `pending?`, `complete?`,
-`cancelled?`, `cancel`, `result`, `error`, `value!`, and `success?`. `cancel`
+`cancelled?`, `cancel`, `active?`, `remove`, `result`, `error`, `value!`, and `success?`.
+`active?` aliases `pending?` and `remove` aliases `cancel`. `cancel`
 prevents callback delivery and discards the result; a process already executing
 may continue in its worker until it exits. Cancellation is a terminal task state,
 so `complete?` becomes true while `success?` remains false. Completed tasks remove their runtime
@@ -1096,6 +2100,337 @@ end
 Long-running synchronous host calls delay later Ruby callbacks, but not PTY
 parsing or rendering. Use `Toyoterm.async` for network I/O, ping, or other
 potentially slow commands to prevent blocking the script thread.
+
+## Timers and task ownership
+
+`Toyoterm.after(seconds) { |timer, context| ... }` schedules a single callback;
+`Toyoterm.every(seconds) { |timer, context| ... }` schedules repeated callbacks.
+Both return a frozen `Toyoterm::Timer` and require a block (`ArgumentError`
+without one). They are runtime operations: use a command, key, event, task
+callback, or console request. Configuration and required-source evaluation
+raise `RuntimeError`; use `Toyoterm.on(:app_started)` for startup scheduling.
+Feature detection uses `Toyoterm.supports?(:timers)` and
+`Toyoterm.supports?(:mode_tasks)`.
+
+`seconds` must be a finite Numeric. `after` accepts 0 through 31,536,000 seconds
+(365 days); `every` accepts 0.01 through that maximum. Wrong types raise
+`TypeError`; invalid values raise `ArgumentError`. Delays round upward to whole
+milliseconds. At most 1,024 timers may be active per VM; exceeding that bound
+raises `ArgumentError`. Validation and failed transactions schedule no native
+timer. IDs increase monotonically within a VM and are not reused after rollback.
+
+| Timer member | Return value / behavior |
+| --- | --- |
+| `id` | VM-local Integer ID |
+| `context` | Captured `CallbackContext` |
+| `delay` | Normalized initial delay in seconds as a Float |
+| `interval` | Normalized repeat interval in seconds, or `nil` for a single callback |
+| `active?` | Whether the timer remains registered in this VM |
+| `cancel` / `remove` | `true` if registration was removed, `false` if already inactive |
+| `Toyoterm.timers` | Frozen Array of active Timer handles sorted by ID; handles are inspected/cancelled through these methods |
+
+Deadlines use the native monotonic clock, starting when the successful request's
+timer registry reaches the main thread. A zero delay means the next available
+script dispatch, never synchronous invocation. An expired timer waits while the
+script thread is occupied; its callback uses a fresh native snapshot. There is
+at most one queued/running invocation per timer. Repeating timers wait their
+full interval after the main thread receives completion, including after a
+callback error. Missed ticks are coalesced instead of replayed. These are
+cooperative timers, not real-time guarantees or interrupts for executing Ruby.
+PTY parsing and rendering never invoke the timer block.
+
+The callback receives its Timer and originating context; one-argument blocks
+can ignore the context. A one-shot is consumed before calling Ruby, so it is
+already inactive inside its block and stays consumed if the block raises.
+A repeating timer remains active until cancelled. Exceptions are logged and
+roll back host-managed changes, task creation/cancellation, configuration,
+registrations, and queued work. The next repeat is still scheduled; cancelling
+then raising rolls the cancellation back. Return values are ignored. Already
+completed process results and one-shot delivery are not resurrected by rollback.
+Arbitrary Ruby mutations and external file/process effects cannot be undone.
+
+Standalone timers capture the current Pane. When a mode lifecycle or mode-owned
+task schedules a timer/async task, its concrete Pane target is used in the new
+task context. Timers whose captured Pane closes are pruned on the next script
+request without invoking their block. Mode-owned tasks and their descendants
+are cancelled when the mode disables, is replaced, or loses its target. Owned
+callbacks may disable their own mode. Inactive task handles are pruned from the
+mode's resource list as new resources are registered, preventing accumulation
+of completed polling tasks. Other event/command callbacks are independent unless
+called within that owned task's execution.
+
+Successful configuration reload clears timer schedules and queued old-VM task
+callbacks. Async worker results carry a VM generation, so a result from an old
+configuration cannot invoke a new callback with a reused task ID. Failed reload
+preserves the old timers/tasks. Cancellation of an async task suppresses its
+callback/result and is transactional; it does not terminate a child already
+running in a worker. Completed tasks retain the result through their handle
+without retaining their runtime registry entry.
+
+```ruby
+Toyoterm.on(:app_started) do
+  Toyoterm.after(5) { |_timer, context| context.pane.badge = 'Ready' }
+end
+
+Toyoterm.command(:start_counter) do
+  count = 0
+  Toyoterm.every(1) do |timer, context|
+    count += 1
+    context.pane.badge = count.to_s
+    timer.cancel if count == 10
+  end
+end
+```
+
+The [timer example](../examples/timers.rb) adds a Pane-local clock mode, toggled
+with Alt+T and disabled with Escape, plus a one-shot reminder on Alt+R. Its timer
+is automatically released when clock mode disables.
+
+## Resource scopes
+
+Capability: `Toyoterm.supports?(:resource_scopes)`.
+`Toyoterm.resource_scope(name: nil, pane: nil) { |scope| ... }` creates and returns
+a frozen `Toyoterm::ResourceScope`. It groups removable resources without a
+mode/keymap definition. The optional block runs immediately inside the scope;
+its return value is ignored by the factory. Without a block, use `within` later.
+Global scopes may be created while loading configuration/libraries; their blocks
+still obey individual API restrictions on runtime-only tasks/overlays.
+
+`name:` accepts a nonempty String/Symbol or nil and is copied/frozen. It is a
+descriptive label, not unique identity; duplicate names are allowed. `pane:`
+accepts nil (global) or a live Pane. Wrong types raise `TypeError`, invalid names
+raise `ArgumentError`, stale Panes raise `InvalidHandleError`, and the startup
+placeholder Pane raises `RuntimeError`. At most 256 scopes may be active in a
+VM; exceeding the bound raises `ArgumentError` without partial installation.
+IDs are VM-local monotonic Integers and are not reused after rollback.
+
+| Scope member | Behavior |
+| --- | --- |
+| `id`, `name`, `pane` | Identity, optional frozen name and Pane/nil lifetime target |
+| `active?` | Whether this exact scope remains registered |
+| `resources` | Frozen Array of currently active owned handles, in creation order; expired handles are pruned. Closed scopes return an empty Array |
+| `within { |scope| ... }` | Runs with this ownership and returns the block's value; missing blocks raise `ArgumentError`, closed scopes raise `RuntimeError`; a live target is validated |
+| `wrap { |*arguments, **keywords| ... }` | Returns a Proc that re-enters `within` on invocation, preserving positional/keyword arguments and return value. Missing blocks raise `ArgumentError`; after closure it returns nil without running the block |
+| `close` / `remove` | Removes all owned resources and descendants in reverse creation order; true once, false when already closed |
+| `Toyoterm.resource_scopes` | Frozen Array of active scope handles sorted by ID; prunes closed-Pane scopes |
+
+Closure marks the scope inactive before removing its resources; wrappers tied
+to it no longer run, including during mode teardown.
+
+Tracked resources include commands, events, hooks/advice, explicit and transient
+keymap activations, timers, async tasks, cooperative work, input/selection/panel
+lifetimes, and child resource scopes. Mode activations newly enabled within a
+scope are also tracked as `Registration` handles of kind `:mode_activation`,
+with mode name and activation ID. Their `active?`/`remove` apply only to that
+exact instance. Already-enabled modes are not adopted; disabling/re-enabling a
+mode later does not let an old scope's handle disable the new instance.
+Mode enable/disable return values remain Boolean.
+Explicit scope closure uses the mode's ordinary disable lifecycle. Automatic
+Pane/ancestor pruning removes owned mode instances without their lifecycle
+callbacks, including modes targeting another still-live Pane, so teardown does
+not run for an expired owner.
+
+Definitions of keymaps/modes, edits to existing keymaps/settings, arbitrary
+terminal mutations and external effects are not owned resources. Removing a
+replacement command or a newly selected major mode does not restore an earlier
+command/major mode. Scope closure does not unload `require`d files or execute
+arbitrary finalizers. Async cancellation suppresses delivery and does not kill
+an already-running process.
+
+The innermost executing mode lifecycle or explicit scope owns new registrations.
+A mode enabled in a scope owns its own lifecycle-created resources by default; the scope
+owns that mode activation. A scope created in a mode is a child resource of the
+mode. Closing a parent closes child scopes even if a child is global. Pane-local
+scopes close on the next request/registry refresh after their Pane disappears;
+they do not run user teardown callbacks. Their task contexts use the declared
+Pane. Global scopes use the current Pane when a new task/overlay is created.
+
+Owned timer/async/cooperative/transient/prompt callbacks propagate their scope
+automatically. Ordinary command/event/hook callbacks are not implicitly wrapped
+just because their registration belongs to a scope: pass `scope.wrap` when their
+later-created resources must belong to it. Typed command prompts already use
+the defining owner. A synchronously executing callback can finish after closing
+its scope, but registering new resources under that expired owner removes the
+new resource and raises `RuntimeError`. A saved wrapped callback becomes a no-op.
+Already-accepted ordinary keymap callbacks and hook/event dispatch snapshots
+retain their normal delivery rules; wrapping makes their body lifetime explicit.
+
+Factory blocks, `within`, and `close` each checkpoint host-managed state, even
+if an outer Ruby caller rescues an error. A failed install/close restores the
+previous resources and pending tasks/overlays. They also participate in the
+enclosing host transaction; failure later in that request can restore a closed
+scope. Ruby objects, module variables and external effects are not rewound.
+Inspect the retained handle or `resource_scopes` after errors instead of assuming
+a caller's Ruby variable was restored. Successful reload replaces all scopes;
+failed reload preserves the old ones. These are trusted lifecycle groups, not
+a permission boundary or implicit extension loader.
+
+```ruby
+scope = Toyoterm.resource_scope(name: 'example.status')
+scope.within do
+  Toyoterm.command(:status, &scope.wrap do |context|
+    panel = Toyoterm.show_panel(lines: ["Pane: #{context.pane.id}"])
+    Toyoterm.after(1) { panel.update(lines: ['Updated']) }
+  end)
+end
+# Later: scope.close removes the command and pending tasks/overlays.
+```
+
+The [runnable library example](../examples/resource_scopes.rb) uses Alt+S for
+a scope-owned live panel. Close the panel, then Alt+M toggles the entire library.
+Its namespaced scope lookup is an application convention; scope names remain
+descriptive and are not enforced unique by the host.
+
+## Instruction budgets
+
+Capability: `Toyoterm.supports?(:instruction_budgets)`.
+`Toyoterm.with_instruction_budget(instructions:) { ... }` returns the block's
+value on success. `instructions:` must be an Integer within 1..1_000_000_000;
+other types raise `TypeError`, and out-of-range values or a missing block raise
+`ArgumentError`. At most 64 nested guards are supported; another raises
+`RuntimeError`. Available during configuration loading and runtime callbacks.
+Ordinary callbacks remain unlimited unless explicitly wrapped.
+
+The guard counts mruby opcode fetches in the block, including Ruby callees and
+Ruby executed by resumed Fibers. Nested guards count toward every active parent;
+the smallest remaining allowance can expire first. Compilation and C/native
+functions, synchronous I/O and external process waiting are not opcode-counted.
+The exact count depends on the embedded compiler/runtime; it is neither a
+wall-clock duration nor a stable source-line count. Unused allowance is discarded.
+
+Exhaustion raises `Toyoterm::InstructionBudgetError < RuntimeError` with message
+`instruction budget exhausted`. An exhausted guard stops checking so Ruby
+`rescue`/`ensure` cleanup can execute. At guard exit, exhaustion takes precedence
+over a rescued result, nonlocal `return`/`break`, or another cleanup exception.
+Normal return/break semantics are preserved when the budget has not expired.
+Yielding a Fiber across the guard's C frame raises mruby's `FiberError`; resuming
+a separate Fiber inside a guard is supported. The active counter is restored
+before any exception or nonlocal exit leaves the C boundary.
+
+Any exception rolls back the block's host-managed registrations, configuration,
+commands, badges, tasks, scopes and overlays to its entry checkpoint, including
+host effects emitted by `ensure`. This rollback occurs even when the caller
+rescues the exception. Success commits to the enclosing callback transaction;
+normal nonlocal exits retain ordinary callback semantics. Arbitrary Ruby objects,
+iterator progress, filesystem writes and external process effects are not
+rewound. The exhausted guard remains subject to the enclosing guard while
+cleanup runs, and an enclosing failure restores its own entry checkpoint.
+
+This is a trusted-code diagnostic guard, not a security boundary or guaranteed
+preemption: code that rescues exhaustion and never returns can still delay the
+script owner; C/native work can also delay it. Use small units with `work_each`
+for scheduling between items and `async` for blocking external operations.
+Neither counting nor unwinding runs on the main PTY/rendering thread.
+
+```ruby
+begin
+  value = Toyoterm.with_instruction_budget(instructions: 100_000) do
+    expensive_ruby_analysis(Toyoterm.current_pane.screen_text)
+  end
+rescue Toyoterm::InstructionBudgetError
+  Toyoterm.log(:warn, 'Terminal analysis exceeded its instruction allowance')
+end
+```
+
+The [bounded terminal-summary example](../examples/instruction_budgets.rb) uses
+Alt+I to show the most frequent words or a budget-exhaustion message in a read-only
+panel. See [the measured hook overhead](performance-baseline.md#instruction-budget-hook).
+
+## Cooperative work
+
+Capabilities: `Toyoterm.supports?(:cooperative_work)` and `:monotonic_clock`.
+`Toyoterm.work_each(items, name: nil, batch_size: 32, budget_ms: 4, interval: 0.01)
+{ |item, context, task| ... }` returns a `Toyoterm::CooperativeTask`. It captures
+an Enumerator from `items.to_enum(:each)` without synchronously processing it.
+The first slice is a zero-delay single-shot timer; each successful continuation
+uses another single-shot timer after `interval`. Existing queued script requests
+can run between slices. The original Pane/context is retained across focus
+changes, with fresh native snapshot data for each delivery.
+
+| Option | Accepted value |
+| --- | --- |
+| `items` | Object responding to `each`; each `Enumerator#next` value is passed as one item |
+| `name:` | Optional nonempty String/Symbol; copied/frozen descriptive name, not unique identity |
+| `batch_size:` | Integer within 1..4096; maximum successfully processed items per slice |
+| `budget_ms:` | Finite Numeric within 0.1..100; elapsed-time target checked between items |
+| `interval:` | Finite Numeric within 0.01..60 seconds between continuations; native delays round upward to milliseconds |
+
+Missing blocks raise `ArgumentError`. Invalid object/option types raise
+`TypeError`; invalid values/bounds raise `ArgumentError`. Creation is runtime-only
+and source-loading calls raise `RuntimeError`. Up to 256 cooperative tasks may
+be active; each also uses one of the VM's 1024 timer registrations. Internal
+drive timers appear in `Toyoterm.timers`; cancel the work handle to control the
+whole task. Cancelling its drive timer also prevents further progress.
+
+The block receives exactly item, captured `CallbackContext`, and its task handle.
+Blocks may ignore arguments; strict lambdas must accept all three. Each slice
+starts at most `batch_size` items and checks its time target after at least one
+item. Reaching either bound queues the next slice. Exhaustion marks completion;
+an additional empty slice may be needed when exhaustion is discovered at the
+start of the next delivery. Return values of item blocks are ignored.
+
+This is cooperative scheduling, not opcode preemption or a time guarantee.
+`Enumerator#next`, an item callback or synchronous I/O can exceed the whole
+budget or stall the script thread. The next check occurs only after it returns.
+Choose small units of work, keep expensive setup outside the GUI hot path,
+and use asynchronous processes for blocking external operations. PTY parsing
+and rendering remain native throughout.
+
+| Task member | Behavior |
+| --- | --- |
+| `id`, `name`, `context` | VM-local work ID, descriptive name and original callback context |
+| `batch_size`, `budget_ms`, `interval` | Configured slice limits/delay |
+| `state` | `:pending`, `:running`, `:completed`, `:failed` or `:cancelled` |
+| `active?` | True while pending/running with a registered drive timer |
+| `cancel` / `remove` | Removes pending continuation; true once, false if inactive. From an item callback it stops after that item returns |
+| `error` | Frozen host error String for failure, otherwise nil |
+| `statistics` | Frozen Hash with `id`, `name`, `state`, `processed`, `slices`, `total_ms`, `last_ms`, `overruns`, `batch_size`, `budget_ms` (Symbol keys) |
+| `Toyoterm.work_tasks` | Frozen Array of active handles, sorted by work ID |
+
+`processed` counts item callbacks that returned normally; `slices` includes empty
+and failed deliveries. Timing covers iterator/callback execution, excluding
+the wait between slices. An overrun is a slice whose elapsed time exceeds its
+configured budget. Progress/timing and the iterator cursor are Ruby execution
+state and are not rewound by host rollback. Therefore a failed slice can report
+successful earlier callbacks even though that slice's host effects were undone.
+
+Each slice uses the normal host transaction. Exceptions from enumeration/items,
+or host configuration validation, roll back that slice's host-managed effects
+and terminally fail the task after rollback. Failed deliveries never retry
+already-consumed input; previous committed slices remain committed. Errors also
+follow ordinary native timer reporting. Cancellation of pending work and creation
+are transactional; failed cancellation restores the prior pending schedule.
+Arbitrary Ruby mutations, iterator side effects and external I/O cannot be undone.
+
+Mode-owned work and its callback-created registrations/tasks inherit the mode's
+resource scope. Disable/replacement/Pane closure cancels its continuation and
+cleans up descendants. Other work remains independent. Closed originating Panes
+are pruned without running more items. Successful reload drops old schedules;
+failed reload preserves pending work. Terminal tasks release their iterator/
+callback references while retained handles keep diagnostics. This does not
+promise to execute an iterator's cleanup/ensure on cancellation; callers own
+external resources and should close them explicitly.
+
+`Toyoterm.monotonic_time` returns finite nondecreasing Float seconds from a
+process-local unspecified origin, using Rust's `Instant`. It is available during
+configuration and runtime, is unrelated to calendar time, and is not reset by
+configuration reload. Platform suspend behavior follows the native clock;
+do not persist or compare values across processes. The work scheduler uses it
+for elapsed-time targets. `Time.now` remains available for calendar displays.
+
+```ruby
+Toyoterm.command(:process_rows) do |context|
+  task = Toyoterm.work_each([1, 2, 3], name: :rows, batch_size: 1) do |item, step, work|
+    step.pane.badge = item.to_s
+  end
+  # Retain task in the calling library to inspect statistics or cancel later.
+end
+```
+
+The [word-count example](../examples/cooperative_work.rb) processes terminal
+snapshot lines in batches and displays progress/diagnostics in a read-only panel.
+Closing it cancels work and its mode-owned timers on the next available slice
+or monitor tick. No editor state or file editing is involved.
 
 ## Loading Ruby libraries
 

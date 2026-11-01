@@ -71,6 +71,80 @@ xattr -dr com.apple.quarantine /Applications/toyoterm.app
 
 ## Configuration
 
+Ruby commands support descriptions, discovery with `Toyoterm.commands` and
+`Toyoterm.command_info`, and composition with `Toyoterm.call_command`.
+Bind `Toyoterm.command_palette` to open a searchable command selector; see
+[the runnable example](examples/command_palette.rb) and
+[API semantics](docs/mruby-api.md#command-discovery-composition-and-palette).
+`Toyoterm.command_help` browses descriptions, arguments, effective keys, advice,
+and definition locations without invoking commands. A definition-selection
+callback connects help to a library's navigation workflow. Try
+[the help example](examples/command_help.rb) with Alt+H; see
+[command help](docs/mruby-api.md#command-help-and-definitions).
+Commands can declare typed `arguments:` with defaults, choices, ranges, history,
+and completion. Key bindings and palettes collect them before execution;
+`call_command(arguments: ...)` validates programmatic calls. Try the
+[Pane-label example](examples/command_arguments.rb); see
+[command arguments](docs/mruby-api.md#typed-command-arguments).
+Libraries can publish named hooks with `Toyoterm.add_hook` / `Toyoterm.run_hook`
+and adapt commands with removable before, after, and around advice through
+`Toyoterm.advise_command`; see [extension hooks](docs/mruby-api.md#extension-hooks-and-command-advice).
+Hook handlers expose labels, priorities and source locations through
+`Toyoterm.hook_handlers`. Provider/policy pipelines can stop at the first
+success or failure. Try [the independent-library example](examples/hook_composition.rb)
+with Alt+P; see [loading and composing libraries](docs/extension-libraries.md).
+Multi-step bindings use `config.keys.sequence("CTRL+X", "CTRL+T").new_tab`.
+Inspect bindings with `Toyoterm.describe_key` / `Toyoterm.command_keys`, or
+open `Toyoterm.key_help`; see [key sequences](docs/mruby-api.md#multi-step-key-sequences-and-inspection).
+Named keymaps support inheritance and removable global or Pane-local activation.
+Major/minor modes add scoped lifecycle callbacks and cleanup of registrations
+created during those callbacks. Try [the navigation-mode example](examples/modes.rb)
+with Alt+N, then h/j/k/l and Escape; see [keymaps and modes](docs/mruby-api.md#keymaps-and-modes).
+`Keymap#activate_transient` temporarily captures keys for one operation or
+repeated terminal commands, with scoped stacking and automatic cancellation.
+Try [the split/Pane-tools example](examples/transient_keymaps.rb) with Alt+S
+or Alt+R; see [transient keymaps](docs/mruby-api.md#transient-keymaps).
+Extensions can collect arguments with `Toyoterm.read_string`, including dynamic
+candidate providers and named history. The [completion example](examples/completion.rb)
+chooses a directory and opens a terminal Pane there; see
+[text input and completion](docs/mruby-api.md#text-input-and-completion).
+Long prompt input scrolls around the cursor by display columns, preserving
+Japanese text and emoji graphemes at narrow widths.
+While an extension overlay is open, the IME candidate anchor follows its visible
+input cursor, including horizontal scrolling and preedit.
+`Toyoterm.show_panel` displays read-only extension output with native filtering
+and paging; its handle can update or close it. Try the live terminal monitor
+in [the panel example](examples/panels.rb) with Alt+M; see
+[read-only panels](docs/mruby-api.md#read-only-panels).
+`Toyoterm.after` / `Toyoterm.every` add cancellable delayed and repeating work.
+Modes own timers and async tasks created during their lifecycle or owned task
+callbacks, and release them on disable/close/reload. Try the
+[clock and reminder example](examples/timers.rb); see
+[timers and task ownership](docs/mruby-api.md#timers-and-task-ownership).
+`pane_ready` observes successful PTY preparation and `pane_resized` reports
+actual per-Pane row/column changes, including split/layout changes. Try
+[the dimensions-badge example](examples/pane_events.rb); see
+[runtime events](docs/mruby-api.md#runtime-events).
+`Toyoterm.resource_scope` groups an extension's registrations, mode activations,
+tasks and overlays for transactional cleanup without defining a mode.
+`scope.wrap` gives later callbacks the same ownership. Try
+[the scoped-library example](examples/resource_scopes.rb) with Alt+S/Alt+M;
+see [resource scopes](docs/mruby-api.md#resource-scopes).
+`Toyoterm.work_each` processes enumerable items in cooperative batches with
+item/time budgets, cancellation and progress/overrun statistics. It yields only
+between items. Try [the terminal word-count example](examples/cooperative_work.rb)
+with Alt+W; see [cooperative work](docs/mruby-api.md#cooperative-work).
+`Toyoterm.with_instruction_budget(instructions: 100_000) { ... }` limits Ruby
+opcode execution in an explicit block and rolls back its host effects on error.
+It does not interrupt C functions or blocking I/O. Try
+[the bounded terminal-summary example](examples/instruction_budgets.rb) with Alt+I;
+see [instruction budgets](docs/mruby-api.md#instruction-budgets).
+Native actions expose names, argument choices, and keys through `Toyoterm.actions`,
+`Toyoterm.action_info`, and `Toyoterm.action_keys`. `Toyoterm.advise_action` can wrap, change, or suppress
+named actions from native bindings and Ruby. `Toyoterm.operation_palette` lists
+native actions and Ruby commands together; see the [action-policy example](examples/actions.rb)
+and [action API](docs/mruby-api.md#native-action-discovery-and-advice).
+
 There are no built-in GUI key bindings. Save a configuration and start it with:
 
 ```sh
@@ -145,6 +219,14 @@ them, and drag to select text. Control+click (Command+click on macOS) opens
 allowed web/mail links. Exiting the final pane closes the application.
 
 ## Development
+
+`cargo run --locked -- gui-smoke-test --extension-ui` presents a Ruby-created
+Japanese/emoji input prompt and read-only panel before exiting. It requires a
+display/GPU stack and checks frame presentation, not OS keyboard/IME interaction.
+See [development checks](docs/development.md).
+Windows-hosted cross builds now emit PE icon resources only for Windows
+targets. Existing Zig/Rust tools can also verify Linux linking without running
+the binaries; see [cross-target validation](docs/platform-validation.md#cross-target-checks-from-windows).
 
 The [terminal fuzzing guide](docs/fuzzing.md) covers six cargo-fuzz targets,
 seed replay in normal tests, CI smoke runs, hourly campaigns and crash regression.

@@ -4,7 +4,14 @@ module Toyoterm
   API_VERSION = "__TOYOTERM_API_VERSION__".freeze
   CAPABILITIES = [
     :async_process, :bar_sections, :callback_context, :registration_handles,
-    :select_overlay, :targeted_actions, :typed_events
+    :select_overlay, :targeted_actions, :typed_events, :command_palette,
+    :named_hooks, :command_advice, :key_sequences, :key_inspection, :keymaps, :modes,
+    :input_prompt,
+    :timers, :mode_tasks, :dynamic_completion, :mode_prompts,
+    :action_inspection, :action_advice, :operation_palette, :command_arguments,
+    :transient_keymaps, :command_help, :hook_inspection, :hook_priority, :hook_strategies,
+    :text_panels, :cooperative_work, :monotonic_clock, :resource_scopes,
+    :pane_lifecycle_events, :instruction_budgets
   ].freeze
   GLOBAL_ACTIONS = [
     :reload_config, :maximize_window, :toggle_maximize, :minimize_window,
@@ -40,6 +47,22 @@ module Toyoterm
       raise TypeError, "#{label} must be a String or Symbol"
     end
     __string(value.to_s, label)
+  end
+
+  def self.__key_sequence(chords)
+    unless chords.length.between?(2, 32)
+      raise ArgumentError, "key sequence requires between 2 and 32 chords"
+    end
+    chords.each_with_index.map do |chord, index|
+      chord = __string(chord, "key sequence chord").upcase
+      if chord.bytesize > 128 || chord.include?("LEADER+") || chord.each_byte.any? { |byte| byte <= 32 || byte == 127 }
+        raise ArgumentError, "invalid key sequence chord: #{chord}"
+      end
+      if index > 0 && ["ESCAPE", "CTRL+G"].include?(chord)
+        raise ArgumentError, "key sequence suffix is reserved for cancellation: #{chord}"
+      end
+      chord
+    end.join(" ").freeze
   end
 
   def self.__boolean(value, label)
@@ -684,6 +707,7 @@ module Toyoterm
     end
 
     def context
+      return @context ||= CallbackContext.new(@pane, @workspace, @window, @tab) if @pane
       @context ||= CallbackContext.new(
         @pane || Toyoterm.current_pane,
         @workspace || Toyoterm.current_workspace,
@@ -711,10 +735,11 @@ module Toyoterm
   class Registration
     attr_reader :kind, :name, :id
 
-    def initialize(kind, name, id)
+    def initialize(kind, name, id, track = true)
       @kind = kind
       @name = name.freeze
       @id = id
+      Toyoterm.__track_registration(self) if track
     end
 
     def active?
@@ -837,6 +862,10 @@ module Toyoterm
       StaticBinding.new(@config, Toyoterm.__string(key, "key").upcase)
     end
 
+    def sequence(*chords)
+      StaticBinding.new(@config, Toyoterm.__key_sequence(chords))
+    end
+
     def physical(key, mods = "")
       key = Toyoterm.__string(key, "physical key")
       prefix = Toyoterm.__string(mods, "physical modifiers", false, true).upcase
@@ -845,7 +874,16 @@ module Toyoterm
     end
 
     def unbind(key)
-      @config.__unbind(key)
+      @config.__unbind(key.is_a?(Array) ? Toyoterm.__key_sequence(key) : key)
+    end
+
+    def bindings
+      @config.__key_binding_info
+    end
+
+    def describe(key)
+      name = key.is_a?(Array) ? Toyoterm.__key_sequence(key) : Toyoterm.__string(key, "key binding").upcase
+      bindings[name]
     end
 
     private
@@ -857,7 +895,17 @@ module Toyoterm
   end
 
   class Config
-    attr_reader :default_shell, :scrollback_lines
+    attr_reader :default_shell, :scrollback_lines, :key_sequence_timeout_ms
+
+    def key_sequence_timeout_ms=(value)
+      unless value.nil? || value.is_a?(Integer)
+        raise TypeError, "key_sequence_timeout_ms must be an Integer or nil"
+      end
+      if value && (value <= 0 || value > 600_000)
+        raise ArgumentError, "key_sequence_timeout_ms must be between 1 and 600000"
+      end
+      @key_sequence_timeout_ms = value
+    end
 
     def default_shell=(value)
       @default_shell = Toyoterm.__string(value, "default_shell", true, true)
@@ -882,6 +930,7 @@ module Toyoterm
       @static_bindings = {}
       @leader_key = nil
       @leader_timeout = 1000
+      @key_sequence_timeout_ms = 1000
       @theme = nil
       @theme_color_checkpoint = nil
     end
@@ -972,7 +1021,7 @@ module Toyoterm
           allow_osc_focus_requests: @behavior.allow_osc_focus_requests
         },
         default_shell: @default_shell, scrollback_lines: @scrollback_lines,
-        theme: @theme
+        theme: @theme, key_sequence_timeout_ms: @key_sequence_timeout_ms
       }, true)
     end
 
@@ -1004,7 +1053,8 @@ module Toyoterm
          Toyoterm.__deep_copy(@behavior.osc_background_image_directory),
          @behavior.allow_osc_focus_requests],
         [@leader_key, @leader_timeout, @theme,
-         @theme_color_checkpoint && @theme_color_checkpoint.map { |value| value.is_a?(Array) ? value.dup : value }]
+         @theme_color_checkpoint && @theme_color_checkpoint.map { |value| value.is_a?(Array) ? value.dup : value },
+         @key_sequence_timeout_ms]
       ]
     end
 
@@ -1070,6 +1120,7 @@ module Toyoterm
       @leader_timeout = leader[1]
       @theme = leader[2]
       @theme_color_checkpoint = leader[3]
+      @key_sequence_timeout_ms = leader[4]
       nil
     end
 
@@ -1077,8 +1128,23 @@ module Toyoterm
       raise ArgumentError, "key binding requires a block" unless block
       key = Toyoterm.__string(key, "key binding").upcase
       raise ArgumentError, "key binding cannot be empty" if key.empty?
-      raise ArgumentError, "duplicate key binding: #{key}" if @bindings.key?(key) || @static_bindings.key?(key)
+      __validate_binding_key(key)
       @bindings[key] = block
+    end
+
+    def __validate_binding_key(key)
+      if key.include?(" ") && Toyoterm.__key_sequence(key.split(" ")) != key
+        raise ArgumentError, "key sequence must use single spaces between chords"
+      end
+      raise ArgumentError, "duplicate key binding: #{key}" if @bindings.key?(key) || @static_bindings.key?(key)
+      (@bindings.keys + @static_bindings.keys).each do |other|
+        if key.start_with?("#{other} ") || other.start_with?("#{key} ")
+          raise ArgumentError, "key binding conflicts with a sequence prefix: #{key} / #{other}"
+        end
+      end
+      if @leader_key && key.start_with?("#{@leader_key} ")
+        raise ArgumentError, "key sequence conflicts with the leader: #{key}"
+      end
     end
 
     def keys(&block)
@@ -1093,7 +1159,11 @@ module Toyoterm
       mods = Toyoterm.__string(mods, "leader modifiers", false, true).upcase
       raise TypeError, "leader timeout must be an Integer" unless timeout.is_a?(Integer)
       raise ArgumentError, "leader timeout must be positive" if timeout <= 0
-      @leader_key = mods.empty? ? key : "#{mods}+#{key}"
+      leader_key = mods.empty? ? key : "#{mods}+#{key}"
+      if (@bindings.keys + @static_bindings.keys).any? { |binding| binding.start_with?("#{leader_key} ") }
+        raise ArgumentError, "leader conflicts with a key sequence: #{leader_key}"
+      end
+      @leader_key = leader_key
       @leader_timeout = timeout
       self
     end
@@ -1108,7 +1178,7 @@ module Toyoterm
 
     def __register_static(key, action, argument)
       key = Toyoterm.__string(key, "key binding").upcase
-      raise ArgumentError, "duplicate key binding: #{key}" if @bindings.key?(key) || @static_bindings.key?(key)
+      __validate_binding_key(key)
       @static_bindings[key] = [action, argument]
     end
 
@@ -1120,6 +1190,27 @@ module Toyoterm
 
     def __static_binding_count
       @static_bindings.length
+    end
+
+    def __key_binding_info
+      result = {}
+      (@bindings.keys + @static_bindings.keys).sort.each do |key|
+        if @bindings.key?(key)
+          location = @bindings[key].source_location
+          result[key.dup.freeze] = {
+            key: key.dup.freeze, kind: :ruby,
+            source: location && location[0] && location[0].dup.freeze,
+            line: location && location[1]
+          }.freeze
+        else
+          action, argument = @static_bindings[key]
+          result[key.dup.freeze] = {
+            key: key.dup.freeze, kind: action == :user_command ? :command : :native,
+            action: action, argument: argument.is_a?(String) ? argument.dup.freeze : argument
+          }.freeze
+        end
+      end
+      result.freeze
     end
 
     def __static_binding_key(index)
@@ -1547,6 +1638,10 @@ module Toyoterm
   @current_command = nil
   @event_handlers = {}
   @user_commands = {}
+  @command_contexts = []
+  @hooks = {}
+  @hook_depth = 0
+  @command_advice = {}
   @window_bars = {}
   @live_handles = {
     workspace: [0],
@@ -1558,6 +1653,7 @@ module Toyoterm
   @pane_badges = {}
   @themes = {}
   @current_source_path = nil
+  @current_source_label = nil
   @load_paths = []
   @loaded_features = []
   @async_task_id = 0
@@ -1740,7 +1836,7 @@ module Toyoterm
 
     @async_task_id += 1
     task_id = @async_task_id
-    context = CallbackContext.new(current_pane)
+    context = __task_context
     @async_callbacks[task_id] = [block, context]
     @async_requests << [task_id, program, values[1..-1], cwd]
     task = AsyncTask.new(task_id, context)
@@ -1771,7 +1867,8 @@ module Toyoterm
 
     @select_id += 1
     id = @select_id
-    @select_callbacks[id] = [block, CallbackContext.new(current_pane), values]
+    @select_callbacks[id] = [block, __task_context, values, nil, __task_owner].freeze
+    __register_prompt_lifetime(id)
     __queue_command(:open_selector, 0, id.to_s, [title, values])
     nil
   end
@@ -1876,7 +1973,7 @@ module Toyoterm
   end
 
   def self.__loading_source?
-    !@current_source_path.nil?
+    !@current_source_path.nil? || !@current_source_label.nil?
   end
 
   def self.__registration_checkpoint
@@ -1886,7 +1983,9 @@ module Toyoterm
       @user_commands.dup,
       event_handlers,
       @config.__registration_checkpoint,
-      @themes.dup
+      @themes.dup,
+      @hooks.transform_values { |handlers| handlers.dup },
+      @command_advice.transform_values { |handlers| handlers.dup }
     ]
   end
 
@@ -1895,6 +1994,8 @@ module Toyoterm
     @event_handlers = checkpoint[1]
     @config.__rollback_registrations(checkpoint[2])
     @themes = checkpoint[3]
+    @hooks = checkpoint[4]
+    @command_advice = checkpoint[5]
   end
 
   def self.__replace_env(entries)
@@ -1959,19 +2060,226 @@ module Toyoterm
     Registration.new(:event, name, @registration_id)
   end
 
-  def self.command(name, replace: false, &block)
+  def self.command(name, replace: false, description: nil, arguments: [], &block)
     raise ArgumentError, "user command requires a block" unless block
     name = Toyoterm.__identifier(name, "user command name")
+    description = __string(description, "command description", true, true)
+    fields = __command_schema(arguments)
     if @user_commands.key?(name) && !replace
       raise ArgumentError, "duplicate user command: #{name}"
     end
     @registration_id += 1
-    @user_commands[name] = [@registration_id, block]
+    location = block.source_location
+    source = @current_source_path || @current_source_label || (location && location[0])
+    metadata = {
+      name: name, description: description,
+      source: source && source.dup.freeze, line: location && location[1],
+      arguments: __command_schema_info(fields)
+    }.freeze
+    @user_commands[name] = [@registration_id, block, metadata, fields, __task_owner].freeze
     Registration.new(:command, name, @registration_id)
+  end
+
+  def self.commands
+    @user_commands.keys.sort.freeze
+  end
+
+  def self.key_bindings
+    @config.keys.bindings
+  end
+
+  def self.describe_key(key)
+    @config.keys.describe(key)
+  end
+
+  def self.command_keys(name)
+    name = __identifier(name, "user command name")
+    key_bindings.values.select do |entry|
+      entry[:kind] == :command && entry[:argument] == name
+    end.map { |entry| entry[:key] }.freeze
+  end
+
+  def self.key_help(prefix: nil)
+    prefix = __string(prefix, "key prefix").upcase unless prefix.nil?
+    entries = key_bindings.values.select do |entry|
+      prefix.nil? || entry[:key] == prefix || entry[:key].start_with?("#{prefix} ")
+    end
+    return nil if entries.empty?
+    items = entries.map do |entry|
+      if entry[:kind] == :ruby
+        "#{entry[:key]} : Ruby callback"
+      elsif entry[:kind] == :command
+        info = command_info(entry[:argument])
+        description = info && info[:description]
+        description = description.gsub("\r", " ").gsub("\n", " ") if description
+        "#{entry[:key]} : #{entry[:argument]}#{description && !description.empty? ? " - #{description}" : ""}"
+      else
+        "#{entry[:key]} : #{entry[:action]}#{entry[:argument] ? " #{entry[:argument]}" : ""}"
+      end
+    end
+    select(title: "Key bindings", items: items) {}
+    nil
+  end
+
+  def self.add_hook(name, priority: 0, label: nil, &block)
+    raise ArgumentError, "hook requires a block" unless block
+    name = __identifier(name, "hook name")
+    raise TypeError, 'hook priority must be an Integer' unless priority.is_a?(Integer)
+    raise ArgumentError, 'hook priority must be within -32768..32767' unless priority.between?(-32768, 32767)
+    label = __identifier(label, 'hook label') unless label.nil?
+    location = block.source_location
+    source = @current_source_path || @current_source_label || (location && location[0])
+    @registration_id += 1
+    info = { id: @registration_id, label: label, priority: priority,
+             source: source && source.dup.freeze, line: location && location[1] }.freeze
+    (@hooks[name] ||= []) << [@registration_id, block, info].freeze
+    Registration.new(:hook, name, @registration_id)
+  end
+
+  def self.hooks
+    @hooks.keys.sort.freeze
+  end
+
+  def self.run_hook(name, *arguments)
+    __run_hook(name, arguments, :all)
+  end
+
+  def self.run_hook_until_success(name, *arguments)
+    __run_hook(name, arguments, :success)
+  end
+
+  def self.run_hook_until_failure(name, *arguments)
+    __run_hook(name, arguments, :failure)
+  end
+
+  def self.__ordered_hook_handlers(name)
+    (@hooks[name] || []).sort_by { |entry| [entry[2][:priority], entry[0]] }
+  end
+
+  def self.hook_handlers(name)
+    name = __identifier(name, 'hook name')
+    __ordered_hook_handlers(name).map { |entry| entry[2] }.freeze
+  end
+
+  def self.__run_hook(name, arguments, strategy)
+    name = __identifier(name, "hook name")
+    raise RuntimeError, "hook nesting exceeds 64 calls" if @hook_depth >= 64
+    handlers = __ordered_hook_handlers(name)
+    checkpoint = __callback_checkpoint
+    @hook_depth += 1
+    begin
+      return handlers.map { |entry| entry[1].call(*arguments) }.freeze if strategy == :all
+      handlers.each do |entry|
+        value = entry[1].call(*arguments)
+        return value if strategy == :success && value
+        return false if strategy == :failure && !value
+      end
+      strategy == :failure ? true : nil
+    rescue => error
+      __rollback_callback(checkpoint)
+      raise error
+    ensure
+      @hook_depth -= 1
+    end
+  end
+
+  def self.advise_command(name, kind: :before, &block)
+    raise ArgumentError, "command advice requires a block" unless block
+    name = __identifier(name, "user command name")
+    unless [:before, :after, :around].include?(kind)
+      raise ArgumentError, "advice kind must be :before, :after, or :around"
+    end
+    @registration_id += 1
+    (@command_advice[name] ||= []) << [@registration_id, kind, block].freeze
+    Registration.new(:advice, name, @registration_id)
+  end
+
+  def self.command_advice(name)
+    name = __identifier(name, "user command name")
+    (@command_advice[name] || []).map do |entry|
+      { id: entry[0], kind: entry[1] }.freeze
+    end.freeze
+  end
+
+  def self.__wrap_command_advice(callback, operation, context)
+    proc do
+      active = true
+      called = false
+      proceed = proc do
+        raise RuntimeError, "advice continuation is no longer active" unless active
+        raise RuntimeError, "advice continuation was already called" if called
+        called = true
+        operation.call
+      end
+      begin
+        callback.call(proceed, context)
+      ensure
+        active = false
+      end
+    end
+  end
+
+  def self.command_info(name)
+    entry = @user_commands[__identifier(name, "user command name")]
+    entry && entry[2]
+  end
+
+  def self.call_command(name, context: nil, arguments: {})
+    name = __identifier(name, "user command name")
+    entry = @user_commands[name]
+    raise ArgumentError, "undefined user command: #{name}" unless entry
+    context = @command_contexts.last || CommandContext.new(current_pane) if context.nil?
+    raise TypeError, "command context must be a CallbackContext" unless context.is_a?(CallbackContext)
+    [context.workspace, context.window, context.tab, context.pane].each(&:validate!)
+    values = __command_values(entry[3], arguments)
+    raise RuntimeError, "command nesting exceeds 64 calls" if @command_contexts.length >= 64
+    checkpoint = __callback_checkpoint
+    advice = (@command_advice[name] || []).dup
+    @command_contexts << context
+    @command_argument_stack << values
+    begin
+      advice.each { |item| item[2].call(context) if item[1] == :before }
+      operation = proc { entry[3].empty? ? entry[1].call(context) : entry[1].call(context, values) }
+      advice.reverse_each do |item|
+        operation = __wrap_command_advice(item[2], operation, context) if item[1] == :around
+      end
+      result = operation.call
+      advice.each { |item| item[2].call(context, result) if item[1] == :after }
+      result
+    rescue => error
+      __rollback_callback(checkpoint)
+      raise error
+    ensure
+      @command_contexts.pop
+      @command_argument_stack.pop
+    end
+  end
+
+  def self.command_palette
+    entries = @user_commands.dup
+    names = entries.keys.sort
+    return nil if names.empty?
+    context = @command_contexts.last || CommandContext.new(current_pane)
+    select(title: "Commands", items: names) do |name|
+      next if name.nil?
+      unless @user_commands[name].equal?(entries[name])
+        raise ArgumentError, "command changed while palette was open: #{name}"
+      end
+      prompt_command(name, context: context)
+    end
+    nil
   end
 
   def self.__remove_registration(kind, name, id)
     case kind
+    when :hook, :advice
+      registry = kind == :hook ? @hooks : @command_advice
+      handlers = registry[name]
+      return false unless handlers
+      before = handlers.length
+      handlers.delete_if { |entry| entry[0] == id }
+      registry.delete(name) if handlers.empty?
+      handlers.length != before
     when :event
       handlers = @event_handlers[name]
       return false unless handlers
@@ -1991,6 +2299,10 @@ module Toyoterm
 
   def self.__registration_active?(kind, name, id)
     case kind
+    when :hook, :advice
+      registry = kind == :hook ? @hooks : @command_advice
+      handlers = registry[name]
+      !handlers.nil? && handlers.any? { |entry| entry[0] == id }
     when :event
       handlers = @event_handlers[name]
       !handlers.nil? && handlers.any? { |entry| entry[0] == id }
@@ -2063,20 +2375,7 @@ module Toyoterm
   end
 
   def self.__invoke_command(name, pane)
-    entry = @user_commands[name.to_s]
-    raise ArgumentError, "undefined user command: #{name}" unless entry
-    callback = entry[1]
-    checkpoint = __command_checkpoint
-    badge_checkpoint = __badge_checkpoint
-    async_checkpoint = __async_request_checkpoint
-    begin
-      callback.call(CommandContext.new(pane))
-    rescue => error
-      __rollback_commands(checkpoint)
-      __rollback_badges(badge_checkpoint)
-      __rollback_async_requests(async_checkpoint)
-      raise error
-    end
+    prompt_command(name, context: CommandContext.new(pane))
     true
   end
 
@@ -2264,7 +2563,7 @@ module Toyoterm
   def self.__rollback_commands(checkpoint)
     while @commands.length > checkpoint
       command = @commands.pop
-      @select_callbacks.delete(command[2].to_i) if command && command[0] == :open_selector
+      @select_callbacks.delete(command[2].to_i) if command && [:open_selector, :open_prompt, :open_panel].include?(command[0])
     end
   end
 

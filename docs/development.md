@@ -57,12 +57,23 @@ Native smoke tests:
 cargo run --locked -- pty-demo
 cargo run --locked -- screen-demo
 cargo run --locked -- gui-smoke-test
+cargo run --locked -- gui-smoke-test --extension-ui
 ```
 
 The GUI check requires a display and GPU or software rendering stack. Linux CI
 uses Xvfb for X11 and `scripts/wayland-smoke-test.sh` for Wayland. Report
 unavailable checks as untested. See [platform validation](platform-validation.md)
 for physical-machine checks.
+
+The default GUI smoke exits after initialization. `--extension-ui` additionally
+queues trusted Ruby through the normal script-owner boundary to open a long
+Japanese/emoji prompt. After its frame is presented, it closes that prompt's
+resource scope and opens a read-only panel, then waits for its frame before
+success. An event-loop timeout reports failure after 30 seconds without both
+presentations; closing the window early also fails. This does not interrupt a
+blocked Ruby/C call or renderer initialization. It uses the selected configuration and shell; a configuration that
+opens competing overlays or stalls Ruby can make the test fail. It does not send
+OS input, assert screenshot pixels, or validate IME candidate placement.
 
 ## Documentation and releases
 
