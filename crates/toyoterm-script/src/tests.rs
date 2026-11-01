@@ -1,6 +1,183 @@
 use super::*;
 
 #[test]
+fn multi_step_keys_support_native_commands_and_ruby_callbacks() {
+    let mut manager = ConfigManager::new().unwrap();
+    manager
+        .reload(
+            r#"
+      Toyoterm.command(:status) { |context| context.pane.send_text('status') }
+      Toyoterm.configure do |config|
+        config.key_sequence_timeout_ms = nil
+        config.keys do
+          sequence('ctrl+x', 'ctrl+f').new_tab
+          sequence('ctrl+x', 'r', 'b').command(:status)
+          sequence('ctrl+x', 'h').run { |context| context.pane.send_text('hello') }
+        end
+      end
+    "#,
+        )
+        .unwrap();
+    assert_eq!(manager.config().key_sequence_timeout_ms, None);
+    assert_eq!(
+        manager.native_action("CTRL+X CTRL+F"),
+        Some(NativeAction::NewTab)
+    );
+    assert_eq!(
+        manager.native_action("CTRL+X R B"),
+        Some(NativeAction::UserCommand("status".into()))
+    );
+    assert!(manager.has_dynamic_keybinding("CTRL+X H"));
+    manager.trigger_keybinding("CTRL+X H", PaneId(8)).unwrap();
+    assert_eq!(
+        manager.drain_commands(PaneId(8)).unwrap(),
+        vec![NativeCommand::Mux(Command::SendText {
+            pane: PaneId(8),
+            text: "hello".into()
+        })]
+    );
+}
+
+#[test]
+fn key_sequences_reject_ambiguous_prefixes_and_leader_collisions_in_either_order() {
+    let mut manager = ConfigManager::new().unwrap();
+    for source in [
+        "Toyoterm.configure { |c| c.keys.ctrl('x').new_tab; c.keys.sequence('CTRL+X', 'F').run {} }",
+        "Toyoterm.configure { |c| c.keys.sequence('CTRL+X', 'F').new_tab; c.keys.ctrl('x').run {} }",
+        "Toyoterm.configure { |c| c.keys.sequence('CTRL+X', 'R').new_tab; c.keys.sequence('CTRL+X', 'R', 'B').new_tab }",
+        "Toyoterm.configure { |c| c.keys.sequence('CTRL+X', 'F').new_tab; c.leader(key: 'x', mods: 'CTRL') }",
+        "Toyoterm.configure { |c| c.leader(key: 'x', mods: 'CTRL'); c.keys.sequence('CTRL+X', 'F').new_tab }",
+    ] {
+        let error = manager.reload(source).unwrap_err();
+        assert!(error.message().contains("conflict"), "{error}");
+    }
+    for expression in [
+        "sequence('CTRL+X')",
+        "sequence('CTRL+X', '')",
+        "sequence('CTRL+X', 42)",
+        "sequence('CTRL+X', 'LEADER+F')",
+        "sequence('CTRL+X', 'CTRL+G')",
+        "sequence('CTRL+X', 'ESCAPE')",
+        "sequence('CTRL+X', \"bad\\nkey\")",
+        "sequence(*Array.new(33, 'A'))",
+        "key('CTRL+X  F')",
+    ] {
+        assert!(
+            manager
+                .reload(&format!(
+                    "Toyoterm.configure {{ |c| c.keys.{expression}.new_tab }}"
+                ))
+                .is_err(),
+            "{expression}"
+        );
+    }
+}
+
+#[test]
+fn key_sequence_live_edits_are_transactional_and_mirrored_to_the_native_registry() {
+    let mut manager = ConfigManager::new().unwrap();
+    let result = run_script_request(&mut manager, &script_test_context(), &ScriptInvocation::Eval(
+        "Toyoterm.configure { |c| c.key_sequence_timeout_ms = 2500; c.keys.sequence('CTRL+X', 'F').new_tab }".into()
+    )).unwrap();
+    let snapshot = result.snapshot.unwrap();
+    assert_eq!(snapshot.config.key_sequence_timeout_ms, Some(2500));
+    assert_eq!(
+        snapshot.native_actions.get("CTRL+X F"),
+        Some(&NativeAction::NewTab)
+    );
+    let result = run_script_request(&mut manager, &script_test_context(), &ScriptInvocation::Eval(
+        "Toyoterm.configure { |c| c.key_sequence_timeout_ms = nil; c.keys.unbind(['ctrl+x', 'f']) }".into()
+    )).unwrap();
+    assert!(
+        !result
+            .snapshot
+            .unwrap()
+            .native_actions
+            .contains_key("CTRL+X F")
+    );
+    for value in ["0", "-1", "600001", "1.5", "'1000'"] {
+        assert!(run_script_request(&mut manager, &script_test_context(), &ScriptInvocation::Eval(
+            format!("Toyoterm.configure {{ |c| c.keys.sequence('CTRL+X', 'R').new_tab; c.key_sequence_timeout_ms = {value} }}")
+        )).is_err());
+        assert!(manager.native_action("CTRL+X R").is_none());
+        assert_eq!(manager.config().key_sequence_timeout_ms, None);
+    }
+}
+
+#[test]
+fn key_inspection_is_immutable_and_finds_direct_command_bindings() {
+    let mut manager = ConfigManager::new().unwrap();
+    manager
+        .reload(
+            r#"
+      Toyoterm.command(:status, description: "Project\nstatus") {}
+      Toyoterm.configure do |config|
+        config.keys.sequence('CTRL+X', 'R').command(:status)
+        config.keys.ctrl('s').command(:status)
+        config.keys.ctrl('t').new_tab
+        config.keys.alt('x').run {}
+      end
+    "#,
+        )
+        .unwrap();
+    assert_eq!(
+        manager
+            .eval("Toyoterm.describe_key(['ctrl+x', 'r'])[:kind]")
+            .unwrap(),
+        "command"
+    );
+    assert_eq!(
+        manager
+            .eval("Toyoterm.describe_key('CTRL+T')[:action]")
+            .unwrap(),
+        "new_tab"
+    );
+    assert_eq!(
+        manager
+            .eval("Toyoterm.describe_key('ALT+X')[:kind]")
+            .unwrap(),
+        "ruby"
+    );
+    assert_eq!(
+        manager
+            .eval("Toyoterm.describe_key('MISSING').nil?")
+            .unwrap(),
+        "true"
+    );
+    assert_eq!(
+        manager
+            .eval("Toyoterm.command_keys(:status).join(',')")
+            .unwrap(),
+        "CTRL+S,CTRL+X R"
+    );
+    assert!(manager.eval("Toyoterm.key_bindings.clear").is_err());
+    assert!(
+        manager
+            .eval("Toyoterm.describe_key('CTRL+T')[:action] = :close_tab")
+            .is_err()
+    );
+    assert!(
+        manager
+            .eval("Toyoterm.describe_key('CTRL+S')[:argument].replace('changed')")
+            .is_err()
+    );
+    let result = run_script_request(
+        &mut manager,
+        &script_test_context(),
+        &ScriptInvocation::Eval("Toyoterm.key_help(prefix: 'ctrl+x')".into()),
+    )
+    .unwrap();
+    assert_eq!(
+        result.commands,
+        vec![NativeCommand::Ui(UiCommand::OpenSelector {
+            id: 1,
+            title: "Key bindings".into(),
+            items: vec!["CTRL+X R : status - Project status".into()]
+        })]
+    );
+}
+
+#[test]
 #[ignore = "opt-in short soak: scripts/soak-test.py"]
 fn soak_config_reload_and_async_registry() {
     let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../scripts/soak-config.rb");
@@ -367,7 +544,7 @@ fn configuration_sections_return_objects_and_handles_use_consistent_verbs() {
     }
 }
 
-fn script_test_context() -> ScriptContext {
+pub(super) fn script_test_context() -> ScriptContext {
     ScriptContext {
         model: RubyObjectModel {
             current_workspace: WorkspaceId(1),
@@ -3348,6 +3525,432 @@ fn user_command_validation_and_callback_failures_are_isolated() {
     assert!(broken.message().contains("broken command"));
     assert!(manager.drain_commands(PaneId(2)).unwrap().is_empty());
     assert_eq!(manager.eval("6 * 7").unwrap(), "42");
+}
+
+#[test]
+fn command_discovery_is_immutable_and_tracks_registration_lifecycle() {
+    let mut manager = ConfigManager::new().unwrap();
+    manager
+        .reload(
+            r#"
+            Toyoterm.command(:zulu) {}
+            @registration = Toyoterm.command(:alpha, description: "First command") { 42 }
+            "#,
+        )
+        .unwrap();
+    assert_eq!(
+        manager.eval("Toyoterm.commands.join(',')").unwrap(),
+        "alpha,zulu"
+    );
+    assert_eq!(
+        manager
+            .eval("Toyoterm.command_info(:alpha)[:description]")
+            .unwrap(),
+        "First command"
+    );
+    assert_eq!(
+        manager
+            .eval("Toyoterm.command_info(:missing).nil?")
+            .unwrap(),
+        "true"
+    );
+    assert_eq!(manager.eval("Toyoterm.call_command(:alpha)").unwrap(), "42");
+    assert!(manager.eval("Toyoterm.commands << 'injected'").is_err());
+    assert!(
+        manager
+            .eval("Toyoterm.command_info(:alpha)[:name].replace('injected')")
+            .is_err()
+    );
+    assert!(
+        manager
+            .eval("Toyoterm.command_info(:alpha)[:description] = 'changed'")
+            .is_err()
+    );
+    assert!(
+        manager
+            .eval("Toyoterm.command(:alpha, replace: true, description: 42) {}")
+            .is_err()
+    );
+    assert_eq!(manager.eval("@registration.active?").unwrap(), "true");
+    manager
+        .eval("Toyoterm.command(:alpha, replace: true, description: 'Replacement') {}")
+        .unwrap();
+    assert_eq!(manager.eval("@registration.active?").unwrap(), "false");
+    assert_eq!(
+        manager
+            .eval("Toyoterm.command_info(:alpha)[:description]")
+            .unwrap(),
+        "Replacement"
+    );
+}
+
+#[test]
+fn nested_command_failure_rolls_back_even_when_the_caller_rescues() {
+    let mut manager = ConfigManager::new().unwrap();
+    manager
+        .reload(
+            r#"
+      Toyoterm.command :broken do |context|
+        context.pane.send_text('discard')
+        Toyoterm.command(:leaked) {}
+        Toyoterm.configure { |config| config.font.size = 32 }
+        Toyoterm.select(items: ['discard']) {}
+        raise 'failure'
+      end
+      Toyoterm.command :outer do |context|
+        begin
+          Toyoterm.call_command(:broken)
+        rescue RuntimeError
+          context.pane.send_text('keep')
+        end
+      end
+    "#,
+        )
+        .unwrap();
+    manager.trigger_user_command("outer", PaneId(8)).unwrap();
+    assert_eq!(
+        manager.drain_commands(PaneId(8)).unwrap(),
+        vec![NativeCommand::Mux(Command::SendText {
+            pane: PaneId(8),
+            text: "keep".into()
+        })]
+    );
+    assert_eq!(
+        manager.eval("Toyoterm.command_info(:leaked).nil?").unwrap(),
+        "true"
+    );
+    assert_eq!(
+        manager.eval("Toyoterm.config[:font][:size]").unwrap(),
+        "14.0"
+    );
+    // The failed command's pending selector must also be released.
+    manager
+        .eval("Toyoterm.select(items: ['available']) {}")
+        .unwrap();
+}
+
+#[test]
+fn command_recursion_is_bounded_and_the_execution_stack_recovers() {
+    let mut manager = ConfigManager::new().unwrap();
+    manager
+        .reload("Toyoterm.command(:recursive) { Toyoterm.call_command(:recursive) }")
+        .unwrap();
+    let error = manager
+        .trigger_user_command("recursive", PaneId(8))
+        .unwrap_err();
+    assert!(error.message().contains("command nesting exceeds 64 calls"));
+    manager.eval("Toyoterm.command(:answer) { 42 }").unwrap();
+    assert_eq!(
+        manager.eval("Toyoterm.call_command(:answer)").unwrap(),
+        "42"
+    );
+    assert!(
+        manager
+            .eval("Toyoterm.call_command(:answer, context: 1)")
+            .is_err()
+    );
+}
+
+#[test]
+fn command_palette_uses_the_native_selector_and_dispatches_the_choice() {
+    let mut manager = ConfigManager::new().unwrap();
+    manager.reload(r#"
+      Toyoterm.command(:hello, description: 'Say hello') { |context| context.pane.send_text('hello') }
+      Toyoterm.command(:palette) { Toyoterm.command_palette }
+    "#).unwrap();
+    let result = run_script_request(
+        &mut manager,
+        &script_test_context(),
+        &ScriptInvocation::Eval("Toyoterm.call_command(:palette)".into()),
+    )
+    .unwrap();
+    assert_eq!(
+        result.commands,
+        vec![NativeCommand::Ui(UiCommand::OpenSelector {
+            id: 1,
+            title: "Commands".into(),
+            items: vec!["hello".into(), "palette".into()]
+        })]
+    );
+    let result = run_script_request(
+        &mut manager,
+        &script_test_context(),
+        &ScriptInvocation::SelectCallback {
+            id: 1,
+            selection: Some("hello".into()),
+        },
+    )
+    .unwrap();
+    assert_eq!(
+        result.commands,
+        vec![NativeCommand::Mux(Command::SendText {
+            pane: PaneId(4),
+            text: "hello".into()
+        })]
+    );
+}
+
+#[test]
+fn command_palette_rejects_replaced_entries_and_cancels_without_work() {
+    let mut manager = ConfigManager::new().unwrap();
+    manager
+        .reload("Toyoterm.command(:hello) { |context| context.pane.send_text('old') }")
+        .unwrap();
+    run_script_request(
+        &mut manager,
+        &script_test_context(),
+        &ScriptInvocation::Eval("Toyoterm.command_palette".into()),
+    )
+    .unwrap();
+    run_script_request(
+        &mut manager,
+        &script_test_context(),
+        &ScriptInvocation::Eval(
+            "Toyoterm.command(:hello, replace: true) { |context| context.pane.send_text('new') }"
+                .into(),
+        ),
+    )
+    .unwrap();
+    let error = run_script_request(
+        &mut manager,
+        &script_test_context(),
+        &ScriptInvocation::SelectCallback {
+            id: 1,
+            selection: Some("hello".into()),
+        },
+    )
+    .unwrap_err();
+    assert!(
+        error
+            .message()
+            .contains("command changed while palette was open")
+    );
+    let result = run_script_request(
+        &mut manager,
+        &script_test_context(),
+        &ScriptInvocation::Eval("Toyoterm.command_palette".into()),
+    )
+    .unwrap();
+    assert_eq!(result.commands.len(), 1);
+    let result = run_script_request(
+        &mut manager,
+        &script_test_context(),
+        &ScriptInvocation::SelectCallback {
+            id: 2,
+            selection: None,
+        },
+    )
+    .unwrap();
+    assert!(result.commands.is_empty());
+}
+
+#[test]
+fn bundled_command_palette_configuration_is_executable() {
+    let mut manager = ConfigManager::new().unwrap();
+    manager
+        .reload(include_str!("../../../examples/command_palette.rb"))
+        .unwrap();
+    assert!(manager.trigger_keybinding("ALT+X", PaneId(8)).unwrap());
+    assert_eq!(
+        manager.drain_commands(PaneId(8)).unwrap(),
+        vec![NativeCommand::Ui(UiCommand::OpenSelector {
+            id: 1,
+            title: "Commands".into(),
+            items: vec![
+                "git_status".into(),
+                "project_status".into(),
+                "split_right".into()
+            ]
+        })]
+    );
+}
+
+#[test]
+fn named_hooks_preserve_order_and_snapshot_handlers_during_dispatch() {
+    let mut manager = ConfigManager::new().unwrap();
+    manager
+        .reload(
+            r#"
+      @seen = []
+      @second = nil
+      Toyoterm.add_hook(:project_opened) do |name|
+        @seen << "first:#{name}"
+        @second.remove
+        Toyoterm.add_hook(:project_opened) { |next_name| @seen << "late:#{next_name}" }
+        1
+      end
+      @second = Toyoterm.add_hook(:project_opened) { |name| @seen << "second:#{name}"; 2 }
+    "#,
+        )
+        .unwrap();
+    assert_eq!(
+        manager
+            .eval("Toyoterm.run_hook(:project_opened, 'one').join(',')")
+            .unwrap(),
+        "1,2"
+    );
+    assert_eq!(
+        manager.eval("@seen.join(',')").unwrap(),
+        "first:one,second:one"
+    );
+    manager
+        .eval("@seen.clear; Toyoterm.run_hook(:project_opened, 'two')")
+        .unwrap();
+    assert_eq!(
+        manager.eval("@seen.join(',')").unwrap(),
+        "first:two,late:two"
+    );
+    assert_eq!(
+        manager.eval("Toyoterm.hooks.join(',')").unwrap(),
+        "project_opened"
+    );
+    assert_eq!(
+        manager.eval("Toyoterm.run_hook(:missing).empty?").unwrap(),
+        "true"
+    );
+    assert!(manager.eval("Toyoterm.hooks << 'injected'").is_err());
+}
+
+#[test]
+fn named_hook_failure_rolls_back_host_changes_and_recursion_recovers() {
+    let mut manager = ConfigManager::new().unwrap();
+    manager
+        .reload(
+            r#"
+      @original = Toyoterm.add_hook(:failure) do
+        @original.remove
+        @leaked = Toyoterm.add_hook(:leaked) {}
+        Toyoterm.current_pane.send_text('discard')
+        Toyoterm.configure { |config| config.font.size = 40 }
+        raise 'hook failed'
+      end
+      Toyoterm.add_hook(:recursive) { Toyoterm.run_hook(:recursive) }
+    "#,
+        )
+        .unwrap();
+    assert!(manager.eval("Toyoterm.run_hook(:failure)").is_err());
+    assert!(manager.drain_commands(PaneId(0)).unwrap().is_empty());
+    assert_eq!(manager.eval("@original.active?").unwrap(), "true");
+    assert_eq!(manager.eval("@leaked.active?").unwrap(), "false");
+    assert_eq!(
+        manager.eval("Toyoterm.config[:font][:size]").unwrap(),
+        "14.0"
+    );
+    let error = manager.eval("Toyoterm.run_hook(:recursive)").unwrap_err();
+    assert!(error.message().contains("hook nesting exceeds 64 calls"));
+    assert_eq!(
+        manager.eval("Toyoterm.run_hook(:missing).empty?").unwrap(),
+        "true"
+    );
+}
+
+#[test]
+fn command_advice_wraps_commands_in_a_documented_order_and_is_removable() {
+    let mut manager = ConfigManager::new().unwrap();
+    manager.reload(r#"
+      @seen = []
+      Toyoterm.command(:answer) { @seen << 'command'; 20 }
+      Toyoterm.advise_command(:answer) { @seen << 'before' }
+      @around = Toyoterm.advise_command(:answer, kind: :around) do |proceed, context|
+        @seen << 'outer'
+        proceed.call + 1
+      end
+      Toyoterm.advise_command(:answer, kind: :around) do |proceed, context|
+        @seen << 'inner'
+        proceed.call * 2
+      end
+      Toyoterm.advise_command(:answer, kind: :after) { |context, result| @seen << "after:#{result}"; -1 }
+    "#).unwrap();
+    assert_eq!(
+        manager.eval("Toyoterm.call_command(:answer)").unwrap(),
+        "41"
+    );
+    assert_eq!(
+        manager.eval("@seen.join(',')").unwrap(),
+        "before,outer,inner,command,after:41"
+    );
+    assert_eq!(
+        manager
+            .eval("Toyoterm.command_advice(:answer).map { |entry| entry[:kind] }.join(',')")
+            .unwrap(),
+        "before,around,around,after"
+    );
+    manager.eval("@around.remove").unwrap();
+    assert_eq!(
+        manager.eval("Toyoterm.call_command(:answer)").unwrap(),
+        "40"
+    );
+    assert!(
+        manager
+            .eval("Toyoterm.command_advice(:answer)[0][:kind] = :around")
+            .is_err()
+    );
+}
+
+#[test]
+fn command_advice_can_cancel_and_cannot_reuse_its_continuation() {
+    let mut manager = ConfigManager::new().unwrap();
+    manager.reload(r#"
+      Toyoterm.command(:work) { |context| context.pane.send_text('work'); 42 }
+      @cancel = Toyoterm.advise_command(:work, kind: :around) { |proceed| @saved = proceed; :cancelled }
+    "#).unwrap();
+    assert_eq!(
+        manager.eval("Toyoterm.call_command(:work)").unwrap(),
+        "cancelled"
+    );
+    assert!(manager.drain_commands(PaneId(0)).unwrap().is_empty());
+    let error = manager.eval("@saved.call").unwrap_err();
+    assert!(
+        error
+            .message()
+            .contains("advice continuation is no longer active")
+    );
+    manager.eval(r#"
+      @cancel.remove
+      @twice = Toyoterm.advise_command(:work, kind: :around) { |proceed| proceed.call; proceed.call }
+    "#).unwrap();
+    let error = manager.eval("Toyoterm.call_command(:work)").unwrap_err();
+    assert!(
+        error
+            .message()
+            .contains("advice continuation was already called")
+    );
+    assert!(manager.drain_commands(PaneId(0)).unwrap().is_empty());
+    manager.eval("@twice.remove").unwrap();
+    assert_eq!(manager.eval("Toyoterm.call_command(:work)").unwrap(), "42");
+}
+
+#[test]
+fn command_advice_failure_restores_registrations_and_reload_replaces_them() {
+    let mut manager = ConfigManager::new().unwrap();
+    manager
+        .reload(
+            r#"
+      Toyoterm.command(:work) { |context| context.pane.send_text('discard') }
+      @advice = Toyoterm.advise_command(:work, kind: :after) do
+        @advice.remove
+        @leaked = Toyoterm.advise_command(:work) {}
+        Toyoterm.add_hook(:leaked) {}
+        raise 'after failed'
+      end
+    "#,
+        )
+        .unwrap();
+    assert!(manager.trigger_user_command("work", PaneId(8)).is_err());
+    assert!(manager.drain_commands(PaneId(8)).unwrap().is_empty());
+    assert_eq!(manager.eval("@advice.active?").unwrap(), "true");
+    assert_eq!(manager.eval("@leaked.active?").unwrap(), "false");
+    assert_eq!(manager.eval("Toyoterm.hooks.empty?").unwrap(), "true");
+    assert!(manager.reload("raise 'bad reload'").is_err());
+    assert_eq!(manager.eval("@advice.active?").unwrap(), "true");
+    manager.reload("Toyoterm.command(:work) { 42 }").unwrap();
+    assert_eq!(
+        manager
+            .eval("Toyoterm.command_advice(:work).empty?")
+            .unwrap(),
+        "true"
+    );
+    assert_eq!(manager.eval("Toyoterm.call_command(:work)").unwrap(), "42");
 }
 
 #[test]

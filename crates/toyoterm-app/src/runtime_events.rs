@@ -17,6 +17,7 @@ fn is_coalescible_event(kind: ScriptEventKind) -> bool {
             | ScriptEventKind::PaneFocused
             | ScriptEventKind::WorkspaceChanged
             | ScriptEventKind::WindowResized
+            | ScriptEventKind::PaneResized
     )
 }
 
@@ -78,6 +79,29 @@ impl ScriptRuntimeState {
             .then(|| self.pending.pop_front())
             .flatten()
     }
+}
+
+pub(super) fn accept_async_completion(
+    active: u64,
+    generation: u64,
+    id: u64,
+    active_tasks: &mut HashSet<u64>,
+    cancelled: &mut HashSet<u64>,
+) -> bool {
+    active == generation && active_tasks.remove(&id) && !cancelled.remove(&id)
+}
+
+fn discard_vm_callbacks(queue: &mut VecDeque<(u64, ScriptInvocation)>) {
+    queue.retain(|(_, invocation)| {
+        !matches!(
+            invocation,
+            ScriptInvocation::Timer { .. }
+                | ScriptInvocation::AsyncCallback { .. }
+                | ScriptInvocation::SelectCallback { .. }
+                | ScriptInvocation::CompletePrompt { .. }
+                | ScriptInvocation::TransientKeymap { .. }
+        )
+    });
 }
 
 fn reuse_immutable_snapshot<T: PartialEq>(cached: &mut Option<Arc<T>>, value: T) -> (Arc<T>, bool) {
@@ -227,6 +251,14 @@ impl ToyotermApplication {
     ) -> Result<(), String> {
         let waiter = self.scripting.eval_waiters.remove(&completion.id);
         let is_reload = matches!(completion.invocation, ScriptInvocation::Reload);
+        if let ScriptInvocation::CompletePrompt { id, revision, .. } = &completion.invocation
+            && let Some(selector) = self.ui.selector.as_mut()
+        {
+            selector.finish_completion(*id, *revision, completion.result.is_ok());
+        }
+        if let ScriptInvocation::Timer { id } = completion.invocation {
+            self.scripting.timers.complete(id, Instant::now());
+        }
         let bar_position = match &completion.invocation {
             ScriptInvocation::Bar { position } => Some(*position),
             _ => None,
@@ -288,6 +320,12 @@ impl ToyotermApplication {
                 // Reload replaces the mruby VM, so its callback-owned badge state is gone too.
                 self.ui.pane_badges.clear();
                 self.ui.selector = None;
+                self.scripting.generation = self.scripting.generation.wrapping_add(1);
+                self.scripting.cancelled_async_tasks.clear();
+                self.scripting.active_async_tasks.clear();
+                self.scripting.timers.clear();
+                self.ui.key_sequences.reset_transients();
+                discard_vm_callbacks(&mut self.scripting.pending);
             }
             if let Some(snapshot) = result.snapshot {
                 self.ui.config_error_notice = None;
@@ -304,6 +342,8 @@ impl ToyotermApplication {
             self.flush_mux_input()?;
             self.deliver_runtime_events()?;
             for request in result.async_requests {
+                let generation = self.scripting.generation;
+                self.scripting.active_async_tasks.insert(request.id);
                 let proxy = self.event_proxy.clone();
                 let worker_proxy = proxy.clone();
                 let id = request.id;
@@ -314,7 +354,11 @@ impl ToyotermApplication {
                     .name(format!("toyoterm-async-{id}"))
                     .spawn(move || {
                         let output = execute_async_spawn(&program, &args, cwd.as_deref());
-                        let _ = worker_proxy.send_event(AppEvent::AsyncCompleted { id, output });
+                        let _ = worker_proxy.send_event(AppEvent::AsyncCompleted {
+                            generation,
+                            id,
+                            output,
+                        });
                     })
                 {
                     let output = AsyncProcessOutput {
@@ -324,13 +368,20 @@ impl ToyotermApplication {
                         launch_error: true,
                     };
                     proxy
-                        .send_event(AppEvent::AsyncCompleted { id, output })
+                        .send_event(AppEvent::AsyncCompleted {
+                            generation,
+                            id,
+                            output,
+                        })
                         .map_err(|error| format!("report async worker launch failure: {error}"))?;
                 }
             }
-            self.scripting
-                .cancelled_async_tasks
-                .extend(result.async_cancellations);
+            self.scripting.cancelled_async_tasks.extend(
+                result
+                    .async_cancellations
+                    .into_iter()
+                    .filter(|id| self.scripting.active_async_tasks.contains(id)),
+            );
             if matches!(
                 completion.invocation,
                 ScriptInvocation::AsyncCallback { .. }
@@ -442,6 +493,88 @@ mod tests {
     use super::*;
 
     #[test]
+    fn old_worker_results_cannot_consume_new_generation_task_ids_or_cancellations() {
+        let mut active = HashSet::from([1, 2]);
+        let mut cancelled = HashSet::from([1]);
+        assert!(!accept_async_completion(
+            4,
+            3,
+            1,
+            &mut active,
+            &mut cancelled
+        ));
+        assert!(active.contains(&1) && cancelled.contains(&1));
+        assert!(!accept_async_completion(
+            4,
+            4,
+            1,
+            &mut active,
+            &mut cancelled
+        ));
+        assert!(!active.contains(&1) && !cancelled.contains(&1));
+        assert!(accept_async_completion(
+            4,
+            4,
+            2,
+            &mut active,
+            &mut cancelled
+        ));
+        assert!(!accept_async_completion(
+            4,
+            4,
+            2,
+            &mut active,
+            &mut cancelled
+        ));
+    }
+
+    #[test]
+    fn successful_reload_drops_queued_vm_callbacks_and_preserves_user_requests() {
+        let mut pending = VecDeque::from([
+            (1, ScriptInvocation::Timer { id: 1 }),
+            (
+                6,
+                ScriptInvocation::TransientKeymap {
+                    id: 1,
+                    key: Some("S".into()),
+                    pane: PaneId(4),
+                },
+            ),
+            (2, ScriptInvocation::Eval("keep".into())),
+            (
+                4,
+                ScriptInvocation::CompletePrompt {
+                    id: 1,
+                    revision: 0,
+                    query: "old".into(),
+                },
+            ),
+            (
+                5,
+                ScriptInvocation::SelectCallback {
+                    id: 1,
+                    selection: None,
+                },
+            ),
+            (
+                3,
+                ScriptInvocation::AsyncCallback {
+                    id: 1,
+                    output: AsyncProcessOutput {
+                        stdout: vec![],
+                        stderr: vec![],
+                        exit_status: 0,
+                        launch_error: false,
+                    },
+                },
+            ),
+        ]);
+        discard_vm_callbacks(&mut pending);
+        assert_eq!(pending.len(), 1);
+        assert!(matches!(&pending[0].1, ScriptInvocation::Eval(source) if source == "keep"));
+    }
+
+    #[test]
     fn immutable_snapshot_cache_reuses_equal_values() {
         let mut cache = None;
         let (first, reused) = reuse_immutable_snapshot(&mut cache, vec![1, 2, 3]);
@@ -538,6 +671,38 @@ mod tests {
         assert_eq!(latest.height, Some(768));
         assert_eq!(latest.columns, Some(100));
         assert_eq!(latest.rows, Some(30));
+    }
+
+    #[test]
+    fn pane_resize_coalesces_per_pane_while_ready_events_remain_distinct() {
+        let mut queue = VecDeque::new();
+        let mut first = RubyEvent::new(ScriptEventKind::PaneResized);
+        first.pane = Some(PaneId(1));
+        first.columns = Some(80);
+        first.rows = Some(24);
+        let mut other = first.clone();
+        other.pane = Some(PaneId(2));
+        let mut latest = first.clone();
+        latest.columns = Some(100);
+        enqueue_pending_script(&mut queue, 1, ScriptInvocation::Event(first));
+        enqueue_pending_script(&mut queue, 2, ScriptInvocation::Event(other));
+        assert_eq!(
+            enqueue_pending_script(&mut queue, 3, ScriptInvocation::Event(latest)),
+            PendingScriptEnqueue::Coalesced
+        );
+        assert_eq!(queue.len(), 2);
+        let ScriptInvocation::Event(event) = &queue[0].1 else {
+            panic!("event")
+        };
+        assert_eq!(event.columns, Some(100));
+        let mut ready = RubyEvent::new(ScriptEventKind::PaneReady);
+        ready.pane = Some(PaneId(1));
+        enqueue_pending_script(&mut queue, 4, ScriptInvocation::Event(ready.clone()));
+        assert_eq!(
+            enqueue_pending_script(&mut queue, 5, ScriptInvocation::Event(ready)),
+            PendingScriptEnqueue::Queued
+        );
+        assert_eq!(queue.len(), 4);
     }
 
     #[test]

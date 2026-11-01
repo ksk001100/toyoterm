@@ -1,4 +1,30 @@
+#[cfg(test)]
+mod action_tests;
+#[cfg(test)]
+mod command_argument_tests;
+#[cfg(test)]
+mod command_help_tests;
+#[cfg(test)]
+mod cooperative_work_tests;
+#[cfg(test)]
+mod hook_tests;
+#[cfg(test)]
+mod instruction_budget_tests;
+#[cfg(test)]
+mod keymap_tests;
+#[cfg(test)]
+mod pane_event_tests;
+#[cfg(test)]
+mod panel_tests;
 mod performance;
+#[cfg(test)]
+mod prompt_tests;
+#[cfg(test)]
+mod resource_scope_tests;
+#[cfg(test)]
+mod timer_tests;
+#[cfg(test)]
+mod transient_keymap_tests;
 use std::collections::{HashMap, HashSet};
 use std::ffi::{CStr, CString, c_char, c_void};
 use std::fmt;
@@ -28,6 +54,12 @@ pub use toyoterm_config::{
 };
 
 const SLOW_CALLBACK_THRESHOLD: Duration = Duration::from_millis(100);
+
+#[unsafe(no_mangle)]
+pub extern "C" fn toyoterm_host_monotonic_time() -> f64 {
+    static ORIGIN: std::sync::OnceLock<Instant> = std::sync::OnceLock::new();
+    ORIGIN.get_or_init(Instant::now).elapsed().as_secs_f64()
+}
 #[cfg(windows)]
 const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 pub const RUBY_API_VERSION: &str = "0.1.0";
@@ -218,6 +250,9 @@ enum CallbackKind {
     Bar,
     AsyncCallback,
     SelectCallback,
+    Timer,
+    Completion,
+    Action,
 }
 
 impl CallbackKind {
@@ -229,6 +264,9 @@ impl CallbackKind {
             Self::Bar => "bar",
             Self::AsyncCallback => "async_callback",
             Self::SelectCallback => "select_callback",
+            Self::Timer => "timer",
+            Self::Completion => "completion",
+            Self::Action => "action",
         }
     }
 }

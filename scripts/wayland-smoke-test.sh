@@ -29,3 +29,4 @@ while [ ! -S "$socket_path" ]; do
 done
 
 cargo run --locked -- gui-smoke-test
+cargo run --locked -- gui-smoke-test --extension-ui

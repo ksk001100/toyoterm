@@ -34,7 +34,9 @@ use toyoterm_script::{
 
 mod command_dispatch;
 mod downloads;
+mod extension_smoke;
 mod input;
+mod key_sequences;
 mod lifecycle;
 mod logging;
 mod notifications;
@@ -43,6 +45,7 @@ mod pane_lifecycle;
 mod render_coordinator;
 mod runtime_events;
 mod selector;
+mod timers;
 mod ui_geometry;
 
 use input::*;
@@ -349,15 +352,24 @@ pub fn run_gui_with_config_path(config_path: Option<&Path>) -> Result<(), AppErr
 }
 
 pub fn run_gui_with_options(options: GuiOptions) -> Result<(), AppError> {
-    run_gui_inner(options, false)
+    run_gui_inner(options, false, false)
 }
 
 /// Starts the complete GUI stack and exits after successful initialization.
 pub fn run_gui_smoke_test() -> Result<(), AppError> {
-    run_gui_inner(GuiOptions::default(), true)
+    run_gui_inner(GuiOptions::default(), true, false)
 }
 
-fn run_gui_inner(options: GuiOptions, exit_after_startup: bool) -> Result<(), AppError> {
+/// Presents a Ruby-created prompt and panel through the native renderer, then exits.
+pub fn run_gui_extension_smoke_test() -> Result<(), AppError> {
+    run_gui_inner(GuiOptions::default(), false, true)
+}
+
+fn run_gui_inner(
+    options: GuiOptions,
+    exit_after_startup: bool,
+    extension_ui: bool,
+) -> Result<(), AppError> {
     let event_loop = EventLoop::<AppEvent>::with_user_event()
         .build()
         .map_err(|error| AppError(error.to_string()))?;
@@ -444,9 +456,26 @@ fn run_gui_inner(options: GuiOptions, exit_after_startup: bool) -> Result<(), Ap
     .map_err(AppError)?;
     app.submit_script(ScriptInvocation::DrainStartup)
         .map_err(AppError)?;
+    if extension_ui {
+        app.extension_ui_smoke = Some(extension_smoke::ExtensionUiSmoke::new(Instant::now()));
+        app.submit_script(ScriptInvocation::Eval(
+            extension_smoke::PROMPT_SOURCE.into(),
+        ))
+        .map_err(AppError)?;
+    }
     event_loop
         .run_app(&mut app)
         .map_err(|error| AppError(error.to_string()))?;
+    if app.fatal_error.is_none()
+        && app
+            .extension_ui_smoke
+            .as_ref()
+            .is_some_and(|smoke| !smoke.finished())
+    {
+        return Err(AppError(
+            "extension UI smoke ended before both overlays were presented".into(),
+        ));
+    }
     match app.fatal_error.take() {
         Some(error) => Err(AppError(error)),
         None => Ok(()),
@@ -472,6 +501,7 @@ enum AppEvent {
     },
     ScriptCompleted(Box<ScriptCompletion>),
     AsyncCompleted {
+        generation: u64,
         id: u64,
         output: AsyncProcessOutput,
     },
@@ -496,6 +526,7 @@ struct PaneRuntime {
     metadata: PaneMetadata,
     protocol: PaneProtocolState,
     input_pacing: PaneInputPacing,
+    reported_grid: Option<(u16, u16)>,
 }
 
 #[derive(Debug, Default)]
@@ -812,6 +843,7 @@ struct ToyotermApplication {
     mux: Mux,
     fatal_error: Option<String>,
     exit_after_startup: bool,
+    extension_ui_smoke: Option<extension_smoke::ExtensionUiSmoke>,
 }
 
 struct PlatformState {
@@ -839,6 +871,9 @@ struct ScriptRuntimeState {
     event_drops: u64,
     eval_waiters: HashMap<u64, EvalWaiter>,
     cancelled_async_tasks: HashSet<u64>,
+    active_async_tasks: HashSet<u64>,
+    generation: u64,
+    timers: timers::Timers,
     cached_model: Option<Arc<RubyObjectModel>>,
     cached_handles: Option<Arc<[NativeHandle]>>,
     context_dirty: bool,
@@ -859,6 +894,7 @@ struct UiState {
     alt_graph_active: bool,
     consumed_keys: HashSet<winit::keyboard::PhysicalKey>,
     leader_deadline: Option<Instant>,
+    key_sequences: key_sequences::KeySequences,
     mouse_position: PhysicalPosition<f64>,
     pressed_mouse_button: Option<TerminalMouseButton>,
     last_mouse_cell: Option<(u16, u16)>,
@@ -1119,6 +1155,7 @@ impl ApplicationHandler<AppEvent> for ToyotermApplication {
                 if !focused {
                     clear_modifier_state(&mut self.ui.modifiers, &mut self.ui.alt_graph_active);
                     self.ui.consumed_keys.clear();
+                    self.ui.key_sequences.focus_lost();
                     self.ui.leader_deadline = None;
                     self.exit_visual_mode();
                     self.ui.pressed_mouse_button = None;
@@ -1155,6 +1192,7 @@ impl ApplicationHandler<AppEvent> for ToyotermApplication {
                 self.ui.last_mouse_cell = None;
             }
             WindowEvent::MouseInput { state, button, .. } => {
+                self.ui.key_sequences.clear();
                 if self.ui.selector.is_none() {
                     self.handle_mouse_input(event_loop, &window, button, state);
                 }
@@ -1171,6 +1209,7 @@ impl ApplicationHandler<AppEvent> for ToyotermApplication {
                 }
                 let modifiers = effective_modifiers(self.ui.modifiers, self.ui.alt_graph_active);
                 if event.state == ElementState::Released {
+                    self.ui.key_sequences.release(event.physical_key);
                     if self.ui.consumed_keys.remove(&event.physical_key) {
                         return;
                     }
@@ -1240,17 +1279,6 @@ impl ApplicationHandler<AppEvent> for ToyotermApplication {
                     window.request_redraw();
                     return;
                 }
-                match self.handle_leader_key(&event, modifiers) {
-                    Ok(true) => {
-                        self.ui.consumed_keys.insert(event.physical_key);
-                        return;
-                    }
-                    Ok(false) => {}
-                    Err(error) => {
-                        tracing::warn!(target: "toyoterm::app", %error, "leader key handling failed");
-                        return;
-                    }
-                }
                 // Physical bindings are checked before logical bindings by the resolver.
                 match self.handle_keybinding(&event, modifiers) {
                     Ok(true) => {
@@ -1279,12 +1307,14 @@ impl ApplicationHandler<AppEvent> for ToyotermApplication {
             }
             WindowEvent::Ime(Ime::Preedit(text, _cursor)) => {
                 self.ui.leader_deadline = None;
+                self.ui.key_sequences.clear();
                 self.ui.ime_preedit = (!text.is_empty()).then_some(text);
                 self.sync_active_renderer(window.scale_factor());
                 window.request_redraw();
             }
             WindowEvent::Ime(Ime::Commit(text)) => {
                 self.ui.leader_deadline = None;
+                self.ui.key_sequences.clear();
                 self.ui.ime_preedit = None;
                 if let Some(selector) = self.ui.selector.as_mut() {
                     selector.append_query(&text);
@@ -1314,6 +1344,7 @@ impl ApplicationHandler<AppEvent> for ToyotermApplication {
             }
             WindowEvent::Ime(Ime::Disabled) => {
                 self.ui.leader_deadline = None;
+                self.ui.key_sequences.clear();
                 self.ui.ime_preedit = None;
                 self.sync_active_renderer(window.scale_factor());
                 window.request_redraw();
@@ -1344,6 +1375,7 @@ impl ApplicationHandler<AppEvent> for ToyotermApplication {
                         self.fail(event_loop, error.to_string());
                     }
                     Some(Ok(RenderOutcome::Presented)) => {
+                        self.extension_ui_presented(event_loop);
                         if tracing::enabled!(target: "toyoterm::perf", tracing::Level::TRACE) {
                             let ts_ns = std::time::SystemTime::now()
                                 .duration_since(std::time::UNIX_EPOCH)
@@ -1381,6 +1413,19 @@ impl ApplicationHandler<AppEvent> for ToyotermApplication {
 
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
         let now = Instant::now();
+        if self
+            .extension_ui_smoke
+            .as_ref()
+            .is_some_and(|smoke| now >= smoke.deadline && !smoke.finished())
+        {
+            self.fail(
+                event_loop,
+                "extension UI smoke timed out before both overlays were presented".into(),
+            );
+            return;
+        }
+        let next_completion_at = self.dispatch_prompt_completion(now);
+        let next_timer_at = self.dispatch_due_timer(now);
         let expired_sync_panes = self
             .terminal_runtime
             .pane_runtimes
@@ -1458,10 +1503,17 @@ impl ApplicationHandler<AppEvent> for ToyotermApplication {
             .values()
             .filter_map(|runtime| runtime.input_pacing.deadline)
             .min();
-        let next_terminal_at = [next_sync_at, next_effect_at, next_pacing_at]
-            .into_iter()
-            .flatten()
-            .min();
+        let next_terminal_at = [
+            next_sync_at,
+            next_effect_at,
+            next_pacing_at,
+            next_timer_at,
+            next_completion_at,
+            self.extension_ui_smoke.as_ref().map(|smoke| smoke.deadline),
+        ]
+        .into_iter()
+        .flatten()
+        .min();
 
         if self.scripting.snapshot.config.status_bars.is_empty() {
             self.ui.next_bar_at.clear();
@@ -2118,8 +2170,18 @@ impl ApplicationHandler<AppEvent> for ToyotermApplication {
                     window.request_redraw();
                 }
             }
-            AppEvent::AsyncCompleted { id, output } => {
-                if self.scripting.cancelled_async_tasks.remove(&id) {
+            AppEvent::AsyncCompleted {
+                generation,
+                id,
+                output,
+            } => {
+                if !runtime_events::accept_async_completion(
+                    self.scripting.generation,
+                    generation,
+                    id,
+                    &mut self.scripting.active_async_tasks,
+                    &mut self.scripting.cancelled_async_tasks,
+                ) {
                     return;
                 }
                 let invocation = ScriptInvocation::AsyncCallback { id, output };
@@ -2333,6 +2395,7 @@ impl ToyotermApplication {
             vertical_padding: config.ui.padding_y.round() as u32,
             font_size: config.font.size,
         };
+        let key_sequences = key_sequences::KeySequences::new(&script_snapshot);
         Ok(Self {
             event_proxy,
             platform: PlatformState {
@@ -2358,6 +2421,9 @@ impl ToyotermApplication {
                 event_drops: 0,
                 eval_waiters: HashMap::new(),
                 cancelled_async_tasks: HashSet::new(),
+                active_async_tasks: HashSet::new(),
+                generation: 0,
+                timers: timers::Timers::default(),
                 cached_model: None,
                 cached_handles: None,
                 context_dirty: true,
@@ -2380,6 +2446,7 @@ impl ToyotermApplication {
                 alt_graph_active: false,
                 consumed_keys: HashSet::new(),
                 leader_deadline: None,
+                key_sequences,
                 mouse_position: PhysicalPosition::new(0.0, 0.0),
                 pressed_mouse_button: None,
                 last_mouse_cell: None,
@@ -2401,6 +2468,7 @@ impl ToyotermApplication {
             mux,
             fatal_error: None,
             exit_after_startup,
+            extension_ui_smoke: None,
         })
     }
 

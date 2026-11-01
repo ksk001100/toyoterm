@@ -61,6 +61,39 @@ pub(super) fn pty_command_for_launch(
     command
 }
 
+pub(super) fn resize_runtime(
+    pane: PaneId,
+    runtime: &mut PaneRuntime,
+    size: PtySize,
+    scale_factor: f64,
+) -> Result<Option<RubyEvent>, String> {
+    runtime.terminal.resize(size.columns, size.rows);
+    runtime.terminal.set_cell_size(
+        size.pixel_width / size.columns.max(1),
+        size.pixel_height / size.rows.max(1),
+    );
+    runtime.terminal.set_cell_scale_factor(scale_factor);
+    let Some(session) = runtime.process.pty_session.as_mut() else {
+        return Ok(None);
+    };
+    session.resize(size).map_err(|error| {
+        tracing::error!(target: "toyoterm::pty", operation = error.operation(), %pane,
+            columns = size.columns, rows = size.rows, %error, "resize pane PTY failed");
+        error.to_string()
+    })?;
+    let dimensions = (size.columns, size.rows);
+    let kind = match runtime.reported_grid.replace(dimensions) {
+        None => ScriptEventKind::PaneReady,
+        Some(previous) if previous != dimensions => ScriptEventKind::PaneResized,
+        _ => return Ok(None),
+    };
+    let mut event = RubyEvent::new(kind);
+    event.pane = Some(pane);
+    event.columns = Some(size.columns);
+    event.rows = Some(size.rows);
+    Ok(Some(event))
+}
+
 impl ToyotermApplication {
     pub(super) fn update_mouse_cursor(&self, window: &Window) {
         let cursor = self
@@ -185,6 +218,7 @@ impl ToyotermApplication {
             },
             protocol: PaneProtocolState::default(),
             input_pacing: PaneInputPacing::default(),
+            reported_grid: None,
         })
     }
 
@@ -212,6 +246,7 @@ impl ToyotermApplication {
         window_size: PhysicalSize<u32>,
         scale_factor: f64,
     ) -> Result<(), String> {
+        self.collect_mux_events();
         let _layout = performance::Stage::new("layout");
         self.ui.tab_layout = self.calculate_tab_layout(window_size, scale_factor);
         self.ui.workspace_layout = self.calculate_workspace_layout(window_size, scale_factor);
@@ -233,27 +268,11 @@ impl ToyotermApplication {
             })
             .collect::<Vec<_>>();
         for (pane, size) in sizes {
-            if let Some(runtime) = self.terminal_runtime.pane_runtimes.get_mut(&pane) {
-                runtime.terminal.resize(size.columns, size.rows);
-                runtime.terminal.set_cell_size(
-                    size.pixel_width / size.columns.max(1),
-                    size.pixel_height / size.rows.max(1),
-                );
-                runtime.terminal.set_cell_scale_factor(scale_factor);
-                if let Some(session) = runtime.process.pty_session.as_mut() {
-                    session.resize(size).map_err(|error| {
-                        tracing::error!(
-                            target: "toyoterm::pty",
-                            operation = error.operation(),
-                            %pane,
-                            columns = size.columns,
-                            rows = size.rows,
-                            %error,
-                            "resize pane PTY failed"
-                        );
-                        error.to_string()
-                    })?;
-                }
+            if let Some(runtime) = self.terminal_runtime.pane_runtimes.get_mut(&pane)
+                && let Some(event) = resize_runtime(pane, runtime, size, scale_factor)?
+            {
+                self.scripting.invalidate_context();
+                self.scripting.runtime_events.push_back(event);
             }
         }
         Ok(())
@@ -431,6 +450,7 @@ impl ToyotermApplication {
     }
 
     pub(super) fn sync_pane_runtimes(&mut self, size: PtySize) -> Result<(), String> {
+        self.collect_mux_events();
         let desired = self.mux.pane_ids().collect::<HashSet<_>>();
         let stale = self
             .terminal_runtime
@@ -462,10 +482,32 @@ impl ToyotermApplication {
             let runtime = self.start_shell(pane, size, launch.as_ref())?;
             self.terminal_runtime.pending_pane_launches.remove(&pane);
             self.terminal_runtime.pane_runtimes.insert(pane, runtime);
+            self.scripting.invalidate_context();
         }
         self.flush_mux_input()?;
         if let Some(window) = self.platform.window.clone() {
             self.resize_panes(window.inner_size(), window.scale_factor())?;
+        } else {
+            let mut panes = self
+                .terminal_runtime
+                .pane_runtimes
+                .keys()
+                .copied()
+                .collect::<Vec<_>>();
+            panes.sort_unstable();
+            for pane in panes {
+                let runtime = self
+                    .terminal_runtime
+                    .pane_runtimes
+                    .get_mut(&pane)
+                    .expect("known runtime");
+                if runtime.reported_grid.is_none()
+                    && let Some(event) = resize_runtime(pane, runtime, size, 1.0)?
+                {
+                    self.scripting.invalidate_context();
+                    self.scripting.runtime_events.push_back(event);
+                }
+            }
         }
         Ok(())
     }

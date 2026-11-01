@@ -76,6 +76,47 @@ pub struct ScriptSnapshot {
     pub keybindings: HashSet<String>,
     pub event_names: HashSet<String>,
     pub user_command_names: HashSet<String>,
+    pub keymap_bindings: HashMap<KeymapScope, KeymapBindings>,
+    pub timers: Vec<ScriptTimer>,
+    pub advised_actions: HashSet<String>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ScriptTimer {
+    pub id: u64,
+    pub delay: Duration,
+    pub interval: Option<Duration>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub enum KeymapScope {
+    Global,
+    Pane(PaneId),
+}
+
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct KeymapBindings {
+    pub native_actions: HashMap<String, NativeAction>,
+    pub keybindings: HashSet<String>,
+    pub callback_owners: HashMap<String, u64>,
+    pub priorities: HashMap<String, u64>,
+    /// Exclusive transient layers, highest priority first.
+    pub transients: Vec<TransientKeymap>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct TransientKeymap {
+    pub id: u64,
+    pub once: bool,
+    pub keys: HashSet<String>,
+}
+
+impl ScriptSnapshot {
+    pub fn keymap_bindings_for(&self, pane: PaneId) -> Option<&KeymapBindings> {
+        self.keymap_bindings
+            .get(&KeymapScope::Pane(pane))
+            .or_else(|| self.keymap_bindings.get(&KeymapScope::Global))
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -103,15 +144,51 @@ pub struct AsyncProcessOutput {
 
 #[derive(Debug)]
 pub enum ScriptInvocation {
+    Action {
+        action: NativeAction,
+        context: ActionContext,
+    },
     DrainStartup,
-    KeyBinding { key: String, pane: PaneId },
-    UserCommand { name: String, pane: PaneId },
+    Timer {
+        id: u64,
+    },
+    KeyBinding {
+        key: String,
+        pane: PaneId,
+    },
+    KeymapBinding {
+        map: u64,
+        key: String,
+        pane: PaneId,
+    },
+    TransientKeymap {
+        id: u64,
+        key: Option<String>,
+        pane: PaneId,
+    },
+    UserCommand {
+        name: String,
+        pane: PaneId,
+    },
     Event(RubyEvent),
     Eval(String),
     Reload,
-    Bar { position: StatusBarPosition },
-    AsyncCallback { id: u64, output: AsyncProcessOutput },
-    SelectCallback { id: u64, selection: Option<String> },
+    Bar {
+        position: StatusBarPosition,
+    },
+    AsyncCallback {
+        id: u64,
+        output: AsyncProcessOutput,
+    },
+    SelectCallback {
+        id: u64,
+        selection: Option<String>,
+    },
+    CompletePrompt {
+        id: u64,
+        revision: u64,
+        query: String,
+    },
 }
 
 #[derive(Debug)]

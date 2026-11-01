@@ -18,6 +18,7 @@ use ui_controller::apply_ui_command;
 enum KeybindingDispatch {
     Native(NativeAction),
     Ruby(String),
+    KeymapRuby { map: u64, key: String },
     Unassigned,
 }
 
@@ -63,27 +64,46 @@ fn apply_config_command(command: ConfigCommand) -> ControlEffects {
     }
 }
 
+#[cfg(test)]
 fn resolve_keybinding(
     snapshot: &ScriptSnapshot,
     keys: impl IntoIterator<Item = String>,
     visual_mode: bool,
 ) -> KeybindingDispatch {
+    resolve_keybinding_for_pane(snapshot, PaneId(0), keys, visual_mode)
+}
+
+fn resolve_keybinding_for_pane(
+    snapshot: &ScriptSnapshot,
+    pane: PaneId,
+    keys: impl IntoIterator<Item = String>,
+    visual_mode: bool,
+) -> KeybindingDispatch {
+    let effective = snapshot.keymap_bindings_for(pane);
+    let native_actions = effective.map_or(&snapshot.native_actions, |bindings| {
+        &bindings.native_actions
+    });
+    let keybindings = effective.map_or(&snapshot.keybindings, |bindings| &bindings.keybindings);
+    let mut keys: Vec<String> = keys.into_iter().collect();
+    if let Some(bindings) = effective {
+        keys.sort_by_key(|key| {
+            std::cmp::Reverse(bindings.priorities.get(key).copied().unwrap_or(0))
+        });
+    }
     for key in keys {
-        if let Some(action) = snapshot.native_actions.get(&key).cloned() {
-            if !visual_mode
-                && matches!(
-                    &action,
-                    NativeAction::EndVisualSelection
-                        | NativeAction::SelectVisualSelection
-                        | NativeAction::MoveVisualSelection(_)
-                        | NativeAction::YankSelection
-                )
-            {
+        if let Some(action) = native_actions.get(&key).cloned() {
+            if !crate::key_sequences::native_action_enabled(&action, visual_mode) {
                 continue;
             }
             return KeybindingDispatch::Native(action);
         }
-        if snapshot.keybindings.contains(&key) {
+        if keybindings.contains(&key) {
+            if let Some(map) = effective
+                .and_then(|bindings| bindings.callback_owners.get(&key))
+                .filter(|map| **map != 0)
+            {
+                return KeybindingDispatch::KeymapRuby { map: *map, key };
+            }
             return KeybindingDispatch::Ruby(key);
         }
     }
@@ -411,6 +431,22 @@ pub(super) fn dispatch_coordinator_command(
     Ok(result)
 }
 
+fn advised_action_invocation(
+    command: &NativeCommand,
+    origin: CommandOrigin,
+    snapshot: &ScriptSnapshot,
+) -> Option<ScriptInvocation> {
+    let NativeCommand::Action(ActionCommand::Invoke { action, context }) = command else {
+        return None;
+    };
+    (origin == CommandOrigin::Keybinding && snapshot.advised_actions.contains(action.name())).then(
+        || ScriptInvocation::Action {
+            action: action.clone(),
+            context: *context,
+        },
+    )
+}
+
 impl ToyotermApplication {
     pub(super) fn apply_control_command(
         &mut self,
@@ -419,6 +455,12 @@ impl ToyotermApplication {
     ) -> Result<ControlEffects, String> {
         self.scripting.invalidate_context();
         validate_command_origin(origin, &command)?;
+        if let Some(invocation) =
+            advised_action_invocation(&command, origin, &self.scripting.snapshot)
+        {
+            self.submit_script(invocation)?;
+            return Ok(ControlEffects::default());
+        }
         if let NativeCommand::Action(command) = command {
             let ActionResolution {
                 activation,
@@ -485,6 +527,9 @@ impl ToyotermApplication {
                     &mut self.terminal_runtime,
                     &mut self.ui,
                 );
+                if let Some(error) = ui_effects.error {
+                    return Err(error);
+                }
                 if ui_effects.request_redraw
                     && let Some(window) = self.platform.window.as_ref()
                 {
@@ -518,7 +563,75 @@ impl ToyotermApplication {
         event: &KeyEvent,
         modifiers: ModifiersState,
     ) -> Result<bool, String> {
-        self.handle_keybinding_candidates(keybinding_names(event, modifiers))
+        use crate::key_sequences::SequenceDispatch;
+        if event.repeat && self.ui.key_sequences.is_held(event.physical_key) {
+            return Ok(true);
+        }
+        let candidates = keybinding_names(event, modifiers);
+        let pane = self
+            .mux
+            .current_pane()
+            .ok_or_else(|| "mux has no current pane".to_owned())?;
+        self.ui
+            .key_sequences
+            .select_pane(&self.scripting.snapshot, pane);
+        match self.ui.key_sequences.advance_transient(
+            &candidates,
+            pane,
+            event.repeat,
+            Instant::now(),
+        ) {
+            crate::key_sequences::TransientDispatch::Inactive => {}
+            crate::key_sequences::TransientDispatch::Consumed => {
+                self.ui.key_sequences.hold(event.physical_key);
+                return Ok(true);
+            }
+            crate::key_sequences::TransientDispatch::Invoke { id, key } => {
+                self.ui.key_sequences.hold(event.physical_key);
+                self.ui.leader_deadline = None;
+                self.submit_script(ScriptInvocation::TransientKeymap { id, key, pane })?;
+                return Ok(true);
+            }
+        }
+        let had_leader = self.ui.leader_deadline.is_some();
+        if had_leader
+            && self.ui.visual_selection.is_none()
+            && self.handle_leader_key(event, modifiers)?
+        {
+            return Ok(true);
+        }
+        match self.ui.key_sequences.advance(
+            &candidates,
+            pane,
+            event.repeat,
+            self.ui.visual_selection.is_some(),
+            Instant::now(),
+        ) {
+            SequenceDispatch::Consumed => {
+                self.ui.key_sequences.hold(event.physical_key);
+                return Ok(true);
+            }
+            SequenceDispatch::Binding(key) => {
+                self.ui.key_sequences.hold(event.physical_key);
+                self.handle_keybinding_candidates(vec![key])?;
+                return Ok(true);
+            }
+            SequenceDispatch::Unassigned => {}
+        }
+        if self
+            .ui
+            .key_sequences
+            .has_layer_binding(&candidates, self.ui.visual_selection.is_some())
+        {
+            return self.handle_keybinding_candidates(candidates);
+        }
+        if !had_leader
+            && self.ui.visual_selection.is_none()
+            && self.handle_leader_key(event, modifiers)?
+        {
+            return Ok(true);
+        }
+        self.handle_keybinding_candidates(candidates)
     }
 
     pub(super) fn handle_keybinding_candidates(
@@ -530,8 +643,9 @@ impl ToyotermApplication {
             .current_pane()
             .ok_or_else(|| "mux has no current pane".to_owned())?;
         let _key = performance::Stage::new("key_dispatch");
-        match resolve_keybinding(
+        match resolve_keybinding_for_pane(
             &self.scripting.snapshot,
+            pane,
             keys,
             self.ui.visual_selection.is_some(),
         ) {
@@ -559,6 +673,10 @@ impl ToyotermApplication {
             }
             KeybindingDispatch::Ruby(key) => {
                 self.submit_script(ScriptInvocation::KeyBinding { key, pane })?;
+                Ok(true)
+            }
+            KeybindingDispatch::KeymapRuby { map, key } => {
+                self.submit_script(ScriptInvocation::KeymapBinding { map, key, pane })?;
                 Ok(true)
             }
             KeybindingDispatch::Unassigned => Ok(false),
@@ -651,6 +769,29 @@ impl ToyotermApplication {
         event: &KeyEvent,
         modifiers: ModifiersState,
     ) -> Result<(), String> {
+        let primary = if cfg!(target_os = "macos") {
+            modifiers.super_key()
+        } else {
+            modifiers.control_key()
+        };
+        if self
+            .ui
+            .selector
+            .as_ref()
+            .is_some_and(SelectorOverlay::is_prompt)
+            && primary
+            && !modifiers.alt_key()
+            && matches!(&event.logical_key, Key::Character(key) if key.eq_ignore_ascii_case("v"))
+        {
+            let text = self
+                .clipboard()?
+                .get_text()
+                .map_err(|error| error.to_string())?;
+            if let Some(selector) = self.ui.selector.as_mut() {
+                selector.append_query(&text);
+            }
+            return Ok(());
+        }
         if let Some(completion) = ui_controller::handle_selector_key(event, modifiers, &mut self.ui)
         {
             self.submit_script(ScriptInvocation::SelectCallback {
@@ -737,10 +878,14 @@ impl ToyotermApplication {
 
     pub(super) fn apply_script_snapshot(&mut self, snapshot: ScriptSnapshot) -> Result<(), String> {
         let _apply = performance::Stage::new("config_apply");
+        self.scripting
+            .timers
+            .reconcile(&snapshot.timers, Instant::now());
         let config = snapshot.config.clone();
         let color_presets = terminal_color_presets(&snapshot)?;
         let previous_opacity = self.scripting.snapshot.config.window.opacity;
         self.ui.leader_deadline = None;
+        self.ui.key_sequences.replace_registry(&snapshot);
         let mut render_style = RenderStyle::from_hex_with_ui(
             &config.font.family,
             config.font.fallback.clone(),
@@ -900,11 +1045,20 @@ impl ToyotermApplication {
     }
 
     pub(super) fn collect_mux_events(&mut self) {
-        self.scripting.runtime_events.extend(
-            self.mux
-                .drain_events()
-                .filter_map(ruby_event_from_mux_event),
-        );
+        for event in self
+            .mux
+            .drain_events()
+            .filter_map(ruby_event_from_mux_event)
+        {
+            if matches!(
+                event.kind,
+                ScriptEventKind::PaneFocused | ScriptEventKind::WorkspaceChanged
+            ) {
+                self.ui.key_sequences.clear();
+                self.ui.leader_deadline = None;
+            }
+            self.scripting.runtime_events.push_back(event);
+        }
     }
 
     pub(super) fn deliver_runtime_events(&mut self) -> Result<(), String> {
@@ -935,6 +1089,7 @@ fn test_ui_state() -> UiState {
         search_query: String::new(),
         search_result: SearchResult::default(),
         selector: None,
+
         config_error_layout: ConfigErrorLayout::default(),
         config_error_notice: None,
         ime_preedit: Some("preedit".into()),
@@ -942,6 +1097,7 @@ fn test_ui_state() -> UiState {
         alt_graph_active: false,
         consumed_keys: HashSet::new(),
         leader_deadline: None,
+        key_sequences: crate::key_sequences::KeySequences::default(),
         mouse_position: PhysicalPosition::new(0.0, 0.0),
         pressed_mouse_button: None,
         last_mouse_cell: None,
@@ -985,6 +1141,7 @@ fn test_terminal_runtime(panes: impl IntoIterator<Item = PaneId>) -> TerminalRun
                         },
                         protocol: PaneProtocolState::default(),
                         input_pacing: PaneInputPacing::default(),
+                        reported_grid: None,
                     },
                 )
             })
@@ -998,6 +1155,215 @@ mod tests {
     use super::*;
 
     #[test]
+    fn only_advised_native_key_actions_enter_the_script_queue() {
+        use toyoterm_api::{TabId, WindowId, WorkspaceId};
+        let mut snapshot = ScriptSnapshot {
+            config: ToyotermConfig::default(),
+            color_presets: HashMap::new(),
+            native_actions: HashMap::new(),
+            keybindings: HashSet::new(),
+            event_names: HashSet::new(),
+            user_command_names: HashSet::new(),
+            keymap_bindings: HashMap::new(),
+            timers: vec![],
+            advised_actions: HashSet::new(),
+        };
+        let context = ActionContext {
+            workspace: WorkspaceId(1),
+            window: WindowId(2),
+            tab: TabId(3),
+            pane: PaneId(4),
+        };
+        let command = NativeCommand::Action(ActionCommand::Invoke {
+            action: NativeAction::NewTab,
+            context,
+        });
+        assert!(
+            advised_action_invocation(&command, CommandOrigin::Keybinding, &snapshot).is_none()
+        );
+        snapshot.advised_actions.insert("new_tab".into());
+        assert!(
+            matches!(advised_action_invocation(&command, CommandOrigin::Keybinding, &snapshot), Some(ScriptInvocation::Action { action: NativeAction::NewTab, context: captured }) if captured == context)
+        );
+        assert!(advised_action_invocation(&command, CommandOrigin::Script, &snapshot).is_none());
+        assert!(advised_action_invocation(&command, CommandOrigin::Ipc, &snapshot).is_none());
+        assert!(
+            advised_action_invocation(
+                &NativeCommand::Mux(Command::ClosePane(PaneId(4))),
+                CommandOrigin::Keybinding,
+                &snapshot
+            )
+            .is_none()
+        );
+    }
+
+    #[test]
+    fn native_action_advice_round_trips_through_the_script_thread_before_mux_mutation() {
+        let unique = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!(
+            "toyoterm-actions-{}-{unique}.rb",
+            std::process::id()
+        ));
+        std::fs::write(&path, "Toyoterm.advise_action(:split, kind: :around) { |proceed, call| proceed.call(:down) }\n").unwrap();
+        let (sender, receiver) = mpsc::channel();
+        let (worker, startup) = ScriptThread::start(Some(path.clone()), move |completion| {
+            let _ = sender.send(completion);
+        })
+        .unwrap();
+        let mut mux = Mux::new();
+        let pane = mux.current_pane().unwrap();
+        let captured = ActionContext {
+            workspace: mux.current_workspace(),
+            window: mux.current_window().unwrap(),
+            tab: mux.current_tab().unwrap(),
+            pane,
+        };
+        let request = NativeCommand::Action(ActionCommand::Invoke {
+            action: NativeAction::Split(SplitDirection::Right),
+            context: captured,
+        });
+        let invocation =
+            advised_action_invocation(&request, CommandOrigin::Keybinding, &startup.snapshot)
+                .unwrap();
+        worker
+            .submit(ScriptRequest {
+                id: 1,
+                invocation,
+                context: ScriptContext {
+                    model: Arc::new(ruby_object_model(&mux, None).unwrap()),
+                    handles: mux.native_handles().into(),
+                    clipboard: None,
+                },
+            })
+            .unwrap();
+        assert_eq!(mux.pane_ids().count(), 1);
+        let completion = receiver.recv_timeout(Duration::from_secs(10)).unwrap();
+        let result = completion.result.unwrap();
+        let [NativeCommand::Action(action)] = result.commands.as_slice() else {
+            panic!("expected an advised action")
+        };
+        let ui = test_ui_state();
+        let resolution =
+            resolve_action_command(action.clone(), CommandOrigin::Script, &mux, &ui.pane_layout)
+                .unwrap();
+        assert_eq!(
+            resolution.command,
+            Some(NativeCommand::Mux(Command::Split {
+                pane,
+                direction: SplitDirection::Down
+            }))
+        );
+        for command in resolution.activation {
+            mux.dispatch(command).unwrap();
+        }
+        let Some(NativeCommand::Mux(command)) = resolution.command else {
+            panic!("expected split")
+        };
+        mux.dispatch(command).unwrap();
+        assert_eq!(mux.pane_ids().count(), 2);
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn transient_input_round_trips_through_the_script_thread_before_mux_mutation() {
+        let unique = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!(
+            "toyoterm-transients-{}-{unique}.rb",
+            std::process::id()
+        ));
+        std::fs::write(
+            &path,
+            include_str!("../../../examples/transient_keymaps.rb"),
+        )
+        .unwrap();
+        let (sender, receiver) = mpsc::channel();
+        let (worker, _) = ScriptThread::start(Some(path.clone()), move |completion| {
+            let _ = sender.send(completion);
+        })
+        .unwrap();
+        let mut mux = Mux::new();
+        let pane = mux.current_pane().unwrap();
+        let context = ScriptContext {
+            model: Arc::new(ruby_object_model(&mux, None).unwrap()),
+            handles: mux.native_handles().into(),
+            clipboard: None,
+        };
+        worker
+            .submit(ScriptRequest {
+                id: 1,
+                invocation: ScriptInvocation::UserCommand {
+                    name: "choose_split".into(),
+                    pane,
+                },
+                context: context.clone(),
+            })
+            .unwrap();
+        let activated = receiver
+            .recv_timeout(Duration::from_secs(10))
+            .unwrap()
+            .result
+            .unwrap();
+        let snapshot = activated.snapshot.unwrap();
+        let mut keys = crate::key_sequences::KeySequences::new(&snapshot);
+        keys.select_pane(&snapshot, pane);
+        let crate::key_sequences::TransientDispatch::Invoke { id, key } =
+            keys.advance_transient(&["J".into()], pane, false, Instant::now())
+        else {
+            panic!("expected transient invocation")
+        };
+        worker
+            .submit(ScriptRequest {
+                id: 2,
+                invocation: ScriptInvocation::TransientKeymap { id, key, pane },
+                context,
+            })
+            .unwrap();
+        assert_eq!(mux.pane_ids().count(), 1);
+        let result = receiver
+            .recv_timeout(Duration::from_secs(10))
+            .unwrap()
+            .result
+            .unwrap();
+        let [NativeCommand::Action(action)] = result.commands.as_slice() else {
+            panic!("expected split action")
+        };
+        let resolution = resolve_action_command(
+            action.clone(),
+            CommandOrigin::Script,
+            &mux,
+            &test_ui_state().pane_layout,
+        )
+        .unwrap();
+        assert_eq!(
+            resolution.command,
+            Some(NativeCommand::Mux(Command::Split {
+                pane,
+                direction: SplitDirection::Down
+            }))
+        );
+        for command in resolution.activation {
+            mux.dispatch(command).unwrap();
+        }
+        let Some(NativeCommand::Mux(command)) = resolution.command else {
+            panic!("expected mux split")
+        };
+        mux.dispatch(command).unwrap();
+        assert_eq!(mux.pane_ids().count(), 2);
+        keys.replace_registry(&result.snapshot.unwrap());
+        assert_eq!(
+            keys.advance_transient(&["J".into()], pane, false, Instant::now()),
+            crate::key_sequences::TransientDispatch::Inactive
+        );
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
     #[ignore = "opt-in performance baseline"]
     fn performance_native_key_resolution() {
         let snapshot = ScriptSnapshot {
@@ -1007,6 +1373,9 @@ mod tests {
             keybindings: HashSet::new(),
             event_names: HashSet::new(),
             user_command_names: HashSet::new(),
+            keymap_bindings: HashMap::new(),
+            timers: Vec::new(),
+            advised_actions: HashSet::new(),
         };
         let mut times = Vec::new();
         for batch in 0..1100 {
@@ -1566,6 +1935,9 @@ mod tests {
             keybindings: HashSet::new(),
             event_names: HashSet::new(),
             user_command_names: HashSet::new(),
+            keymap_bindings: HashMap::new(),
+            timers: Vec::new(),
+            advised_actions: HashSet::new(),
         };
         let mut ruby_invocations = 0;
 
@@ -1579,6 +1951,103 @@ mod tests {
     }
 
     #[test]
+    fn completed_sequences_use_the_existing_native_and_ruby_dispatch_boundary() {
+        use crate::key_sequences::{KeySequences, SequenceDispatch};
+        let snapshot = ScriptSnapshot {
+            config: ToyotermConfig::default(),
+            color_presets: HashMap::new(),
+            native_actions: HashMap::from([("CTRL+X F".into(), NativeAction::NewTab)]),
+            keybindings: HashSet::from(["CTRL+X R B".into()]),
+            event_names: HashSet::new(),
+            user_command_names: HashSet::new(),
+            keymap_bindings: HashMap::new(),
+            timers: Vec::new(),
+            advised_actions: HashSet::new(),
+        };
+        let mut keys = KeySequences::new(&snapshot);
+        let now = Instant::now();
+        assert_eq!(
+            keys.advance(&["CTRL+X".into()], PaneId(1), false, false, now),
+            SequenceDispatch::Consumed
+        );
+        let SequenceDispatch::Binding(key) =
+            keys.advance(&["F".into()], PaneId(1), false, false, now)
+        else {
+            panic!("expected native binding");
+        };
+        assert_eq!(
+            resolve_keybinding(&snapshot, [key], false),
+            KeybindingDispatch::Native(NativeAction::NewTab)
+        );
+        assert_eq!(
+            keys.advance(&["CTRL+X".into()], PaneId(1), false, false, now),
+            SequenceDispatch::Consumed
+        );
+        assert_eq!(
+            keys.advance(&["R".into()], PaneId(1), false, false, now),
+            SequenceDispatch::Consumed
+        );
+        let SequenceDispatch::Binding(key) =
+            keys.advance(&["B".into()], PaneId(1), false, false, now)
+        else {
+            panic!("expected Ruby binding");
+        };
+        assert_eq!(
+            resolve_keybinding(&snapshot, [key], false),
+            KeybindingDispatch::Ruby("CTRL+X R B".into())
+        );
+    }
+
+    #[test]
+    fn scoped_layers_resolve_native_actions_and_typed_keymap_callbacks() {
+        use toyoterm_script::KeymapBindings;
+        let mut snapshot = ScriptSnapshot {
+            config: ToyotermConfig::default(),
+            color_presets: HashMap::new(),
+            native_actions: HashMap::from([("CTRL+T".into(), NativeAction::CloseTab)]),
+            keybindings: HashSet::new(),
+            event_names: HashSet::new(),
+            user_command_names: HashSet::new(),
+            keymap_bindings: HashMap::new(),
+            timers: Vec::new(),
+            advised_actions: HashSet::new(),
+        };
+        snapshot.keymap_bindings.insert(
+            toyoterm_script::KeymapScope::Pane(PaneId(4)),
+            KeymapBindings {
+                native_actions: HashMap::from([
+                    ("PHYSICAL:KEYT".into(), NativeAction::CloseTab),
+                    ("CTRL+T".into(), NativeAction::NewTab),
+                ]),
+                keybindings: HashSet::from(["CTRL+X F".into()]),
+                callback_owners: HashMap::from([("CTRL+X F".into(), 42)]),
+                priorities: HashMap::from([("PHYSICAL:KEYT".into(), 1), ("CTRL+T".into(), 2)]),
+                transients: Vec::new(),
+            },
+        );
+        assert_eq!(
+            resolve_keybinding_for_pane(
+                &snapshot,
+                PaneId(4),
+                ["PHYSICAL:KEYT".into(), "CTRL+T".into()],
+                false
+            ),
+            KeybindingDispatch::Native(NativeAction::NewTab)
+        );
+        assert_eq!(
+            resolve_keybinding_for_pane(&snapshot, PaneId(5), ["CTRL+T".into()], false),
+            KeybindingDispatch::Native(NativeAction::CloseTab)
+        );
+        assert_eq!(
+            resolve_keybinding_for_pane(&snapshot, PaneId(4), ["CTRL+X F".into()], false),
+            KeybindingDispatch::KeymapRuby {
+                map: 42,
+                key: "CTRL+X F".into()
+            }
+        );
+    }
+
+    #[test]
     fn visual_only_actions_are_skipped_outside_visual_mode() {
         let mut snapshot = ScriptSnapshot {
             config: ToyotermConfig::default(),
@@ -1587,6 +2056,9 @@ mod tests {
             keybindings: HashSet::new(),
             event_names: HashSet::new(),
             user_command_names: HashSet::new(),
+            keymap_bindings: HashMap::new(),
+            timers: Vec::new(),
+            advised_actions: HashSet::new(),
         };
         snapshot.native_actions.insert(
             "H".into(),

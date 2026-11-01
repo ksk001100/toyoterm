@@ -2921,6 +2921,8 @@ dependencies = [
  "toyoterm-script",
  "toyoterm-terminal",
  "tracing",
+ "unicode-segmentation",
+ "unicode-width",
  "windows",
  "winit",
 ]
@@ -2996,6 +2998,7 @@ name = "toyoterm-script"
 version = "0.2.0-dev"
 dependencies = [
  "cc",
+ "tempfile",
  "toyoterm-api",
  "toyoterm-config",
  "toyoterm-mux",

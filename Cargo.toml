@@ -45,6 +45,7 @@ portable-pty = "0.9.0"
 pollster = "1.0.1"
 sys-locale = "0.3.2"
 tracing = { version = "0.1.44", default-features = false, features = ["std"] }
+tempfile = "3.27.0"
 unicode-width = "0.2.2"
 unicode-script = "0.5.8"
 unicode-segmentation = "1.13.3"

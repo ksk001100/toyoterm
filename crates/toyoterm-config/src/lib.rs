@@ -107,6 +107,7 @@ pub struct ToyotermConfig {
     pub default_shell: Option<String>,
     pub scrollback_lines: usize,
     pub leader: Option<LeaderConfig>,
+    pub key_sequence_timeout_ms: Option<u64>,
     pub status_bars: Vec<StatusBarConfig>,
 }
 
@@ -180,6 +181,7 @@ impl Default for ToyotermConfig {
             default_shell: None,
             scrollback_lines: 10_000,
             leader: None,
+            key_sequence_timeout_ms: Some(1000),
             status_bars: Vec::new(),
         }
     }

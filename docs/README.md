@@ -9,6 +9,7 @@
 | [Installation](packaging.md) | Artifacts, install, upgrade, uninstall, and checksums |
 | [Usage](usage.md) | Controls, CLI, logs, configuration recovery, and rendering |
 | [mruby API](mruby-api.md) | Canonical configuration and Ruby API reference, defaults, validation, and execution semantics |
+| [Extension libraries](extension-libraries.md) | Explicit installation/loading, hook composition, inspection, cleanup and compatibility |
 | [Shell integration](shell-integration.md) | Shell setup, cwd reporting, and command lifecycle |
 | [OSC support](osc-support.md) | Supported OSC sequences, intentional restrictions, and prioritized backlog |
 | [Terminal images](image-protocols.md) | Sixel, Kitty, OSC 1337, limits, and a runnable chart |
@@ -29,6 +30,8 @@ toyoterm itself has no built-in GUI key bindings.
 | [Performance baseline](performance-baseline.md) | PTY-to-frame fixtures, timings, Ruby overhead, JSON records and commit comparison |
 | [Crate architecture](architecture.md) | Responsibilities and dependency rules |
 | [Threading](threading.md) | Ownership, request ordering, and callback budgets |
+| [Programmable environment](extensibility.md) | Implementation status and acceptance criteria for commands, keymaps, modes, terminal UI, and extension lifecycle |
+| [Extension validation audit](extension-validation-audit.md) | Requirement evidence, Windows runs, Linux/macOS cross-target checks and unverified desktop behavior |
 | [Architecture decisions](adr/README.md) | Accepted decisions and rationale |
 | [Platform validation](platform-validation.md) | CI coverage and physical-machine checks |
 | [Soak validation](soak-validation.md) | Short churn, long idle, memory trends and sleep/wake RC evidence |
