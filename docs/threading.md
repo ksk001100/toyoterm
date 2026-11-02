@@ -171,6 +171,17 @@ Size/PID model changes invalidate cached native snapshots before a script reques
 is built. Per-Pane resize events coalesce under the existing bounded runtime
 event queue. Ruby handlers never participate in sizing or block PTY parsing.
 
+## Terminal image file work
+
+Kitty `t=f` requests also use the bounded native file worker. The VT owner emits
+an immutable request; the worker reads and decodes regular files and returns an
+`ImageFileLoaded` event. The main thread validates its process-wide request ID,
+applies pixels, and resumes deferred tokens/shell markers in stream order.
+The pane retains at most 1 MiB of deferred output; overflow fails that image and
+resumes parsing. Resize/cell-size changes invalidate pending results before
+clearing placements. The main event loop and other panes remain active. See
+[ADR 0009](adr/0009-kitty-image-file-transmission.md).
+
 ## Cooperative work and execution budgets
 
 The opt-in extension GUI smoke uses the same serialized request/completion

@@ -12,6 +12,9 @@ toyoterm is a Cargo workspace. Each crate owns one runtime responsibility:
   Kitty, and OSC 1337 payloads become immutable RGBA snapshots using `image`,
   `base64`, and `flate2`. `toyoterm-render` uploads and caches their GPU textures.
   These external dependencies add no internal crate edges.
+  Kitty file transmission emits immutable jobs for the app's native file worker;
+  file I/O and bounded decoding run there and return to the terminal owner.
+  Unix regular-file opening uses shared `libc` flags; the crate graph is unchanged.
 - `toyoterm-pty`: process spawning, PTY I/O, resize, and child lifecycle
 - `toyoterm-render`: layout plus GPU and text rendering
 - `toyoterm-config`: configuration values and path discovery

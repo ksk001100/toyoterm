@@ -65,6 +65,11 @@ enum DownloadJob {
         path: Option<String>,
         proxy: EventLoopProxy<AppEvent>,
     },
+    ImageFile {
+        pane: PaneId,
+        request: toyoterm_terminal::ImageFileRequest,
+        proxy: EventLoopProxy<AppEvent>,
+    },
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -212,6 +217,11 @@ fn download_sender() -> &'static SyncSender<DownloadJob> {
                                 root,
                                 result,
                             });
+                            Ok(())
+                        }
+                        DownloadJob::ImageFile { pane, request, proxy } => {
+                            let result = request.load();
+                            let _ = proxy.send_event(AppEvent::ImageFileLoaded { pane, result });
                             Ok(())
                         }
                     };
@@ -580,6 +590,18 @@ fn load_background_image(root: &Path, requested: &str) -> Result<BackgroundImage
         return Err("OSC background-image path is outside the configured root".into());
     }
     BackgroundImage::load(&candidate).map_err(|error| error.to_string())
+}
+
+pub fn queue_image_file(
+    pane: PaneId,
+    request: toyoterm_terminal::ImageFileRequest,
+    proxy: EventLoopProxy<AppEvent>,
+) -> Result<(), String> {
+    send_job(DownloadJob::ImageFile {
+        pane,
+        request,
+        proxy,
+    })
 }
 
 fn send_job(job: DownloadJob) -> Result<(), String> {

@@ -7,7 +7,7 @@ return {
     end
 
     -- Register before Snacks first caches its terminal environment. Keep the
-    -- terminal's identity, and use in-band data rather than local file paths.
+    -- terminal's identity and let Snacks select its standard transfer method.
     local terminal = require("snacks.image.terminal")
     local found = false
     for _, env in ipairs(terminal.envs()) do
@@ -19,7 +19,6 @@ return {
         env = { TERM_PROGRAM = "^toyoterm$" },
         supported = true,
         placeholders = true,
-        remote = true,
       })
     end
     opts.image = vim.tbl_deep_extend("force", opts.image or {}, { enabled = true })

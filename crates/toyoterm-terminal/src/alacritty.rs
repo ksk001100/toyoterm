@@ -1,9 +1,9 @@
 use super::graphics::{
-    Graphics, PlaceholderCell,
+    GraphicResult, Graphics, ImageFileRequest, ImageFileResult, PlaceholderCell,
     handler::{GraphicsHandler, SemanticMarkerKind, SemanticMarkers},
     stream::{Stream, Token},
 };
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeSet, HashMap, VecDeque};
 use std::sync::Arc;
 use std::sync::mpsc::{self, Receiver, Sender};
 
@@ -85,7 +85,32 @@ impl EventListener for TerminalEventSender {
     }
 }
 
+const MAX_DEFERRED_IMAGE_BYTES: usize = 1024 * 1024;
+
+struct PendingImageFile {
+    request: ImageFileRequest,
+    payload: Vec<u8>,
+    at: (u16, i32),
+}
+
+enum DeferredImageInput {
+    Token(Token<'static>),
+    Shell(TerminalEvent),
+}
+impl DeferredImageInput {
+    fn byte_len(&self) -> usize {
+        match self {
+            Self::Token(token) => token.byte_len(),
+            // Conservatively account for bounded shell/clipboard payloads.
+            Self::Shell(_) => MAX_OSC52_COPY_BYTES + MAX_SHELL_INTEGRATION_PAYLOAD_BYTES,
+        }
+    }
+}
+
 pub struct AlacrittyTerminalBackend {
+    pending_image_file: Option<PendingImageFile>,
+    deferred_image_input: VecDeque<DeferredImageInput>,
+    deferred_image_bytes: usize,
     graphics: Graphics,
     graphics_stream: Stream,
     processor: Processor,
@@ -203,6 +228,9 @@ impl AlacrittyTerminalBackend {
         let config = terminal_config(scrollback_lines);
         let (event_sender, events) = mpsc::channel();
         Self {
+            pending_image_file: None,
+            deferred_image_input: VecDeque::new(),
+            deferred_image_bytes: 0,
             graphics: Graphics::new(),
             graphics_stream: Stream::default(),
             processor: Processor::new(),
@@ -250,80 +278,95 @@ impl AlacrittyTerminalBackend {
 
     fn advance_vt(&mut self, bytes: &[u8]) {
         for token in self.graphics_stream.advance(bytes) {
-            match token {
-                Token::Cancel => self.graphics.cancel_transfer(),
-                Token::Text(bytes) => self.processor.advance(
-                    &mut GraphicsHandler {
-                        terminal: &mut self.terminal,
-                        graphics: &mut self.graphics,
-                        semantic_markers: &mut self.semantic_markers,
-                        mouse_cursor_stacks: &mut self.mouse_cursor_stacks,
-                        clipboard_capture: &mut self.clipboard_capture,
-                        output: &self.event_sender,
-                        default_colors: &self.default_colors,
-                        allow_osc52_copy: self.allow_osc52_copy,
-                    },
-                    &bytes,
-                ),
-                Token::CellSizeQuery => {
-                    let (width, height) = self.graphics.size();
+            self.process_graphic_token(token);
+        }
+    }
+
+    fn process_graphic_token(&mut self, token: Token<'_>) {
+        if self.pending_image_file.is_some() {
+            self.defer_image_input(DeferredImageInput::Token(token.into_owned()));
+            return;
+        }
+        match token {
+            Token::Cancel => self.graphics.cancel_transfer(),
+            Token::Text(bytes) => self.processor.advance(
+                &mut GraphicsHandler {
+                    terminal: &mut self.terminal,
+                    graphics: &mut self.graphics,
+                    semantic_markers: &mut self.semantic_markers,
+                    mouse_cursor_stacks: &mut self.mouse_cursor_stacks,
+                    clipboard_capture: &mut self.clipboard_capture,
+                    output: &self.event_sender,
+                    default_colors: &self.default_colors,
+                    allow_osc52_copy: self.allow_osc52_copy,
+                },
+                &bytes,
+            ),
+            Token::CellSizeQuery => {
+                let (width, height) = self.graphics.size();
+                let _ = self
+                    .event_sender
+                    .send(TerminalEvent::PtyWrite(format!("\x1b[6;{height};{width}t")));
+            }
+            Token::Graphic(kind, payload) => {
+                // Flush buffered synchronized text before capturing the image cursor.
+                self.processor.stop_sync(&mut GraphicsHandler {
+                    terminal: &mut self.terminal,
+                    graphics: &mut self.graphics,
+                    semantic_markers: &mut self.semantic_markers,
+                    mouse_cursor_stacks: &mut self.mouse_cursor_stacks,
+                    clipboard_capture: &mut self.clipboard_capture,
+                    output: &self.event_sender,
+                    default_colors: &self.default_colors,
+                    allow_osc52_copy: self.allow_osc52_copy,
+                });
+                let at = self.terminal.grid().cursor.point;
+                let background = match self.terminal.grid().cursor.template.bg {
+                    Color::Spec(rgb) => rgb,
+                    Color::Indexed(index) => {
+                        resolved_color(&self.terminal, &self.default_colors, usize::from(index))
+                            .expect("indexed terminal colors always resolve")
+                    }
+                    Color::Named(color) => {
+                        resolved_color(&self.terminal, &self.default_colors, color as usize)
+                            .unwrap_or_else(|| {
+                                resolved_color(
+                                    &self.terminal,
+                                    &self.default_colors,
+                                    NamedColor::Background as usize,
+                                )
+                                .expect("terminal background always resolves")
+                            })
+                    }
+                };
+                let result = self.graphics.receive(
+                    kind,
+                    &payload,
+                    (at.column.0 as u16, at.line.0),
+                    self.dimensions(),
+                    self.terminal.mode().contains(TermMode::ALT_SCREEN),
+                    [background.r, background.g, background.b, 255],
+                );
+                let mut result = result;
+                if let Some(request) = result.file.take() {
+                    self.pending_image_file = Some(PendingImageFile {
+                        request: request.clone(),
+                        payload,
+                        at: (at.column.0 as u16, at.line.0),
+                    });
                     let _ = self
                         .event_sender
-                        .send(TerminalEvent::PtyWrite(format!("\x1b[6;{height};{width}t")));
+                        .send(TerminalEvent::ImageFileRequested(request));
                 }
-                Token::Graphic(kind, payload) => {
-                    use alacritty_terminal::vte::ansi::Handler;
-                    // Flush buffered synchronized text before capturing the image cursor.
-                    self.processor.stop_sync(&mut GraphicsHandler {
-                        terminal: &mut self.terminal,
-                        graphics: &mut self.graphics,
-                        semantic_markers: &mut self.semantic_markers,
-                        mouse_cursor_stacks: &mut self.mouse_cursor_stacks,
-                        clipboard_capture: &mut self.clipboard_capture,
-                        output: &self.event_sender,
-                        default_colors: &self.default_colors,
-                        allow_osc52_copy: self.allow_osc52_copy,
-                    });
-                    let at = self.terminal.grid().cursor.point;
-                    let background = match self.terminal.grid().cursor.template.bg {
-                        Color::Spec(rgb) => rgb,
-                        Color::Indexed(index) => {
-                            resolved_color(&self.terminal, &self.default_colors, usize::from(index))
-                                .expect("indexed terminal colors always resolve")
-                        }
-                        Color::Named(color) => {
-                            resolved_color(&self.terminal, &self.default_colors, color as usize)
-                                .unwrap_or_else(|| {
-                                    resolved_color(
-                                        &self.terminal,
-                                        &self.default_colors,
-                                        NamedColor::Background as usize,
-                                    )
-                                    .expect("terminal background always resolves")
-                                })
-                        }
-                    };
-                    let result = self.graphics.receive(
-                        kind,
-                        &payload,
-                        (at.column.0 as u16, at.line.0),
-                        self.dimensions(),
-                        self.terminal.mode().contains(TermMode::ALT_SCREEN),
-                        [background.r, background.g, background.b, 255],
-                    );
-                    if let Some(reply) = result.reply {
-                        let _ = self.event_sender.send(TerminalEvent::PtyWrite(reply));
-                    }
-                    if let Some(download) = result.download {
-                        let _ = self.event_sender.send(TerminalEvent::FileDownload {
-                            name: download.name,
-                            data: download.data,
-                            permissions: None,
-                            modified_ns: None,
-                        });
-                    }
-                    if let Some((columns, rows)) = result.advance {
-                        let mut handler = GraphicsHandler {
+                self.apply_graphic_result(result, (at.column.0 as u16, at.line.0));
+            }
+            Token::Osc1337(payload) => {
+                if let Some(shape) = payload.strip_prefix(b"1337;CursorShape=")
+                    && matches!(shape, b"0" | b"1" | b"2")
+                {
+                    let sequence = [b"\x1b]50;CursorShape=".as_slice(), shape, b"\x1b\\"].concat();
+                    self.processor.advance(
+                        &mut GraphicsHandler {
                             terminal: &mut self.terminal,
                             graphics: &mut self.graphics,
                             semantic_markers: &mut self.semantic_markers,
@@ -332,69 +375,154 @@ impl AlacrittyTerminalBackend {
                             output: &self.event_sender,
                             default_colors: &self.default_colors,
                             allow_osc52_copy: self.allow_osc52_copy,
-                        };
-                        for _ in 1..rows.min(handler.terminal.screen_lines() as u16) {
-                            handler.linefeed();
-                        }
-                        handler.goto_col(at.column.0.saturating_add(usize::from(columns)));
+                        },
+                        &sequence,
+                    );
+                } else if payload == b"1337;ReportCellSize" {
+                    let (width, height) = self.graphics.size();
+                    let scale = self.cell_scale_factor;
+                    let _ = self.event_sender.send(TerminalEvent::PtyWrite(format!(
+                        "\x1b]1337;ReportCellSize={:.2};{:.2};{scale:.2}\x1b\\",
+                        f64::from(height) / scale,
+                        f64::from(width) / scale,
+                    )));
+                } else if payload == b"1337;ClearScrollback" {
+                    self.processor.advance(
+                        &mut GraphicsHandler {
+                            terminal: &mut self.terminal,
+                            graphics: &mut self.graphics,
+                            semantic_markers: &mut self.semantic_markers,
+                            mouse_cursor_stacks: &mut self.mouse_cursor_stacks,
+                            clipboard_capture: &mut self.clipboard_capture,
+                            output: &self.event_sender,
+                            default_colors: &self.default_colors,
+                            allow_osc52_copy: self.allow_osc52_copy,
+                        },
+                        b"\x1b[3J",
+                    );
+                    self.selection_anchor = None;
+                    self.search = SearchState::default();
+                }
+            }
+            Token::Osc66(payload) => {
+                if let Some(chunks) = parse_osc66(&payload) {
+                    for chunk in chunks {
+                        self.write_sized_text(chunk);
                     }
                 }
-                Token::Osc1337(payload) => {
-                    if let Some(shape) = payload.strip_prefix(b"1337;CursorShape=")
-                        && matches!(shape, b"0" | b"1" | b"2")
-                    {
-                        let sequence =
-                            [b"\x1b]50;CursorShape=".as_slice(), shape, b"\x1b\\"].concat();
-                        self.processor.advance(
-                            &mut GraphicsHandler {
-                                terminal: &mut self.terminal,
-                                graphics: &mut self.graphics,
-                                semantic_markers: &mut self.semantic_markers,
-                                mouse_cursor_stacks: &mut self.mouse_cursor_stacks,
-                                clipboard_capture: &mut self.clipboard_capture,
-                                output: &self.event_sender,
-                                default_colors: &self.default_colors,
-                                allow_osc52_copy: self.allow_osc52_copy,
-                            },
-                            &sequence,
-                        );
-                    } else if payload == b"1337;ReportCellSize" {
-                        let (width, height) = self.graphics.size();
-                        let scale = self.cell_scale_factor;
-                        let _ = self.event_sender.send(TerminalEvent::PtyWrite(format!(
-                            "\x1b]1337;ReportCellSize={:.2};{:.2};{scale:.2}\x1b\\",
-                            f64::from(height) / scale,
-                            f64::from(width) / scale,
-                        )));
-                    } else if payload == b"1337;ClearScrollback" {
-                        self.processor.advance(
-                            &mut GraphicsHandler {
-                                terminal: &mut self.terminal,
-                                graphics: &mut self.graphics,
-                                semantic_markers: &mut self.semantic_markers,
-                                mouse_cursor_stacks: &mut self.mouse_cursor_stacks,
-                                clipboard_capture: &mut self.clipboard_capture,
-                                output: &self.event_sender,
-                                default_colors: &self.default_colors,
-                                allow_osc52_copy: self.allow_osc52_copy,
-                            },
-                            b"\x1b[3J",
-                        );
-                        self.selection_anchor = None;
-                        self.search = SearchState::default();
-                    }
+            }
+            Token::Osc5113(payload) => {
+                for event in self.kitty_file_transfers.handle(&payload) {
+                    let _ = self.event_sender.send(event);
                 }
-                Token::Osc66(payload) => {
-                    if let Some(chunks) = parse_osc66(&payload) {
-                        for chunk in chunks {
-                            self.write_sized_text(chunk);
-                        }
-                    }
+            }
+        }
+    }
+
+    fn apply_graphic_result(&mut self, result: GraphicResult, at: (u16, i32)) {
+        if let Some(reply) = result.reply {
+            let _ = self.event_sender.send(TerminalEvent::PtyWrite(reply));
+        }
+        if let Some(download) = result.download {
+            let _ = self.event_sender.send(TerminalEvent::FileDownload {
+                name: download.name,
+                data: download.data,
+                permissions: None,
+                modified_ns: None,
+            });
+        }
+        if let Some((columns, rows)) = result.advance {
+            let mut handler = GraphicsHandler {
+                terminal: &mut self.terminal,
+                graphics: &mut self.graphics,
+                semantic_markers: &mut self.semantic_markers,
+                mouse_cursor_stacks: &mut self.mouse_cursor_stacks,
+                clipboard_capture: &mut self.clipboard_capture,
+                output: &self.event_sender,
+                default_colors: &self.default_colors,
+                allow_osc52_copy: self.allow_osc52_copy,
+            };
+            for _ in 1..rows.min(handler.terminal.screen_lines() as u16) {
+                handler.linefeed();
+            }
+            handler.goto_col(usize::from(at.0).saturating_add(usize::from(columns)));
+        }
+    }
+
+    pub fn image_file_request_is_current(&self, request: &ImageFileRequest) -> bool {
+        self.pending_image_file
+            .as_ref()
+            .is_some_and(|pending| pending.request.id == request.id)
+    }
+
+    /// Apply a decoded worker result on the terminal owner, then resume ordered output.
+    pub fn complete_image_file(&mut self, result: ImageFileResult) -> bool {
+        if !self
+            .pending_image_file
+            .as_ref()
+            .is_some_and(|pending| pending.request.id == result.id)
+        {
+            return false;
+        }
+        let pending = self
+            .pending_image_file
+            .take()
+            .expect("checked pending image");
+        let result = self.graphics.complete_file(
+            &pending.payload,
+            pending.at,
+            self.dimensions(),
+            self.terminal.mode().contains(TermMode::ALT_SCREEN),
+            result,
+        );
+        self.apply_graphic_result(result, pending.at);
+        while self.pending_image_file.is_none() {
+            let Some(input) = self.deferred_image_input.pop_front() else {
+                break;
+            };
+            self.deferred_image_bytes -= input.byte_len();
+            match input {
+                DeferredImageInput::Token(token) => self.process_graphic_token(token),
+                DeferredImageInput::Shell(event) => {
+                    self.collect_vt_events();
+                    self.record_shell_event(event);
                 }
-                Token::Osc5113(payload) => {
-                    for event in self.kitty_file_transfers.handle(&payload) {
-                        let _ = self.event_sender.send(event);
-                    }
+            }
+        }
+        self.collect_vt_events();
+        true
+    }
+
+    fn cancel_image_file(&mut self) {
+        while let Some(pending) = &self.pending_image_file {
+            let result = pending.request.failure();
+            self.complete_image_file(result);
+        }
+    }
+
+    fn defer_image_input(&mut self, input: DeferredImageInput) {
+        let length = input.byte_len();
+        // Abort an overloaded image rather than accumulating unbounded PTY output.
+        while self.pending_image_file.is_some()
+            && self.deferred_image_bytes.saturating_add(length) > MAX_DEFERRED_IMAGE_BYTES
+        {
+            let result = self
+                .pending_image_file
+                .as_ref()
+                .expect("pending image")
+                .request
+                .failure();
+            self.complete_image_file(result);
+        }
+        if self.pending_image_file.is_some() {
+            self.deferred_image_bytes += length;
+            self.deferred_image_input.push_back(input);
+        } else {
+            match input {
+                DeferredImageInput::Token(token) => self.process_graphic_token(token),
+                DeferredImageInput::Shell(event) => {
+                    self.collect_vt_events();
+                    self.record_shell_event(event);
                 }
             }
         }
@@ -492,6 +620,10 @@ impl AlacrittyTerminalBackend {
     }
 
     fn record_shell_event(&mut self, event: TerminalEvent) {
+        if self.pending_image_file.is_some() {
+            self.defer_image_input(DeferredImageInput::Shell(event));
+            return;
+        }
         if event == TerminalEvent::ClipboardCaptureStart {
             self.clipboard_capture = Some(ClipboardCapture::default());
             return;
@@ -1159,6 +1291,7 @@ impl AlacrittyTerminalBackend {
     pub fn set_cell_size(&mut self, width: u16, height: u16) {
         let size = (width.max(1), height.max(1));
         if self.graphics.cell_size != size {
+            self.cancel_image_file();
             self.graphics.clear(false, i32::MIN, i32::MAX);
             self.graphics.clear(true, i32::MIN, i32::MAX);
             self.graphics.cell_size = size;
@@ -1407,6 +1540,7 @@ impl TerminalBackend for AlacrittyTerminalBackend {
     fn resize(&mut self, columns: u16, rows: u16) {
         let previous = self.dimensions();
         if previous != (columns, rows) {
+            self.cancel_image_file();
             let preserve_text_blocks =
                 rows == previous.1 && columns >= previous.0 && self.terminal.history_size() == 0;
             if preserve_text_blocks {

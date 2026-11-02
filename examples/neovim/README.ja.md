@@ -9,9 +9,10 @@
 
 Snacks は現在、Kitty graphics の対応を問い合わせず、Kitty・Ghostty・WezTerm
 という端末名で判定します。この例は `snacks.image.terminal.envs()` に toyoterm を登録し、
-Unicode placeholders と `remote = true` を指定します。ここでの `remote` は、ローカルでも
-PNG データを直接分割送信する方式（`t=d`）を選ぶ指定です。通常のローカル用の
-ファイルパス転送（`t=f`）には toyoterm が対応していません。
+Unicode placeholders を有効にします。ローカルでは Snacks 標準のファイルパス転送（`t=f`）を
+使い、toyoterm のネイティブワーカーが読み込み・デコードします。端末と Neovim が同じ
+絶対パスを参照できる必要があります。SSH では Snacks の直接転送（`t=d`）を維持します。
+Windows/WSL やコンテナなど、ファイルシステムの名前空間が異なる場合も直接転送が必要です。
 `TERM` の変更や `force = true`、`SNACKS_KITTY`、`SNACKS_SSH` は不要です。
 以前追加した `SNACKS_KITTY` / `SNACKS_SSH` の上書き設定は削除してください。
 
@@ -30,5 +31,6 @@ Kitty・WezTerm・Ghostty の実行ファイルが見つからないと表示さ
 Markdown 内の画像には LazyVim の `lang.markdown` extra と、health check が示す
 Treesitter parser を有効にしてください。スクロール、リサイズ、同じ PNG を別のバッファで
 開く操作、バッファの終了を確認します。ネイティブの回帰テストでは直接転送、複数の仮想配置、
-配置ごとの削除を検証しますが、GUI の確認は別途必要です。
+配置ごとの削除に加え、ファイル読み込み完了、カーソルと文字の順序、ファイルのエラー、
+リサイズや出力過負荷後の古い結果の破棄を検証しますが、GUI の確認は別途必要です。
 toyoterm の[画像の制限](../../docs/image-protocols.md)は引き続き適用されます。

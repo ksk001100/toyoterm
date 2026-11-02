@@ -4,7 +4,9 @@ import argparse
 import base64
 import struct
 import sys
+import tempfile
 import zlib
+from pathlib import Path
 
 
 def png_chart():
@@ -32,8 +34,17 @@ def sequence(protocol):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--protocol", choices=["all", "sixel", "kitty", "iterm2"], default="all")
+    parser.add_argument("--protocol", choices=["all", "sixel", "kitty", "kitty-file", "iterm2"], default="all")
     args = parser.parse_args()
+    if args.protocol == "kitty-file":
+        with tempfile.TemporaryDirectory(prefix="toyoterm-images-") as directory:
+            path = Path(directory) / "chart.png"
+            path.write_bytes(png_chart())
+            encoded = base64.b64encode(str(path.resolve()).encode("utf-8")).decode("ascii")
+            sys.stdout.write(f"kitty-file\n\x1b_Ga=T,t=f,f=100,q=2;{encoded}\x1b\\\n\n")
+            sys.stdout.flush()
+            input("Press Enter after the image appears to remove the temporary PNG: ")
+        return
     protocols = ["sixel", "kitty", "iterm2"] if args.protocol == "all" else [args.protocol]
     for protocol in protocols:
         sys.stdout.write(f"{protocol}\n{sequence(protocol)}\n\n")
