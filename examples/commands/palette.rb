@@ -1,4 +1,4 @@
-# Load with: toyoterm --config /path/to/examples/command_palette.rb
+# Load with: toyoterm --config /path/to/examples/commands/palette.rb
 Toyoterm.command(:git_status, description: "Show Git status in this pane") do |context|
   context.pane.send_text("git status\n")
 end

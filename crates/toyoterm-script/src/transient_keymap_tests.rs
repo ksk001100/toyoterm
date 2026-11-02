@@ -306,7 +306,7 @@ fn typed_command_prompts_inherit_the_transient_mode_owner() {
 fn bundled_transient_example_loads_and_dispatches_the_selected_split() {
     let mut manager = ConfigManager::new().unwrap();
     manager
-        .reload(include_str!("../../../examples/transient_keymaps.rb"))
+        .reload(include_str!("../../../examples/pane_tools/transients.rb"))
         .unwrap();
     eval(&mut manager, "Toyoterm.call_command(:choose_split)").unwrap();
     let id = layers(&mut manager)[0].id;

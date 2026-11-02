@@ -223,7 +223,8 @@ fn hook_options_validate_before_registration_and_metadata_tracks_mode_cleanup() 
 
 #[test]
 fn independent_hook_libraries_compose_validate_observe_and_remove_without_load_order_priority() {
-    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples/hook_composition.rb");
+    let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../examples/extension_libraries/composition.rb");
     let mut manager = ConfigManager::load_startup(Some(&path)).unwrap();
     let directory = tempfile::tempdir().unwrap();
     let directory_text = directory.path().to_string_lossy().into_owned();
@@ -268,7 +269,8 @@ fn independent_hook_libraries_compose_validate_observe_and_remove_without_load_o
 
 #[test]
 fn independent_library_require_permutations_preserve_priority_and_load_once() {
-    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples/hook_libraries");
+    let root =
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples/extension_libraries/hooks");
     let fixture = tempfile::tempdir().unwrap();
     let project = fixture.path().join("project");
     let shell = fixture.path().join("shell");
@@ -286,7 +288,7 @@ fn independent_library_require_permutations_preserve_priority_and_load_once() {
         root.join("launch_observer.rb"),
         extra,
     ];
-    let command_source = include_str!("../../../examples/hook_composition.rb")
+    let command_source = include_str!("../../../examples/extension_libraries/composition.rb")
         .lines()
         .filter(|line| !line.starts_with("require_relative "))
         .collect::<Vec<_>>()

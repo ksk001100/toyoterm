@@ -259,7 +259,7 @@ fn closing_the_origin_prunes_timers_and_owned_async_delivery_and_reload_resets_t
 fn bundled_timer_example_ticks_and_cancels_through_its_mode_keymap() {
     let mut manager = ConfigManager::new().unwrap();
     manager
-        .reload(include_str!("../../../examples/timers.rb"))
+        .reload(include_str!("../../../examples/monitoring/timers.rb"))
         .unwrap();
     let context = script_test_context();
     let result = run_script_request(

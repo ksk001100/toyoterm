@@ -452,4 +452,6 @@ use parsing::*;
 mod registry;
 use registry::RegistrySnapshot;
 #[cfg(test)]
+mod recipe_tests;
+#[cfg(test)]
 mod tests;

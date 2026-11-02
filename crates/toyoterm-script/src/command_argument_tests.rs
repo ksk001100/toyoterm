@@ -353,7 +353,7 @@ fn command_schema_errors_do_not_replace_existing_registrations() {
 fn bundled_typed_command_example_loads_and_invokes_without_input() {
     let mut manager = ConfigManager::new().unwrap();
     manager
-        .reload(include_str!("../../../examples/command_arguments.rb"))
+        .reload(include_str!("../../../examples/commands/arguments.rb"))
         .unwrap();
     let result = eval(
         &mut manager,

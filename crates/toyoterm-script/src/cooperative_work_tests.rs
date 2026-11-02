@@ -263,7 +263,9 @@ fn closed_targets_are_pruned_and_failed_reload_preserves_pending_work() {
 fn cooperative_example_counts_snapshot_words_and_releases_tasks_when_its_panel_closes() {
     let mut manager = ConfigManager::new().unwrap();
     manager
-        .reload(include_str!("../../../examples/cooperative_work.rb"))
+        .reload(include_str!(
+            "../../../examples/screen_analysis/cooperative.rb"
+        ))
         .unwrap();
     let mut context = script_test_context();
     Arc::make_mut(&mut context.model).panes[0].screen_text = "one two\none three".into();

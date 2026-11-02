@@ -251,7 +251,7 @@ fn help_bounds_large_metadata_without_truncating_programmatic_values() {
 fn mode_owned_help_closes_on_disable_and_the_example_loads() {
     let mut manager = ConfigManager::new().unwrap();
     manager
-        .reload(include_str!("../../../examples/command_help.rb"))
+        .reload(include_str!("../../../examples/commands/help.rb"))
         .unwrap();
     let result = eval(
         &mut manager,

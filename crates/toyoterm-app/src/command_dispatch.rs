@@ -1279,7 +1279,7 @@ mod tests {
         ));
         std::fs::write(
             &path,
-            include_str!("../../../examples/transient_keymaps.rb"),
+            include_str!("../../../examples/pane_tools/transients.rb"),
         )
         .unwrap();
         let (sender, receiver) = mpsc::channel();

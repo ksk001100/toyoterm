@@ -424,7 +424,7 @@ fn mode_and_explicit_map_precedence_is_independent_of_enable_order() {
 fn bundled_modes_example_toggles_scope_and_exits_through_its_own_keymap() {
     let mut manager = ConfigManager::new().unwrap();
     manager
-        .reload(include_str!("../../../examples/modes.rb"))
+        .reload(include_str!("../../../examples/pane_tools/navigation.rb"))
         .unwrap();
     manager.trigger_keybinding("ALT+N", PaneId(8)).unwrap();
     manager.refresh_config_snapshot().unwrap();

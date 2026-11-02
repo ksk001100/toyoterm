@@ -26,16 +26,14 @@ Toyoterm.configure do |config|
     bar.section(:center, separator: " | ") do |section|
       section.add_async("ping", ping_flag, "1", "1.1.1.1",
                         interval: 10.0, initial: "Ping: measuring...") do |result|
-        if result.success? && result.stdout =~ /(?:Average = |time=)([\d.]+ ?ms)/i
-          "Ping: #{$1}"
-        elsif result.success?
+        if result.success?
           "Ping: ok"
         else
           "Ping: failed"
         end
       end
 
-      section.add_async("curl", "-s", "https://wttr.in/?format=1",
+      section.add_async("curl", "-s", "--connect-timeout", "3", "--max-time", "5", "https://wttr.in/?format=1",
                         interval: 300.0, initial: "Weather: fetching...") do |result|
         if result.success? && !result.stdout.strip.empty?
           result.stdout.strip

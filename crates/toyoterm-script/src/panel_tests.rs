@@ -177,7 +177,7 @@ fn mode_owned_panels_close_on_disable_and_failed_disable_restores_them() {
 fn panel_example_updates_from_a_timer_and_releases_its_mode_after_user_close() {
     let mut manager = ConfigManager::new().unwrap();
     manager
-        .reload(include_str!("../../../examples/panels.rb"))
+        .reload(include_str!("../../../examples/monitoring/panels.rb"))
         .unwrap();
     let id = opened(&eval(&mut manager, "Toyoterm.call_command(:terminal_monitor)").unwrap());
     let timer = manager.snapshot().timers[0].id;

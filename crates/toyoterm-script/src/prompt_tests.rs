@@ -307,7 +307,7 @@ fn terminal_completion_example_navigates_directories_and_launches_a_pane() {
     .unwrap();
     let mut manager = ConfigManager::new().unwrap();
     manager
-        .reload(include_str!("../../../examples/completion.rb"))
+        .reload(include_str!("../../../examples/commands/completion.rb"))
         .unwrap();
     let result = run_script_request(
         &mut manager,

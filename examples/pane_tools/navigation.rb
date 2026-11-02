@@ -1,4 +1,4 @@
-# Load with: toyoterm --config /path/to/examples/modes.rb
+# Load with: toyoterm --config /path/to/examples/pane_tools/navigation.rb
 # Alt+N toggles global navigation, which stays active across Pane switches.
 # Escape leaves navigation mode.
 Toyoterm.keymap(:navigation_base) do
