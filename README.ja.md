@@ -25,6 +25,9 @@ toyotermはRustと組み込みmrubyによる、プログラム可能な実験的
 - アトミックな設定リロード、ライブRubyコンソール、ローカルIPC、ウィンドウバーと壁紙（明示許可・固定ルート内に限定したOSC壁紙変更を含む）
 - OSCの許可設定を `config.osc` に集約。ダウンロード・アップロード・OSC壁紙変更は絶対パスのディレクトリを指定するだけで有効化できます（[設定API](docs/mruby-api.md#configosc)）
 
+[LazyVim / Snacks の設定例](examples/neovim/README.ja.md)は、画像データをタイマーごとに
+少量ずつ送り、バッチの合間に Neovim が入力を処理できるようにします。
+
 ## 現在の状態
 
 主な開発環境はLinuxです。CIではLinux・macOS・Windowsのビルド、テスト、パッケージ作成、

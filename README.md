@@ -25,6 +25,9 @@ This is a personal project built for my own use and an experimental toy.
 - Atomic configuration reload, a live Ruby console, local IPC, and configurable window bars and wallpaper, including opt-in fixed-root OSC wallpaper changes
 - Grouped `config.osc` permissions; assigning an absolute directory enables downloads, uploads, or OSC wallpaper changes without a separate permission flag ([configuration reference](docs/mruby-api.md#configosc))
 
+The [LazyVim / Snacks recipe](examples/neovim/README.md) sends image data in
+bounded timer batches so Neovim can process input between transfers' batches.
+
 ## Current status
 
 Linux is the primary development platform. CI runs builds, tests, packaging,

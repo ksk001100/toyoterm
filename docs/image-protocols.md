@@ -20,6 +20,8 @@ Unicode placeholders and selects direct PNG transmission, without changing the
 terminal's identity. Snacks' default terminal-name check does not recognize
 toyoterm, and its default local file-path transfer is unsupported. Setting
 `force = true` alone does not select a compatible transfer method.
+The recipe also replaces Snacks' blocking per-chunk sleep with bounded timer
+batches and serializes graphics requests so editing can continue during transfer.
 
 ## Supported subset
 
