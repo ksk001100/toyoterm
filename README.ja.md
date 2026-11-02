@@ -66,6 +66,9 @@ xattr -dr com.apple.quarantine /Applications/toyoterm.app
 
 ## 設定
 
+[拡張APIの実用例](examples/README.ja.md)に、Rubyステータスバー、昼夜の動的テーマ、
+ペイン作業台、コマンド実行ログを用意しています。各例に独立した `config.rb` と操作・手順があります。
+
 Rubyコマンドには説明を付けられ、`Toyoterm.commands`と`Toyoterm.command_info`で一覧・定義情報を確認し、
 `Toyoterm.call_command`で別のコマンドから呼び出せます。
 `Toyoterm.command_palette`をキーに割り当てると、検索可能なコマンド選択画面を開けます。

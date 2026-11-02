@@ -41,6 +41,12 @@ Normal Ruby libraries and explicit loading remain the model in ADR 0007.
 
 ## Validation
 
+For everyday workflows, see the [extension recipe gallery](../examples/README.md):
+an asynchronous Git/status dashboard, scheduled themes with manual selection,
+same-directory Pane tools with cross-workspace navigation, and an in-memory
+command-result journal. Each recipe has a standalone configuration and a
+bilingual walkthrough, including shell-integration requirements.
+
 The public surface is specified by [the mruby reference](mruby-api.md).
 Regression coverage belongs to toyoterm-script and toyoterm-app; it checks
 command/hook/keymap transactions, ownership, typed callbacks, timers and task

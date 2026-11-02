@@ -71,6 +71,10 @@ xattr -dr com.apple.quarantine /Applications/toyoterm.app
 
 ## Configuration
 
+Try the [practical extension recipes](examples/README.md): a Ruby status bar,
+automatic day/night themes, a Pane workbench, and a command-result journal.
+Each has a standalone `config.rb`, controls, and a walkthrough.
+
 Ruby commands support descriptions, discovery with `Toyoterm.commands` and
 `Toyoterm.command_info`, and composition with `Toyoterm.call_command`.
 Bind `Toyoterm.command_palette` to open a searchable command selector; see
