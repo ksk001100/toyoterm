@@ -26,7 +26,7 @@ This is a personal project built for my own use and an experimental toy.
 - Grouped `config.osc` permissions; assigning an absolute directory enables downloads, uploads, or OSC wallpaper changes without a separate permission flag ([configuration reference](docs/mruby-api.md#configosc))
 
 The [LazyVim / Snacks recipe](examples/neovim/README.md) sends image data in
-bounded timer batches so Neovim can process input between transfers' batches.
+bounded timer batches so Neovim can process input between batches.
 
 ## Current status
 
