@@ -109,6 +109,7 @@ pub enum TerminalEvent {
     },
     FileUploadCancel(String),
     BackgroundImageRequested(Option<String>),
+    ImageFileRequested(crate::ImageFileRequest),
     Notification {
         id: Option<String>,
         title: Option<String>,

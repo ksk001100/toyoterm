@@ -25,13 +25,14 @@ never caught.
 ## Filesystem safety and resource limits
 
 OSC 5113 download/upload parsing is enabled, but events are inspected and dropped.
-The terminal crate performs no local filesystem operations. Paths, parent IDs
+The terminal parser performs no local filesystem operations. Paths, parent IDs
 and symlink metadata remain untrusted event data. This tests the parser/state
 machine; on-disk containment policy belongs to app tests. Never connect the
 harness to app transfer handlers. Future filesystem fuzzing must use a separately
 reviewed fixed temporary root and traversal/symlink containment tests.
-Kitty graphics' existing direct-transmission requirement rejects local file and
-shared-memory transports. No app, GUI, PTY, mruby, clipboard or event consumer is
+Kitty file transmission emits immutable image-file requests; the harness must
+never call their `load()` method or consume them with a filesystem worker.
+Shared-memory transport remains unsupported. No app, GUI, PTY, mruby, clipboard or event consumer is
 linked. The architecture checker enforces the fuzz dependency allowlist.
 
 The harness does not truncate or sanitize input, alter production limits or use

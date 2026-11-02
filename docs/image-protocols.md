@@ -16,17 +16,16 @@ python examples/terminal_images.py --protocol kitty
 For Neovim's Snacks image viewer, use the
 [LazyVim integration example](../examples/neovim/README.md)
 ([日本語](../examples/neovim/README.ja.md)). It registers toyoterm as supporting
-Unicode placeholders and selects direct PNG transmission, without changing the
-terminal's identity. Snacks' default terminal-name check does not recognize
-toyoterm, and its default local file-path transfer is unsupported. Setting
-`force = true` alone does not select a compatible transfer method.
+Unicode placeholders without changing the terminal's identity. Snacks' default
+terminal-name check does not recognize toyoterm. Its standard local file-path
+transfer is supported; remote clients still need direct data transmission.
 
 ## Supported subset
 
 | Protocol | Supported |
 | --- | --- |
 | Sixel (DCS `ESC P … q … ESC \\`) | Raster dimensions, repeat, carriage return, next sixel line, 256 color registers, RGB and DEC HLS definitions, transparent background (`P2=1`), and 7-bit or 8-bit DCS/ST controls |
-| Kitty (APC `ESC _ G … ESC \\`) | Direct base64 transmission (`t=d`), RGB/RGBA/PNG (`f=24/32/100`), zlib (`o=z`), chunking (`m`), transmit/query/display (`a=t/q/T/p`), image and placement IDs (`i/p`), cell sizes (`c/r`), cursor preservation (`C=1`), virtual placements (`U=1`) and Unicode placeholders, quiet replies (`q`), deletion of visible placements or an image ID (`d=a/A/i/I`), and 7-bit or 8-bit APC/ST controls |
+| Kitty (APC `ESC _ G … ESC \\`) | Direct base64 transmission (`t=d`), regular-file transmission (`t=f`, `S/O` file size/offset), RGB/RGBA/PNG (`f=24/32/100`), zlib (`o=z`), direct-data chunking (`m`), transmit/query/display (`a=t/q/T/p`), image and placement IDs (`i/p`), cell sizes (`c/r`), cursor preservation (`C=1`), virtual placements (`U=1`) and Unicode placeholders, quiet replies (`q`), deletion of visible placements or an image ID (`d=a/A/i/I`), and 7-bit or 8-bit APC/ST controls |
 | iTerm2 (OSC 1337) | `File=inline=1` and `MultipartFile`/`FilePart`/`FileEnd`, base64 PNG/JPEG/GIF/BMP/WebP (the first frame of an animated image is displayed), optional byte `size`, `width`/`height` in cells, pixels, percent, or `auto`, `preserveAspectRatio`, BEL or 7-bit/8-bit ST termination; opt-in `inline=0` downloads to one configured absolute directory |
 
 Kitty replies use the normal PTY response channel. Queries decode and validate
@@ -53,6 +52,43 @@ Placement starts at the current cursor. By default the cursor moves to the last
 occupied image row and just beyond its occupied columns, clipped to the screen.
 An image taller than the screen reserves at most one screen of cursor movement.
 Kitty `C=1` leaves the cursor in place.
+
+### Kitty file transmission
+
+For `t=f`, the base64 payload is an absolute UTF-8 filename (at most 4096 bytes).
+The native file worker follows symlinks and reads only regular files. It checks
+the path/type before opening and the file type again after opening, rejecting
+Unix `/proc`, `/sys`, `/dev` and Windows non-local-disk paths. It reads at most
+32 MiB, using `O` as a byte offset and optional `S` as a byte count (`S=0` or
+omitted reads the remainder), and performs bounded decompression and decoding
+off the GUI thread. Files are never modified or deleted. Every read/decode
+failure returns `EBADF:Failed to read image file`, subject to `q=1/2`.
+
+The terminal and client must see the same file path; SSH and separate filesystem
+namespaces require `t=d`. This image transport is enabled by default and is
+independent of OSC 5113 uploads/downloads. Temporary-file deletion (`t=t`) and
+shared-memory transport (`t=s`) are unsupported.
+
+Following output for the pane waits in stream order until the file completes;
+the main event loop and other panes remain active. Deferred output is limited
+to 1 MiB: overload fails the image and resumes parsing. Resizing or changing cell
+size cancels pending images. At most 16 jobs wait on the shared native file
+worker. Stale completions cannot recreate images after cancellation or pane
+replacement. See [ADR 0009](adr/0009-kitty-image-file-transmission.md).
+
+Try the file transport inside toyoterm with:
+
+```sh
+python examples/terminal_images.py --protocol kitty-file
+```
+
+The demo keeps its temporary PNG until you press Enter, since the read is
+asynchronous. For example, a client can transmit a path then place it:
+
+```text
+ESC _ Gt=f,f=100,i=1;BASE64_ABSOLUTE_FILENAME ESC \
+ESC _ Ga=p,i=1,c=20,r=10,C=1 ESC \
+```
 
 Images follow vertical scrolling into history. Primary and alternate screens
 have separate placements; exiting the alternate screen discards its placements.
@@ -83,9 +119,9 @@ diacritics are not exposed to the text renderer.
   passthrough is not implemented.
 - Sixel pixel-aspect scaling, persistent palettes across separate images, and
   DEC private Sixel modes are not implemented.
-- Kitty file/shared-memory transmission, animation, image-number addressing,
-  cropping, offsets, relative placement, and nonzero
-  z-index are not implemented. Use direct transmission with supported placement
+- Kitty temporary-file/shared-memory transmission, animation, image-number addressing,
+  cropping, pixel offsets, relative placement, and nonzero
+  z-index are not implemented. Use direct or regular-file transmission with supported placement
   keys. Deletion selectors other than `a/A/i/I` return an unsupported error.
 - OSC 1337 image animation and formats other than PNG/JPEG/GIF/BMP/WebP are not
   implemented. Downloads accept arbitrary bounded bytes and do not decode them

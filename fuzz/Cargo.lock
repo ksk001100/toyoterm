@@ -627,6 +627,7 @@ dependencies = [
  "cursor-icon",
  "flate2",
  "image",
+ "libc",
  "tracing",
  "unicode-segmentation",
  "unicode-width",

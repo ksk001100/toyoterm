@@ -410,7 +410,9 @@ fn malformed_unsupported_cancelled_and_oversized_data_recovers() {
     for bytes in [
         kitty("a=T,f=32,s=999999,v=999999,i=1", &[0]),
         kitty("a=T,f=32,s=1,v=1,i=1", &[0]),
-        kitty("a=T,t=f,i=1", b"/etc/passwd"),
+        // Regular files (t=f) now produce asynchronous host jobs. Shared
+        // memory remains unsupported and must recover without a host worker.
+        kitty("a=T,t=s,i=1", b"/toyoterm-unsupported-image"),
         b"\x1bPq!99999999999999999999999~\x1b\\".to_vec(),
         b"\x1bPq#999999~\x1b\\".to_vec(),
         b"\x1b_Ga=T;unfinished\x18".to_vec(),

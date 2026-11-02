@@ -53,6 +53,31 @@ pub(crate) enum Token<'a> {
     Cancel,
 }
 
+impl Token<'_> {
+    pub fn into_owned(self) -> Token<'static> {
+        match self {
+            Self::Text(bytes) => Token::Text(Cow::Owned(bytes.into_owned())),
+            Self::Graphic(kind, bytes) => Token::Graphic(kind, bytes),
+            Self::Osc1337(bytes) => Token::Osc1337(bytes),
+            Self::Osc66(bytes) => Token::Osc66(bytes),
+            Self::Osc5113(bytes) => Token::Osc5113(bytes),
+            Self::CellSizeQuery => Token::CellSizeQuery,
+            Self::Cancel => Token::Cancel,
+        }
+    }
+
+    pub fn byte_len(&self) -> usize {
+        match self {
+            Self::Text(bytes) => bytes.len(),
+            Self::Graphic(_, bytes)
+            | Self::Osc1337(bytes)
+            | Self::Osc66(bytes)
+            | Self::Osc5113(bytes) => bytes.len(),
+            Self::CellSizeQuery | Self::Cancel => 1,
+        }
+    }
+}
+
 impl Stream {
     pub fn advance<'a>(&mut self, bytes: &'a [u8]) -> Vec<Token<'a>> {
         // Complete text/CSI reads need no reconstruction. Keep the incremental

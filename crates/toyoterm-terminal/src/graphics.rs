@@ -1,11 +1,13 @@
-//! Bounded, in-band terminal graphics. No protocol may read local files.
+//! Bounded terminal graphics. File I/O is delegated to immutable host-worker jobs.
 use std::collections::{BTreeMap, BTreeSet};
 use std::io::{Cursor, Read};
 use std::sync::Arc;
 
 use base64::{Engine, engine::general_purpose::STANDARD};
 
+mod file;
 pub(crate) mod handler;
+pub use file::{ImageFileRequest, ImageFileResult};
 mod sixel;
 pub(crate) mod stream;
 
@@ -124,8 +126,8 @@ pub(crate) struct PlaceholderCell {
     pub diacritic_count: u8,
 }
 
-#[derive(Clone)]
-struct Pixels {
+#[derive(Clone, Debug)]
+pub(crate) struct Pixels {
     width: u32,
     height: u32,
     rgba: Arc<[u8]>,
@@ -150,6 +152,7 @@ pub(crate) struct Graphics {
 }
 
 pub(crate) struct GraphicResult {
+    pub file: Option<ImageFileRequest>,
     pub advance: Option<(u16, u16)>,
     pub reply: Option<String>,
     pub download: Option<FileDownload>,
@@ -654,9 +657,10 @@ impl Graphics {
             advance: None,
             reply: None,
             download: None,
+            file: None,
         };
         if kind == b'_' {
-            return self.kitty(payload, at, screen, alternate);
+            return self.kitty(payload, at, screen, alternate, None);
         }
         let decoded = if kind == b'P' {
             sixel::decode(payload, terminal_background).map(|p| ItermContent::Image(p, None))
@@ -733,17 +737,30 @@ impl Graphics {
         None
     }
 
+    pub fn complete_file(
+        &mut self,
+        payload: &[u8],
+        at: (u16, i32),
+        screen: (u16, u16),
+        alternate: bool,
+        result: ImageFileResult,
+    ) -> GraphicResult {
+        self.kitty(payload, at, screen, alternate, Some(result.pixels))
+    }
+
     fn kitty(
         &mut self,
         payload: &[u8],
         at: (u16, i32),
         screen: (u16, u16),
         alternate: bool,
+        file_pixels: Option<Result<Pixels, &'static str>>,
     ) -> GraphicResult {
         let mut result = GraphicResult {
             advance: None,
             reply: None,
             download: None,
+            file: None,
         };
         let Some(payload) = payload.strip_prefix(b"G") else {
             return result;
@@ -779,7 +796,7 @@ impl Graphics {
             }
         }
         let action = value(&keys, "a", "t");
-        if action != "d" && value(&keys, "m", "0") == "1" {
+        if action != "d" && value(&keys, "t", "d") == "d" && value(&keys, "m", "0") == "1" {
             if data.len() <= MAX_BYTES {
                 self.kitty_transfer = Some((keys, data));
             }
@@ -789,6 +806,9 @@ impl Graphics {
         let placement = number(&keys, "p", 0);
         let quiet = number(&keys, "q", 0);
         let attempt = (|| -> Result<(), &'static str> {
+            if value(&keys, "t", "d") == "f" && value(&keys, "m", "0") != "0" {
+                return Err("EINVAL:file transmission cannot be chunked");
+            }
             if action == "d" {
                 let delete = value(&keys, "d", "a");
                 let removed_ids = match delete {
@@ -853,54 +873,25 @@ impl Graphics {
                     .cloned()
                     .ok_or("ENOENT:unknown image")?
             } else {
-                if value(&keys, "t", "d") != "d" {
-                    return Err("ENOTSUP:direct transmission required");
-                }
-                let mut bytes = STANDARD
-                    .decode(&data)
-                    .map_err(|_| "EINVAL:invalid base64")?;
-                match value(&keys, "o", "") {
-                    "z" => {
-                        let mut inflated = Vec::new();
-                        flate2::read::ZlibDecoder::new(bytes.as_slice())
-                            .take(MAX_BYTES as u64 + 1)
-                            .read_to_end(&mut inflated)
-                            .map_err(|_| "EINVAL:invalid zlib data")?;
-                        if inflated.len() > MAX_BYTES {
-                            return Err("E2BIG:image too large");
-                        }
-                        bytes = inflated;
-                    }
-                    "" => {}
-                    _ => return Err("ENOTSUP:unsupported compression"),
-                }
-                match number(&keys, "f", 32) {
-                    100 => decode_image(&bytes, true).ok_or("EINVAL:invalid PNG")?,
-                    format @ (24 | 32) => {
-                        let width = number(&keys, "s", 0);
-                        let height = number(&keys, "v", 0);
-                        let length =
-                            pixel_length(width, height).ok_or("E2BIG:invalid dimensions")?;
-                        if bytes.len() != length / 4 * (format as usize / 8) {
-                            return Err("EINVAL:pixel length mismatch");
-                        }
-                        let rgba = if format == 24 {
-                            bytes
-                                .as_chunks::<3>()
-                                .0
-                                .iter()
-                                .flat_map(|p| [p[0], p[1], p[2], 255])
-                                .collect()
+                match value(&keys, "t", "d") {
+                    "f" => {
+                        if let Some(pixels) = file_pixels {
+                            pixels?
                         } else {
-                            bytes
-                        };
-                        Pixels {
-                            width,
-                            height,
-                            rgba: Arc::from(rgba),
+                            result.file = Some(ImageFileRequest::new(&keys, &data)?);
+                            return Ok(());
                         }
                     }
-                    _ => return Err("ENOTSUP:unsupported format"),
+                    "d" => decode_pixels(
+                        number(&keys, "f", 32),
+                        number(&keys, "s", 0),
+                        number(&keys, "v", 0),
+                        value(&keys, "o", ""),
+                        STANDARD
+                            .decode(&data)
+                            .map_err(|_| "EINVAL:invalid base64")?,
+                    )?,
+                    _ => return Err("ENOTSUP:unsupported transmission medium"),
                 }
             };
             if action == "q" {
@@ -996,7 +987,11 @@ impl Graphics {
             }
             Ok(())
         })();
-        if quiet < 2 && (attempt.is_err() || quiet == 0) && (id != 0 || attempt.is_err()) {
+        if result.file.is_none()
+            && quiet < 2
+            && (attempt.is_err() || quiet == 0)
+            && (id != 0 || attempt.is_err())
+        {
             let status = attempt.err().unwrap_or("OK");
             let placement = if placement == 0 {
                 String::new()
@@ -1006,6 +1001,55 @@ impl Graphics {
             result.reply = Some(format!("\x1b_Gi={id}{placement};{status}\x1b\\"));
         }
         result
+    }
+}
+
+fn decode_pixels(
+    format: u32,
+    width: u32,
+    height: u32,
+    compression: &str,
+    mut bytes: Vec<u8>,
+) -> Result<Pixels, &'static str> {
+    match compression {
+        "z" => {
+            let mut inflated = Vec::new();
+            flate2::read::ZlibDecoder::new(bytes.as_slice())
+                .take(MAX_BYTES as u64 + 1)
+                .read_to_end(&mut inflated)
+                .map_err(|_| "EINVAL:invalid zlib data")?;
+            if inflated.len() > MAX_BYTES {
+                return Err("E2BIG:image too large");
+            }
+            bytes = inflated;
+        }
+        "" => {}
+        _ => return Err("ENOTSUP:unsupported compression"),
+    }
+    match format {
+        100 => decode_image(&bytes, true).ok_or("EINVAL:invalid PNG"),
+        format @ (24 | 32) => {
+            let length = pixel_length(width, height).ok_or("E2BIG:invalid dimensions")?;
+            if bytes.len() != length / 4 * (format as usize / 8) {
+                return Err("EINVAL:pixel length mismatch");
+            }
+            let rgba = if format == 24 {
+                bytes
+                    .as_chunks::<3>()
+                    .0
+                    .iter()
+                    .flat_map(|p| [p[0], p[1], p[2], 255])
+                    .collect()
+            } else {
+                bytes
+            };
+            Ok(Pixels {
+                width,
+                height,
+                rgba: Arc::from(rgba),
+            })
+        }
+        _ => Err("ENOTSUP:unsupported format"),
     }
 }
 

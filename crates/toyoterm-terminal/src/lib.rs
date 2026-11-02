@@ -255,7 +255,7 @@ pub trait TerminalBackend: Send {
 mod alacritty;
 mod graphics;
 mod input;
-pub use graphics::TerminalImage;
+pub use graphics::{ImageFileRequest, ImageFileResult, TerminalImage};
 
 pub use alacritty::{
     AlacrittyTerminalBackend, DEFAULT_SCROLLBACK_LINES, FileTransferEntry, FileTransferEntryKind,

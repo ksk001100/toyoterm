@@ -9,9 +9,11 @@ It enables Snacks images while preserving any other image options you set.
 
 Snacks currently recognizes Kitty, Ghostty and WezTerm by name; it does not
 probe Kitty graphics support. This example registers toyoterm through
-`snacks.image.terminal.envs()` with Unicode placeholders and `remote = true`.
-Here `remote` selects direct, chunked PNG transmission (`t=d`), even locally.
-Snacks otherwise sends a local file path (`t=f`), which toyoterm does not accept.
+`snacks.image.terminal.envs()` with Unicode placeholders. Local sessions use
+Snacks' standard file-path transmission (`t=f`), which toyoterm reads and decodes
+on its native file worker. The terminal and Neovim must see the same absolute
+path. SSH sessions retain Snacks' direct-data transfer (`t=d`); Windows/WSL or
+containers with different filesystem namespaces also require direct transfer.
 No `TERM` changes, `force = true`, `SNACKS_KITTY`, or `SNACKS_SSH` are needed.
 Remove earlier `SNACKS_KITTY` / `SNACKS_SSH` overrides from your Neovim config.
 
@@ -31,5 +33,7 @@ For inline Markdown images, enable LazyVim's `lang.markdown` extra and the
 Treesitter parsers reported by health checks. Try scrolling, resizing, opening
 the same PNG in another buffer, and closing it. Native protocol regression tests
 cover direct transmission, multiple virtual placements, and independent deletion;
-they do not replace this GUI check. toyoterm's
+file-transfer tests additionally cover worker completions, cursor/text ordering,
+file errors, and stale results after resize or output overload.
+They do not replace this GUI check. toyoterm's
 [image limits](../../docs/image-protocols.md) still apply.

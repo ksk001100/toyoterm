@@ -513,6 +513,10 @@ enum AppEvent {
         root: PathBuf,
         result: Result<Option<toyoterm_config::BackgroundImage>, String>,
     },
+    ImageFileLoaded {
+        pane: PaneId,
+        result: toyoterm_terminal::ImageFileResult,
+    },
     NotificationFeedback(NotificationFeedback),
 }
 
@@ -981,6 +985,7 @@ fn ruby_event_from_terminal_event(pane: PaneId, event: TerminalEvent) -> Option<
         | TerminalEvent::FileUploadRequest { .. }
         | TerminalEvent::FileUploadDataRequest { .. }
         | TerminalEvent::FileUploadCancel(_)
+        | TerminalEvent::ImageFileRequested(_)
         | TerminalEvent::BackgroundImageRequested(_) => return None,
         TerminalEvent::Notification { .. }
         | TerminalEvent::NotificationClose(_)
@@ -1594,6 +1599,7 @@ impl ApplicationHandler<AppEvent> for ToyotermApplication {
                 let mut file_upload_data_requests = Vec::new();
                 let mut file_upload_cancellations = Vec::new();
                 let mut background_image_requests = Vec::new();
+                let mut image_file_requests = Vec::new();
                 let mut font_family_change = None;
                 let allow_notifications = self
                     .scripting
@@ -1832,6 +1838,11 @@ impl ApplicationHandler<AppEvent> for ToyotermApplication {
                             TerminalEvent::BackgroundImageRequested(path) => {
                                 background_image_requests.push(path.clone());
                             }
+                            TerminalEvent::ImageFileRequested(request) => {
+                                if runtime.terminal.image_file_request_is_current(request) {
+                                    image_file_requests.push(request.clone());
+                                }
+                            }
                             TerminalEvent::Notification {
                                 id,
                                 title,
@@ -2037,6 +2048,18 @@ impl ApplicationHandler<AppEvent> for ToyotermApplication {
                         }
                     }
                 }
+                for request in image_file_requests {
+                    let failure = request.failure();
+                    if let Err(error) =
+                        downloads::queue_image_file(pane, request, self.event_proxy.clone())
+                    {
+                        tracing::warn!(target: "toyoterm::image", %error, "queue Kitty image file failed");
+                        let _ = self.event_proxy.send_event(AppEvent::ImageFileLoaded {
+                            pane,
+                            result: failure,
+                        });
+                    }
+                }
                 let background_image_directory = self
                     .scripting
                     .snapshot
@@ -2187,6 +2210,21 @@ impl ApplicationHandler<AppEvent> for ToyotermApplication {
                 let invocation = ScriptInvocation::AsyncCallback { id, output };
                 if let Err(error) = self.submit_script(invocation) {
                     tracing::warn!(target: "toyoterm::script", %error, "submit async callback failed");
+                }
+            }
+            AppEvent::ImageFileLoaded { pane, result } => {
+                if let Some(runtime) = self.terminal_runtime.pane_runtimes.get_mut(&pane)
+                    && runtime.terminal.complete_image_file(result)
+                {
+                    // Use the normal terminal-event/render path, including requests
+                    // produced while resuming the ordered output after this file.
+                    self.user_event(
+                        event_loop,
+                        AppEvent::Output {
+                            pane,
+                            pending: Arc::new(PtyOutputBuffer::default()),
+                        },
+                    );
                 }
             }
             AppEvent::FileTransferResponse { pane, responses } => {
