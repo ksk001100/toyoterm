@@ -272,13 +272,11 @@ impl ToyotermApplication {
                 layout,
             );
             renderer.update_selector(
-                selector_view
-                    .as_ref()
-                    .map(|(text, rect, selected_rect)| SelectorRenderData {
-                        rect: *rect,
-                        text,
-                        selected_rect: *selected_rect,
-                    }),
+                selector_view.as_ref().map(|view| SelectorRenderData {
+                    rect: view.rect,
+                    text: &view.text,
+                    selected_rect: view.selected_rect,
+                }),
                 layout,
             );
             let window_size = self
@@ -342,7 +340,10 @@ impl ToyotermApplication {
             renderer.update_config_error(config_error, layout);
             renderer.update_preedit(self.ui.ime_preedit.as_deref(), layout);
         }
-        self.update_ime_cursor_area(scale_factor);
+        self.update_ime_cursor_area(
+            scale_factor,
+            selector_view.as_ref().map(|view| view.ime_rect),
+        );
         self.update_window_title();
     }
 
@@ -363,10 +364,17 @@ impl ToyotermApplication {
         )
     }
 
-    pub(super) fn update_ime_cursor_area(&self, scale_factor: f64) {
+    fn update_ime_cursor_area(&self, scale_factor: f64, selector_area: Option<PaneRect>) {
         let Some(window) = self.platform.window.as_ref() else {
             return;
         };
+        if let Some(rect) = selector_area {
+            window.set_ime_cursor_area(
+                PhysicalPosition::new(rect.x, rect.y),
+                PhysicalSize::new(rect.width, rect.height),
+            );
+            return;
+        }
         let Some(pane) = self.mux.current_pane() else {
             return;
         };
@@ -436,13 +444,20 @@ impl ToyotermApplication {
     }
 }
 
+struct SelectorRenderView {
+    text: String,
+    rect: PaneRect,
+    selected_rect: Option<PaneRect>,
+    ime_rect: PaneRect,
+}
+
 fn selector_render_view(
     selector: &SelectorOverlay,
     preedit: Option<&str>,
     size: PhysicalSize<u32>,
     layout: TextLayout,
     scale_factor: f64,
-) -> (String, PaneRect, Option<PaneRect>) {
+) -> SelectorRenderView {
     let margin = (24.0 * scale_factor.max(0.1)).round() as u32;
     let maximum_width = (720.0 * scale_factor.max(0.1)).round() as u32;
     let width = maximum_width.min(size.width.saturating_sub(margin.saturating_mul(2)));
@@ -468,17 +483,43 @@ fn selector_render_view(
     );
 
     let title = if selector.title.is_empty() {
-        "Select"
+        if selector.is_panel() {
+            "Panel"
+        } else if selector.is_prompt() {
+            "Input"
+        } else {
+            "Select"
+        }
     } else {
         selector.title.as_str()
     };
-    let mut text = format!(
-        "{title}\n> {}{}▏\n\n",
-        selector.query,
-        preedit.unwrap_or("")
+    let input_columns =
+        ((width.saturating_sub(32) as f32 / layout.cell_width.max(1.0)) as usize).saturating_sub(2);
+    let input = selector.visible_input_line(preedit, input_columns);
+    let mut text = format!("{title}\n> {}\n\n", input.text);
+    let ime_x = rect
+        .x
+        .saturating_add(16)
+        .saturating_add(
+            ((2 + input.caret_column.unwrap_or(0)) as f32 * layout.cell_width).round() as u32,
+        )
+        .min(rect.x.saturating_add(rect.width.saturating_sub(1)));
+    let ime_y = rect
+        .y
+        .saturating_add(12)
+        .saturating_add(line_height)
+        .min(rect.y.saturating_add(rect.height.saturating_sub(1)));
+    let ime_rect = PaneRect::new(
+        ime_x,
+        ime_y,
+        (layout.cell_width.ceil().max(1.0) as u32)
+            .min(rect.x.saturating_add(rect.width).saturating_sub(ime_x)),
+        line_height.min(rect.y.saturating_add(rect.height).saturating_sub(ime_y)),
     );
     if lines.items.is_empty() {
-        text.push_str("  No matches\n");
+        text.push_str("  ");
+        text.push_str(selector.completion_status().unwrap_or("No matches"));
+        text.push('\n');
     } else {
         for item in &lines.items {
             text.push_str("  ");
@@ -487,22 +528,40 @@ fn selector_render_view(
         }
     }
     text.push('\n');
-    text.push_str(&format!(
-        "{} matches   ↑↓ move   Enter select   Esc cancel",
-        lines.total
-    ));
+    if selector.is_panel() {
+        text.push_str(&format!(
+            "{} lines   ↑↓/PgUp/PgDn browse   Enter/Esc close",
+            lines.total
+        ));
+    } else if selector.is_prompt() {
+        text.push_str("Tab complete · ↑↓ candidates · Alt+↑↓ history · Enter accept · Esc cancel");
+    } else {
+        text.push_str(&format!(
+            "{} matches   ↑↓ move   Enter select   Esc cancel",
+            lines.total
+        ));
+    }
 
-    let selected_rect = lines.selected.map(|selected| {
-        PaneRect::new(
+    let selected_rect = lines.selected.and_then(|selected| {
+        let selected = PaneRect::new(
             rect.x.saturating_add(8),
             rect.y
                 .saturating_add(12)
                 .saturating_add(line_height.saturating_mul(selected.saturating_add(3) as u32)),
             rect.width.saturating_sub(16),
             line_height,
-        )
+        );
+        (selected.width > 0
+            && selected.y.saturating_add(selected.height)
+                <= rect.y.saturating_add(rect.height.saturating_sub(12)))
+        .then_some(selected)
     });
-    (text, rect, selected_rect)
+    SelectorRenderView {
+        text,
+        rect,
+        selected_rect,
+        ime_rect,
+    }
 }
 
 fn progress_title_suffix(progress: TerminalProgress) -> String {
@@ -551,6 +610,31 @@ mod tests {
     }
 
     #[test]
+    fn panel_view_pages_content_and_identifies_dismissal_instead_of_selection() {
+        let mut panel = SelectorOverlay::panel(
+            3,
+            String::new(),
+            (0..40).map(|i| format!("Row {i}")).collect(),
+        );
+        panel.move_last();
+        let layout = TextLayout {
+            font_size: 14.0,
+            line_height: 20.0,
+            cell_width: 9.0,
+            horizontal_padding: 0.0,
+            vertical_padding: 0.0,
+        };
+        let SelectorRenderView { text, rect, .. } =
+            selector_render_view(&panel, None, PhysicalSize::new(1000, 600), layout, 1.0);
+        assert!(text.starts_with("Panel\n"));
+        assert!(text.contains("Row 39\n"));
+        assert!(!text.contains("Row 0\n"));
+        assert!(text.contains("Enter/Esc close"));
+        assert!(!text.contains("Enter select"));
+        assert!(rect.height <= 600);
+    }
+
+    #[test]
     fn selector_view_is_centered_and_bounds_visible_results() {
         let selector = SelectorOverlay::new(
             1,
@@ -564,8 +648,12 @@ mod tests {
             horizontal_padding: 0.0,
             vertical_padding: 0.0,
         };
-        let (text, rect, selected) =
-            selector_render_view(&selector, None, PhysicalSize::new(1000, 600), layout, 1.0);
+        let SelectorRenderView {
+            text,
+            rect,
+            selected_rect: selected,
+            ..
+        } = selector_render_view(&selector, None, PhysicalSize::new(1000, 600), layout, 1.0);
         assert_eq!(rect.x, 140);
         assert_eq!(rect.y, 118);
         assert_eq!(rect.width, 720);
@@ -573,5 +661,93 @@ mod tests {
         assert!(text.contains("Theme 0"));
         assert!(!text.contains("Theme 12\n"));
         assert!(selected.is_some_and(|selected| selected.y > rect.y));
+    }
+
+    #[test]
+    fn selector_ime_anchor_tracks_input_cursor_and_preedit_instead_of_literal_caret_text() {
+        let mut selector = SelectorOverlay::prompt(
+            5,
+            toyoterm_api::InputPrompt {
+                initial: "▏猫".into(),
+                ..Default::default()
+            },
+        );
+        let layout = TextLayout {
+            font_size: 14.0,
+            line_height: 20.0,
+            cell_width: 9.0,
+            horizontal_padding: 0.0,
+            vertical_padding: 0.0,
+        };
+        let view = |selector: &SelectorOverlay, preedit| {
+            selector_render_view(selector, preedit, PhysicalSize::new(1000, 600), layout, 1.0)
+        };
+        let end = view(&selector, None);
+        assert_eq!(
+            end.ime_rect,
+            PaneRect::new(end.rect.x + 61, end.rect.y + 32, 9, 20)
+        );
+        selector.move_cursor(false);
+        let middle = view(&selector, None);
+        assert_eq!(middle.ime_rect.x, middle.rect.x + 43);
+        let composing = view(&selector, Some("変換"));
+        assert_eq!(composing.ime_rect.x, middle.ime_rect.x + 36);
+        selector.cursor_edge(false);
+        let start = view(&selector, None);
+        assert_eq!(start.ime_rect.x, start.rect.x + 34);
+    }
+
+    #[test]
+    fn wide_prompt_input_and_selection_remain_inside_small_scaled_overlays() {
+        use unicode_width::UnicodeWidthStr;
+        let selector = SelectorOverlay::prompt(
+            4,
+            toyoterm_api::InputPrompt {
+                initial: "日本語👩‍💻".repeat(40),
+                completions: vec!["日本語👩‍💻".repeat(40)],
+                ..Default::default()
+            },
+        );
+        for scale in [1.0, 1.5, 2.0] {
+            let layout = TextLayout {
+                font_size: 14.0 * scale as f32,
+                line_height: 20.0 * scale as f32,
+                cell_width: 9.0 * scale as f32,
+                horizontal_padding: 0.0,
+                vertical_padding: 0.0,
+            };
+            for (width, height) in [(0, 0), (64, 64), (240, 160), (500, 300), (1000, 600)] {
+                let SelectorRenderView {
+                    text,
+                    rect,
+                    selected_rect: selected,
+                    ime_rect,
+                } = selector_render_view(
+                    &selector,
+                    Some("変換"),
+                    PhysicalSize::new(width, height),
+                    layout,
+                    scale,
+                );
+                assert!(rect.x + rect.width <= width);
+                assert!(rect.y + rect.height <= height);
+                assert!(ime_rect.x >= rect.x && ime_rect.y >= rect.y);
+                assert!(ime_rect.x + ime_rect.width <= rect.x + rect.width);
+                assert!(ime_rect.y + ime_rect.height <= rect.y + rect.height);
+                if let Some(selected) = selected {
+                    assert!(selected.x >= rect.x && selected.y >= rect.y);
+                    assert!(selected.x + selected.width <= rect.x + rect.width);
+                    assert!(selected.y + selected.height <= rect.y + rect.height);
+                }
+                let input = text.lines().nth(1).unwrap();
+                if rect.width as f32 >= 32.0 + 3.0 * layout.cell_width {
+                    assert!(input.contains('▏'));
+                    assert!(
+                        input.width() as f32 * layout.cell_width
+                            <= rect.width.saturating_sub(32) as f32
+                    );
+                }
+            }
+        }
     }
 }

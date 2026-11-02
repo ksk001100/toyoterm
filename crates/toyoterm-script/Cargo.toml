@@ -15,5 +15,6 @@ tracing.workspace = true
 cc.workspace = true
 
 [dev-dependencies]
+tempfile.workspace = true
 toyoterm-mux.workspace = true
 toyoterm-pty.workspace = true

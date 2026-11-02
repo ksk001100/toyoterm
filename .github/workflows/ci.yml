@@ -45,6 +45,9 @@ jobs:
       - name: Native GUI smoke test
         if: runner.os != 'Linux'
         run: cargo run --locked -- gui-smoke-test
+      - name: Native extension GUI smoke test
+        if: runner.os != 'Linux'
+        run: cargo run --locked -- gui-smoke-test --extension-ui
       - name: Package
         run: |
           sh scripts/test-windows-msi-version.sh
@@ -83,6 +86,9 @@ jobs:
       - name: X11 GUI smoke test
         if: matrix.display == 'x11'
         run: xvfb-run -a cargo run --locked -- gui-smoke-test
+      - name: X11 extension GUI smoke test
+        if: matrix.display == 'x11'
+        run: xvfb-run -a cargo run --locked -- gui-smoke-test --extension-ui
       - name: Wayland GUI smoke test
         if: matrix.display == 'wayland'
         run: sh scripts/wayland-smoke-test.sh

@@ -5,7 +5,9 @@ use std::process::ExitCode;
 #[cfg(test)]
 use toyoterm_api::PaneLaunchSpec;
 use toyoterm_api::{Command, PaneId, SplitDirection};
-use toyoterm_app::{init_logging, install_panic_hook, run_gui, run_gui_smoke_test};
+use toyoterm_app::{
+    init_logging, install_panic_hook, run_gui, run_gui_extension_smoke_test, run_gui_smoke_test,
+};
 use toyoterm_ipc::{IpcRequest, request_remote, run_console};
 use toyoterm_mux::Mux;
 use toyoterm_pty::{NativePty, Pty, PtyCommand, PtySize};
@@ -92,8 +94,20 @@ fn run(mut args: impl Iterator<Item = String>) -> Result<(), String> {
             Ok(())
         }
         Some("gui-smoke-test") => {
+            let extension_ui = match args.next().as_deref() {
+                None => false,
+                Some("--extension-ui") => true,
+                Some(argument) => {
+                    return Err(format!("unexpected gui-smoke-test argument `{argument}`"));
+                }
+            };
             ensure_no_arguments(&mut args)?;
-            run_gui_smoke_test().map_err(|error| error.to_string())
+            (if extension_ui {
+                run_gui_extension_smoke_test()
+            } else {
+                run_gui_smoke_test()
+            })
+            .map_err(|error| error.to_string())
         }
         Some("ruby") => match args.next().as_deref() {
             None | Some("console") => {
@@ -301,7 +315,7 @@ fn print_help() {
         "toyoterm - a programmable terminal emulator powered by Rust and mruby\n\n\
          Usage:\n  toyoterm [GUI-OPTIONS] [-e COMMAND [ARG...]]\n  toyoterm [COMMAND]\n\n\
          GUI options:\n  --config PATH                    Use a specific Ruby configuration\n  --title TITLE                    Set the initial window title\n  --app-id APP-ID                  Set the Wayland app ID / X11 class on Linux\n  --working-directory DIR          Set the initial pane working directory\n  -e, --execute COMMAND [ARG...]   Run a command instead of the default shell\n\n\
-         Commands:\n  gui                              Open the native GPU window (default)\n  ruby console                     Connect to the running GUI Ruby VM\n  list                             Show the running GUI mux state\n  reload                           Reload the running GUI configuration\n  cli list-panes                   List panes in the running GUI\n  cli send-text --pane ID TEXT     Send text to a pane\n  cli split [DIRECTION]            Split the active pane (default: right)\n  cli activate-workspace NAME      Activate or create a workspace\n  demo                             Exercise tabs and pane splitting\n  pty-demo                         Spawn a process in a native PTY\n  screen-demo                      Parse PTY output into a terminal snapshot\n  shell-integration SHELL         Print the integration script for a shell\n  version                          Print version\n  help                             Print this help\n\nEnvironment:\n  TOYOTERM_INSTANCE                Select a named running GUI instance"
+         Commands:\n  gui                              Open the native GPU window (default)\n  ruby console                     Connect to the running GUI Ruby VM\n  list                             Show the running GUI mux state\n  reload                           Reload the running GUI configuration\n  cli list-panes                   List panes in the running GUI\n  cli send-text --pane ID TEXT     Send text to a pane\n  cli split [DIRECTION]            Split the active pane (default: right)\n  cli activate-workspace NAME      Activate or create a workspace\n  demo                             Exercise tabs and pane splitting\n  pty-demo                         Spawn a process in a native PTY\n  screen-demo                      Parse PTY output into a terminal snapshot\n  gui-smoke-test [--extension-ui]  Check GUI startup or extension frame presentation\n  shell-integration SHELL         Print the integration script for a shell\n  version                          Print version\n  help                             Print this help\n\nEnvironment:\n  TOYOTERM_INSTANCE                Select a named running GUI instance"
     );
 }
 

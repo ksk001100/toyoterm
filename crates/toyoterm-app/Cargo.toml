@@ -22,6 +22,8 @@ pollster.workspace = true
 sys-locale.workspace = true
 tracing.workspace = true
 winit.workspace = true
+unicode-segmentation.workspace = true
+unicode-width.workspace = true
 
 [target.'cfg(target_os = "macos")'.dependencies]
 futures-channel.workspace = true

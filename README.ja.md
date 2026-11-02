@@ -66,6 +66,62 @@ xattr -dr com.apple.quarantine /Applications/toyoterm.app
 
 ## 設定
 
+Rubyコマンドには説明を付けられ、`Toyoterm.commands`と`Toyoterm.command_info`で一覧・定義情報を確認し、
+`Toyoterm.call_command`で別のコマンドから呼び出せます。
+`Toyoterm.command_palette`をキーに割り当てると、検索可能なコマンド選択画面を開けます。
+[実行可能な設定例](examples/command_palette.rb)と
+[APIの仕様](docs/mruby-api.md#command-discovery-composition-and-palette)を参照してください。
+`Toyoterm.command_help`では、コマンド本体を実行せずに説明・引数・実効キー・advice・定義位置を調べられます。
+定義位置を選んだ際のコールバックから、ライブラリ独自の移動処理につなげられます。
+[ヘルプの設定例](examples/command_help.rb)はAlt+Hで開きます。詳細は[コマンドヘルプ](docs/mruby-api.md#command-help-and-definitions)を参照してください。
+コマンドの`arguments:`には型・既定値・選択肢・範囲・履歴・補完を宣言できます。
+キー割り当てやパレットからは実行前に引数を入力し、`call_command(arguments: ...)`からは値を検証して直接実行します。
+[Paneラベルの設定例](examples/command_arguments.rb)と[コマンド引数の仕様](docs/mruby-api.md#typed-command-arguments)を参照してください。
+ライブラリ間の拡張ポイントには`Toyoterm.add_hook` / `Toyoterm.run_hook`を使えます。
+`Toyoterm.advise_command`ではコマンドの前・後・全体に解除可能な処理を追加できます。
+詳細は[フックとadvice](docs/mruby-api.md#extension-hooks-and-command-advice)を参照してください。
+`Toyoterm.hook_handlers`でハンドラのラベル・優先度・定義元を調べられます。
+候補や許可条件を返す処理では、最初の成功／失敗で実行を止めることもできます。
+[独立したライブラリを組み合わせる設定例](examples/hook_composition.rb)はAlt+Pで試せます。
+詳細は[ライブラリの読み込みと組み合わせ](docs/extension-libraries.md)を参照してください。
+`config.keys.sequence("CTRL+X", "CTRL+T").new_tab`のように複数段のキー列も定義できます。
+`Toyoterm.describe_key` / `Toyoterm.command_keys`で割り当てを調べ、`Toyoterm.key_help`で
+検索可能なキー一覧を開けます。詳細は[キー列と調査API](docs/mruby-api.md#multi-step-key-sequences-and-inspection)を参照してください。
+名前付きキーマップは継承と全体／Pane単位の有効化・解除に対応します。
+major／minor modeには開始・終了コールバックがあり、その中で作成した登録を終了時に解除します。
+[ナビゲーションモードの設定例](examples/modes.rb)ではAlt+Nで切り替え、h/j/k/lでPaneを移動し、Escapeで終了できます。
+詳細は[キーマップとモード](docs/mruby-api.md#keymaps-and-modes)を参照してください。
+`Keymap#activate_transient`では、1回の操作または端末コマンドの繰り返し用に、一時的にキーを受け取れます。
+全体／Pane単位で重ねられ、Escape・Ctrl+G・未割り当てキーで解除します。
+[分割・Pane操作の設定例](examples/transient_keymaps.rb)をAlt+SまたはAlt+Rで試せます。
+詳細は[一時キーマップ](docs/mruby-api.md#transient-keymaps)を参照してください。
+`Toyoterm.read_string`では動的な候補生成や名前付き履歴を使い、拡張コマンドの引数を受け取れます。
+[補完の設定例](examples/completion.rb)では、ディレクトリを選んでその場所に端末Paneを開きます。
+詳細は[入力と補完](docs/mruby-api.md#text-input-and-completion)を参照してください。
+長い入力は表示幅に合わせてカーソル周辺を表示し、狭い入力欄でも日本語や絵文字のまとまりを途中で分断しません。
+拡張の画面を開いている間、IME候補の表示位置はスクロールや未確定文字列を反映した入力欄のカーソルに追従します。
+`Toyoterm.show_panel`では、拡張の出力を読み取り専用で表示し、ネイティブ側で絞り込み・ページ移動できます。
+返されたハンドルから内容を更新・画面を閉じられます。
+[パネルの設定例](examples/panels.rb)はAlt+Mで端末の状態を継続表示します。詳細は[読み取り専用パネル](docs/mruby-api.md#read-only-panels)を参照してください。
+`Toyoterm.after` / `Toyoterm.every`で、解除可能な遅延処理・繰り返し処理を登録できます。
+モードの開始・終了処理や所有タスクのコールバック内で作ったタイマー・非同期タスクは、モード終了・対象を閉じる操作・再読み込みに合わせて解除します。
+[時計とリマインダーの設定例](examples/timers.rb)と[タイマーとタスクの所有関係](docs/mruby-api.md#timers-and-task-ownership)を参照してください。
+`pane_ready`ではPTY準備の完了、`pane_resized`では分割や配置変更を含む各Paneの実際の行・列数の変更を受け取れます。
+[サイズを表示する設定例](examples/pane_events.rb)と[実行時イベント](docs/mruby-api.md#runtime-events)を参照してください。
+`Toyoterm.resource_scope`では、モードを定義せずに拡張の登録・モード有効化・タスク・画面をまとめ、失敗時の復元に対応して解除できます。
+後から呼ばれる処理は`scope.wrap`で同じ所有関係を引き継げます。
+[スコープ付きライブラリの設定例](examples/resource_scopes.rb)はAlt+S／Alt+Mで試せます。詳細は[リソーススコープ](docs/mruby-api.md#resource-scopes)を参照してください。
+`Toyoterm.work_each`では、列挙した項目を件数・時間の予算で小分けに処理し、キャンセルや進捗・予算超過の調査ができます。
+項目の間でのみ処理を譲ります。[端末の単語数を数える設定例](examples/cooperative_work.rb)はAlt+Wで開きます。
+詳細は[協調タスク](docs/mruby-api.md#cooperative-work)を参照してください。
+`Toyoterm.with_instruction_budget(instructions: 100_000) { ... }`では、指定したブロックのRuby命令数を制限し、エラー時にはホスト管理下の変更を復元します。
+C関数やブロッキングI/Oは中断しません。[端末テキストを要約する設定例](examples/instruction_budgets.rb)はAlt+Iで開きます。
+詳細は[命令数予算](docs/mruby-api.md#instruction-budgets)を参照してください。
+`Toyoterm.actions` / `Toyoterm.action_info` / `Toyoterm.action_keys`で組み込み操作の名前・引数候補・キーを調べられます。
+`Toyoterm.advise_action`ではネイティブのキー割り当てやRubyからの操作に処理を追加し、変更・抑止できます。
+`Toyoterm.operation_palette`は組み込み操作とRubyコマンドをまとめて表示します。
+[操作を変更する設定例](examples/actions.rb)と[操作API](docs/mruby-api.md#native-action-discovery-and-advice)を参照してください。
+
 組み込みGUIキーバインドはありません。設定ファイルを保存して次のように起動します。
 
 ```sh
@@ -138,6 +194,11 @@ required fileでは通常の`Toyoterm.command`、`Toyoterm.on`、`Toyoterm.theme
 最後のPaneが終了するとアプリも終了します。
 
 ## 開発
+
+`cargo run --locked -- gui-smoke-test --extension-ui` は、Rubyから日本語・絵文字の入力欄と読み取り専用パネルを開き、フレーム表示後に終了します。
+ディスプレイとGPU環境が必要です。OS経由のキー・IME操作は検証しません。[開発時の検査](docs/development.md)を参照してください。
+Windowsホストのクロスビルドでも、PE形式のアイコンリソースはWindowsターゲットにだけ生成します。
+既存のZig/RustでLinux向けバイナリを実行せずにリンク検査する手順は、[クロスターゲット検証](docs/platform-validation.md#cross-target-checks-from-windows)を参照してください。
 
 [端末fuzzingガイド](docs/fuzzing.md)に、6種類のcargo-fuzz target、通常テストでのseed再実行、
 CI smoke、各1時間のcampaign、crash regressionの運用手順をまとめています。

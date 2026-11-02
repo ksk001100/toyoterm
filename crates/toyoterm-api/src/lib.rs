@@ -121,6 +121,8 @@ pub enum ScriptEventKind {
     TabCreated,
     TabClosed,
     PaneCreated,
+    PaneReady,
+    PaneResized,
     PaneClosed,
     PaneFocused,
     TitleChanged,
@@ -134,7 +136,7 @@ pub enum ScriptEventKind {
 }
 
 impl ScriptEventKind {
-    pub const ALL: [Self; 18] = [
+    pub const ALL: [Self; 20] = [
         Self::AppStarted,
         Self::ConfigReloaded,
         Self::WorkspaceChanged,
@@ -143,6 +145,8 @@ impl ScriptEventKind {
         Self::TabCreated,
         Self::TabClosed,
         Self::PaneCreated,
+        Self::PaneReady,
+        Self::PaneResized,
         Self::PaneClosed,
         Self::PaneFocused,
         Self::TitleChanged,
@@ -165,6 +169,8 @@ impl ScriptEventKind {
             Self::TabCreated => "tab_created",
             Self::TabClosed => "tab_closed",
             Self::PaneCreated => "pane_created",
+            Self::PaneReady => "pane_ready",
+            Self::PaneResized => "pane_resized",
             Self::PaneClosed => "pane_closed",
             Self::PaneFocused => "pane_focused",
             Self::TitleChanged => "title_changed",
@@ -215,6 +221,71 @@ pub enum NativeAction {
     Split(SplitDirection),
     ActivatePane(SplitDirection),
     ToggleZoom,
+}
+
+impl NativeAction {
+    /// Canonical operation name shared with the configuration DSL.
+    pub const fn name(&self) -> &'static str {
+        match self {
+            Self::NewTab => "new_tab",
+            Self::ClosePane => "close_pane",
+            Self::CloseTab => "close_tab",
+            Self::NewWorkspace => "new_workspace",
+            Self::ReloadConfig => "reload_config",
+            Self::Search => "search",
+            Self::MaximizeWindow => "maximize_window",
+            Self::ToggleMaximize => "toggle_maximize",
+            Self::MinimizeWindow => "minimize_window",
+            Self::ToggleFullscreen => "toggle_fullscreen",
+            Self::NextTab => "next_tab",
+            Self::PreviousTab => "previous_tab",
+            Self::NextWorkspace => "next_workspace",
+            Self::PreviousWorkspace => "previous_workspace",
+            Self::NextPrompt => "next_prompt",
+            Self::PreviousPrompt => "previous_prompt",
+            Self::NextMark => "next_mark",
+            Self::PreviousMark => "previous_mark",
+            Self::SelectNextCommandOutput => "select_next_command_output",
+            Self::SelectPreviousCommandOutput => "select_previous_command_output",
+            Self::SelectLastCommandOutput => "select_last_command_output",
+            Self::CopySelection => "copy_selection",
+            Self::PasteClipboard => "paste_clipboard",
+            Self::StartVisualMode => "start_visual_mode",
+            Self::ToggleVisualMode => "toggle_visual_mode",
+            Self::StartVisualSelection => "start_visual_selection",
+            Self::SelectVisualSelection => "select_visual_selection",
+            Self::EndVisualSelection => "end_visual_selection",
+            Self::MoveVisualSelection(_) => "move_visual_selection",
+            Self::YankSelection => "yank_selection",
+            Self::UserCommand(_) => "user_command",
+            Self::Split(_) => "split",
+            Self::ActivatePane(_) => "activate_pane",
+            Self::ToggleZoom => "toggle_zoom",
+        }
+    }
+
+    pub fn argument(&self) -> Option<&str> {
+        match self {
+            Self::Split(direction) | Self::ActivatePane(direction) => Some(match direction {
+                SplitDirection::Left => "left",
+                SplitDirection::Right => "right",
+                SplitDirection::Up => "up",
+                SplitDirection::Down => "down",
+            }),
+            Self::MoveVisualSelection(motion) => Some(match motion {
+                SelectionMotion::Left => "left",
+                SelectionMotion::Right => "right",
+                SelectionMotion::Up => "up",
+                SelectionMotion::Down => "down",
+                SelectionMotion::LineStart => "line_start",
+                SelectionMotion::LineEnd => "line_end",
+                SelectionMotion::WordForward => "word_forward",
+                SelectionMotion::WordBackward => "word_backward",
+            }),
+            Self::UserCommand(name) => Some(name),
+            _ => None,
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -292,8 +363,40 @@ pub enum WindowCommand {
     ToggleFullscreen,
 }
 
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct InputPrompt {
+    pub title: String,
+    pub initial: String,
+    pub completions: Vec<String>,
+    pub history: Vec<String>,
+    pub require_match: bool,
+    pub dynamic: bool,
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub enum UiCommand {
+    OpenPanel {
+        id: u64,
+        title: String,
+        lines: Vec<String>,
+    },
+    UpdatePanel {
+        id: u64,
+        title: Option<String>,
+        lines: Vec<String>,
+    },
+    OpenPrompt {
+        id: u64,
+        prompt: InputPrompt,
+    },
+    UpdatePromptCompletions {
+        id: u64,
+        revision: u64,
+        items: Vec<String>,
+    },
+    ClosePrompt {
+        id: u64,
+    },
     OpenSelector {
         id: u64,
         title: String,

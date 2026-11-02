@@ -309,6 +309,7 @@ fn reports_bounded_iterm_session_variables() {
             ..PaneProtocolState::default()
         },
         input_pacing: PaneInputPacing::default(),
+        reported_grid: None,
     };
 
     assert_eq!(
@@ -549,6 +550,103 @@ impl PtySession for RecordingPtySession {
     }
 }
 
+struct ResizeFailureOnceSession {
+    inner: RecordingPtySession,
+    error: Option<PtyError>,
+}
+
+impl PtySession for ResizeFailureOnceSession {
+    fn process_id(&self) -> Option<u32> {
+        self.inner.process_id()
+    }
+    fn take_reader(&mut self) -> Result<Box<dyn Read + Send>, PtyError> {
+        self.inner.take_reader()
+    }
+    fn write(&mut self, data: &[u8]) -> Result<(), PtyError> {
+        self.inner.write(data)
+    }
+    fn resize(&mut self, size: PtySize) -> Result<(), PtyError> {
+        match self.error.take() {
+            Some(error) => Err(error),
+            None => self.inner.resize(size),
+        }
+    }
+    fn try_wait(&mut self) -> Result<Option<PtyExitStatus>, PtyError> {
+        self.inner.try_wait()
+    }
+    fn wait(&mut self) -> Result<PtyExitStatus, PtyError> {
+        self.inner.wait()
+    }
+    fn kill(&mut self) -> Result<(), PtyError> {
+        self.inner.kill()
+    }
+}
+
+#[test]
+fn pane_lifecycle_events_follow_successful_grid_changes_and_preserve_retry_state() {
+    let recorded = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let mut runtime = recording_pane_runtime(recorded.clone());
+    let pane = PaneId(7);
+    let ready = pane_lifecycle::resize_runtime(pane, &mut runtime, PtySize::new(80, 24), 1.0)
+        .unwrap()
+        .unwrap();
+    assert_eq!(ready.kind, ScriptEventKind::PaneReady);
+    assert_eq!(
+        (ready.pane, ready.columns, ready.rows),
+        (Some(pane), Some(80), Some(24))
+    );
+    assert!(
+        pane_lifecycle::resize_runtime(pane, &mut runtime, PtySize::new(80, 24), 1.0)
+            .unwrap()
+            .is_none()
+    );
+    // Invalid dimensions produce a portable public PtyError before any child is launched.
+    let error = NativePty
+        .spawn(PtyCommand::new("unused"), PtySize::new(0, 0))
+        .err()
+        .expect("invalid size");
+    runtime.process.pty_session = Some(Box::new(ResizeFailureOnceSession {
+        inner: RecordingPtySession(recorded),
+        error: Some(error),
+    }));
+    assert!(pane_lifecycle::resize_runtime(pane, &mut runtime, PtySize::new(90, 30), 1.0).is_err());
+    assert_eq!(runtime.reported_grid, Some((80, 24)));
+    let resized = pane_lifecycle::resize_runtime(pane, &mut runtime, PtySize::new(90, 30), 1.0)
+        .unwrap()
+        .unwrap();
+    assert_eq!(resized.kind, ScriptEventKind::PaneResized);
+    assert_eq!((resized.columns, resized.rows), (Some(90), Some(30)));
+    assert_eq!(runtime.terminal.dimensions(), (90, 30));
+    runtime.process.pty_session = None;
+    assert!(
+        pane_lifecycle::resize_runtime(pane, &mut runtime, PtySize::new(100, 40), 1.0)
+            .unwrap()
+            .is_none()
+    );
+}
+
+#[test]
+fn pane_ready_is_not_reported_until_the_first_resize_succeeds() {
+    let recorded = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let mut runtime = recording_pane_runtime(recorded.clone());
+    let error = NativePty
+        .spawn(PtyCommand::new("unused"), PtySize::new(0, 0))
+        .err()
+        .expect("invalid size");
+    runtime.process.pty_session = Some(Box::new(ResizeFailureOnceSession {
+        inner: RecordingPtySession(recorded),
+        error: Some(error),
+    }));
+    assert!(
+        pane_lifecycle::resize_runtime(PaneId(7), &mut runtime, PtySize::new(80, 24), 1.0).is_err()
+    );
+    assert!(runtime.reported_grid.is_none());
+    let event = pane_lifecycle::resize_runtime(PaneId(7), &mut runtime, PtySize::new(80, 24), 1.0)
+        .unwrap()
+        .unwrap();
+    assert_eq!(event.kind, ScriptEventKind::PaneReady);
+}
+
 fn recording_pane_runtime(recorded: std::sync::Arc<std::sync::Mutex<Vec<u8>>>) -> PaneRuntime {
     PaneRuntime {
         terminal: AlacrittyTerminalBackend::new(80, 24),
@@ -566,6 +664,7 @@ fn recording_pane_runtime(recorded: std::sync::Arc<std::sync::Mutex<Vec<u8>>>) -
         },
         protocol: PaneProtocolState::default(),
         input_pacing: PaneInputPacing::default(),
+        reported_grid: None,
     }
 }
 
@@ -589,6 +688,7 @@ fn pane_runtime_kills_its_child_when_dropped_during_shutdown() {
             },
             protocol: PaneProtocolState::default(),
             input_pacing: PaneInputPacing::default(),
+            reported_grid: None,
         };
     }
 

@@ -1,0 +1,29 @@
+{
+  "schema_version": 1,
+  "date": "2026-11-01",
+  "base_commit": "df27fbd",
+  "uncommitted_worktree": true,
+  "profile": "release",
+  "environment": {
+    "os": "Microsoft Windows NT 10.0.26300.0",
+    "cpu": "Intel64 Family 6 Model 183 Stepping 1, GenuineIntel",
+    "host": "x86_64-pc-windows-msvc",
+    "rustc": "1.99.1 (58cf8f9c3 2026-10-13)",
+    "llvm": "23.1.1",
+    "power_and_background_load_controlled": false
+  },
+  "measurements": [
+    { "scenario": "instruction_budget_inactive", "samples": 20, "warmup": 3, "p50_ms": 14.247, "p95_ms": 14.900 },
+    { "scenario": "instruction_budget_active", "samples": 20, "warmup": 3, "p50_ms": 18.160, "p95_ms": 19.034 },
+    { "scenario": "ruby_key", "samples": 1000, "warmup": 100, "p50_ms": 0.5026, "p95_ms": 0.5839, "total_ms": 512.7470999999995 },
+    { "scenario": "ruby_event", "samples": 1000, "warmup": 100, "p50_ms": 0.5093, "p95_ms": 0.5859, "total_ms": 517.4366000000007 },
+    { "scenario": "ruby_async_completion", "samples": 1000, "warmup": 100, "p50_ms": 0.5264, "p95_ms": 0.6066, "total_ms": 535.8546000000008 },
+    { "scenario": "native_key_resolution", "samples": 1000, "batch_size": 1000, "warmup_batches": 100, "unit": "milliseconds_per_lookup", "p50_ms": 0.0000778, "p95_ms": 0.0000812 }
+  ],
+  "correctness": {
+    "instruction_budget_passed": 10,
+    "instruction_budget_ignored": 1,
+    "app_passed": 139,
+    "app_ignored": 1
+  }
+}

@@ -255,3 +255,41 @@ records a local comparison, its platform limitations and the measured optimizati
 The [2026-10-13 memory investigation](performance-baselines/2026-10-13-memory.md)
 records font/theme retention fixes, controlled Windows idle comparisons and the
 custom-config macOS measurement procedure.
+
+## Instruction-budget hook
+
+Run the isolated interpreter measurement with:
+
+```sh
+cargo test -p toyoterm-script --locked performance_instruction_budget -- --ignored --nocapture
+```
+
+It evaluates the same 500,000-iteration integer-sum Ruby method with and without
+an explicit guard, validates its result, discards three warmups and reports
+median/p95 for 20 samples. Evaluation/compilation and guard checkpoint cost are
+included; GUI, PTY, rendering and external I/O are excluded. Compare identical
+profiles/hardware, including a build before enabling `MRB_USE_DEBUG_HOOK` to
+isolate the inactive branch cost. Do not disable only the installed hook and
+call that a build-option baseline.
+
+Local Windows x86_64, test profile, 2026-11-01:
+
+| Build / scenario | Median ms | p95 ms |
+| --- | ---: | ---: |
+| Before enabling debug hooks, unguarded | 21.813 | 22.699 |
+| Debug-hook build, unguarded | 22.860 | 25.224 |
+| Debug-hook build, one active guard | 34.239 | 35.340 |
+
+The inactive difference was about 4.8%; the explicitly guarded loop was about
+49.8% slower than the unguarded loop in the same build. These short local samples
+demonstrate cost, not a cross-platform or release-profile performance guarantee.
+An active guard walks all nested frames per opcode; deeply nested guards cost
+more. The hook is null outside guards.
+
+The [2026-11-01 Windows release-profile extension measurement](performance-baselines/2026-11-01-extension-runtime.md)
+records the same loop at 14.247 ms without an active guard and 18.160 ms with one
+(about 27.5% overhead), plus real script-thread callback round trips and native
+key resolution. It includes machine-readable summaries and optimized-build
+correctness checks. There is no release build-option baseline without debug
+hooks. Linux/macOS performance and end-to-end desktop extension latency remain
+to be measured.
