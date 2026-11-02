@@ -11,6 +11,9 @@ cargo run --locked -- --config examples/command_forge/config.rb
 
 With an installed binary, use `toyoterm --config examples/command_forge/config.rb`.
 
+For Neovim configuration rather than Ruby recipes, see the
+[LazyVim / Snacks image integration](neovim/README.md).
+
 ## Build your own terminal behaviour with Ruby
 
 | Recipe | Experience | Try it |

@@ -98,6 +98,50 @@ fn kitty_chunked_png_transmit_place_delete_and_query() {
 }
 
 #[test]
+fn snacks_direct_png_virtual_placements_and_deletion() {
+    let mut t = terminal();
+    // Snacks interleaves a Neovim instance ID into the low 24 bits and uses
+    // q=2 on each request. Its remote path sends PNG chunks directly.
+    let id = 0x12_401f;
+    let encoded = STANDARD.encode(png());
+    t.advance(format!("\x1b_Gt=d,i={id},f=100,m=1,q=2;{}\x1b\\", &encoded[..20]).as_bytes());
+    t.advance(format!("\x1b_Gm=0,q=2;{}\x1b\\", &encoded[20..]).as_bytes());
+    assert!(t.snapshot().images.is_empty());
+    t.advance(format!("\x1b_Ga=p,U=1,i={id},p=10,C=1,c=2,r=1,q=2\x1b\\").as_bytes());
+    t.advance(format!("\x1b_Ga=p,U=1,i={id},p=11,C=1,c=4,r=2,q=2\x1b\\").as_bytes());
+    assert_eq!(t.cursor().column, 0);
+
+    // Neovim uses the foreground for the image ID, underline color for the
+    // placement ID, and explicit row/column diacritics on every cell.
+    t.advance(
+        "\x1b[2;3H\x1b[38;2;18;64;31;58;2;0;0;10m\u{10eeee}\u{0305}\u{0305}\
+         \u{10eeee}\u{0305}\u{030d}\x1b[4;3H\x1b[58;2;0;0;11m\
+         \u{10eeee}\u{0305}\u{0305}\x1b[0m"
+            .as_bytes(),
+    );
+    let snapshot = t.snapshot();
+    assert_eq!(snapshot.images.len(), 2);
+    let first = &snapshot.images[0];
+    assert_eq!(
+        (first.column, first.row, first.columns, first.rows),
+        (2, 1, 2, 1)
+    );
+    assert_eq!(&*first.rgba, &[255, 0, 0, 128, 255, 0, 0, 128]);
+    let second = &snapshot.images[1];
+    assert_eq!(
+        (second.column, second.row, second.columns, second.rows),
+        (2, 3, 4, 2)
+    );
+
+    // Closing one image buffer must preserve another placement of the same PNG.
+    t.advance(format!("\x1b_Ga=d,d=i,i={id},p=10,q=2\x1b\\").as_bytes());
+    assert_eq!(t.snapshot().images.len(), 1);
+    t.advance(format!("\x1b_Ga=d,d=i,i={id},p=11,q=2\x1b\\").as_bytes());
+    assert!(t.snapshot().images.is_empty());
+    assert!(t.drain_events().is_empty());
+}
+
+#[test]
 fn kitty_unicode_placeholders_render_ratatui_image_virtual_placements() {
     let mut t = terminal();
     let image_id = 0x0200_002a;

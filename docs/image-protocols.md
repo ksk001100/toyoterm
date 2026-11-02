@@ -11,6 +11,16 @@ python examples/terminal_images.py
 python examples/terminal_images.py --protocol kitty
 ```
 
+## LazyVim / Snacks
+
+For Neovim's Snacks image viewer, use the
+[LazyVim integration example](../examples/neovim/README.md)
+([日本語](../examples/neovim/README.ja.md)). It registers toyoterm as supporting
+Unicode placeholders and selects direct PNG transmission, without changing the
+terminal's identity. Snacks' default terminal-name check does not recognize
+toyoterm, and its default local file-path transfer is unsupported. Setting
+`force = true` alone does not select a compatible transfer method.
+
 ## Supported subset
 
 | Protocol | Supported |

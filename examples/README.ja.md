@@ -11,6 +11,9 @@ cargo run --locked -- --config examples/command_forge/config.rb
 
 インストール済みなら `toyoterm --config examples/command_forge/config.rb` で起動できます。
 
+Ruby のレシピではなく Neovim 側の設定例は、
+[LazyVim / Snacks の画像連携](neovim/README.ja.md)を参照してください。
+
 ## Rubyで端末の振る舞いを作る
 
 | 例 | できること | 操作 |
