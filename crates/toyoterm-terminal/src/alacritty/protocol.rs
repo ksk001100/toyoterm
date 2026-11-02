@@ -1295,7 +1295,10 @@ fn split_kitty_color_alpha(value: &str) -> Option<(&str, Option<f32>)> {
 pub(super) fn parse_kitty_color(value: &str) -> Option<Rgb> {
     let (value, _) = split_kitty_color_alpha(value)?;
     if let Some(hex) = value.strip_prefix('#') {
-        if hex.len() % 3 != 0 || !(3..=12).contains(&hex.len()) {
+        if hex.len() % 3 != 0
+            || !(3..=12).contains(&hex.len())
+            || !hex.bytes().all(|byte| byte.is_ascii_hexdigit())
+        {
             return None;
         }
         let digits = hex.len() / 3;

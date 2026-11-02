@@ -116,3 +116,26 @@ For every crash, timeout or excessive allocation:
 Keep target names and regression seeds stable across protocol changes. Extend
 fixtures and dictionary as needed, preserving production budgets and the
 filesystem boundary.
+
+### OSC hex color UTF-8 regression (2026-11-02)
+
+The `sixel` campaign in [run 41244956339](https://github.com/ksk001100/toyoterm/actions/runs/41244956339)
+at commit `df27fbd5ce23da25baece8511612b06eb5d98658` found
+`crash-5f562f4fbc7a76cd384bdaa164972a6b055a5980` using ASan with
+`-timeout=10 -rss_limit_mb=1024 -max_len=1048576 -max_total_time=3600`.
+The unchanged wire-input path reached OSC 13 with a malformed hex color. The
+shared OSC color parser sliced a UTF-8 combining character at a byte offset,
+causing a panic before rejecting the non-hex component. Hex colors now require
+ASCII hex digits before component slicing.
+
+`sixel/regression-osc-hex-utf8-original` preserves the exact 98-byte artifact;
+`sixel/regression-osc-hex-utf8` is a 10-byte manually reduced wire reproducer.
+The `osc_colors` integration tests check rejection without changing the previous
+color, subsequent valid colors/text, every PTY split, and all four supported
+hex component widths. Stable corpus replay reproduces the original panic before
+the fix and passes after it. Local nightly `1.101.0-nightly (92b5b8c87)` on
+Windows builds the ASan target, but ASan replay cannot start because its runtime
+DLL is missing (`STATUS_DLL_NOT_FOUND`); Linux ASan replay and a full one-hour
+campaign remain required. The fallback `--sanitizer none` smoke attempt also
+cannot link on this toolchain (unresolved sanitizer coverage symbols), so no
+local instrumented replay or mutation campaign is claimed.
