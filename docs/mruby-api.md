@@ -81,6 +81,12 @@ information in production builds.
 amalgamations use mruby's corresponding filesystem HAL. Socket access and an
 additional task scheduler remain outside the runtime model.
 
+Runnable metaprogramming recipes include [Command Forge](../examples/command_forge/README.md),
+which turns declarations into Method-backed commands, and [output lenses](../examples/output_lenses/README.md),
+which combine generated scanners with independent hook providers.
+[Project modes](../examples/project_modes/README.md) generate Pane-local major modes
+from a profile table. See the [recipe index](../examples/README.md) for combined API workbenches.
+
 ## Filesystem APIs
 
 General-purpose filesystem work uses Ruby APIs rather than application-specific
@@ -156,7 +162,7 @@ Toyoterm.configure do |config|
 end
 ```
 
-[examples/default_config.rb](../examples/default_config.rb) is a complete starting point. toyoterm has no
+[examples/starter/config.rb](../examples/starter/config.rb) is a complete starting point. toyoterm has no
 built-in GUI key bindings, so copy the bindings you want into your config.
 
 Configuration reload is atomic. A candidate file is evaluated and validated in
@@ -697,7 +703,7 @@ discarded and the terminal keeps running.
 Named keymaps layer reusable bindings over the base `config.keys`. They remain
 ordinary Ruby objects loaded through `require`; no plugin loader is involved.
 Use `Toyoterm.supports?(:keymaps)` and `Toyoterm.supports?(:modes)` for feature
-detection. The [navigation example](../examples/modes.rb) toggles a global
+detection. The [navigation example](../examples/pane_tools/navigation.rb) toggles a global
 minor mode with Alt+N and exits through an Escape binding in that mode.
 
 ### Keymap definitions and activation
@@ -832,7 +838,7 @@ Toyoterm.configure { |c| c.keys.alt('s').command(:choose_split) }
 # Alt+S, then j/l chooses one split. Escape cancels.
 ```
 
-The [complete example](../examples/transient_keymaps.rb) also uses a global
+The [complete example](../examples/pane_tools/transients.rb) also uses a global
 `once: false` map for repeated Pane focus/zoom operations with Alt+R.
 
 ### Major and minor modes
@@ -1231,7 +1237,7 @@ Toyoterm.command_help(:label_pane)
 Toyoterm.command_definition(:label_pane)
 ```
 
-The [runnable example](../examples/command_help.rb) also registers a terminal
+The [runnable example](../examples/commands/help.rb) also registers a terminal
 status command so its definition, description and key can be inspected.
 
 ### Typed command arguments
@@ -1323,7 +1329,7 @@ Toyoterm.prompt_command(:label_pane, arguments: {label: 'Build'})
 The named operations available through `config.keys` and `context.actions` can
 be inspected and wrapped by independent libraries. Capability checks are
 `Toyoterm.supports?(:action_inspection)`, `:action_advice`, and `:operation_palette`.
-The [action-policy example](../examples/actions.rb) toggles a Pane's split policy
+The [action-policy example](../examples/pane_tools/policy.rb) toggles a Pane's split policy
 with Alt+M, requests a right split with Alt+D, and opens the combined operation
 palette with Alt+O. Its policy changes that Pane's split direction to down and
 suppresses its close action while shell integration reports a running command.
@@ -1531,7 +1537,7 @@ Toyoterm.command(:task_result) do
 end
 ```
 
-The [live monitor example](../examples/panels.rb) updates terminal snapshot data
+The [live monitor example](../examples/monitoring/panels.rb) updates terminal snapshot data
 once per second inside a Pane-local mode. User closure disables that mode and
 cancels its timer on the next tick; mode disable/Pane closure also closes the
 panel. Snapshot strings are escaped for display before passing line validation.
@@ -1666,7 +1672,7 @@ Toyoterm.command(:choose_theme) do
 end
 ```
 
-The [completion example](../examples/completion.rb) traverses directory
+The [completion example](../examples/commands/completion.rb) traverses directory
 candidates and opens a terminal Pane in the chosen directory with Alt+P.
 
 ## Runtime events
@@ -1762,7 +1768,7 @@ There is no cancellation/veto result. Handler return values are ignored.
 end
 ```
 
-The [runnable example](../examples/pane_events.rb) also binds Alt+D to split right.
+The [runnable example](../examples/pane_tools/events.rb) also binds Alt+D to split right.
 
 ### Delivery and rollback
 
@@ -1864,7 +1870,7 @@ context.pane.split(:right, cwd: path) if path && allowed
 ```
 
 These policies are trusted application conventions, not access control over
-Ruby libraries. See [the runnable composition example](../examples/hook_composition.rb)
+Ruby libraries. See [the runnable composition example](../examples/extension_libraries/composition.rb)
 and [the library guide](extension-libraries.md) for explicit loading, inspection,
 cleanup and compatibility conventions.
 
@@ -2182,7 +2188,7 @@ Toyoterm.command(:start_counter) do
 end
 ```
 
-The [timer example](../examples/timers.rb) adds a Pane-local clock mode, toggled
+The [timer example](../examples/monitoring/timers.rb) adds a Pane-local clock mode, toggled
 with Alt+T and disabled with Escape, plus a one-shot reminder on Alt+R. Its timer
 is automatically released when clock mode disables.
 
@@ -2276,7 +2282,7 @@ end
 # Later: scope.close removes the command and pending tasks/overlays.
 ```
 
-The [runnable library example](../examples/resource_scopes.rb) uses Alt+S for
+The [runnable library example](../examples/extension_libraries/scopes.rb) uses Alt+S for
 a scope-owned live panel. Close the panel, then Alt+M toggles the entire library.
 Its namespaced scope lookup is an application convention; scope names remain
 descriptive and are not enforced unique by the host.
@@ -2332,7 +2338,7 @@ rescue Toyoterm::InstructionBudgetError
 end
 ```
 
-The [bounded terminal-summary example](../examples/instruction_budgets.rb) uses
+The [bounded terminal-summary example](../examples/screen_analysis/bounded.rb) uses
 Alt+I to show the most frequent words or a budget-exhaustion message in a read-only
 panel. See [the measured hook overhead](performance-baseline.md#instruction-budget-hook).
 
@@ -2427,7 +2433,7 @@ Toyoterm.command(:process_rows) do |context|
 end
 ```
 
-The [word-count example](../examples/cooperative_work.rb) processes terminal
+The [word-count example](../examples/screen_analysis/cooperative.rb) processes terminal
 snapshot lines in batches and displays progress/diagnostics in a read-only panel.
 Closing it cancels work and its mode-owned timers on the next available slice
 or monitor tick. No editor state or file editing is involved.

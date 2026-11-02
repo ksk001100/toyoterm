@@ -70,7 +70,7 @@ reference, so mutation of those objects remains visible even after an exception.
 Policies express application behavior; every library is trusted code with the
 same process permissions and can choose not to use that policy.
 
-The [runnable composition example](../examples/hook_composition.rb) explicitly
+The [runnable composition example](../examples/extension_libraries/composition.rb) explicitly
 loads three independent libraries. Alt+P chooses a directory from providers,
 checks launch conditions, queues a terminal split, then notifies observers.
 Its observation hook is named `terminal_launch_requested` because it fires
@@ -115,7 +115,7 @@ async work, cooperative work and overlays propagate captured scope ownership.
 `scope.close` removes the group transactionally, including child scopes and
 newly-enabled mode instances. Existing definitions/settings and arbitrary Ruby
 or native terminal effects are not undone. Re-enable by creating a fresh scope;
-closed scopes cannot be reopened. The [scoped library example](../examples/resource_scopes.rb)
+closed scopes cannot be reopened. The [scoped library example](../examples/extension_libraries/scopes.rb)
 can be disabled/re-enabled without redefining its named keymap.
 
 Names are descriptive rather than unique; retain exact handles or apply a

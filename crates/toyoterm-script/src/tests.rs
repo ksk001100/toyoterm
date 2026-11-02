@@ -1908,7 +1908,7 @@ fn rejects_invalid_font_fallbacks() {
 fn bundled_minimal_configuration_is_executable() {
     let mut manager = ConfigManager::new().unwrap();
     manager
-        .reload(include_str!("../../../examples/minimal_config.rb"))
+        .reload(include_str!("../../../examples/starter/minimal.rb"))
         .unwrap();
     assert_eq!(manager.config().font.size, 14.0);
     assert_eq!(manager.config().scrollback_lines, 10_000);
@@ -1952,7 +1952,7 @@ fn rejects_invalid_colors_without_replacing_the_config() {
 fn bundled_default_key_configuration_is_executable() {
     let mut manager = ConfigManager::new().unwrap();
     manager
-        .reload(include_str!("../../../examples/default_config.rb"))
+        .reload(include_str!("../../../examples/starter/config.rb"))
         .unwrap();
 
     assert!(manager.native_action("F11").is_some());
@@ -3748,7 +3748,7 @@ fn command_palette_rejects_replaced_entries_and_cancels_without_work() {
 fn bundled_command_palette_configuration_is_executable() {
     let mut manager = ConfigManager::new().unwrap();
     manager
-        .reload(include_str!("../../../examples/command_palette.rb"))
+        .reload(include_str!("../../../examples/commands/palette.rb"))
         .unwrap();
     assert!(manager.trigger_keybinding("ALT+X", PaneId(8)).unwrap());
     assert_eq!(

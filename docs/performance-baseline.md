@@ -160,7 +160,7 @@ script-thread service time, while the ignored test includes the channel roundtri
 For manual key-to-frame investigation use the companion config:
 
 ```sh
-TOYOTERM_LOG=warn,toyoterm::perf=trace target/release/toyoterm --config examples/performance.rb
+TOYOTERM_LOG=warn,toyoterm::perf=trace target/release/toyoterm --config examples/performance/config.rb
 ```
 
 Create a split, then repeatedly press Ctrl+Shift+F11 (native toggle zoom) and

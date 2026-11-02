@@ -112,6 +112,10 @@ are listed in the [API reference](mruby-api.md#loading-configuration).
 
 ## Included documentation
 
+The [example index](../examples/README.md) groups runnable configurations by
+scenario. Keep each directory and its required sibling/shared Ruby libraries
+together when copying examples out of an archive.
+
 Packages include both READMEs, the `docs/` and `examples/` trees, the README icon,
 `AGENTS.md`, the project license, third-party notices, and applicable mruby/ConPTY
 licenses. README links to local guides, examples, and the mruby license work from

@@ -1,8 +1,8 @@
 # Alt+P composes independently required directory, policy and observer libraries.
 raise 'hook strategies unavailable' unless Toyoterm.supports?(:hook_strategies)
-require_relative 'hook_libraries/directory_provider'
-require_relative 'hook_libraries/launch_policy'
-require_relative 'hook_libraries/launch_observer'
+require_relative 'hooks/directory_provider'
+require_relative 'hooks/launch_policy'
+require_relative 'hooks/launch_observer'
 
 Toyoterm.command(:project_terminal, description: 'Open a terminal using library-provided directory policy') do |context|
   path = Toyoterm.run_hook_until_success(:terminal_directory, context)

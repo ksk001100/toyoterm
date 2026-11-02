@@ -25,7 +25,7 @@ impl ExtensionFlow {
         ));
         std::fs::write(
             &path,
-            include_str!("../../../../../examples/command_arguments.rb"),
+            include_str!("../../../../../examples/commands/arguments.rb"),
         )
         .unwrap();
         let (sender, completions) = mpsc::channel();

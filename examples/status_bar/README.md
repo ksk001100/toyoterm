@@ -1,5 +1,13 @@
 # Status bar / ステータスバー
 
+The former `async_bar.rb` is now [network.rb](network.rb), an alternative
+configuration using ping and curl against 1.1.1.1 and wttr.in. Run it with
+`--config examples/status_bar/network.rb`; do not load both bar configs together.
+
+旧 `async_bar.rb` は別設定の [network.rb](network.rb) に移動しました。
+`--config examples/status_bar/network.rb` でping・curlによる1.1.1.1／wttr.inへの
+通信を試せます。通常版と同時には読み込まないでください。
+
 ```sh
 cargo run --locked -- --config examples/status_bar/config.rb
 ```

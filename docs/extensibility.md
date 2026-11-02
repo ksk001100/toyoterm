@@ -41,11 +41,14 @@ Normal Ruby libraries and explicit loading remain the model in ADR 0007.
 
 ## Validation
 
-For everyday workflows, see the [extension recipe gallery](../examples/README.md):
-an asynchronous Git/status dashboard, scheduled themes with manual selection,
-same-directory Pane tools with cross-workspace navigation, and an in-memory
-command-result journal. Each recipe has a standalone configuration and a
-bilingual walkthrough, including shell-integration requirements.
+The [extension recipe gallery](../examples/README.md) includes generated Ruby
+methods registered as commands, project-sensitive Pane-local major modes, and
+hook-composed output lenses, alongside status bars, scheduled themes, Pane
+workbenches and a command-result journal. Related API demonstrations share
+combined entry points for commands, Pane tools, monitoring, screen analysis and
+extension-library lifecycles. Each has a bilingual guide. Regression tests load
+and reload the combined configurations, inspect generated metadata, exercise
+mode replacement/cleanup, and preserve captured output across nested selectors.
 
 The public surface is specified by [the mruby reference](mruby-api.md).
 Regression coverage belongs to toyoterm-script and toyoterm-app; it checks
@@ -81,12 +84,12 @@ input cursor. Tests check cursor movement, preedit, literal caret characters
 inside user input, scrolling, scaled metrics and tiny windows. OS/IME candidate
 placement itself remains unverified by these geometry tests.
 
-[The completion example](../examples/completion.rb) chooses a directory and
+[The completion example](../examples/commands/completion.rb) chooses a directory and
 opens a terminal Pane there. Its test traverses nested directories, excludes
 files, and verifies the typed Pane launch command. Other examples are
-[commands](../examples/command_palette.rb), [modes](../examples/modes.rb), and
-[timers](../examples/timers.rb).
-The [action-policy example](../examples/actions.rb) demonstrates modifying a
+[commands](../examples/commands/palette.rb), [modes](../examples/pane_tools/navigation.rb), and
+[timers](../examples/monitoring/timers.rb).
+The [action-policy example](../examples/pane_tools/policy.rb) demonstrates modifying a
 native split request, suppressing a close action based on terminal metadata,
 removing the policy with its mode, and selecting native/Ruby operations together.
 Action regressions cover native-name round trips, metadata immutability,
@@ -95,43 +98,43 @@ lifetimes, recursion bounds, mode cleanup, reload and palette argument selection
 A native key action/real script-thread/Mux integration test proves that the
 native split happens after advice and uses the replaced direction. Pure ingress
 tests verify that unadvised actions and script-produced commands stay native.
-The [typed-command example](../examples/command_arguments.rb) labels a terminal
+The [typed-command example](../examples/commands/arguments.rb) labels a terminal
 Pane and optionally toggles its zoom. Argument regressions cover schema/value
 validation, immutable metadata, nested advice, legacy callback arity, retry,
 cancellation, palettes, completion, rollback and mode-owned input cleanup.
-The [transient-map example](../examples/transient_keymaps.rb) provides one-shot
+The [transient-map example](../examples/pane_tools/transients.rb) provides one-shot
 split selection and repeated Pane focus/zoom commands. Regression coverage
 checks scope/stack ordering, prefix timeouts, modifiers, physical priority,
 repeat suppression, cancellation, immutable inspection, edits, ownership,
 closed targets, failed callbacks/reload and old-snapshot retirement. A native
 resolver/real script-thread/Mux integration test verifies the selected split
 occurs only after script delivery and the one-shot is no longer active.
-The [help example](../examples/command_help.rb) browses metadata and copies a
+The [help example](../examples/commands/help.rb) browses metadata and copies a
 selected definition location through a trusted callback. Regressions verify
 root/required-file provenance, typed help content, effective Pane keys, metadata
 bounds, immutable full definitions, cancellation, registration replacement,
 callback rollback and mode-owned help cleanup. Definition navigation is an
 explicit callback for independent libraries; core help does not read/edit files.
 The [library guide](extension-libraries.md) and
-[composition example](../examples/hook_composition.rb) use independent provider,
+[composition example](../examples/extension_libraries/composition.rb) use independent provider,
 policy and observer files. Tests cover priority/tie ordering, immutable labels
 and source provenance, truthy/falsy short-circuiting, dispatch snapshots,
 exception rollback, recursion bounds, option validation, mode cleanup, directory
 launch commands, policy refusal and observer removal across explicit imports.
-The [live panel example](../examples/panels.rb) renders a terminal snapshot and
+The [live panel example](../examples/monitoring/panels.rb) renders a terminal snapshot and
 updates it from a mode-owned timer. Tests exercise typed create/update/close,
 copied/empty/duplicate lines, payload limits, native read-only filtering/paging,
 ID/kind rejection of late updates, dismissal, rollback, reload, mode cleanup
 and automatic timer removal after closure. Rendering semantics verify bounded
 visible rows and panel-specific dismissal hints without changing image snapshots.
-The [cooperative word-count example](../examples/cooperative_work.rb) processes
+The [cooperative word-count example](../examples/screen_analysis/cooperative.rb) processes
 terminal snapshot lines and publishes progress in a read-only panel. Regressions
 cover monotonic clock binding, item/time boundaries, overrun statistics,
 intervening requests, original-target continuation, item/configuration failure,
 non-retry after rollback, cancellation restoration, resource ownership, closed
 targets, reload preservation, payload bounds and panel-driven cleanup. Time
 targets are cooperative between items, not arbitrary Ruby instruction limits.
-The [resource-scope library example](../examples/resource_scopes.rb) toggles its
+The [resource-scope library example](../examples/extension_libraries/scopes.rb) toggles its
 commands, keymap activation and runtime-created panel/timer as a group without
 defining a mode. Regressions verify iterative reverse/nested cleanup, ownership
 precedence, wrapped positional/keyword callbacks, rescued failures, atomic close
@@ -140,7 +143,7 @@ restoration, closed targets, reload, bounded scope registration and reinstallati
 Mode handles are activation-specific and do not remove a later unowned instance.
 Automatic stale-owner pruning also skips owned mode teardown on other live
 Panes; an invalid owner's failing teardown cannot block subsequent requests.
-The [Pane-event example](../examples/pane_events.rb) displays actual grid sizes
+The [Pane-event example](../examples/pane_tools/events.rb) displays actual grid sizes
 after PTY preparation and layout changes. Tests cover successful initial/change
 delivery, unchanged/missing PTYs, failed synchronization and retry, per-Pane
 coalescing, typed Ruby payloads, stale handles and context hierarchy after focus

@@ -30,6 +30,14 @@ fn recipes_load_from_disk_render_and_reload_without_duplicate_registrations() {
         "dynamic_theme",
         "pane_workbench",
         "command_journal",
+        "command_forge",
+        "project_modes",
+        "output_lenses",
+        "commands",
+        "pane_tools",
+        "monitoring",
+        "screen_analysis",
+        "extension_libraries",
     ] {
         let mut manager = load(recipe);
         for _ in 0..2 {
@@ -214,4 +222,186 @@ fn recipe_journal_bounds_results_handles_missing_markers_and_escapes_metadata() 
         panic!("expected empty journal panel");
     };
     assert!(lines[0].starts_with("No completed commands."));
+}
+
+#[test]
+fn recipe_forge_generated_methods_preserve_each_declaration_and_have_real_help() {
+    let mut manager = load("command_forge");
+    for (name, direction, role, key) in [
+        ("forge_tools", SplitDirection::Right, "tools", "ALT+1"),
+        ("forge_notes", SplitDirection::Down, "notes", "ALT+2"),
+        ("forge_review", SplitDirection::Left, "review", "ALT+3"),
+    ] {
+        let result = command(&mut manager, name);
+        let [
+            NativeCommand::Pane(PaneCommand::SplitWithLaunch {
+                pane,
+                direction: actual,
+                launch,
+            }),
+            NativeCommand::Ui(UiCommand::SetPaneBadge { badge, .. }),
+        ] = result.commands.as_slice()
+        else {
+            panic!(
+                "generated command lost its launch or observer: {:?}",
+                result.commands
+            );
+        };
+        assert_eq!(*pane, PaneId(4));
+        assert_eq!(*actual, direction);
+        assert_eq!(
+            launch.environment,
+            vec![("TOYOTERM_ROLE".into(), Some(role.into()))]
+        );
+        assert_eq!(badge.as_deref(), Some(format!("queued: {role}").as_str()));
+        assert_eq!(
+            manager.native_action(key),
+            Some(NativeAction::UserCommand(name.into()))
+        );
+    }
+    let result = command(&mut manager, "forge_inspect");
+    let [NativeCommand::Ui(UiCommand::OpenPanel { lines, .. })] = result.commands.as_slice() else {
+        panic!("expected generated method inspection");
+    };
+    assert_eq!(lines.len(), 3);
+    assert!(
+        lines
+            .iter()
+            .any(|line| line.contains("forge_tools | ALT+1"))
+    );
+    // The code generator only extends its private receiver, never Object.
+    assert_eq!(
+        manager
+            .eval("Object.new.respond_to?(:forge_tools)")
+            .unwrap(),
+        "false"
+    );
+}
+
+#[test]
+fn recipe_project_modes_reconcile_per_pane_keys_and_release_old_event_subscriptions() {
+    let project = tempfile::tempdir().unwrap();
+    let cargo = project.path().join("Cargo.toml");
+    let package = project.path().join("package.json");
+    std::fs::write(&cargo, "").unwrap();
+    std::fs::write(&package, "{}").unwrap();
+    let mut manager = load("project_modes");
+    let mut context = script_test_context();
+    Arc::make_mut(&mut context.model).panes[0].cwd = Some(project.path().to_str().unwrap().into());
+    let mut event = RubyEvent::new(ScriptEventKind::CwdChanged);
+    event.pane = Some(PaneId(4));
+    let change = ScriptInvocation::Event(event);
+    for (kind, program) in [("rust", "cargo"), ("node", "npm")] {
+        run_script_request(&mut manager, &context, &change).unwrap();
+        // A second detection should not re-enable the mode or add handlers.
+        assert!(
+            run_script_request(&mut manager, &context, &change)
+                .unwrap()
+                .commands
+                .is_empty()
+        );
+        let map = manager
+            .eval(&format!("Toyoterm.keymap('recipe.project.{kind}').id"))
+            .unwrap()
+            .parse()
+            .unwrap();
+        let result = run_script_request(
+            &mut manager,
+            &context,
+            &ScriptInvocation::KeymapBinding {
+                map,
+                key: "ALT+ENTER".into(),
+                pane: PaneId(4),
+            },
+        )
+        .unwrap();
+        let [NativeCommand::Pane(PaneCommand::SplitWithLaunch { launch, .. })] =
+            result.commands.as_slice()
+        else {
+            panic!("expected context-sensitive task");
+        };
+        assert_eq!(launch.program.as_deref(), Some(program));
+        assert_eq!(launch.args, ["test"]);
+        let mut finish = RubyEvent::new(ScriptEventKind::CommandFinished);
+        finish.pane = Some(PaneId(4));
+        finish.exit_status = Some(7);
+        let result =
+            run_script_request(&mut manager, &context, &ScriptInvocation::Event(finish)).unwrap();
+        assert_eq!(result.commands.len(), 1, "old mode subscription leaked");
+        if kind == "rust" {
+            std::fs::remove_file(&cargo).unwrap();
+        }
+    }
+    std::fs::remove_file(&package).unwrap();
+    run_script_request(&mut manager, &context, &change).unwrap();
+    assert_eq!(manager.eval("Toyoterm.current_pane.modes").unwrap(), "[]");
+    let mut finish = RubyEvent::new(ScriptEventKind::CommandFinished);
+    finish.pane = Some(PaneId(4));
+    assert!(
+        run_script_request(&mut manager, &context, &ScriptInvocation::Event(finish))
+            .unwrap()
+            .commands
+            .is_empty()
+    );
+}
+
+fn choose_recipe_item(
+    manager: &mut ConfigManager,
+    result: ScriptResult,
+    wanted: &str,
+) -> ScriptResult {
+    let [NativeCommand::Ui(UiCommand::OpenSelector { id, items, .. })] = result.commands.as_slice()
+    else {
+        panic!("expected selection, got {:?}", result.commands);
+    };
+    let selection = items
+        .iter()
+        .find(|item| item.contains(wanted))
+        .unwrap()
+        .clone();
+    invoke(
+        manager,
+        ScriptInvocation::SelectCallback {
+            id: *id,
+            selection: Some(selection),
+        },
+    )
+}
+
+#[test]
+fn recipe_output_lenses_extend_via_hooks_and_keep_the_original_screen_snapshot() {
+    let mut manager = load("output_lenses");
+    let mut context = script_test_context();
+    Arc::make_mut(&mut context.model).panes[0].screen_text =
+        "warning: captured\nTODO: review\nhttps://one.test https://two.test/path.\n".into();
+    let opened = run_script_request(
+        &mut manager,
+        &context,
+        &ScriptInvocation::UserCommand {
+            name: "recipe_lenses".into(),
+            pane: PaneId(4),
+        },
+    )
+    .unwrap();
+    // Later callbacks use the default screen ("prompt>"). Results must still
+    // refer to the original capture and include the second URL on one line.
+    let matches = choose_recipe_item(&mut manager, opened, "URLs");
+    let actions = choose_recipe_item(&mut manager, matches, "https://two.test/path");
+    let result = choose_recipe_item(&mut manager, actions, "Copy to clipboard");
+    assert_eq!(
+        result.commands,
+        vec![NativeCommand::Clipboard(ClipboardCommand::Write(
+            "https://two.test/path".into()
+        ))]
+    );
+    invoke(&mut manager, ScriptInvocation::Eval(
+        "ExampleOutputLenses.register('Prompts') { |line| line.start_with?('prompt>') ? [line] : [] }".into()
+    ));
+    let opened = command(&mut manager, "recipe_lenses");
+    let matches = choose_recipe_item(&mut manager, opened, "Prompts");
+    let actions = choose_recipe_item(&mut manager, matches, "prompt>");
+    let result = choose_recipe_item(&mut manager, actions, "Find in scrollback");
+    assert!(
+        matches!(result.commands.as_slice(), [NativeCommand::Pane(PaneCommand::Search { pane: PaneId(4), query, .. })] if query == "prompt>")
+    );
 }

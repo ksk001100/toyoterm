@@ -41,7 +41,7 @@ fn pane_events_preserve_grid_payload_and_subject_through_the_native_boundary() {
 fn pane_event_example_shows_grid_dimensions_and_ignores_stale_panes() {
     let mut manager = ConfigManager::new().unwrap();
     manager
-        .reload(include_str!("../../../examples/pane_events.rb"))
+        .reload(include_str!("../../../examples/pane_tools/events.rb"))
         .unwrap();
     let mut event = RubyEvent::new(ScriptEventKind::PaneReady);
     event.pane = Some(PaneId(4));

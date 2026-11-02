@@ -348,7 +348,9 @@ fn scope_validation_and_capacity_errors_leave_no_partial_installation() {
 fn scoped_library_example_installs_closes_and_reinstalls_without_definition_collisions() {
     let mut manager = ConfigManager::new().unwrap();
     manager
-        .reload(include_str!("../../../examples/resource_scopes.rb"))
+        .reload(include_str!(
+            "../../../examples/extension_libraries/scopes.rb"
+        ))
         .unwrap();
     let result = eval(&mut manager, "Toyoterm.call_command(:scoped_status)").unwrap();
     let [NativeCommand::Ui(UiCommand::OpenPanel { id, .. })] = result.commands.as_slice() else {

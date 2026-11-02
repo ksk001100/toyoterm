@@ -358,7 +358,7 @@ fn action_advice_validates_registrations_and_replacement_arguments_before_queuin
 fn bundled_action_policy_example_intercepts_and_releases_native_actions() {
     let mut manager = ConfigManager::new().unwrap();
     manager
-        .reload(include_str!("../../../examples/actions.rb"))
+        .reload(include_str!("../../../examples/pane_tools/policy.rb"))
         .unwrap();
     run_script_request(
         &mut manager,

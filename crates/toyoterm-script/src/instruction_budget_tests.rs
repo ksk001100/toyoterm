@@ -344,7 +344,7 @@ fn budget_guard_works_during_load_and_example_summarizes_terminal_text() {
         .unwrap();
     assert_ne!(manager.snapshot().config.scrollback_lines, 987);
     manager
-        .reload(include_str!("../../../examples/instruction_budgets.rb"))
+        .reload(include_str!("../../../examples/screen_analysis/bounded.rb"))
         .unwrap();
     let mut context = script_test_context();
     Arc::make_mut(&mut context.model).panes[0].screen_text = "one two\none three".into();

@@ -13,7 +13,7 @@ Toyoterm.command(:bounded_screen_summary, description: 'Summarize terminal text 
     end
   rescue Toyoterm::InstructionBudgetError
     rows = ['Summary exceeded its Ruby instruction limit.',
-            'Try smaller work units or the cooperative_work.rb example.']
+            'Try smaller work units or the screen_analysis/cooperative.rb example.']
   end
   Toyoterm.show_panel(title: 'Bounded screen summary', lines: rows)
 end

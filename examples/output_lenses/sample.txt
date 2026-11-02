@@ -1,0 +1,6 @@
+Compiling toyoterm v0.2.0
+warning: demonstration diagnostic, no actual compiler failure
+TODO: review the generated key bindings
+FIXME: add a project-specific output lens
+Documentation https://example.com/docs and https://example.com/help.
+FAILED: demonstration test result

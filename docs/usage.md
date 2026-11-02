@@ -5,7 +5,7 @@ See the [documentation index](README.md) for configuration, installation, and de
 ## Controls
 
 There are no built-in GUI key bindings. Copy the bindings from
-[default configuration](../examples/default_config.rb) into your `config.rb` and change them as needed.
+[default configuration](../examples/starter/config.rb) into your `config.rb` and change them as needed.
 
 - Type normally to send input to the PTY
 - Click a workspace or tab label to activate it

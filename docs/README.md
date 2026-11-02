@@ -18,7 +18,7 @@
 | [v0.1.0 release notes](releases/v0.1.0.md) | First-release highlights, setup, and current limits |
 
 Runnable configurations live in [examples](../examples). The
-[default configuration](../examples/default_config.rb) provides optional bindings;
+[default configuration](../examples/starter/config.rb) provides optional bindings;
 toyoterm itself has no built-in GUI key bindings.
 
 ## Developing toyoterm
